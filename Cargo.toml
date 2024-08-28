@@ -1,0 +1,29 @@
+[package]
+name = "sky_engine"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+smallvec = "1.13.2"
+lazy_static = "1.4.0"
+hecs = "0.10.5"
+legion = "0.4"
+rand = "0.8"
+specs = "0.16"
+flecs = "0.1.5"
+
+
+[dev-dependencies]
+criterion = "0.4"
+
+[[bench]]
+name = "sky"
+harness = false
+
+[profile.release]
+debug = true
+
+[build]
+rustflags = ["-C", "target-cpu=native"]

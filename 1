@@ -1,0 +1,100 @@
+{
+            let this = &mut test;
+            // Ensure we are within bounds of cached data
+            let mut current_data_index = 0;
+            let mut current_chunk_index = 0;
+            let mut current_entity_index = 0;
+
+            //let mut result = vec![ptr::null(); this.query.types.len()];
+
+            while current_data_index < this.cached.len() {
+                let cache = &this.cached[current_data_index];
+                let chunks = &cache.data.chunks;
+                let total_size = cache.data.archetype.total_size;
+                let layout1 = cache.layout[0];
+                let layout2 = cache.layout[1];
+                let chunk_size = chunks.len();
+                
+                while current_chunk_index < chunk_size {
+                    let chunk = unsafe { chunks.get_unchecked(current_chunk_index) };
+                    
+                    let entity_count = chunk.entity_count;
+                    //let total_size = chunk.archetype.total_size;
+
+                    /*
+                    for (i, offset) in cache.layout.iter().enumerate() {
+                        let ptr = chunk.data.as_ptr();
+                        unsafe { *result.get_unchecked_mut(i) = ptr.byte_add(*offset) };
+                    }*/
+
+                    
+                    //let query_type_num = cache.layout.len();
+
+                    //let ptr = chunk.data.as_ptr();
+
+                    let ptr = chunk.data.as_ptr();
+
+                    let mut ptr1 = unsafe { ptr.byte_add(layout1) };
+                    let mut ptr2 = unsafe { ptr.byte_add(layout2) };
+
+                    
+
+                    let step = 4; // Unroll the loop by a factor of 4
+                    let until =  entity_count  -step;
+                    while current_entity_index <= until {
+                        unsafe {
+                            let v1 = &mut *(ptr1 as *mut VelocityComponent);
+                            let p1 = &mut *(ptr2 as *mut PositionComponent);
+                            p1.x += v1.x;
+                            p1.y += v1.y;
+
+                            let v2 = &mut *(ptr1.byte_add(total_size) as *mut VelocityComponent);
+                            let p2 = &mut *(ptr2.byte_add(total_size) as *mut PositionComponent);
+                            p2.x += v2.x;
+                            p2.y += v2.y;
+
+                            let v3 =
+                                &mut *(ptr1.byte_add(2 * total_size) as *mut VelocityComponent);
+                            let p3 =
+                                &mut *(ptr2.byte_add(2 * total_size) as *mut PositionComponent);
+                            p3.x += v3.x;
+                            p3.y += v3.y;
+
+                            let v4 =
+                                &mut *(ptr1.byte_add(3 * total_size) as *mut VelocityComponent);
+                            let p4 =
+                                &mut *(ptr2.byte_add(3 * total_size) as *mut PositionComponent);
+                            p4.x += v4.x;
+                            p4.y += v4.y;
+
+
+                            ptr1 = ptr1.byte_add(4 * total_size);
+                            ptr2 = ptr2.byte_add(4 * total_size);
+                        }
+                        current_entity_index += step;
+                    }
+
+                    // Handle the remaining entities
+                    while current_entity_index < entity_count {
+                        let v = unsafe { &mut *(ptr1 as *mut VelocityComponent) };
+                        let p = unsafe { &mut *(ptr2 as *mut PositionComponent) };
+                        p.x += v.x;
+                        p.y += v.y;
+
+                        current_entity_index += 1;
+
+                        unsafe {
+                            ptr1 = ptr1.byte_add(total_size);
+                            ptr2 = ptr2.byte_add(total_size);
+                        }
+                    }
+
+                    current_chunk_index += 1;
+                    current_entity_index = 0;
+                }
+
+                current_data_index += 1;
+                current_chunk_index = 0;
+                current_entity_index = 0;
+            }
+        }
