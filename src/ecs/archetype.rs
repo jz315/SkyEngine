@@ -1,12 +1,12 @@
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
-use std::{ptr, rc::Rc};
+use std::ptr;
 
 use smallvec::SmallVec;
 
 use crate::reflect::*;
 
-use super::{Chunk, Query};
+use super::Query;
 
 pub const MAX_COMPONENTS: usize = 32;
 
@@ -77,6 +77,12 @@ impl InternalArchetype {
             Ok(index) => Some(self.layout[index]),
             Err(_) => None,
         }
+    }
+
+    pub fn query_component_index(&self, ty: &Type) -> Option<usize> {
+        self.components
+            .binary_search_by(|component| component.id().cmp(&ty.id()))
+            .ok()
     }
 
     pub fn matches_query(&self, query: &Query) -> bool {

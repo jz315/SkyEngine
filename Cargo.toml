@@ -22,8 +22,13 @@ criterion = "0.4"
 name = "sky"
 harness = false
 
+[[bench]]
+name = "hevy"
+harness = false
+
+[[bench]]
+name = "legion"
+harness = false
+
 [profile.release]
 debug = true
-
-[build]
-rustflags = ["-C", "target-cpu=native"]
