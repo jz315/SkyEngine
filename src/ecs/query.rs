@@ -1,5 +1,6 @@
 use super::{Archetype, Data, World};
 use crate::reflect::*;
+use core::{mem, slice};
 
 const UNROLL: usize = 8;
 
@@ -64,6 +65,12 @@ impl<'a> QueryIter<'a> {
 
 impl<'a> QueryIter<'a> {
     #[inline(always)]
+    fn debug_assert_query_type<T>(ty: &Type) {
+        debug_assert_eq!(ty.size, mem::size_of::<T>());
+        debug_assert_eq!(ty.align, mem::align_of::<T>());
+    }
+
+    #[inline(always)]
     pub fn for_each2<F>(&mut self, mut f: F)
     where
         F: FnMut(*mut u8, *mut u8),
@@ -118,6 +125,62 @@ impl<'a> QueryIter<'a> {
                         ptr2 = ptr2.add(stride2);
                         i += 1;
                     }
+                }
+            }
+
+            current_data_index += 1;
+        }
+    }
+
+    #[inline(always)]
+    pub fn for_each_chunk2<A, B, F>(&mut self, mut f: F)
+    where
+        F: FnMut(&mut [A], &[B]),
+    {
+        debug_assert!(self.query.types.len() >= 2);
+        Self::debug_assert_query_type::<A>(&self.query.types[0]);
+        Self::debug_assert_query_type::<B>(&self.query.types[1]);
+
+        let mut current_data_index = 0;
+
+        while current_data_index < self.cached.len() {
+            let cache = &self.cached[current_data_index];
+
+            debug_assert!(cache.component_indices.len() >= 2);
+
+            let component1 = cache.component_indices[0];
+            let component2 = cache.component_indices[1];
+
+            debug_assert_ne!(component1, component2);
+            debug_assert_eq!(
+                cache.data.archetype.components[component1].size,
+                mem::size_of::<A>()
+            );
+            debug_assert_eq!(
+                cache.data.archetype.components[component1].align,
+                mem::align_of::<A>()
+            );
+            debug_assert_eq!(
+                cache.data.archetype.components[component2].size,
+                mem::size_of::<B>()
+            );
+            debug_assert_eq!(
+                cache.data.archetype.components[component2].align,
+                mem::align_of::<B>()
+            );
+
+            for chunk in &cache.data.chunks {
+                let entity_count = chunk.entity_count;
+                if entity_count == 0 {
+                    continue;
+                }
+
+                unsafe {
+                    let components1 =
+                        slice::from_raw_parts_mut(chunk.column_ptr(component1) as *mut A, entity_count);
+                    let components2 =
+                        slice::from_raw_parts(chunk.column_ptr(component2) as *const B, entity_count);
+                    f(components1, components2);
                 }
             }
 

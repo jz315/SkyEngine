@@ -67,12 +67,11 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     c.bench_function("sky_2_of_4", |b| {
         b.iter(|| {
-            test.for_each2(|position, velocity| {
-                let p = unsafe { &mut *(position as *mut PositionComponent) };
-                let v = unsafe { &*(velocity as *const VelocityComponent) };
-
-                p.x += v.x * DELTA;
-                p.y += v.y * DELTA;
+            test.for_each_chunk2::<PositionComponent, VelocityComponent, _>(|positions, velocities| {
+                for (position, velocity) in positions.iter_mut().zip(velocities.iter()) {
+                    position.x += velocity.x * DELTA;
+                    position.y += velocity.y * DELTA;
+                }
             });
         })
     });
