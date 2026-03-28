@@ -1,6 +1,8 @@
 use super::{Archetype, Data, World};
 use crate::reflect::*;
 
+const UNROLL: usize = 8;
+
 pub struct Query {
     pub types: Vec<Type>,
 }
@@ -83,7 +85,7 @@ impl<'a> QueryIter<'a> {
                 let mut ptr1 = chunk.column_ptr(component1);
                 let mut ptr2 = chunk.column_ptr(component2);
 
-                let step = 16;
+                let step = UNROLL;
                 let until = entity_count - (entity_count % step);
                 let mut i = 0;
 
@@ -103,17 +105,9 @@ impl<'a> QueryIter<'a> {
                         process_entity!(5);
                         process_entity!(6);
                         process_entity!(7);
-                        process_entity!(8);
-                        process_entity!(9);
-                        process_entity!(10);
-                        process_entity!(11);
-                        process_entity!(12);
-                        process_entity!(13);
-                        process_entity!(14);
-                        process_entity!(15);
 
-                        ptr1 = ptr1.add(16 * stride1);
-                        ptr2 = ptr2.add(16 * stride2);
+                        ptr1 = ptr1.add(UNROLL * stride1);
+                        ptr2 = ptr2.add(UNROLL * stride2);
                         i += step;
                     }
 
@@ -159,7 +153,7 @@ impl<'a> QueryIter<'a> {
                 let mut ptr3 = chunk.column_ptr(component3);
                 let mut ptr4 = chunk.column_ptr(component4);
 
-                let step = 16;
+                let step = UNROLL;
                 let until = entity_count - (entity_count % step);
                 let mut i = 0;
 
@@ -184,19 +178,11 @@ impl<'a> QueryIter<'a> {
                         process_entity!(5);
                         process_entity!(6);
                         process_entity!(7);
-                        process_entity!(8);
-                        process_entity!(9);
-                        process_entity!(10);
-                        process_entity!(11);
-                        process_entity!(12);
-                        process_entity!(13);
-                        process_entity!(14);
-                        process_entity!(15);
 
-                        ptr1 = ptr1.add(16 * stride1);
-                        ptr2 = ptr2.add(16 * stride2);
-                        ptr3 = ptr3.add(16 * stride3);
-                        ptr4 = ptr4.add(16 * stride4);
+                        ptr1 = ptr1.add(UNROLL * stride1);
+                        ptr2 = ptr2.add(UNROLL * stride2);
+                        ptr3 = ptr3.add(UNROLL * stride3);
+                        ptr4 = ptr4.add(UNROLL * stride4);
                         i += step;
                     }
 

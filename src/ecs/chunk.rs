@@ -3,7 +3,7 @@ use smallvec::SmallVec;
 use std::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
 use std::ptr::{self, NonNull};
 
-const CHUNK_SIZE: usize = 48 * 1024;
+const CHUNK_SIZE: usize = 32 * 1024;
 
 fn align_up(value: usize, align: usize) -> usize {
     debug_assert!(align.is_power_of_two());
