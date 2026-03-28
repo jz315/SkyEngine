@@ -17,6 +17,7 @@ flecs = "0.1.5"
 
 [dev-dependencies]
 criterion = "0.4"
+cgmath = "0.18"
 
 [[bench]]
 name = "sky"
@@ -28,6 +29,10 @@ harness = false
 
 [[bench]]
 name = "legion"
+harness = false
+
+[[bench]]
+name = "suite"
 harness = false
 
 [profile.release]

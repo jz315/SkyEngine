@@ -157,6 +157,10 @@ impl ArchetypeBuilder {
         self
     }
 
+    pub fn add_rust_component<T: 'static>(self) -> Self {
+        self.add_component(register_rust_type::<T>())
+    }
+
     pub fn build(self) -> Archetype {
         let internal_archetype = Box::leak(Box::new(self.internal_archetype.build()));
         Archetype::new(internal_archetype)

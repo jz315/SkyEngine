@@ -36,13 +36,30 @@ fn criterion_benchmark(c: &mut Criterion) {
         ));
     }
 
-    let mut query = PreparedQuery::<(&mut PositionComponent, &VelocityComponent)>::default();
+    let mut query2 = PreparedQuery::<(&mut PositionComponent, &VelocityComponent)>::default();
+    let mut query4 = PreparedQuery::<(
+        &mut PositionComponent,
+        &VelocityComponent,
+        &mut test3Component,
+        &test4Component,
+    )>::default();
 
     c.bench_function("hecs_2_of_4", |b| {
         b.iter(|| {
-            for (_, (p, v)) in query.query(&world).iter() {
+            for (_, (p, v)) in query2.query(&world).iter() {
                 p.x += v.x * DELTA;
                 p.y += v.y * DELTA;
+            }
+        })
+    });
+
+    c.bench_function("hecs_4_of_4", |b| {
+        b.iter(|| {
+            for (_, (p, v, t3, t4)) in query4.query(&world).iter() {
+                p.x += v.x * DELTA + t4.x * DELTA;
+                p.y += v.y * DELTA + t4.y * DELTA;
+                t3.x += v.x;
+                t3.y += t4.y;
             }
         })
     });

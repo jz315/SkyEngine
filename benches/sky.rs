@@ -1,8 +1,5 @@
 use criterion::{criterion_group, criterion_main, Criterion};
-use sky_engine::{
-    ecs::{create_archetype, Query, QueryIter, World},
-    reflect,
-};
+use sky_engine::ecs::{create_archetype, World};
 
 const ENTITY_COUNT: usize = 5_000_000;
 const DELTA: f32 = 0.1;
@@ -28,33 +25,11 @@ pub struct test4Component {
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
-    let ty_a = reflect::register(
-        "VelocityComponent",
-        std::mem::size_of::<VelocityComponent>(),
-        std::mem::align_of::<VelocityComponent>(),
-    );
-    let ty_b: reflect::Type = reflect::register(
-        "PositionComponent",
-        std::mem::size_of::<PositionComponent>(),
-        std::mem::align_of::<PositionComponent>(),
-    );
-
-    let ty_c = reflect::register(
-        "test3Component",
-        std::mem::size_of::<test3Component>(),
-        std::mem::align_of::<test3Component>(),
-    );
-    let ty_d: reflect::Type = reflect::register(
-        "test4Component",
-        std::mem::size_of::<test4Component>(),
-        std::mem::align_of::<test4Component>(),
-    );
-
     let archetype = create_archetype()
-        .add_component(ty_a)
-        .add_component(ty_b)
-        .add_component(ty_c)
-        .add_component(ty_d)
+        .add_rust_component::<VelocityComponent>()
+        .add_rust_component::<PositionComponent>()
+        .add_rust_component::<test3Component>()
+        .add_rust_component::<test4Component>()
         .build();
 
     let mut world = World::new();
@@ -62,15 +37,29 @@ fn criterion_benchmark(c: &mut Criterion) {
         world.add_entity(archetype);
     }
 
-    let query = Query::new(vec![ty_b, ty_a]);
-    let mut test = QueryIter::new(&world, &query);
+    let mut query2 = world.query::<(&mut PositionComponent, &VelocityComponent)>();
+    let mut query4 =
+        world.query::<(&mut PositionComponent, &VelocityComponent, &mut test3Component, &test4Component)>();
 
     c.bench_function("sky_2_of_4", |b| {
         b.iter(|| {
-            test.for_each_chunk2::<PositionComponent, VelocityComponent, _>(|positions, velocities| {
+            query2.for_each_chunk(&world, |(positions, velocities)| {
                 for (position, velocity) in positions.iter_mut().zip(velocities.iter()) {
                     position.x += velocity.x * DELTA;
                     position.y += velocity.y * DELTA;
+                }
+            });
+        })
+    });
+
+    c.bench_function("sky_4_of_4", |b| {
+        b.iter(|| {
+            query4.for_each_chunk(&world, |(positions, velocities, tests3, tests4)| {
+                for index in 0..positions.len() {
+                    positions[index].x += velocities[index].x * DELTA + tests4[index].x * DELTA;
+                    positions[index].y += velocities[index].y * DELTA + tests4[index].y * DELTA;
+                    tests3[index].x += velocities[index].x;
+                    tests3[index].y += tests4[index].y;
                 }
             });
         })

@@ -3,7 +3,7 @@ use smallvec::SmallVec;
 use std::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
 use std::ptr::{self, NonNull};
 
-const CHUNK_SIZE: usize = 32 * 1024;
+const CHUNK_SIZE: usize = 512 * 1024;
 
 fn align_up(value: usize, align: usize) -> usize {
     debug_assert!(align.is_power_of_two());
@@ -235,24 +235,26 @@ mod tests {
             .add_component(ty_b)
             .build();
         let mut chunk = Chunk::new(archetype);
+        let index_a = archetype.query_component_index(&ty_a).unwrap();
+        let index_b = archetype.query_component_index(&ty_b).unwrap();
 
         assert!(chunk.add_entity());
         assert!(chunk.add_entity());
 
         assert!(chunk.max_entity_count > 0);
         assert_eq!(
-            chunk.column_ptr(0) as usize % core::mem::align_of::<Aligned16>(),
+            chunk.column_ptr(index_a) as usize % core::mem::align_of::<Aligned16>(),
             0
         );
         assert_eq!(
-            chunk.column_ptr(1) as usize % core::mem::align_of::<Aligned8>(),
+            chunk.column_ptr(index_b) as usize % core::mem::align_of::<Aligned8>(),
             0
         );
         assert_eq!(
             unsafe {
                 chunk
-                    .component_ptr(0, 1)
-                    .offset_from(chunk.component_ptr(0, 0)) as usize
+                    .component_ptr(index_a, 1)
+                    .offset_from(chunk.component_ptr(index_a, 0)) as usize
             },
             core::mem::size_of::<Aligned16>()
         );
