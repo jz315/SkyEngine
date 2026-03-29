@@ -29,10 +29,12 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     for _ in 0..ENTITY_COUNT {
         world.spawn((
-            VelocityComponent { x: 0.0, y: 0.0 },
+            // Keep the hecs workload aligned with benches/sky.rs so the comparison
+            // reflects query/runtime differences rather than different input data.
+            VelocityComponent { x: 1.0, y: 1.0 },
             PositionComponent { x: 0.0, y: 0.0 },
             test3Component { x: 0.0, y: 0.0 },
-            test4Component { x: 0.0, y: 0.0 },
+            test4Component { x: 1.0, y: 1.0 },
         ));
     }
 
