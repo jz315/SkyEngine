@@ -1,2 +1,2 @@
-mod reflect;
-pub use reflect::*;
+mod registry;
+pub use registry::*;

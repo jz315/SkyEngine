@@ -1,1 +1,5 @@
 /target
+
+# Profiler artifacts
+*.json.gz
+*.syms.json

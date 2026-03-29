@@ -63,14 +63,14 @@ impl TypeMngr {
 
     fn register(&mut self, name: &str, size: usize, align: usize) -> Type {
         if let Some(ty) = self.name_to_type.get(name) {
-            return ty.clone();
+            return *ty;
         }
 
         let boxed_info = Box::new(TypeInfo::new(name, size, align));
         let static_info: &'static TypeInfo = Box::leak(boxed_info);
 
         let ty = Type::new(static_info);
-        self.name_to_type.insert(name.to_string(), ty.clone());
+        self.name_to_type.insert(name.to_string(), ty);
 
         ty
     }

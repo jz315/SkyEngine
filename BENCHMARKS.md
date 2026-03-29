@@ -164,3 +164,49 @@ Interpretation:
 
 - Prepared-query dispatch overhead was negligible.
 - The real cost remained in the inner streaming loops.
+
+## Version Records
+
+### v0.2 — ECS API Expansion (2026-03-29)
+
+Changes: code cleanup (dead imports, todo stubs), World `entity_count`/`archetype_count`/`clear`, Query `for_each_with_entity`/`for_each_chunk_with_entities`/`count`/`is_empty`. None of these touch the typed hot path.
+
+#### `cargo bench --bench sky -- --noplot`
+
+| Benchmark | Result |
+| --- | --- |
+| `sky_2_of_4` | `3.0330-3.1492 ms` |
+| `sky_4_of_4` | `6.5002-6.7820 ms` |
+
+#### `cargo bench --bench suite -- --noplot`
+
+| Benchmark | Sky | hecs |
+| --- | --- | --- |
+| `simple_insert` | `457.36-463.79 us` | `283.11-285.87 us` |
+| `simple_iter` | `2.3167-2.3465 us` | `5.3387-5.4113 us` |
+| `fragmented_iter` | `95.187-96.221 ns` | `1.1973-1.2068 us` |
+| `heavy_compute` | `2.9502-2.9715 ms` | `2.9321-2.9532 ms` |
+
+Conclusion: no regression on any hot path.
+
+### v0.3 — Optional Query + Filters (2026-03-29)
+
+Changes: `Option<&T>` / `Option<&mut T>` in typed queries, `With<T>` / `Without<T>` query filters, `query_filtered` API. resolve_column_ptr helper replaces direct column_ptr calls to handle optional sentinel. QueryFilter trait with zero-cost () default.
+
+#### `cargo bench --bench sky -- --noplot`
+
+| Benchmark | Result |
+| --- | --- |
+| `sky_2_of_4` | `3.2714-3.4191 ms` |
+| `sky_4_of_4` | `6.5559-6.8589 ms` |
+
+#### `cargo bench --bench suite -- --noplot`
+
+| Benchmark | Sky | hecs |
+| --- | --- | --- |
+| `simple_insert` | `481.39-497.43 us` | `303.96-317.99 us` |
+| `simple_iter` | `2.0434-2.1123 us` | `5.8916-6.1735 us` |
+| `fragmented_iter` | `109.02-110.19 ns` | `1.1707-1.1873 us` |
+| `heavy_compute` | `2.9429-2.9660 ms` | `2.9493-2.9701 ms` |
+
+Conclusion: no regression. resolve_column_ptr inlines cleanly for non-optional queries.

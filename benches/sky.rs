@@ -1,45 +1,51 @@
 use criterion::{criterion_group, criterion_main, Criterion};
-use sky_engine::ecs::{create_archetype, World};
+use sky_engine::ecs::World;
 
 const ENTITY_COUNT: usize = 5_000_000;
 const DELTA: f32 = 0.1;
 
+#[derive(Clone, Copy)]
 pub struct VelocityComponent {
     pub x: f32,
     pub y: f32,
 }
 
+#[derive(Clone, Copy)]
 pub struct PositionComponent {
     pub x: f32,
     pub y: f32,
 }
 
+#[derive(Clone, Copy)]
 pub struct test3Component {
     pub x: f32,
     pub y: f32,
 }
 
+#[derive(Clone, Copy)]
 pub struct test4Component {
     pub x: f32,
     pub y: f32,
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
-    let archetype = create_archetype()
-        .add_rust_component::<VelocityComponent>()
-        .add_rust_component::<PositionComponent>()
-        .add_rust_component::<test3Component>()
-        .add_rust_component::<test4Component>()
-        .build();
-
     let mut world = World::new();
     for _ in 0..ENTITY_COUNT {
-        world.add_entity(archetype);
+        world.spawn((
+            VelocityComponent { x: 1.0, y: 1.0 },
+            PositionComponent { x: 0.0, y: 0.0 },
+            test3Component { x: 0.0, y: 0.0 },
+            test4Component { x: 1.0, y: 1.0 },
+        ));
     }
 
     let mut query2 = world.query::<(&mut PositionComponent, &VelocityComponent)>();
-    let mut query4 =
-        world.query::<(&mut PositionComponent, &VelocityComponent, &mut test3Component, &test4Component)>();
+    let mut query4 = world.query::<(
+        &mut PositionComponent,
+        &VelocityComponent,
+        &mut test3Component,
+        &test4Component,
+    )>();
 
     c.bench_function("sky_2_of_4", |b| {
         b.iter(|| {
