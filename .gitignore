@@ -1,5 +1,16 @@
 /target
-
-# Profiler artifacts
 *.json.gz
 *.syms.json
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Temp benchmark output
+bench_*.txt

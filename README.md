@@ -1,26 +1,34 @@
 # SkyEngine
 
-A high-performance Entity Component System written in Rust, built on chunk-based columnar storage for maximum cache efficiency.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+A high-performance Entity Component System written in Rust, built on **chunk-based columnar storage** for maximum cache efficiency.
 
 ## ⚡ Performance
 
-Benchmarked against Bevy ECS and Hecs on identical workloads (10k entities, 4 components):
+Benchmarked against **Bevy ECS** and **Hecs** on identical workloads:
 
-| Benchmark | Sky | Bevy | Hecs | 
+| Benchmark | SkyEngine | Bevy ECS | Hecs |
 |---|---|---|---|
-| **Iteration** (2-of-4 query) | **1.7 µs** | 8.7 µs | 5.3 µs |
+| **Iteration** (2-of-4 query, 10k) | **1.7 µs** | 8.7 µs | 5.3 µs |
 | **Fragmented** (26 archetypes) | **104 ns** | 989 ns | 215 ns |
 | **Batch Insert** (10k entities) | **135 µs** | 305 µs | 282 µs |
 
-At large scale (5M entities), Sky maintains a consistent **10-15% lead** over Hecs on head-to-head iteration, with both implementations approaching memory bandwidth limits.
+At scale (5M entities), SkyEngine maintains a **10-15% lead** over Hecs, with both approaching memory bandwidth limits.
 
-> All benchmarks run on the same machine with `cargo bench`. See `benches/` for full source.
+### Stress Test
+
+**1,000,000 particles at 80 FPS** — physics + pixel rendering on a single thread.
+
+```bash
+cargo run --example particles --release
+```
 
 ## 🏗️ Architecture
 
 ### Chunk-Based Columnar Storage
 
-Unlike traditional archetype-table designs, SkyEngine partitions entity data into **fixed-size 512KB chunks** with per-column layout within each chunk:
+Unlike traditional archetype-table designs, SkyEngine partitions entity data into **fixed-size 512KB chunks** with per-column layout:
 
 ```
 Chunk (512 KB)
@@ -31,14 +39,13 @@ Chunk (512 KB)
 └─────────────────────────────────────────────────┘
 ```
 
-This gives us:
-- **CPU cache prefetcher** can predict and preload sequential column data
-- **SIMD-friendly** data layout — components densely packed per type
+- **CPU prefetcher** can predict and preload sequential column data
+- **SIMD-friendly** — components densely packed per type
 - **Fragmentation-resistant** — many small archetypes still iterate with good locality
 
-### Zero-Overhead Batch Write
+### Zero-Overhead Batch Insert
 
-`spawn_batch` pre-computes column offsets once, then writes each entity with raw pointer arithmetic — no hash lookups, no binary search, no type registration in the hot loop.
+`spawn_batch` pre-computes column offsets once, then writes each entity with raw pointer arithmetic — no hash lookups, no binary search in the hot loop.
 
 ## 🎮 Quick Start
 
@@ -62,14 +69,14 @@ fn main() {
         (Position { x: i as f32, y: 0.0 }, Velocity { x: 1.0, y: 1.0 })
     }));
 
-    // Query iteration
+    // Query — per-entity
     let mut query = world.query::<(&mut Position, &Velocity)>();
     query.for_each(&world, |(pos, vel)| {
         pos.x += vel.x * 0.016;
         pos.y += vel.y * 0.016;
     });
 
-    // Chunk-level access for max throughput
+    // Query — chunk-level (max throughput)
     query.for_each_chunk(&world, |(positions, velocities)| {
         for (pos, vel) in positions.iter_mut().zip(velocities.iter()) {
             pos.x += vel.x * 0.016;
@@ -83,71 +90,69 @@ fn main() {
 
 | Feature | Status |
 |---|---|
-| Typed `PreparedQuery` with caching | ✅ |
+| Typed `PreparedQuery` with epoch caching | ✅ |
 | `With<T>` / `Without<T>` filters | ✅ |
+| `Option<&T>` / `Option<&mut T>` in queries | ✅ |
 | `spawn` / `spawn_batch` / `despawn` | ✅ |
-| `insert` / `remove` component | ✅ |
+| `insert` / `remove` component (archetype migration) | ✅ |
 | `get` / `get_mut` random access | ✅ |
-| Deferred `Commands` | ✅ |
-| Resource storage | ✅ |
-| Group-based scheduling | ✅ |
+| Deferred `Commands` buffer | ✅ |
+| Type-erased resource storage | ✅ |
+| Group-based system scheduling | ✅ |
 | Fixed-timestep groups | ✅ |
-| `System` trait with lifecycle hooks | ✅ |
-| Dynamic query (scripting/tooling path) | ✅ |
-
-## 🔧 Scheduling
-
-```rust
-let mut world = World::new();
-
-// Groups execute in creation order
-world.group("input").add(InputSystem);
-world.group("physics").fixed(0.02).add(PhysicsSystem);
-world.group("gameplay").add(|world: &mut World| {
-    // Closure systems work too
-    let dt = world.time.delta;
-});
-world.group("render").add(RenderSystem);
-
-// Run one frame
-world.tick();
-
-// Cleanup
-world.shutdown();
-```
+| `System` trait with init/run/teardown lifecycle | ✅ |
+| Dynamic query path (scripting/tooling) | ✅ |
+| Generational `EntityId` | ✅ |
 
 ## 📦 Project Structure
 
 ```
-src/ecs/
-├── world.rs       # World — primary API surface
-├── chunk.rs       # 512KB chunk allocation and column storage
-├── archetype.rs   # Archetype definition and caching
-├── bundle.rs      # Bundle trait and write_fast optimization
-├── query/         # Typed + dynamic query implementations
-├── system.rs      # System trait, Schedule, GroupBuilder
-├── time.rs        # Time management
-├── commands.rs    # Deferred command buffer
-├── entity.rs      # EntityId with generational indexing
-└── resource.rs    # Type-erased resource storage
+src/
+├── ecs/
+│   ├── world.rs        # World — primary API surface
+│   ├── chunk.rs         # 512KB chunk allocation & column storage
+│   ├── archetype.rs     # Archetype definition & caching
+│   ├── bundle.rs        # Bundle trait & write_fast optimization
+│   ├── query/           # Typed + dynamic query implementations
+│   ├── system.rs        # System trait, Schedule, group builder
+│   ├── commands.rs      # Deferred command buffer
+│   ├── entity.rs        # EntityId with generational indexing
+│   ├── resource.rs      # Type-erased resource storage
+│   └── time.rs          # Frame time management
+├── reflect/             # Runtime type registry
+└── lib.rs
 
 benches/
-├── common.rs      # Shared components and helpers
-├── insert.rs      # Insert benchmarks (Sky vs Bevy vs Hecs)
-├── iter.rs        # Iteration benchmarks
-└── entity.rs      # Entity lifecycle benchmarks
+├── common.rs            # Shared components & helpers
+├── insert.rs            # Insert benchmarks (Sky vs Bevy vs Hecs)
+├── iter.rs              # Iteration benchmarks
+├── entity.rs            # Entity lifecycle benchmarks
+├── sky.rs               # 5M entity head-to-head (Sky)
+└── hevy.rs              # 5M entity head-to-head (Hecs)
+
+examples/
+└── particles.rs         # 2D particle simulation demo
+
+docs/
+└── api.md               # Full API reference (中文)
 ```
 
 ## 🧪 Running
 
 ```bash
-cargo test                    # Run all tests
-cargo bench --bench iter      # Iteration benchmarks
-cargo bench --bench insert    # Insert benchmarks
-cargo bench --bench entity    # Entity lifecycle benchmarks
-cargo bench                   # Run everything
+# Tests
+cargo test
+
+# Benchmarks
+cargo bench --bench iter       # Iteration
+cargo bench --bench insert     # Insertion
+cargo bench --bench entity     # Entity lifecycle
+cargo bench --bench sky --bench hevy  # Head-to-head at 5M scale
+
+# Particle demo
+cargo run --example particles --release --features demo
 ```
 
 ## License
 
-MIT
+[MIT](LICENSE)
