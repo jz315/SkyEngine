@@ -1,12 +1,23 @@
+pub mod raw;
 mod archetype;
+mod bundle;
 mod chunk;
-mod component;
+mod commands;
+mod entity;
 mod query;
-mod system;
+mod resource;
+pub(crate) mod system;
+pub(crate) mod time;
 mod world;
-pub use archetype::*;
-pub use chunk::*;
-pub use component::*;
-pub use query::*;
-pub use system::*;
-pub use world::*;
+
+pub use bundle::Bundle;
+pub use commands::Commands;
+pub use entity::EntityId;
+pub use query::{With, Without};
+pub use system::System;
+pub use time::Time;
+pub use world::World;
+
+pub(crate) use archetype::*;
+pub(crate) use chunk::*;
+pub(crate) use query::*;

@@ -8,16 +8,17 @@ edition = "2021"
 [dependencies]
 smallvec = "1.13.2"
 lazy_static = "1.4.0"
-hecs = "0.10.5"
-legion = "0.4"
-rand = "0.8"
-specs = "0.16"
-flecs = "0.1.5"
 
 
 [dev-dependencies]
 criterion = "0.4"
 cgmath = "0.18"
+hecs = "0.10.5"
+legion = "0.4"
+rand = "0.8"
+specs = "0.16"
+flecs = "0.1.5"
+bevy_ecs = "0.18.1"
 
 [[bench]]
 name = "sky"

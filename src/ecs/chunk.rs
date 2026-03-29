@@ -1,4 +1,4 @@
-use super::{Archetype, MAX_COMPONENTS};
+use super::{Archetype, EntityId, MAX_COMPONENTS};
 use smallvec::SmallVec;
 use std::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
 use std::ptr::{self, NonNull};
@@ -17,6 +17,7 @@ pub struct Chunk {
     data: NonNull<u8>,
     alloc_layout: Layout,
     column_offsets: SmallVec<[usize; MAX_COMPONENTS]>,
+    entities: Vec<EntityId>,
 }
 
 impl Chunk {
@@ -82,6 +83,7 @@ impl Chunk {
             data,
             alloc_layout,
             column_offsets,
+            entities: Vec::with_capacity(max_entity_count),
         }
     }
 
@@ -93,13 +95,15 @@ impl Chunk {
         self.entity_count == 0
     }
 
-    pub fn add_entity(&mut self) -> bool {
+    pub fn add_entity(&mut self, entity: EntityId) -> Option<usize> {
         if self.entity_count == self.max_entity_count {
-            return false;
+            return None;
         }
 
+        let entity_index = self.entity_count;
         self.entity_count += 1;
-        true
+        self.entities.push(entity);
+        Some(entity_index)
     }
 
     pub fn column_ptr(&self, component_index: usize) -> *mut u8 {
@@ -118,8 +122,8 @@ impl Chunk {
         }
     }
 
-    pub fn get_entity() {
-        todo!()
+    pub(crate) fn entities(&self) -> &[EntityId] {
+        &self.entities[..self.entity_count]
     }
 
     pub fn get_entity_as_ptr(&self, index: usize) -> *const u8 {
@@ -128,6 +132,53 @@ impl Chunk {
         }
 
         self.component_ptr(0, index) as *const u8
+    }
+
+    pub fn entity_id(&self, entity_index: usize) -> Option<EntityId> {
+        self.entities.get(entity_index).copied()
+    }
+
+    pub fn copy_entity_within(&mut self, src_index: usize, dst_index: usize) {
+        if src_index == dst_index {
+            return;
+        }
+
+        for (component_index, component) in self.archetype.components.iter().enumerate() {
+            unsafe {
+                ptr::copy_nonoverlapping(
+                    self.component_ptr(component_index, src_index),
+                    self.component_ptr(component_index, dst_index),
+                    component.size,
+                );
+            }
+        }
+
+        self.entities[dst_index] = self.entities[src_index];
+    }
+
+    pub fn copy_entity_from(&mut self, src: &Chunk, src_index: usize, dst_index: usize) {
+        debug_assert_eq!(self.archetype.id(), src.archetype.id());
+
+        for (component_index, component) in self.archetype.components.iter().enumerate() {
+            unsafe {
+                ptr::copy_nonoverlapping(
+                    src.component_ptr(component_index, src_index),
+                    self.component_ptr(component_index, dst_index),
+                    component.size,
+                );
+            }
+        }
+
+        self.entities[dst_index] = src.entities[src_index];
+    }
+
+    pub fn remove_last_entity(&mut self) -> Option<EntityId> {
+        if self.entity_count == 0 {
+            return None;
+        }
+
+        self.entity_count -= 1;
+        self.entities.pop()
     }
 }
 
@@ -144,6 +195,12 @@ pub struct Data {
     pub chunks: Vec<Chunk>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct ChunkEntityLocation {
+    pub chunk_index: usize,
+    pub entity_index: usize,
+}
+
 impl Data {
     pub fn new(archetype: Archetype) -> Self {
         Self {
@@ -156,53 +213,71 @@ impl Data {
         self.chunks.push(Chunk::new(self.archetype));
     }
 
-    pub fn add_entity(&mut self) {
+    pub fn add_entity(&mut self, entity: EntityId) -> ChunkEntityLocation {
         if let Some(chunk) = self.chunks.last_mut() {
-            if chunk.add_entity() {
-                return;
+            if let Some(entity_index) = chunk.add_entity(entity) {
+                return ChunkEntityLocation {
+                    chunk_index: self.chunks.len() - 1,
+                    entity_index,
+                };
             }
         }
 
         self.add_chunk();
-        let added = self.chunks.last_mut().unwrap().add_entity();
-        debug_assert!(added);
-    }
-}
-
-pub struct EntityIter<'a> {
-    data: &'a Data,
-    current_chunk_index: usize,
-    current_entity_index: usize,
-}
-
-impl<'a> EntityIter<'a> {
-    pub fn new(data: &'a Data) -> Self {
-        Self {
-            data,
-            current_chunk_index: 0,
-            current_entity_index: 0,
+        let chunk = self.chunks.last_mut().unwrap();
+        let entity_index = chunk.add_entity(entity).unwrap();
+        ChunkEntityLocation {
+            chunk_index: self.chunks.len() - 1,
+            entity_index,
         }
     }
-}
 
-impl<'a> Iterator for EntityIter<'a> {
-    type Item = *const u8;
+    pub fn remove_entity(
+        &mut self,
+        location: ChunkEntityLocation,
+    ) -> Option<(EntityId, ChunkEntityLocation)> {
+        if self.chunks.is_empty() {
+            return None;
+        }
 
-    fn next(&mut self) -> Option<Self::Item> {
-        while self.current_chunk_index < self.data.chunks.len() {
-            let chunk = &self.data.chunks[self.current_chunk_index];
+        let last_chunk_index = self.chunks.len() - 1;
+        let last_entity_index = self.chunks[last_chunk_index].entity_count.checked_sub(1)?;
 
-            if self.current_entity_index < chunk.entity_count {
-                let entity_index = self.current_entity_index;
-                self.current_entity_index += 1;
-                return Some(chunk.get_entity_as_ptr(entity_index));
+        let removed_is_last =
+            location.chunk_index == last_chunk_index && location.entity_index == last_entity_index;
+
+        let moved_entity = if removed_is_last {
+            None
+        } else {
+            let moved_entity = self.chunks[last_chunk_index]
+                .entity_id(last_entity_index)
+                .unwrap();
+
+            if location.chunk_index == last_chunk_index {
+                self.chunks[last_chunk_index]
+                    .copy_entity_within(last_entity_index, location.entity_index);
+            } else {
+                let (head, tail) = self.chunks.split_at_mut(last_chunk_index);
+                let dst_chunk = &mut head[location.chunk_index];
+                let src_chunk = &tail[0];
+                dst_chunk.copy_entity_from(src_chunk, last_entity_index, location.entity_index);
             }
 
-            self.current_chunk_index += 1;
-            self.current_entity_index = 0;
+            Some((
+                moved_entity,
+                ChunkEntityLocation {
+                    chunk_index: location.chunk_index,
+                    entity_index: location.entity_index,
+                },
+            ))
+        };
+
+        self.chunks[last_chunk_index].remove_last_entity();
+        if self.chunks.last().is_some_and(Chunk::is_empty) {
+            self.chunks.pop();
         }
 
-        None
+        moved_entity
     }
 }
 
@@ -212,9 +287,11 @@ mod tests {
     use crate::{ecs::create_archetype, reflect};
 
     #[repr(align(16))]
+    #[allow(dead_code)]
     struct Aligned16([u8; 16]);
 
     #[repr(align(8))]
+    #[allow(dead_code)]
     struct Aligned8([u8; 8]);
 
     #[test]
@@ -238,8 +315,11 @@ mod tests {
         let index_a = archetype.query_component_index(&ty_a).unwrap();
         let index_b = archetype.query_component_index(&ty_b).unwrap();
 
-        assert!(chunk.add_entity());
-        assert!(chunk.add_entity());
+        let entity_a = crate::ecs::EntityId::new(0, 0);
+        let entity_b = crate::ecs::EntityId::new(1, 0);
+
+        assert!(chunk.add_entity(entity_a).is_some());
+        assert!(chunk.add_entity(entity_b).is_some());
 
         assert!(chunk.max_entity_count > 0);
         assert_eq!(

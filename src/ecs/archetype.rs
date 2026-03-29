@@ -1,6 +1,9 @@
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::fmt;
 use std::ops::Deref;
 use std::ptr;
+use std::sync::RwLock;
 
 use smallvec::SmallVec;
 
@@ -9,6 +12,10 @@ use crate::reflect::*;
 use super::Query;
 
 pub const MAX_COMPONENTS: usize = 32;
+
+lazy_static::lazy_static! {
+    static ref ARCHETYPE_CACHE: RwLock<HashMap<Vec<usize>, Archetype>> = RwLock::new(HashMap::new());
+}
 
 // 定义Archetype结构体，包括内存布局和对齐信息，以及组件信息
 #[derive(Debug)]
@@ -37,13 +44,13 @@ impl InternalArchetype {
         self.alignment = self.alignment.max(ty.align);
         self.total_size += ty.size;
 
-        self.components.push(ty.clone());
+        self.components.push(ty);
 
         self
     }
 
     fn build(mut self) -> Self {
-        self.components.sort_by(|a, b| a.id().cmp(&b.id()));
+        self.components.sort_by_key(|a| a.id());
 
         let mut offset = 0;
         for component in &self.components {
@@ -89,18 +96,18 @@ impl InternalArchetype {
         query.types.iter().all(|ty| self.has_component(ty))
     }
 
-    // 打印Archetype的内存布局信息
-    pub fn print_layout(&self) {
-        println!("Archetype Alignment: {}", self.alignment);
-        println!("Archetype Total Size: {}", self.total_size);
-        println!("Components:");
+}
+
+impl fmt::Display for InternalArchetype {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Archetype[")?;
         for (i, component) in self.components.iter().enumerate() {
-            println!(
-                "  - : Size = {}, Align = {}, Offset = {}",
-                component.size, component.align, self.layout[i]
-            );
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", component.name)?;
         }
-        println!("Layout Offsets: {:?}", self.layout);
+        write!(f, "]")
     }
 }
 impl PartialEq for Archetype {
@@ -162,8 +169,20 @@ impl ArchetypeBuilder {
     }
 
     pub fn build(self) -> Archetype {
-        let internal_archetype = Box::leak(Box::new(self.internal_archetype.build()));
-        Archetype::new(internal_archetype)
+        let built = self.internal_archetype.build();
+        let key = built
+            .components
+            .iter()
+            .map(|component| component.id())
+            .collect::<Vec<_>>();
+
+        if let Some(archetype) = ARCHETYPE_CACHE.read().unwrap().get(&key).copied() {
+            return archetype;
+        }
+
+        let archetype = Archetype::new(Box::leak(Box::new(built)));
+        let mut cache = ARCHETYPE_CACHE.write().unwrap();
+        *cache.entry(key).or_insert(archetype)
     }
 }
 
