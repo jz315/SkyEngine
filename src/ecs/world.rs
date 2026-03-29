@@ -205,9 +205,18 @@ impl World {
     }
 
     pub fn spawn_batch<B: Bundle>(&mut self, bundles: impl IntoIterator<Item = B>) {
-        let data_index = self.ensure_data_index(B::archetype());
+        let archetype = B::archetype();
+        let data_index = self.ensure_data_index(archetype);
+        let offsets = B::column_offsets(archetype);
+        let iter = bundles.into_iter();
+        let (lower, _) = iter.size_hint();
 
-        for bundle in bundles {
+        // Pre-reserve entity record storage to avoid per-entity Vec reallocation.
+        if lower > 0 {
+            self.entities.reserve(lower);
+        }
+
+        for bundle in iter {
             let entity = self.allocate_entity();
             let location = self.data[data_index].add_entity(entity);
             self.set_entity_location(
@@ -221,7 +230,7 @@ impl World {
 
             let chunk = &mut self.data[data_index].chunks[location.chunk_index];
             unsafe {
-                bundle.write(chunk, location.entity_index);
+                bundle.write_fast(chunk, location.entity_index, &offsets);
             }
         }
     }
