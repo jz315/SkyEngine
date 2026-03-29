@@ -2,95 +2,93 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Chunk-based columnar ECS in Rust. Fast iteration, fast insertion, small codebase.
+SkyEngine is a data-oriented game engine prototype built in Rust, centered around a custom ECS with chunk-based columnar storage. It's a library, not a framework — organize your game however you like.
 
-## Benchmarks
+The ECS is designed around fixed-size 512KB chunks where component data is laid out column-by-column, giving the CPU prefetcher predictable sequential access patterns. Queries cache their archetype matches and only refresh when the world changes.
 
-Against Bevy ECS and Hecs, same workload, same machine:
-
-| | SkyEngine | Hecs | Bevy |
-|---|---|---|---|
-| iter 2-of-4 (10k) | **1.7 µs** | 5.3 µs | 8.7 µs |
-| fragmented (26 archetypes) | **104 ns** | 215 ns | 989 ns |
-| batch insert (10k) | **135 µs** | 282 µs | 305 µs |
-
-At 5M entities both Sky and Hecs hit memory bandwidth, Sky still leads ~10-15%.
-
-Particle stress test: **1M entities, 80 FPS**, single thread.
-
-## Why it's fast
-
-512KB chunks, columns packed per component type. CPU prefetcher loves sequential access. No hash maps in the hot path — query caches archetype matches, batch insert pre-computes column offsets.
-
-```
-Chunk layout:
-[Pos Pos Pos Pos ...][Vel Vel Vel Vel ...][Hp Hp Hp Hp ...]
-       column 0             column 1            column 2
-```
-
-## Usage
+### Example
 
 ```rust
 use sky_engine::ecs::World;
 
 #[derive(Clone, Copy)]
-struct Pos { x: f32, y: f32 }
+struct Position { x: f32, y: f32 }
 
 #[derive(Clone, Copy)]
-struct Vel { x: f32, y: f32 }
+struct Velocity { x: f32, y: f32 }
 
 let mut world = World::new();
 
-world.spawn((Pos { x: 0.0, y: 0.0 }, Vel { x: 1.0, y: 0.0 }));
+let e = world.spawn((Position { x: 0.0, y: 0.0 }, Velocity { x: 1.0, y: 2.0 }));
 
-world.spawn_batch((0..10_000).map(|i| {
-    (Pos { x: i as f32, y: 0.0 }, Vel { x: 1.0, y: 1.0 })
-}));
-
-let mut q = world.query::<(&mut Pos, &Vel)>();
-q.for_each(&world, |(pos, vel)| {
-    pos.x += vel.x * 0.016;
+let mut query = world.query::<(&mut Position, &Velocity)>();
+query.for_each(&world, |(pos, vel)| {
+    pos.x += vel.x;
+    pos.y += vel.y;
 });
 
-// chunk-level for SIMD-friendly loops
-q.for_each_chunk(&world, |(positions, velocities)| {
+assert_eq!(world.get::<Position>(e).unwrap().x, 1.0);
+```
+
+Batch operations avoid per-entity overhead by pre-computing column offsets:
+
+```rust
+world.spawn_batch((0..10_000).map(|i| {
+    (Position { x: i as f32, y: 0.0 }, Velocity { x: 1.0, y: 1.0 })
+}));
+```
+
+For maximum throughput, queries also expose chunk-level slice access:
+
+```rust
+query.for_each_chunk(&world, |(positions, velocities)| {
     for (p, v) in positions.iter_mut().zip(velocities.iter()) {
-        p.x += v.x * 0.016;
+        p.x += v.x;
     }
 });
 ```
 
-## What's in the box
+### Design Goals
 
-- Typed `PreparedQuery` with epoch-based cache invalidation
-- `With<T>` / `Without<T>` filters, `Option<&T>` optional access
-- `spawn` / `spawn_batch` / `despawn` / `insert` / `remove`
-- `get` / `get_mut` random access
-- Deferred `Commands` buffer
-- Resource storage
-- Group-based system scheduling with fixed timestep
-- `System` trait (init / run / teardown)
-- Dynamic query path for tooling/scripting
-- Generational entity IDs
+* **Fast iteration**: Columnar chunk layout for cache-friendly traversal
+* **Fast insertion**: Pre-computed column offsets, zero hash lookups in the hot path
+* **Small surface**: Core ECS is under 2,000 lines of Rust
+* **No magic**: No proc macros, no global state, no implicit parallelism
 
-## Running
+### Performance
 
-```bash
-cargo test
+Criterion benchmarks against [hecs](https://github.com/Ralith/hecs) and [Bevy ECS](https://github.com/bevyengine/bevy) are included under `benches/`. On the author's machine (same workload, same entity count, single-threaded):
+
+* Iteration throughput is roughly 3-5x that of Bevy and 2-3x that of hecs at moderate entity counts. At millions of entities both Sky and hecs approach memory bandwidth limits with Sky maintaining a ~10-15% lead.
+* Fragmented iteration across many archetypes is where chunk storage helps most — roughly 10x faster than Bevy, 2x faster than hecs.
+* Batch insertion is about 2x faster than both after the `write_fast` optimization.
+
+Run them yourself:
+
+```sh
 cargo bench
+```
+
+A particle simulation example spawns up to 1M entities at 80 FPS on a single thread:
+
+```sh
 cargo run --example particles --release --features demo
 ```
 
-## Structure
+### Docs
 
-```
-src/ecs/           Core ECS (world, chunk, archetype, query, bundle, system)
-src/reflect/       Runtime type registry
-benches/           Criterion benchmarks (insert, iter, entity, head-to-head)
-examples/          Particle simulation demo
-docs/api.md        API reference (中文)
-```
+* **[API Reference](docs/api.md)** — full API documentation
+* **[Benchmark History](BENCHMARKS.md)** — detailed benchmark records and chunk-size sweep data
+* **[Examples](examples/)** — runnable demos
 
-## License
+### Other Libraries
 
-MIT
+SkyEngine's ECS draws inspiration from the Rust ECS ecosystem. If it doesn't fit your needs, consider:
+
+- [bevy](https://github.com/bevyengine/bevy) — batteries-included engine with a mature plugin ecosystem
+- [hecs](https://github.com/Ralith/hecs) — minimal, high-quality archetype ECS library
+- [flecs](https://github.com/SanderMertens/flecs) — feature-rich C/C++ ECS with Rust bindings
+
+### License
+
+MIT ([LICENSE](LICENSE))
