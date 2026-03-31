@@ -1,4 +1,5 @@
 use std::any::{type_name, TypeId};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::RwLock;
@@ -29,6 +30,10 @@ impl Deref for Type {
 
 lazy_static::lazy_static! {
     static ref TYPE_MNGR: RwLock<TypeMngr> = RwLock::new(TypeMngr::new());
+}
+
+thread_local! {
+    static LOCAL_RUST_TYPES: RefCell<HashMap<TypeId, Type>> = RefCell::new(HashMap::new());
 }
 
 #[derive(Debug)]
@@ -119,8 +124,28 @@ pub fn register(name: &str, size: usize, align: usize) -> Type {
 }
 
 pub fn register_rust_type<T: 'static>() -> Type {
+    let rust_type_id = TypeId::of::<T>();
+
+    if let Some(ty) = LOCAL_RUST_TYPES.with(|cache| cache.borrow().get(&rust_type_id).copied()) {
+        return ty;
+    }
+
+    {
+        let mgr = TYPE_MNGR.read().unwrap();
+        if let Some(ty) = mgr.query_by_rust_type::<T>() {
+            LOCAL_RUST_TYPES.with(|cache| {
+                cache.borrow_mut().insert(rust_type_id, ty);
+            });
+            return ty;
+        }
+    }
+
     let mut mgr = TYPE_MNGR.write().unwrap();
-    mgr.register_rust_type::<T>()
+    let ty = mgr.register_rust_type::<T>();
+    LOCAL_RUST_TYPES.with(|cache| {
+        cache.borrow_mut().insert(rust_type_id, ty);
+    });
+    ty
 }
 
 // query a type by name
@@ -130,6 +155,15 @@ pub fn query_by_name(name: &str) -> Option<Type> {
 }
 
 pub fn query_by_rust_type<T: 'static>() -> Option<Type> {
+    let rust_type_id = TypeId::of::<T>();
+    if let Some(ty) = LOCAL_RUST_TYPES.with(|cache| cache.borrow().get(&rust_type_id).copied()) {
+        return Some(ty);
+    }
+
     let mgr = TYPE_MNGR.read().unwrap();
-    mgr.query_by_rust_type::<T>()
+    let ty = mgr.query_by_rust_type::<T>()?;
+    LOCAL_RUST_TYPES.with(|cache| {
+        cache.borrow_mut().insert(rust_type_id, ty);
+    });
+    Some(ty)
 }

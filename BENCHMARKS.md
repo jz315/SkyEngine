@@ -1,212 +1,115 @@
 # Benchmark Records
 
-Local benchmark notes for this repo. All numbers below were collected on the same local Windows machine with Criterion and should be treated as machine-specific.
+Local benchmark notes for this repo.
 
-## Commands
+All numbers below were collected on the same local Windows machine with Criterion and should be treated as **machine-specific**, not universal performance claims.
 
-- Direct project comparison: `cargo bench --bench hevy --bench sky -- --noplot`
-- Suite comparison: `cargo bench --bench suite -- --noplot`
+## How to Run
+
+- Canonical fair comparison: `cargo bench --bench fair`
+- Sky regression suite: `cargo bench --bench sky`
+- hecs reference suite: `cargo bench --bench hecs`
+- bevy reference suite: `cargo bench --bench bevy`
+- Full run: `cargo bench`
 - Chunk-size sweep: edit `CHUNK_SIZE` in `src/ecs/chunk.rs`, then run `cargo bench --bench sky -- --noplot`
 
-## Current Fair Results
+---
 
-### Project Benchmarks
+## Benchmark Policy
 
-Command: `cargo bench --bench hevy --bench sky -- --noplot`
+- `fair` is the only canonical apples-to-apples comparison suite.
+- `fair` only includes workloads that Sky, hecs, and Bevy can all express through safe public APIs.
+- Query/prepared state is created outside the timed loop in `fair` for all engines.
+- Sky-specific APIs such as chunk iteration, filtered typed queries, and deferred commands remain in `sky` as project-side regression checks.
+- Records collected before the 2026-03-31 normalization pass are still useful for history, but they are not the canonical fair-comparison baseline.
 
-| Benchmark | Result |
-| --- | --- |
-| `hecs_2_of_4` | `4.4705-4.6190 ms` |
-| `sky_2_of_4` | `3.1541-3.2411 ms` |
-| `hecs_4_of_4` | `9.5069-9.6966 ms` |
-| `sky_4_of_4` | `6.1364-6.3277 ms` |
+---
 
-Interpretation:
+## Current Summary
 
-- `sky_2_of_4` is about `1.4x` faster than `hecs_2_of_4`.
-- `sky_4_of_4` is about `1.5x` faster than `hecs_4_of_4`.
+### Latest full run
+- Date: **2026-03-31**
+- Command: `cargo bench --bench fair -- --noplot`
+- Status: **canonical fair-comparison snapshot, post-optimization**
 
-### ecs_bench_suite-Matched Results
+### Current takeaways
+- `fair_insert/batch_10k`: Sky is about **2.40x** faster than `hecs` and about **2.33x** faster than Bevy.
+- `fair_insert/single_10k`: Sky is now ahead of both `hecs` and Bevy.
+- `fair_iteration/simple`: Sky is still fastest, about **2.07x** faster than `hecs` and about **3.03x** faster than Bevy.
+- `fair_fragmented_iteration/fragmented`: Sky remains fastest, about **4.05x** faster than `hecs` and about **2.04x** faster than Bevy.
+- `fair_heavy_compute/heavy`: Sky and Bevy are now effectively tied, both ahead of `hecs`.
+- `fair_entity_ops/spawn_despawn_1k` improved enough for Sky to beat Bevy, while `fair_entity_ops/add_remove_component_1k` remains the main structural-operation gap.
+- The older `2026-03-30 cargo bench` record remains below as a pre-normalization regression snapshot.
 
-Command: `cargo bench --bench suite -- --noplot`
+---
 
-Fairness adjustments used in `benches/suite.rs`:
+## Latest Fair Run (2026-03-31)
 
-- `simple_insert`: Sky writes real component values after insertion, not just archetype allocation.
-- `heavy_compute`: `hecs` uses a single-threaded loop instead of the original parallel `rayon` path.
+Command: `cargo bench --bench fair -- --noplot`
 
-| Benchmark | Sky | hecs |
+Note: this run was taken after the bundle-meta cache, type-registry cache, component-index cache, and transition-plan cache optimizations.
+
+| Workload | Sky | hecs | Bevy |
+| --- | --- | --- | --- |
+| `fair_insert/batch_10k` | `156.90-163.71 us` | `373.54-395.34 us` | `363.36-382.82 us` |
+| `fair_insert/single_10k` | `545.65-580.51 us` | `752.78-788.08 us` | `866.39-898.53 us` |
+| `fair_iteration/simple` | `2.6906-2.8891 us` | `5.6653-5.9005 us` | `8.3256-8.5450 us` |
+| `fair_fragmented_iteration/fragmented` | `131.17-144.45 ns` | `538.44-577.83 ns` | `276.23-287.54 ns` |
+| `fair_heavy_compute/heavy` | `2.4715-2.6115 ms` | `2.9359-3.0656 ms` | `2.4984-2.6095 ms` |
+| `fair_random_access/get` | `177.98-192.19 us` | `163.01-173.95 us` | `31.035-32.219 us` |
+| `fair_entity_ops/spawn_despawn_1k` | `53.246-54.677 us` | `25.899-26.533 us` | `65.422-67.160 us` |
+| `fair_entity_ops/add_remove_component_1k` | `127.66-131.23 us` | `59.667-61.220 us` | `87.243-89.386 us` |
+
+---
+
+## Historical Full Run (2026-03-30)
+
+Command: `cargo bench`
+
+Note: this run predates the restored `fair` suite. Use it as a regression snapshot, not as the authoritative apples-to-apples comparison record.
+
+### bevy
+
+| Benchmark | Result | Outliers |
 | --- | --- | --- |
-| `simple_insert` | `245.83-250.82 us` | `322.68-331.04 us` |
-| `simple_iter` | `2.2224-2.2621 us` | `5.4825-5.6137 us` |
-| `fragmented_iter` | `95.647-98.562 ns` | `1.1601-1.1845 us` |
-| `heavy_compute` | `2.9745-3.0217 ms` | `2.9849-3.0271 ms` |
+| `bevy_insert/batch_10k` | `269.47-282.72 us` | `10/100` (`6` high mild, `4` high severe) |
+| `bevy_simple_iter` | `9.0095-9.6230 us` | `5/100` (`5` high mild) |
+| `bevy_fragmented_iter` | `990.92 ns-1.0260 us` | `12/100` (`6` high mild, `6` high severe) |
 
-Interpretation:
+### hecs
 
-- `simple_insert`: Sky is about `25%` faster.
-- `simple_iter`: Sky is about `2.5x` faster.
-- `fragmented_iter`: Sky is about `10x+` faster.
-- `heavy_compute`: effectively tied in the single-threaded version.
-
-## Chunk Size Sweep
-
-Benchmark target: `sky_2_of_4` and `sky_4_of_4`
-
-### First Full Sweep
-
-| `CHUNK_SIZE` | `sky_2_of_4` | `sky_4_of_4` |
+| Benchmark | Result | Outliers |
 | --- | --- | --- |
-| `32KB` | `4.3485 ms` | `7.5325 ms` |
-| `48KB` | `3.9788 ms` | `7.4081 ms` |
-| `64KB` | `3.8691 ms` | `7.2602 ms` |
-| `128KB` | `3.6572 ms` | `6.9387 ms` |
-| `256KB` | `3.4613 ms` | `7.0520 ms` |
-| `512KB` | `4.0563 ms` | `6.7732 ms` |
-| `1MB` | `3.3318 ms` | `7.0734 ms` |
+| `hecs_hot_path/2_of_4` | `4.9571-5.2541 ms` | `2/100` (`2` high mild) |
+| `hecs_hot_path/4_of_4` | `11.008-11.620 ms` | `0/100` reported |
+| `hecs_insert/batch_10k` | `322.74-349.11 us` | `14/100` (`5` high mild, `9` high severe) |
+| `hecs_insert/single_10k` | `584.30-609.87 us` | `9/100` (`4` high mild, `5` high severe) |
+| `hecs_simple_iter` | `6.1955-6.9349 us` | `5/100` (`5` high mild) |
+| `hecs_fragmented_iter` | `312.85-342.94 ns` | `0/100` reported |
+| `hecs_heavy_compute` | `3.4597-3.6909 ms` | `4/100` (`4` high mild) |
+| `hecs_random_access` | `149.64-161.31 us` | `0/100` reported |
+| `hecs_spawn_despawn_1k` | `27.877-31.093 us` | `0/100` reported |
+| `hecs_add_remove_component_1k` | `72.892-81.761 us` | `0/100` reported |
 
-Note: `512KB` looked noisy in `2_of_4`, so the large-size candidates were rerun.
+### sky
 
-### Focused 3-Run Averages
-
-| `CHUNK_SIZE` | Avg `sky_2_of_4` | Avg `sky_4_of_4` |
+| Benchmark | Result | Outliers |
 | --- | --- | --- |
-| `128KB` | `3.6678 ms` | `6.8641 ms` |
-| `256KB` | `3.4973 ms` | `7.0024 ms` |
-| `512KB` | `3.1358 ms` | `6.6173 ms` |
-| `1MB` | `3.2882 ms` | `6.8367 ms` |
-
-Reference:
-
-- `hecs_2_of_4` during this round was about `4.3218 ms`.
-
-Conclusion:
-
-- `512KB` was the best balance for the current workload.
-- `1MB` stayed acceptable for `2_of_4`, but started regressing for `4_of_4`.
-
-## Historical Milestones
-
-### Typed Fast Path Initial Result
-
-After switching the hot path to typed chunk slices:
-
-| Benchmark | Result |
-| --- | --- |
-| `sky_2_of_4` | `5.15-5.49 ms` |
-| `hecs_2_of_4` | `5.23-5.56 ms` |
-
-Interpretation:
-
-- This was the first run where Sky and hecs were effectively tied.
-
-### Repeated 4-Run Check
-
-To check whether the tie was real, the same benchmark was rerun four times in alternating order.
-
-Per-run means:
-
-- `sky`: `4.1078`, `4.1463`, `4.1109`, `4.1327 ms`
-- `hecs`: `4.7983`, `4.8004`, `4.2823`, `5.0034 ms`
-
-Averages:
-
-- `sky`: `4.1244 ms`
-- `hecs`: `4.7211 ms`
-
-Interpretation:
-
-- Sky was ahead in all four runs.
-- Average lead was about `12.6%`.
-
-### Post-512KB Optimization Check
-
-Later, after keeping `CHUNK_SIZE = 512KB` and related query-path tuning:
-
-| Benchmark | Result |
-| --- | --- |
-| `hecs_2_of_4` | `4.79-4.94 ms` |
-| `sky_2_of_4` | `2.91-3.06 ms` |
-| `sky_4_of_4` | `6.41-6.77 ms` |
-
-## Archived Non-Final Results
-
-These are kept for history, but should not be treated as the current fair conclusion.
-
-### Early suite run before fairness fixes
-
-Command: `cargo bench --bench suite -- --noplot`
-
-At that point:
-
-- `simple_insert` used structure-only insert on the Sky side.
-- `heavy_compute` kept the original `hecs` parallel implementation.
-
-| Benchmark | Sky | hecs |
-| --- | --- | --- |
-| `simple_insert` | `128.53-131.10 us` | `311.55-319.00 us` |
-| `simple_iter` | `1.9869-2.0312 us` | `5.4437-5.5683 us` |
-| `fragmented_iter` | `157.41-159.96 ns` | `1.1558-1.1758 us` |
-| `heavy_compute` | `2.9930-3.0420 ms` | `403.30-412.93 us` |
-
-### Query Overhead Probe
-
-These temporary benchmarks were added only for diagnosis and later removed from `benches/sky.rs`.
-
-| Benchmark | Result |
-| --- | --- |
-| `sky_2_of_4_query_overhead` | `449.21-460.41 ns` |
-| `sky_4_of_4_query_overhead` | `818.13-842.13 ns` |
-| `sky_2_of_4_stream_only` | `4.0841-4.2118 ms` |
-| `sky_4_of_4_stream_only` | `7.0897-7.3507 ms` |
-
-Interpretation:
-
-- Prepared-query dispatch overhead was negligible.
-- The real cost remained in the inner streaming loops.
-
-## Version Records
-
-### v0.2 — ECS API Expansion (2026-03-29)
-
-Changes: code cleanup (dead imports, todo stubs), World `entity_count`/`archetype_count`/`clear`, Query `for_each_with_entity`/`for_each_chunk_with_entities`/`count`/`is_empty`. None of these touch the typed hot path.
-
-#### `cargo bench --bench sky -- --noplot`
-
-| Benchmark | Result |
-| --- | --- |
-| `sky_2_of_4` | `3.0330-3.1492 ms` |
-| `sky_4_of_4` | `6.5002-6.7820 ms` |
-
-#### `cargo bench --bench suite -- --noplot`
-
-| Benchmark | Sky | hecs |
-| --- | --- | --- |
-| `simple_insert` | `457.36-463.79 us` | `283.11-285.87 us` |
-| `simple_iter` | `2.3167-2.3465 us` | `5.3387-5.4113 us` |
-| `fragmented_iter` | `95.187-96.221 ns` | `1.1973-1.2068 us` |
-| `heavy_compute` | `2.9502-2.9715 ms` | `2.9321-2.9532 ms` |
-
-Conclusion: no regression on any hot path.
-
-### v0.3 — Optional Query + Filters (2026-03-29)
-
-Changes: `Option<&T>` / `Option<&mut T>` in typed queries, `With<T>` / `Without<T>` query filters, `query_filtered` API. resolve_column_ptr helper replaces direct column_ptr calls to handle optional sentinel. QueryFilter trait with zero-cost () default.
-
-#### `cargo bench --bench sky -- --noplot`
-
-| Benchmark | Result |
-| --- | --- |
-| `sky_2_of_4` | `3.2714-3.4191 ms` |
-| `sky_4_of_4` | `6.5559-6.8589 ms` |
-
-#### `cargo bench --bench suite -- --noplot`
-
-| Benchmark | Sky | hecs |
-| --- | --- | --- |
-| `simple_insert` | `481.39-497.43 us` | `303.96-317.99 us` |
-| `simple_iter` | `2.0434-2.1123 us` | `5.8916-6.1735 us` |
-| `fragmented_iter` | `109.02-110.19 ns` | `1.1707-1.1873 us` |
-| `heavy_compute` | `2.9429-2.9660 ms` | `2.9493-2.9701 ms` |
-
-Conclusion: no regression. resolve_column_ptr inlines cleanly for non-optional queries.
+| `sky_hot_path/2_of_4` | `4.0201-4.2830 ms` | `1/100` (`1` high mild) |
+| `sky_hot_path/4_of_4` | `8.1781-8.7247 ms` | `8/100` (`4` high mild, `4` high severe) |
+| `sky_insert/batch_10k` | `207.86-219.39 us` | `12/100` (`9` high mild, `3` high severe) |
+| `sky_insert/single_10k` | `1.9538-2.0633 ms` | `10/100` (`5` high mild, `5` high severe) |
+| `sky_simple_iter/for_each` | `2.4399-2.7386 us` | `3/100` (`3` high mild) |
+| `sky_simple_iter/for_each_chunk` | `2.1251-2.2567 us` | `13/100` (`3` high mild, `10` high severe) |
+| `sky_fragmented_iter` | `102.67-104.18 ns` | `6/100` (`3` low mild, `1` high mild, `2` high severe) |
+| `sky_iter_scaling/for_each/1000` | `92.891-95.508 ns` | `17/100` (`4` high mild, `13` high severe) |
+| `sky_iter_scaling/for_each/10000` | `1.7362-1.7593 us` | `9/100` (`2` low mild, `4` high mild, `3` high severe) |
+| `sky_iter_scaling/for_each/100000` | `40.880-41.136 us` | `6/100` (`2` high mild, `4` high severe) |
+| `sky_filtered_query/all_10k` | `2.3571-2.3728 us` | `8/100` (`2` low mild, `4` high mild, `2` high severe) |
+| `sky_filtered_query/with_enemy_5k` | `1.1741-1.1809 us` | `3/100` (`2` high mild, `1` high severe) |
+| `sky_heavy_compute` | `2.7454-2.7656 ms` | `2/100` (`2` high severe) |
+| `sky_random_access` | `175.95-176.99 us` | `10/100` (`2` low mild, `6` high mild, `2` high severe) |
+| `sky_spawn_despawn_1k` | `115.98-116.78 us` | `10/100` (`7` high mild, `3` high severe) |
+| `sky_add_remove_component_1k` | `359.79-362.05 us` | `5/100` (`1` low mild, `4` high mild) |
+| `sky_commands/spawn_1k_deferred` | `153.37-155.21 us` | `4/100` (`2` low mild, `1` high mild, `1` high severe) |
+| `sky_commands/spawn_1k_direct` | `114.19-115.38 us` | `6/100` (`1` low mild, `3` high mild, `2` high severe) |

@@ -106,6 +106,7 @@ impl Chunk {
         Some(entity_index)
     }
 
+    #[inline(always)]
     pub fn column_ptr(&self, component_index: usize) -> *mut u8 {
         unsafe { self.data.as_ptr().add(self.column_offsets[component_index]) }
     }
@@ -114,6 +115,7 @@ impl Chunk {
         self.data.as_ptr()
     }
 
+    #[inline(always)]
     pub fn component_ptr(&self, component_index: usize, entity_index: usize) -> *mut u8 {
         if entity_index >= self.entity_count {
             return ptr::null_mut();

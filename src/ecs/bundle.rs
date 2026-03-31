@@ -1,9 +1,19 @@
-use super::{create_archetype, Archetype, Chunk};
+use super::{create_archetype, Archetype, Chunk, MAX_COMPONENTS};
 use crate::reflect::{register_rust_type, Type};
-use std::{any::TypeId, collections::HashMap, ptr, sync::RwLock};
+use smallvec::{smallvec, SmallVec};
+use std::{any::TypeId, cell::RefCell, collections::HashMap, ptr, sync::RwLock};
 
 lazy_static::lazy_static! {
-    static ref BUNDLE_ARCHETYPES: RwLock<HashMap<TypeId, Archetype>> = RwLock::new(HashMap::new());
+    static ref BUNDLE_META: RwLock<HashMap<TypeId, &'static BundleMeta>> = RwLock::new(HashMap::new());
+}
+
+thread_local! {
+    static LOCAL_BUNDLE_META: RefCell<HashMap<TypeId, &'static BundleMeta>> = RefCell::new(HashMap::new());
+}
+
+pub(crate) struct BundleMeta {
+    pub archetype: Archetype,
+    pub columns: SmallVec<[(usize, usize); MAX_COMPONENTS]>,
 }
 
 fn assert_unique_types(types: &[Type]) {
@@ -19,26 +29,56 @@ fn assert_unique_types(types: &[Type]) {
     }
 }
 
-fn bundle_archetype<B: 'static>(types: &[Type]) -> Archetype {
+fn bundle_meta<B: 'static>(
+    make_types: impl FnOnce() -> SmallVec<[Type; MAX_COMPONENTS]>,
+) -> &'static BundleMeta {
     let type_id = TypeId::of::<B>();
 
-    if let Some(archetype) = BUNDLE_ARCHETYPES.read().unwrap().get(&type_id).copied() {
-        return archetype;
+    if let Some(meta) = LOCAL_BUNDLE_META.with(|cache| cache.borrow().get(&type_id).copied()) {
+        return meta;
     }
 
-    assert_unique_types(types);
+    if let Some(meta) = BUNDLE_META.read().unwrap().get(&type_id).copied() {
+        LOCAL_BUNDLE_META.with(|cache| {
+            cache.borrow_mut().insert(type_id, meta);
+        });
+        return meta;
+    }
 
+    let mut cache = BUNDLE_META.write().unwrap();
+    if let Some(meta) = cache.get(&type_id).copied() {
+        LOCAL_BUNDLE_META.with(|cache| {
+            cache.borrow_mut().insert(type_id, meta);
+        });
+        return meta;
+    }
+
+    let types = make_types();
+    assert_unique_types(&types);
     let mut builder = create_archetype();
-    for ty in types {
+    for ty in &types {
         builder = builder.add_component(*ty);
     }
     let archetype = builder.build();
+    let columns = types
+        .iter()
+        .map(|ty| {
+            let component_index = archetype.query_component_index(ty).unwrap();
+            (component_index, ty.size)
+        })
+        .collect();
+    let meta = Box::leak(Box::new(BundleMeta { archetype, columns }));
 
-    let mut cache = BUNDLE_ARCHETYPES.write().unwrap();
-    *cache.entry(type_id).or_insert(archetype)
+    let meta = *cache.entry(type_id).or_insert(meta);
+    LOCAL_BUNDLE_META.with(|cache| {
+        cache.borrow_mut().insert(type_id, meta);
+    });
+    meta
 }
 
 pub trait Bundle: 'static {
+    fn cached_meta() -> (Archetype, &'static [(usize, usize)]);
+
     fn archetype() -> Archetype;
     /// # Safety
     ///
@@ -46,58 +86,35 @@ pub trait Bundle: 'static {
     /// chunk's archetype must match the bundle's archetype.
     unsafe fn write(self, chunk: &mut Chunk, entity_index: usize);
 
-    /// Returns pre-computed column offsets for this bundle's component types
-    /// within the given archetype. Used to avoid repeated lookups in batch ops.
-    fn column_offsets(archetype: Archetype) -> Vec<(usize, usize)>;
-
-    /// # Safety
-    ///
-    /// Fast write using pre-computed column offsets. Skips binary search.
-    unsafe fn write_fast(self, chunk: &mut Chunk, entity_index: usize, offsets: &[(usize, usize)]);
+    /// Fast write using pre-computed column indices. Skips binary search.
+    unsafe fn write_fast(self, chunk: &mut Chunk, entity_index: usize, columns: &[(usize, usize)]);
 }
 
 macro_rules! impl_bundle_tuple {
     ($(($Type:ident, $value:ident, $idx:tt)),+ $(,)?) => {
         impl<$($Type: Copy + 'static),+> Bundle for ($($Type,)+) {
+            fn cached_meta() -> (Archetype, &'static [(usize, usize)]) {
+                let meta = bundle_meta::<Self>(|| smallvec![$(register_rust_type::<$Type>()),+]);
+                (meta.archetype, &meta.columns)
+            }
+
             fn archetype() -> Archetype {
-                bundle_archetype::<Self>(&[$(register_rust_type::<$Type>()),+])
+                Self::cached_meta().0
             }
 
             unsafe fn write(self, chunk: &mut Chunk, entity_index: usize) {
+                let (_, columns) = Self::cached_meta();
+                self.write_fast(chunk, entity_index, columns);
+            }
+
+            unsafe fn write_fast(self, chunk: &mut Chunk, entity_index: usize, columns: &[(usize, usize)]) {
                 let ($($value,)+) = self;
 
                 $(
-                    let ty = register_rust_type::<$Type>();
-                    let component_index = chunk
-                        .archetype
-                        .query_component_index(&ty)
-                        .unwrap();
+                    let (component_index, comp_size) = columns[$idx];
                     let col_ptr = chunk.column_ptr(component_index);
                     ptr::write(
-                        col_ptr.add(ty.size * entity_index) as *mut $Type,
-                        $value,
-                    );
-                )+
-            }
-
-            fn column_offsets(archetype: Archetype) -> Vec<(usize, usize)> {
-                vec![
-                    $({
-                        let ty = register_rust_type::<$Type>();
-                        let ci = archetype.query_component_index(&ty).unwrap();
-                        (archetype.layout[ci], ty.size)
-                    },)+
-                ]
-            }
-
-            unsafe fn write_fast(self, chunk: &mut Chunk, entity_index: usize, offsets: &[(usize, usize)]) {
-                let base = chunk.data_ptr();
-                let ($($value,)+) = self;
-
-                $(
-                    let (col_offset, comp_size) = offsets[$idx];
-                    ptr::write(
-                        base.add(col_offset + comp_size * entity_index) as *mut $Type,
+                        col_ptr.add(comp_size * entity_index) as *mut $Type,
                         $value,
                     );
                 )+
@@ -111,8 +128,23 @@ impl_bundle_tuple!((A, a, 0), (B, b, 1));
 impl_bundle_tuple!((A, a, 0), (B, b, 1), (C, c, 2));
 impl_bundle_tuple!((A, a, 0), (B, b, 1), (C, c, 2), (D, d, 3));
 impl_bundle_tuple!((A, a, 0), (B, b, 1), (C, c, 2), (D, d, 3), (E, e, 4));
-impl_bundle_tuple!((A, a, 0), (B, b, 1), (C, c, 2), (D, d, 3), (E, e, 4), (F, f, 5));
-impl_bundle_tuple!((A, a, 0), (B, b, 1), (C, c, 2), (D, d, 3), (E, e, 4), (F, f, 5), (G, g, 6));
+impl_bundle_tuple!(
+    (A, a, 0),
+    (B, b, 1),
+    (C, c, 2),
+    (D, d, 3),
+    (E, e, 4),
+    (F, f, 5)
+);
+impl_bundle_tuple!(
+    (A, a, 0),
+    (B, b, 1),
+    (C, c, 2),
+    (D, d, 3),
+    (E, e, 4),
+    (F, f, 5),
+    (G, g, 6)
+);
 impl_bundle_tuple!(
     (A, a, 0),
     (B, b, 1),

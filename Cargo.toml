@@ -6,6 +6,7 @@ description = "High-performance ECS with chunk-based columnar storage"
 license = "MIT"
 keywords = ["ecs", "game-engine", "performance", "data-oriented"]
 categories = ["game-engines", "data-structures"]
+autobenches = false
 
 [dependencies]
 smallvec = "1.13.2"
@@ -26,23 +27,23 @@ hecs = "0.10.5"
 bevy_ecs = "0.18.1"
 
 [[bench]]
-name = "insert"
-harness = false
-
-[[bench]]
-name = "iter"
-harness = false
-
-[[bench]]
-name = "entity"
-harness = false
-
-[[bench]]
 name = "sky"
+path = "benches/sky/main.rs"
 harness = false
 
 [[bench]]
-name = "hevy"
+name = "hecs"
+path = "benches/hecs/main.rs"
+harness = false
+
+[[bench]]
+name = "bevy"
+path = "benches/bevy/main.rs"
+harness = false
+
+[[bench]]
+name = "fair"
+path = "benches/fair/main.rs"
 harness = false
 
 [profile.release]

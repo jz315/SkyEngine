@@ -9,10 +9,12 @@ impl EntityId {
         Self { index, generation }
     }
 
+    #[inline(always)]
     pub fn index(self) -> u32 {
         self.index
     }
 
+    #[inline(always)]
     pub fn generation(self) -> u32 {
         self.generation
     }

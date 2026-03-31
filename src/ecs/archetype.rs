@@ -1,6 +1,7 @@
+use std::cell::Cell;
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use std::ptr;
 use std::sync::RwLock;
@@ -17,14 +18,15 @@ lazy_static::lazy_static! {
     static ref ARCHETYPE_CACHE: RwLock<HashMap<Vec<usize>, Archetype>> = RwLock::new(HashMap::new());
 }
 
-// 定义Archetype结构体，包括内存布局和对齐信息，以及组件信息
+thread_local! {
+    static LAST_COMPONENT_LOOKUP: Cell<Option<(usize, usize, u8)>> = const { Cell::new(None) };
+}
+
+// 定义Archetype结构体，包括组件信息和整体对齐要求
 #[derive(Debug)]
 pub struct InternalArchetype {
-    pub layout: SmallVec<[usize; MAX_COMPONENTS]>,
     pub components: SmallVec<[Type; MAX_COMPONENTS]>,
-
     pub alignment: usize,
-    pub total_size: usize,
 }
 
 impl InternalArchetype {
@@ -32,18 +34,13 @@ impl InternalArchetype {
     fn new() -> Self {
         InternalArchetype {
             components: SmallVec::new(),
-            layout: SmallVec::new(),
-
             alignment: 1,
-            total_size: 0,
         }
     }
 
     // 添加一个Component
     fn add_component(mut self, ty: Type) -> Self {
         self.alignment = self.alignment.max(ty.align);
-        self.total_size += ty.size;
-
         self.components.push(ty);
 
         self
@@ -51,51 +48,46 @@ impl InternalArchetype {
 
     fn build(mut self) -> Self {
         self.components.sort_by_key(|a| a.id());
-
-        let mut offset = 0;
-        for component in &self.components {
-            // 对齐偏移量
-            offset = (offset + component.align - 1) & !(component.align - 1);
-            self.layout.push(offset);
-            offset += component.size;
-        }
-
-        // 对齐total_size
-        self.total_size = (offset + self.alignment - 1) & !(self.alignment - 1);
-
         self
     }
 }
 
 impl InternalArchetype {
     // 查询Archetype是否包含指定类型的Component
+    #[inline(always)]
     pub fn has_component(&self, ty: &Type) -> bool {
-        self.components
-            .binary_search_by(|component| component.id().cmp(&ty.id()))
-            .is_ok()
+        self.query_component_index(ty).is_some()
     }
 
-    // 查询Archetype是否包含指定类型的Component
-    pub fn query_component_offset(&self, ty: &Type) -> Option<usize> {
-        match self
+    #[inline(always)]
+    pub fn query_component_index(&self, ty: &Type) -> Option<usize> {
+        let archetype_id = self as *const InternalArchetype as usize;
+        let component_id = ty.id();
+
+        if let Some((cached_archetype_id, cached_component_id, cached_index)) =
+            LAST_COMPONENT_LOOKUP.with(Cell::get)
+        {
+            if cached_archetype_id == archetype_id && cached_component_id == component_id {
+                return Some(cached_index as usize);
+            }
+        }
+
+        let index = self
             .components
             .binary_search_by(|component| component.id().cmp(&ty.id()))
-        {
-            Ok(index) => Some(self.layout[index]),
-            Err(_) => None,
-        }
+            .ok()?;
+
+        debug_assert!(index < u8::MAX as usize);
+        LAST_COMPONENT_LOOKUP.with(|cache| {
+            cache.set(Some((archetype_id, component_id, index as u8)));
+        });
+        Some(index)
     }
 
-    pub fn query_component_index(&self, ty: &Type) -> Option<usize> {
-        self.components
-            .binary_search_by(|component| component.id().cmp(&ty.id()))
-            .ok()
-    }
-
+    #[inline(always)]
     pub fn matches_query(&self, query: &Query) -> bool {
         query.types.iter().all(|ty| self.has_component(ty))
     }
-
 }
 
 impl fmt::Display for InternalArchetype {
@@ -133,6 +125,7 @@ impl Archetype {
         Archetype { archetype }
     }
 
+    #[inline(always)]
     pub fn id(&self) -> usize {
         self.archetype as *const InternalArchetype as usize
     }

@@ -2,25 +2,15 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-## SkyEngine 是什么？
+[English](README.md)
 
-SkyEngine 是一个用 Rust 写的游戏引擎原型，核心是一套自研的 Entity Component System（ECS）。它的存储基于固定大小的 512KB chunk，组件数据在 chunk 内按列排布——同一类型的组件紧挨着存在一起，而不是按 entity 交错存放。这种布局直接对应现代 CPU 的内存访问方式：顺序、可预测、prefetcher 友好。
+基于块列式存储的 Archetype ECS，以 Rust 实现。同类型组件在内存中连续排列，迭代时产生对缓存预取友好的顺序访存模式。
 
-SkyEngine 是一个库，不是框架。没有隐式全局状态，没有 proc macro，没有强制的应用结构。你创建一个 `World`，spawn entity，query 组件，在上面搭自己的游戏。
+定位为库，非框架。无过程宏，无全局状态，不限定应用结构。
 
-项目还在早期。ECS 运行时已经可用并且经过了 benchmark 验证，但还没有渲染器、资产管线和编辑器。
+> **项目阶段：** ECS 运行时已可用，附有完整基准测试。渲染器、资产管线、编辑器等上层组件尚未实现。
 
-## 为什么选 SkyEngine？
-
-- **Chunk 列存储。** 组件数据按类型打包在 512KB chunk 内，CPU prefetcher 能直接顺序预取。这是迭代快的根本原因，尤其在 archetype 碎片化的场景下优势最大。
-
-- **零开销批量插入。** `spawn_batch` 在循环外一次性算好 column offset，循环内每个 entity 的写入就是一次 `ptr::write`——没有 hash 查表，没有二分查找，没有类型注册。
-
-- **Epoch 缓存查询。** `PreparedQuery` 将 archetype 匹配结果缓存下来，只在 world 的 archetype 集合变化时重新扫描。游戏主循环里重复跑的 query 几乎没有 setup 开销。
-
-- **代码量小。** 整个 ECS 核心不到 2000 行 Rust。没有 proc macro，没有代码生成，运行时反射只有一个最小的类型注册表。
-
-## 快速开始
+## 快速上手
 
 ```rust
 use sky_engine::ecs::World;
@@ -34,81 +24,94 @@ struct Velocity { x: f32, y: f32 }
 fn main() {
     let mut world = World::new();
 
-    // 创建单个 entity
     let entity = world.spawn((
         Position { x: 0.0, y: 0.0 },
         Velocity { x: 1.0, y: 2.0 },
     ));
 
-    // 批量创建 10000 个 entity
+    // 批量插入
     world.spawn_batch((0..10_000).map(|i| {
         (Position { x: i as f32, y: 0.0 }, Velocity { x: 1.0, y: 1.0 })
     }));
 
-    // 逐 entity 查询
+    // 迭代
     let mut query = world.query::<(&mut Position, &Velocity)>();
     query.for_each(&world, |(pos, vel)| {
         pos.x += vel.x * 0.016;
         pos.y += vel.y * 0.016;
     });
 
-    // chunk 级查询，拿到的是 slice，适合手动向量化
+    // 块级迭代，返回切片，便于手动向量化
     query.for_each_chunk(&world, |(positions, velocities)| {
         for (p, v) in positions.iter_mut().zip(velocities.iter()) {
             p.x += v.x * 0.016;
         }
     });
 
-    // 随机访问
     let pos = world.get::<Position>(entity).unwrap();
     println!("({}, {})", pos.x, pos.y);
 }
 ```
 
+## 主要特性
+
+- **块列式存储：** 每个 archetype 按固定大小的块组织，块内按组件类型分列连续存储，迭代路径与硬件预取对齐。
+- **批量插入：** `spawn_batch` 避免逐实体的重复查找，大批量场景下显著优于逐个插入。
+- **查询缓存：** `PreparedQuery` 缓存匹配结果，archetype 未变动时重复查询无额外开销。
+- **可选组件与过滤器：** 查询支持 `Option<&T>` 访问可选组件，以及 `With<T>` / `Without<T>` 编译期过滤。
+
 ## 性能
 
-Benchmark 基于 Criterion，代码在 `benches/` 目录下。以下数据在同一台机器上采集，workload 相同，单线程，对比对象是 [hecs](https://github.com/Ralith/hecs) 和 [Bevy ECS](https://github.com/bevyengine/bevy)。
+基准测试现在分成两条线。方法论、记录数据和历史结果详见 [BENCHMARKS.md](BENCHMARKS.md)。
 
-### 迭代
+- `cargo bench --bench fair` 是唯一的公平横向对比入口，只包含三家引擎都能等价表达的 workload，并且所有引擎都把 query/prepared state 放在计时区间之外。
+- `cargo bench --bench sky` 是项目自身的回归套件，保留 Sky 专有的热路径，例如 chunk 级迭代、类型化过滤查询和 commands 路径；这些不会混入公平对比结果。
 
-中等规模（10k entity，4 组件，查其中 2 个）下，SkyEngine 的吞吐量大约是 hecs 的 3 倍、Bevy 的 5 倍。碎片化迭代（大量 archetype）是 chunk 存储最受益的场景——大约比 hecs 快 2 倍、比 Bevy 快 10 倍。
-
-5M entity 规模下，SkyEngine 和 hecs 都接近内存带宽极限，SkyEngine 仍领先 10-15%。
-
-### 插入
-
-`spawn_batch` 插入 10000 个 entity 耗时约 135µs，hecs 约 282µs，Bevy 约 305µs。加速来自循环外预算 column offset，循环内每个 entity 的写入是直接的 `ptr::write`，不做任何查找。
-
-### 压力测试
-
-粒子模拟 example 在单线程下处理 100 万 entity，跑到 80 FPS，包含物理和像素缓冲渲染：
+粒子模拟示例（80,000 并发实体）：
 
 ```sh
 cargo run --example particles --release --features demo
 ```
 
-### 跑 benchmark
+运行基准测试：
 
 ```sh
-cargo bench                           # 全部
-cargo bench --bench iter              # 迭代
-cargo bench --bench insert            # 插入
-cargo bench --bench sky --bench hevy  # 5M 正面对比
+cargo bench --bench fair   # 公平横向对比
+cargo bench --bench sky    # Sky 回归套件
+cargo bench --bench hecs   # hecs 参考套件
+cargo bench --bench bevy   # bevy 参考套件
+cargo bench                # 全部 bench
 ```
 
-详细历史数据和 chunk size 调优过程见 [BENCHMARKS.md](BENCHMARKS.md)。
+## 项目结构
+
+```
+src/
+├── ecs/
+│   ├── archetype.rs    # 原型定义与构建器
+│   ├── chunk.rs        # 块分配与列式存储
+│   ├── query/          # 类型化查询、过滤器
+│   ├── world.rs        # World 存储与实体管理
+│   ├── bundle.rs       # 组件包 trait
+│   ├── system.rs       # 系统调度
+│   └── ...
+├── reflect/            # 运行时类型注册表
+└── lib.rs
+benches/                # 基准测试
+examples/               # 可运行示例
+```
 
 ## 文档
 
-- [API 文档](docs/api.md) — 完整接口说明
-- [Benchmark 记录](BENCHMARKS.md) — 历史数据
+- [API 参考](docs/api.md)
+- [基准测试记录](BENCHMARKS.md)
 
 ## 相关项目
 
-- [bevy](https://github.com/bevyengine/bevy) — 功能完整的游戏引擎，插件生态成熟
-- [hecs](https://github.com/Ralith/hecs) — 精简高质量的 archetype ECS
-- [flecs](https://github.com/SanderMertens/flecs) — C99 写的功能丰富 ECS，有 Rust binding
+- [hecs](https://github.com/Ralith/hecs) — 精简的 archetype ECS
+- [Bevy](https://github.com/bevyengine/bevy) — 完整游戏引擎，插件生态
+- [flecs](https://github.com/SanderMertens/flecs) — C99 实现，功能丰富
 
-## 许可
+## 许可证
 
-MIT ([LICENSE](LICENSE))
+MIT（[LICENSE](LICENSE)）

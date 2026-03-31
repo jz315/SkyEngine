@@ -4,13 +4,30 @@ use crate::ecs::entity::{EntityLocation, EntityRecord};
 use crate::ecs::system::{GroupBuilder, Schedule, TickPolicy};
 use crate::ecs::time::Time;
 use crate::reflect::register_rust_type;
+use smallvec::SmallVec;
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::ptr::NonNull;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct TransitionKey {
+    archetype: Archetype,
+    component_id: usize,
+    add: bool,
+}
+
+struct TransitionPlan {
+    target_archetype: Archetype,
+    copy_pairs: SmallVec<[(u8, u8, usize); MAX_COMPONENTS]>,
+    target_component_index: Option<u8>,
+    target_data_index: Cell<Option<usize>>,
+}
 
 pub struct World {
     pub time: Time,
     pub(crate) data: Vec<Data>,
     archetype_to_data_index: HashMap<Archetype, usize>,
+    transitions: HashMap<TransitionKey, Box<TransitionPlan>>,
     archetype_epoch: usize,
     entities: Vec<EntityRecord>,
     free_entities: Vec<u32>,
@@ -30,6 +47,7 @@ impl World {
             time: Time::default(),
             data: Vec::new(),
             archetype_to_data_index: HashMap::new(),
+            transitions: HashMap::new(),
             archetype_epoch: 0,
             entities: Vec::new(),
             free_entities: Vec::new(),
@@ -43,15 +61,16 @@ impl World {
     // -----------------------------------------------------------------------
 
     pub fn group(&mut self, name: &str) -> GroupBuilder<'_> {
-        let schedule = self.schedule.as_mut()
+        let schedule = self
+            .schedule
+            .as_mut()
             .expect("cannot modify schedule during tick");
         let index = schedule.find_or_create_group(name);
         GroupBuilder::new(schedule, index)
     }
 
     pub fn tick(&mut self) {
-        let mut schedule = self.schedule.take()
-            .expect("cannot call tick recursively");
+        let mut schedule = self.schedule.take().expect("cannot call tick recursively");
 
         let now = std::time::Instant::now();
         let real_delta = match schedule.last_tick {
@@ -67,8 +86,7 @@ impl World {
     }
 
     pub fn tick_with_delta(&mut self, delta: f32) {
-        let mut schedule = self.schedule.take()
-            .expect("cannot call tick recursively");
+        let mut schedule = self.schedule.take().expect("cannot call tick recursively");
 
         let scaled_delta = delta * self.time.time_scale;
         self.run_schedule(&mut schedule, scaled_delta);
@@ -112,8 +130,7 @@ impl World {
     }
 
     pub fn shutdown(&mut self) {
-        let mut schedule = self.schedule.take()
-            .expect("cannot shutdown during tick");
+        let mut schedule = self.schedule.take().expect("cannot shutdown during tick");
 
         for group in schedule.groups.iter_mut().rev() {
             for registered in group.systems.iter_mut().rev() {
@@ -141,6 +158,7 @@ impl World {
         }
     }
 
+    #[inline(always)]
     fn ensure_data_index(&mut self, archetype: Archetype) -> usize {
         if let Some(index) = self.archetype_to_data_index.get(&archetype).copied() {
             return index;
@@ -153,6 +171,7 @@ impl World {
         index
     }
 
+    #[inline(always)]
     fn entity_location(&self, entity: EntityId) -> Option<EntityLocation> {
         let record = self.entities.get(entity.index() as usize)?;
         if record.generation != entity.generation() {
@@ -162,6 +181,7 @@ impl World {
         record.location
     }
 
+    #[inline(always)]
     fn set_entity_location(&mut self, entity: EntityId, location: EntityLocation) {
         let record = &mut self.entities[entity.index() as usize];
         debug_assert_eq!(record.generation, entity.generation());
@@ -184,8 +204,9 @@ impl World {
     }
 
     pub fn spawn<B: Bundle>(&mut self, bundle: B) -> EntityId {
+        let (archetype, columns) = B::cached_meta();
         let entity = self.allocate_entity();
-        let data_index = self.ensure_data_index(B::archetype());
+        let data_index = self.ensure_data_index(archetype);
         let location = self.data[data_index].add_entity(entity);
         self.set_entity_location(
             entity,
@@ -198,16 +219,15 @@ impl World {
 
         let chunk = &mut self.data[data_index].chunks[location.chunk_index];
         unsafe {
-            bundle.write(chunk, location.entity_index);
+            bundle.write_fast(chunk, location.entity_index, columns);
         }
 
         entity
     }
 
     pub fn spawn_batch<B: Bundle>(&mut self, bundles: impl IntoIterator<Item = B>) {
-        let archetype = B::archetype();
+        let (archetype, columns) = B::cached_meta();
         let data_index = self.ensure_data_index(archetype);
-        let offsets = B::column_offsets(archetype);
         let iter = bundles.into_iter();
         let (lower, _) = iter.size_hint();
 
@@ -230,7 +250,7 @@ impl World {
 
             let chunk = &mut self.data[data_index].chunks[location.chunk_index];
             unsafe {
-                bundle.write_fast(chunk, location.entity_index, &offsets);
+                bundle.write_fast(chunk, location.entity_index, columns);
             }
         }
     }
@@ -259,6 +279,7 @@ impl World {
         self.resources.remove::<R>()
     }
 
+    #[inline(always)]
     pub fn has<T: 'static>(&self, entity: EntityId) -> bool {
         let Some(location) = self.entity_location(entity) else {
             return false;
@@ -301,6 +322,7 @@ impl World {
         true
     }
 
+    #[inline(always)]
     pub fn get<T: 'static>(&self, entity: EntityId) -> Option<&T> {
         let location = self.entity_location(entity)?;
         let data = &self.data[location.data_index];
@@ -312,6 +334,7 @@ impl World {
         Some(unsafe { &*(chunk.component_ptr(component_index, location.entity_index) as *const T) })
     }
 
+    #[inline(always)]
     pub fn get_mut<T: 'static>(&mut self, entity: EntityId) -> Option<&mut T> {
         let location = self.entity_location(entity)?;
         let data = &mut self.data[location.data_index];
@@ -358,23 +381,82 @@ impl World {
         Some(builder.build())
     }
 
-    fn copy_shared_components(
+    fn copy_pairs(
+        source: Archetype,
+        target: Archetype,
+    ) -> SmallVec<[(u8, u8, usize); MAX_COMPONENTS]> {
+        let mut pairs = SmallVec::new();
+
+        for (source_index, component) in source.components.iter().enumerate() {
+            let Some(target_index) = target.query_component_index(component) else {
+                continue;
+            };
+            pairs.push((source_index as u8, target_index as u8, component.size));
+        }
+
+        pairs
+    }
+
+    fn transition_plan(
+        &mut self,
+        base: Archetype,
+        component: crate::reflect::Type,
+        add: bool,
+    ) -> Option<NonNull<TransitionPlan>> {
+        let key = TransitionKey {
+            archetype: base,
+            component_id: component.id(),
+            add,
+        };
+
+        if let Some(plan) = self.transitions.get(&key) {
+            return Some(NonNull::from(plan.as_ref()));
+        }
+
+        let plan = if add {
+            if base.has_component(&component) {
+                return None;
+            }
+
+            let target_archetype = Self::archetype_with_component(base, component);
+            let target_component_index =
+                target_archetype.query_component_index(&component).unwrap() as u8;
+            TransitionPlan {
+                target_archetype,
+                copy_pairs: Self::copy_pairs(base, target_archetype),
+                target_component_index: Some(target_component_index),
+                target_data_index: Cell::new(None),
+            }
+        } else {
+            let target_archetype = Self::archetype_without_component(base, component)?;
+            TransitionPlan {
+                target_archetype,
+                copy_pairs: Self::copy_pairs(base, target_archetype),
+                target_component_index: None,
+                target_data_index: Cell::new(None),
+            }
+        };
+
+        let entry = self
+            .transitions
+            .entry(key)
+            .or_insert_with(|| Box::new(plan));
+        Some(NonNull::from(entry.as_ref()))
+    }
+
+    fn copy_components_with_pairs(
         source: &Chunk,
         source_entity_index: usize,
         target: &mut Chunk,
         target_entity_index: usize,
+        pairs: &[(u8, u8, usize)],
     ) {
-        for (component_index, component) in source.archetype.components.iter().enumerate() {
-            let Some(target_component_index) = target.archetype.query_component_index(component)
-            else {
-                continue;
-            };
-
+        for &(source_component_index, target_component_index, component_size) in pairs {
             unsafe {
                 std::ptr::copy_nonoverlapping(
-                    source.component_ptr(component_index, source_entity_index),
-                    target.component_ptr(target_component_index, target_entity_index),
-                    component.size,
+                    source.component_ptr(source_component_index as usize, source_entity_index),
+                    target.component_ptr(target_component_index as usize, target_entity_index),
+                    component_size,
                 );
             }
         }
@@ -396,8 +478,17 @@ impl World {
             return false;
         }
 
-        let target_archetype = Self::archetype_with_component(source_archetype, component_ty);
-        let target_data_index = self.ensure_data_index(target_archetype);
+        let plan = self
+            .transition_plan(source_archetype, component_ty, true)
+            .expect("adding a missing component must produce a transition plan");
+        let plan = unsafe { plan.as_ref() };
+        let target_data_index = if let Some(index) = plan.target_data_index.get() {
+            index
+        } else {
+            let index = self.ensure_data_index(plan.target_archetype);
+            plan.target_data_index.set(Some(index));
+            index
+        };
         let target_location = self.data[target_data_index].add_entity(entity);
 
         {
@@ -415,19 +506,19 @@ impl World {
                 )
             };
 
-            Self::copy_shared_components(
+            Self::copy_components_with_pairs(
                 source_chunk,
                 source_location.entity_index,
                 target_chunk,
                 target_location.entity_index,
+                &plan.copy_pairs,
             );
 
-            let component_index = target_chunk
-                .archetype
-                .query_component_index(&component_ty)
-                .unwrap();
+            let component_index = plan
+                .target_component_index
+                .expect("add transition plans must include the inserted component index");
             unsafe {
-                *(target_chunk.component_ptr(component_index, target_location.entity_index)
+                *(target_chunk.component_ptr(component_index as usize, target_location.entity_index)
                     as *mut T) = component;
             }
         }
@@ -467,13 +558,18 @@ impl World {
 
         let component_ty = register_rust_type::<T>();
         let source_archetype = self.data[source_location.data_index].archetype;
-        let Some(target_archetype) =
-            Self::archetype_without_component(source_archetype, component_ty)
-        else {
+        let Some(plan) = self.transition_plan(source_archetype, component_ty, false) else {
             return false;
         };
+        let plan = unsafe { plan.as_ref() };
 
-        let target_data_index = self.ensure_data_index(target_archetype);
+        let target_data_index = if let Some(index) = plan.target_data_index.get() {
+            index
+        } else {
+            let index = self.ensure_data_index(plan.target_archetype);
+            plan.target_data_index.set(Some(index));
+            index
+        };
         let target_location = self.data[target_data_index].add_entity(entity);
 
         {
@@ -491,11 +587,12 @@ impl World {
                 )
             };
 
-            Self::copy_shared_components(
+            Self::copy_components_with_pairs(
                 source_chunk,
                 source_location.entity_index,
                 target_chunk,
                 target_location.entity_index,
+                &plan.copy_pairs,
             );
         }
 
@@ -598,6 +695,36 @@ mod tests {
             world.get::<Velocity>(entity),
             Some(&Velocity { x: 3.0, y: 4.0 })
         );
+    }
+
+    #[test]
+    fn spawn_batch_initializes_all_component_columns() {
+        let mut world = World::new();
+        let expected: Vec<_> = (0..128)
+            .map(|i| {
+                (
+                    Position {
+                        x: i as f32,
+                        y: i as f32 + 0.5,
+                    },
+                    Velocity {
+                        x: i as f32 * 2.0,
+                        y: i as f32 * 2.0 + 1.0,
+                    },
+                )
+            })
+            .collect();
+
+        world.spawn_batch(expected.iter().copied());
+
+        let mut actual = Vec::new();
+        let mut query = world.query::<(&Position, &Velocity)>();
+        query.for_each(&world, |(position, velocity)| {
+            actual.push((*position, *velocity));
+        });
+        actual.sort_by(|(left, _), (right, _)| left.x.total_cmp(&right.x));
+
+        assert_eq!(actual, expected);
     }
 
     #[test]
