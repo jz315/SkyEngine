@@ -1,9 +1,10 @@
 use super::{Archetype, EntityId, MAX_COMPONENTS};
 use smallvec::SmallVec;
 use std::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
+use std::mem;
 use std::ptr::{self, NonNull};
 
-const CHUNK_SIZE: usize = 512 * 1024;
+pub(crate) const CHUNK_SIZE: usize = 512 * 1024;
 
 fn align_up(value: usize, align: usize) -> usize {
     debug_assert!(align.is_power_of_two());
@@ -116,6 +117,11 @@ impl Chunk {
     }
 
     #[inline(always)]
+    pub(crate) fn retained_size(&self) -> usize {
+        CHUNK_SIZE + self.entities.capacity() * mem::size_of::<EntityId>()
+    }
+
+    #[inline(always)]
     pub fn component_ptr(&self, component_index: usize, entity_index: usize) -> *mut u8 {
         if entity_index >= self.entity_count {
             return ptr::null_mut();
@@ -201,6 +207,11 @@ pub struct Data {
     pub chunks: Vec<Chunk>,
 }
 
+pub(crate) struct RemoveEntityResult {
+    pub moved_entity: Option<(EntityId, ChunkEntityLocation)>,
+    pub emptied_chunk: Option<Chunk>,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct ChunkEntityLocation {
     pub chunk_index: usize,
@@ -215,33 +226,25 @@ impl Data {
         }
     }
 
-    fn add_chunk(&mut self) {
-        self.chunks.push(Chunk::new(self.archetype));
-    }
-
-    pub fn add_entity(&mut self, entity: EntityId) -> ChunkEntityLocation {
-        if let Some(chunk) = self.chunks.last_mut() {
-            if let Some(entity_index) = chunk.add_entity(entity) {
-                return ChunkEntityLocation {
-                    chunk_index: self.chunks.len() - 1,
-                    entity_index,
-                };
-            }
-        }
-
-        self.add_chunk();
-        let chunk = self.chunks.last_mut().unwrap();
-        let entity_index = chunk.add_entity(entity).unwrap();
-        ChunkEntityLocation {
+    pub(crate) fn try_add_entity_to_last_chunk(
+        &mut self,
+        entity: EntityId,
+    ) -> Option<ChunkEntityLocation> {
+        let chunk = self.chunks.last_mut()?;
+        let entity_index = chunk.add_entity(entity)?;
+        Some(ChunkEntityLocation {
             chunk_index: self.chunks.len() - 1,
             entity_index,
-        }
+        })
     }
 
-    pub fn remove_entity(
-        &mut self,
-        location: ChunkEntityLocation,
-    ) -> Option<(EntityId, ChunkEntityLocation)> {
+    pub(crate) fn push_empty_chunk(&mut self, chunk: Chunk) {
+        debug_assert_eq!(self.archetype.id(), chunk.archetype.id());
+        debug_assert!(chunk.is_empty());
+        self.chunks.push(chunk);
+    }
+
+    pub fn remove_entity(&mut self, location: ChunkEntityLocation) -> Option<RemoveEntityResult> {
         if self.chunks.is_empty() {
             return None;
         }
@@ -279,11 +282,16 @@ impl Data {
         };
 
         self.chunks[last_chunk_index].remove_last_entity();
-        if self.chunks.last().is_some_and(Chunk::is_empty) {
-            self.chunks.pop();
-        }
+        let emptied_chunk = if self.chunks.last().is_some_and(Chunk::is_empty) {
+            self.chunks.pop()
+        } else {
+            None
+        };
 
-        moved_entity
+        Some(RemoveEntityResult {
+            moved_entity,
+            emptied_chunk,
+        })
     }
 }
 
