@@ -3,6 +3,16 @@ use super::param::QuerySpec;
 use super::{EntityId, PreparedCache, QueryDescriptor, World};
 use core::marker::PhantomData;
 
+/// A typed, cached query over component data.
+///
+/// Created via [`World::query`] or [`World::query_filtered`].  The query
+/// caches which archetypes match and automatically refreshes when the
+/// world's archetype set changes (epoch-based invalidation).
+///
+/// The type parameter `Q` determines which components are accessed
+/// (e.g. `&Position`, `(&mut Position, &Velocity)`, `Option<&Health>`).
+/// The optional `Flt` restricts matching to archetypes that satisfy
+/// the filter (e.g. `With<Enemy>`, `Without<Dead>`).
 pub struct PreparedQuery<Q, Flt = ()> {
     descriptor: QueryDescriptor,
     prepared: PreparedCache,
@@ -20,11 +30,14 @@ impl<Q: QuerySpec, Flt: QueryFilter> Default for PreparedQuery<Q, Flt> {
 }
 
 impl<Q: QuerySpec, Flt: QueryFilter> PreparedQuery<Q, Flt> {
+    /// Creates a new, un-cached query.  Prefer [`World::query`] for
+    /// convenience.
     #[inline(always)]
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Returns the number of archetypes currently matching this query.
     pub fn cached_archetype_count(&self) -> usize {
         self.prepared.cached_archetype_count()
     }
@@ -34,6 +47,11 @@ impl<Q: QuerySpec, Flt: QueryFilter> PreparedQuery<Q, Flt> {
         self.prepared.prepare::<Flt>(world, &self.descriptor);
     }
 
+    /// Iterates *chunk-by-chunk*, providing full slices of each component
+    /// column.
+    ///
+    /// This is the fastest iteration path — ideal for SIMD-style batch
+    /// processing.
     #[inline(always)]
     pub fn for_each_chunk<F>(&mut self, world: &World, mut f: F)
     where
@@ -52,6 +70,8 @@ impl<Q: QuerySpec, Flt: QueryFilter> PreparedQuery<Q, Flt> {
         }
     }
 
+    /// Iterates *entity-by-entity*, providing individual component
+    /// references.
     #[inline(always)]
     pub fn for_each<F>(&mut self, world: &World, mut f: F)
     where
@@ -70,6 +90,8 @@ impl<Q: QuerySpec, Flt: QueryFilter> PreparedQuery<Q, Flt> {
         }
     }
 
+    /// Like [`for_each`](Self::for_each), but also provides the
+    /// [`EntityId`] for each matched entity.
     pub fn for_each_with_entity<F>(&mut self, world: &World, mut f: F)
     where
         F: for<'w> FnMut(EntityId, Q::Item<'w>),
@@ -91,6 +113,8 @@ impl<Q: QuerySpec, Flt: QueryFilter> PreparedQuery<Q, Flt> {
         }
     }
 
+    /// Like [`for_each_chunk`](Self::for_each_chunk), but also provides
+    /// the entity ID slice for each chunk.
     pub fn for_each_chunk_with_entities<F>(&mut self, world: &World, mut f: F)
     where
         F: for<'w> FnMut(&[EntityId], Q::Chunk<'w>),
@@ -111,6 +135,7 @@ impl<Q: QuerySpec, Flt: QueryFilter> PreparedQuery<Q, Flt> {
         }
     }
 
+    /// Returns the total number of entities matched by this query.
     pub fn count(&mut self, world: &World) -> usize {
         self.prepare(world);
         self.prepared
@@ -126,6 +151,7 @@ impl<Q: QuerySpec, Flt: QueryFilter> PreparedQuery<Q, Flt> {
             .sum()
     }
 
+    /// Returns `true` if no entities match this query.
     pub fn is_empty(&mut self, world: &World) -> bool {
         self.prepare(world);
         !self.prepared.archetypes.iter().any(|cached| {

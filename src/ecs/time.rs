@@ -1,4 +1,4 @@
-/// Timing information updated automatically by [`World::tick`].
+/// Timing information updated automatically each tick.
 #[derive(Debug, Clone)]
 pub struct Time {
     /// Delta time for the current group.

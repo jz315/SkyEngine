@@ -1,6 +1,10 @@
 use crate::reflect::register_rust_type;
 use core::marker::PhantomData;
 
+/// Trait for compile-time archetype filters applied to queries.
+///
+/// Filters are composed using tuples with AND semantics:
+/// `(With<A>, Without<B>)` matches archetypes that have `A` but not `B`.
 pub trait QueryFilter {
     fn matches_archetype(archetype: &super::super::InternalArchetype) -> bool;
 }
@@ -12,7 +16,14 @@ impl QueryFilter for () {
     }
 }
 
+/// Includes only archetypes that contain component `T`.
+///
+/// Used as a filter parameter in [`World::query_filtered`](super::World::query_filtered).
 pub struct With<T>(PhantomData<T>);
+
+/// Excludes archetypes that contain component `T`.
+///
+/// Used as a filter parameter in [`World::query_filtered`](super::World::query_filtered).
 pub struct Without<T>(PhantomData<T>);
 
 impl<T: 'static> QueryFilter for With<T> {

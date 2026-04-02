@@ -308,8 +308,12 @@ impl Chunk {
         self.entities.get(entity_index).copied()
     }
 
+    /// Bitwise-copy entity data from `src_index` to `dst_index` within
+    /// this chunk.  The destination slot must be logically uninitialised
+    /// (or already dropped) — this function does NOT drop the old data
+    /// at `dst_index`.
     #[inline(always)]
-    pub fn copy_entity_within(&mut self, src_index: usize, dst_index: usize) {
+    pub(crate) fn copy_entity_within(&mut self, src_index: usize, dst_index: usize) {
         if src_index == dst_index {
             return;
         }
@@ -327,8 +331,11 @@ impl Chunk {
         self.entities[dst_index] = self.entities[src_index];
     }
 
+    /// Bitwise-copy entity data from `src` chunk at `src_index` into
+    /// `self` at `dst_index`.  The destination slot must be logically
+    /// uninitialised (or already dropped).
     #[inline(always)]
-    pub fn copy_entity_from(&mut self, src: &Chunk, src_index: usize, dst_index: usize) {
+    pub(crate) fn copy_entity_from(&mut self, src: &Chunk, src_index: usize, dst_index: usize) {
         debug_assert_eq!(self.archetype.id(), src.archetype.id());
 
         for (component_index, component) in self.archetype.components.iter().enumerate() {
@@ -345,7 +352,7 @@ impl Chunk {
     }
 
     #[inline(always)]
-    pub fn remove_last_entity(&mut self) -> Option<EntityId> {
+    pub(crate) fn remove_last_entity(&mut self) -> Option<EntityId> {
         if self.entity_count == 0 {
             return None;
         }
@@ -353,10 +360,76 @@ impl Chunk {
         self.entity_count -= 1;
         self.entities.pop()
     }
+
+    // -----------------------------------------------------------------------
+    // Drop helpers
+    // -----------------------------------------------------------------------
+
+    /// Drop all components of a single entity at `entity_index`.
+    ///
+    /// # Safety
+    ///
+    /// `entity_index` must be a valid, occupied slot in this chunk.
+    /// After this call the component data at that slot is logically
+    /// uninitialised and must not be read or dropped again.
+    pub(crate) unsafe fn drop_entity_components(&self, entity_index: usize) {
+        for (component_index, component) in self.archetype.components.iter().enumerate() {
+            if let Some(drop_fn) = component.drop_fn() {
+                let ptr = self.component_ptr_unchecked(component_index, entity_index);
+                drop_fn(ptr);
+            }
+        }
+    }
+
+    /// Drop a single component column for one entity.
+    ///
+    /// # Safety
+    ///
+    /// `entity_index` must be a valid, occupied slot.  `component_index`
+    /// must be a valid column.  After this call that component value is
+    /// logically uninitialised.
+    pub(crate) unsafe fn drop_single_component(
+        &self,
+        component_index: usize,
+        entity_index: usize,
+    ) {
+        let component = &self.archetype.components[component_index];
+        if let Some(drop_fn) = component.drop_fn() {
+            let ptr = self.component_ptr_unchecked(component_index, entity_index);
+            drop_fn(ptr);
+        }
+    }
+
+    /// Drop components for every live entity in this chunk.
+    ///
+    /// # Safety
+    ///
+    /// Must only be called once.  After this call, all component data in
+    /// the chunk is logically uninitialised.
+    pub(crate) unsafe fn drop_all_entities(&self) {
+        // Fast path: skip entirely if no component in this archetype needs drop.
+        let any_needs_drop = self
+            .archetype
+            .components
+            .iter()
+            .any(|c| c.needs_drop());
+        if !any_needs_drop {
+            return;
+        }
+
+        for entity_index in 0..self.entity_count {
+            self.drop_entity_components(entity_index);
+        }
+    }
 }
 
 impl Drop for Chunk {
     fn drop(&mut self) {
+        // Safety: we are the sole owner and this chunk is being destroyed.
+        unsafe {
+            self.drop_all_entities();
+        }
+
         let block = ChunkBlock {
             data: self.data,
             alloc_layout: self.alloc_layout,
@@ -569,6 +642,14 @@ impl Data {
                     .entity_id(last.entity_index)
                     .expect("logical tail must be occupied");
 
+                // Drop the removed entity's components at `hole` before
+                // overwriting with the swap-move source.
+                // Safety: hole is a valid, occupied slot that is being removed.
+                unsafe {
+                    self.chunks[hole.chunk_index]
+                        .drop_entity_components(hole.entity_index);
+                }
+
                 if hole.chunk_index == last.chunk_index {
                     self.chunks[hole.chunk_index]
                         .copy_entity_within(last.entity_index, hole.entity_index);
@@ -580,6 +661,13 @@ impl Data {
                 }
 
                 moved.push((moved_entity, hole));
+            } else {
+                // The hole IS the logical last entity — just drop it,
+                // no swap needed.
+                unsafe {
+                    self.chunks[hole.chunk_index]
+                        .drop_entity_components(hole.entity_index);
+                }
             }
 
             logical_last = self.prev_dense_location(last);
@@ -593,6 +681,10 @@ impl Data {
                 .expect("batch removal count must not exceed live entities");
             if remaining >= last_chunk.entity_count {
                 remaining -= last_chunk.entity_count;
+                // Set entity_count to 0 before popping so Chunk::Drop
+                // doesn't double-drop the entities we already dropped above.
+                last_chunk.entity_count = 0;
+                last_chunk.entities.clear();
                 self.chunks.pop();
             } else {
                 last_chunk.entity_count -= remaining;

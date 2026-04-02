@@ -524,6 +524,122 @@ fn bench_commands(c: &mut Criterion) {
 }
 
 // ===========================================================================
+//  System schedule (Sky-only regression tests)
+// ===========================================================================
+
+/// Builds a world with `entity_count` entities and `system_count` closure
+/// systems in a single group, each iterating `(&mut PositionComponent, &VelocityComponent)`.
+fn make_schedule_world(entity_count: usize, system_count: usize) -> World {
+    let mut world = World::new();
+    world.spawn_batch((0..entity_count).map(|_| light_bundle()));
+
+    let mut group = world.group("sim");
+    for _ in 0..system_count {
+        group.add(|world: &mut World| {
+            let mut query = world.query::<(&mut PositionComponent, &VelocityComponent)>();
+            query.for_each(world, |(pos, vel)| {
+                pos.0 += vel.0;
+            });
+        });
+    }
+
+    // Pre-init all systems outside the measurement window.
+    world.tick_with_delta(0.016);
+    world
+}
+
+fn bench_schedule_scaling(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sky_schedule_scaling");
+
+    for &n_systems in &SCHEDULE_SYSTEM_COUNTS {
+        let mut world = make_schedule_world(SCHEDULE_ENTITY_COUNT, n_systems);
+
+        group.bench_with_input(
+            BenchmarkId::new("systems", n_systems),
+            &n_systems,
+            |b, _| {
+                b.iter(|| {
+                    world.tick_with_delta(0.016);
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn bench_schedule_multi_group(c: &mut Criterion) {
+    let mut world = World::new();
+    world.spawn_batch((0..SCHEDULE_ENTITY_COUNT).map(|_| light_bundle()));
+
+    // Four groups with one system each — measures group-dispatch overhead.
+    for name in &["physics", "movement", "combat", "cleanup"] {
+        world.group(name).add(|world: &mut World| {
+            let mut query = world.query::<(&mut PositionComponent, &VelocityComponent)>();
+            query.for_each(world, |(pos, vel)| {
+                pos.0 += vel.0;
+            });
+        });
+    }
+
+    world.tick_with_delta(0.016);
+
+    c.bench_function("sky_schedule_4_groups", |b| {
+        b.iter(|| {
+            world.tick_with_delta(0.016);
+        });
+    });
+}
+
+fn bench_schedule_fixed_tick(c: &mut Criterion) {
+    let mut world = World::new();
+    world.spawn_batch((0..SCHEDULE_ENTITY_COUNT).map(|_| light_bundle()));
+
+    // Fixed group at 0.01 s — a delta of 0.05 triggers 5 sub-ticks.
+    world.group("fixed_physics").fixed(0.01).add(|world: &mut World| {
+        let mut query = world.query::<(&mut PositionComponent, &VelocityComponent)>();
+        query.for_each(world, |(pos, vel)| {
+            pos.0 += vel.0;
+        });
+    });
+
+    world.tick_with_delta(0.016);
+
+    c.bench_function("sky_schedule_fixed_5_subticks", |b| {
+        b.iter(|| {
+            world.tick_with_delta(0.05);
+        });
+    });
+}
+
+fn bench_schedule_empty_systems(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sky_schedule_empty");
+
+    for &n_systems in &SCHEDULE_SYSTEM_COUNTS {
+        let mut world = World::new();
+        {
+            let mut g = world.group("noop");
+            for _ in 0..n_systems {
+                g.add(|_world: &mut World| {});
+            }
+        }
+        world.tick_with_delta(0.016);
+
+        group.bench_with_input(
+            BenchmarkId::new("systems", n_systems),
+            &n_systems,
+            |b, _| {
+                b.iter(|| {
+                    world.tick_with_delta(0.016);
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+// ===========================================================================
 //  Main
 // ===========================================================================
 
@@ -542,5 +658,10 @@ criterion_group!(
     bench_add_remove_component,
     bench_component_transition_ops,
     bench_commands,
+    bench_schedule_scaling,
+    bench_schedule_multi_group,
+    bench_schedule_fixed_tick,
+    bench_schedule_empty_systems,
 );
 criterion_main!(sky_benches);
+

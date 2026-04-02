@@ -4,6 +4,18 @@ use rustc_hash::FxHashMap;
 use std::ops::Deref;
 use std::sync::RwLock;
 
+/// # Safety
+///
+/// The pointer must point to a valid, initialized value of the type this
+/// function was created for.  After the call the pointee is logically
+/// dropped and must not be read again.
+pub(crate) unsafe fn drop_in_place_erased<T>(ptr: *mut u8) {
+    std::ptr::drop_in_place(ptr as *mut T);
+}
+
+/// A lightweight, copyable handle to a registered component type.
+///
+/// Derefs to [`TypeInfo`] for access to size, alignment, and name.
 #[derive(Debug, Clone, Copy)]
 pub struct Type {
     info: &'static TypeInfo,
@@ -16,6 +28,18 @@ impl Type {
 
     pub fn id(&self) -> usize {
         self.info as *const TypeInfo as usize
+    }
+
+    /// Returns `true` if values of this type need `Drop` when destroyed.
+    #[inline(always)]
+    pub fn needs_drop(&self) -> bool {
+        self.info.drop_fn.is_some()
+    }
+
+    /// Returns the type-erased drop function, if the type needs drop.
+    #[inline(always)]
+    pub fn drop_fn(&self) -> Option<unsafe fn(*mut u8)> {
+        self.info.drop_fn
     }
 }
 
@@ -36,19 +60,23 @@ thread_local! {
     static LOCAL_RUST_TYPES: RefCell<FxHashMap<TypeId, Type>> = RefCell::new(FxHashMap::default());
 }
 
+/// Static metadata for a registered type (layout, name, destructor).
 #[derive(Debug)]
 pub struct TypeInfo {
     pub size: usize,
     pub align: usize,
     pub name: String,
+    /// Type-erased `drop_in_place` for this type, or `None` for `Copy` types.
+    pub drop_fn: Option<unsafe fn(*mut u8)>,
 }
 
 impl TypeInfo {
-    fn new(name: &str, size: usize, align: usize) -> Self {
+    fn new(name: &str, size: usize, align: usize, drop_fn: Option<unsafe fn(*mut u8)>) -> Self {
         TypeInfo {
             name: name.to_string(),
             size,
             align,
+            drop_fn,
         }
     }
 }
@@ -71,7 +99,8 @@ impl TypeMngr {
             return *ty;
         }
 
-        let boxed_info = Box::new(TypeInfo::new(name, size, align));
+        // Dynamic registration has no Rust type info, so drop_fn is None.
+        let boxed_info = Box::new(TypeInfo::new(name, size, align, None));
         let static_info: &'static TypeInfo = Box::leak(boxed_info);
 
         let ty = Type::new(static_info);
@@ -94,10 +123,16 @@ impl TypeMngr {
             return ty;
         }
 
+        let drop_fn: Option<unsafe fn(*mut u8)> = if std::mem::needs_drop::<T>() {
+            Some(drop_in_place_erased::<T> as unsafe fn(*mut u8))
+        } else {
+            None
+        };
         let boxed_info = Box::new(TypeInfo::new(
             name,
             core::mem::size_of::<T>(),
             core::mem::align_of::<T>(),
+            drop_fn,
         ));
         let static_info: &'static TypeInfo = Box::leak(boxed_info);
 

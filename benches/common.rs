@@ -27,6 +27,11 @@ pub const MIXED_FRAME_INVERT_COUNT: usize = 8;
 pub const MIXED_PHASE_HEALTH_REPEAT: usize = 8;
 pub const MIXED_PHASE_SPAWN_REPEAT: usize = 32;
 
+/// Entity count for system schedule benchmarks.
+pub const SCHEDULE_ENTITY_COUNT: usize = 10_000;
+/// System counts for scaling tests.
+pub const SCHEDULE_SYSTEM_COUNTS: [usize; 3] = [1, 4, 16];
+
 /// Entity count for the head-to-head hot-path benchmarks (sky vs hecs).
 pub const HOT_PATH_ENTITY_COUNT: usize = 5_000_000;
 pub const HOT_PATH_DELTA: f32 = 0.1;
@@ -205,4 +210,17 @@ pub fn mixed_heavy_bundle() -> (TransformComponent, PositionComponent, VelocityC
         PositionComponent(Vector3::new(1.0, 0.0, 0.0)),
         VelocityComponent(Vector3::new(0.5, 0.0, 0.5)),
     )
+}
+
+/// Deterministic Fisher-Yates shuffle using xorshift64.
+/// Fixed seed so benchmark runs are reproducible without external deps.
+pub fn deterministic_shuffle<T>(slice: &mut [T]) {
+    let mut state: u64 = 0xDEAD_BEEF_CAFE_BABE;
+    for i in (1..slice.len()).rev() {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        let j = (state as usize) % (i + 1);
+        slice.swap(i, j);
+    }
 }

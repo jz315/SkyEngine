@@ -1,3 +1,16 @@
+//! Core ECS (Entity Component System) module.
+//!
+//! This module provides the primary API surface for Sky Engine:
+//!
+//! - [`World`] — the central container for entities, components, and resources.
+//! - [`EntityId`] — a generational handle to a live entity.
+//! - [`Commands`] — a deferred command buffer for structural changes.
+//! - [`Bundle`] — trait implemented for component tuples used in [`World::spawn`].
+//! - [`PreparedQuery`] — the typed, cached query API.
+//! - [`With`] / [`Without`] — archetype-level query filters.
+//! - [`System`] — trait for runnable systems scheduled via [`World::group`].
+//! - [`Time`] — per-frame timing information.
+
 mod archetype;
 mod bundle;
 mod chunk;
@@ -13,7 +26,7 @@ mod world;
 pub use bundle::Bundle;
 pub use commands::Commands;
 pub use entity::EntityId;
-pub use query::{With, Without};
+pub use query::{PreparedQuery, With, Without};
 pub use system::System;
 pub use time::Time;
 pub use world::World;

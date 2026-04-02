@@ -121,9 +121,11 @@ fn sample_entities<T: Copy>(entities: &[T], count: usize) -> Vec<T> {
     assert!(count > 0);
     assert!(entities.len() >= count);
 
-    (0..count)
+    let mut sampled: Vec<T> = (0..count)
         .map(|index| entities[index * entities.len() / count])
-        .collect()
+        .collect();
+    deterministic_shuffle(&mut sampled);
+    sampled
 }
 
 fn sky_mixed_world() -> (SkyWorld, Vec<SkyEntityId>, Vec<SkyEntityId>) {
@@ -679,19 +681,22 @@ fn bench_heavy_compute(c: &mut Criterion) {
 
 fn bench_random_access(c: &mut Criterion) {
     let mut sky_world = SkyWorld::new();
-    let sky_entities: Vec<_> = (0..SIMPLE_ENTITY_COUNT)
+    let mut sky_entities: Vec<_> = (0..SIMPLE_ENTITY_COUNT)
         .map(|_| sky_world.spawn(light_bundle()))
         .collect();
+    deterministic_shuffle(&mut sky_entities);
 
     let mut hecs_world = HecsWorld::new();
-    let hecs_entities: Vec<_> = (0..SIMPLE_ENTITY_COUNT)
+    let mut hecs_entities: Vec<_> = (0..SIMPLE_ENTITY_COUNT)
         .map(|_| hecs_world.spawn(light_bundle()))
         .collect();
+    deterministic_shuffle(&mut hecs_entities);
 
     let mut bevy_world = BevyWorld::new();
-    let bevy_entities: Vec<_> = (0..SIMPLE_ENTITY_COUNT)
+    let mut bevy_entities: Vec<_> = (0..SIMPLE_ENTITY_COUNT)
         .map(|_| bevy_world.spawn(light_bundle()).id())
         .collect();
+    deterministic_shuffle(&mut bevy_entities);
 
     let mut group = c.benchmark_group("fair_random_access");
 

@@ -61,50 +61,107 @@ pub(crate) enum InsertValue {
     Inline {
         len: usize,
         bytes: [MaybeUninit<u8>; INLINE_INSERT_BYTES],
+        drop_fn: Option<unsafe fn(*mut u8)>,
     },
-    Heap(Box<[u8]>),
+    Heap {
+        data: Box<[u8]>,
+        drop_fn: Option<unsafe fn(*mut u8)>,
+    },
+    /// Sentinel: the value has been consumed (written to a chunk).
+    Consumed,
 }
 
 impl InsertValue {
     fn from_value<T>(value: T) -> Self
     where
-        T: Copy + 'static,
+        T: 'static,
     {
         let len = mem::size_of::<T>();
+        let drop_fn: Option<unsafe fn(*mut u8)> = if mem::needs_drop::<T>() {
+            Some(crate::reflect::registry::drop_in_place_erased::<T>)
+        } else {
+            None
+        };
+
+        // Wrap in ManuallyDrop so the original value isn't dropped after
+        // we memcpy its bytes into our buffer.
+        let value = mem::ManuallyDrop::new(value);
+
         if len <= INLINE_INSERT_BYTES {
             let mut bytes = [MaybeUninit::<u8>::uninit(); INLINE_INSERT_BYTES];
             unsafe {
                 ptr::copy_nonoverlapping(
-                    (&value as *const T).cast::<u8>(),
+                    (&*value as *const T).cast::<u8>(),
                     bytes.as_mut_ptr().cast::<u8>(),
                     len,
                 );
             }
-            Self::Inline { len, bytes }
+            Self::Inline { len, bytes, drop_fn }
         } else {
-            let mut bytes = vec![0u8; len].into_boxed_slice();
+            let mut data = vec![0u8; len].into_boxed_slice();
             unsafe {
                 ptr::copy_nonoverlapping(
-                    (&value as *const T).cast::<u8>(),
-                    bytes.as_mut_ptr(),
+                    (&*value as *const T).cast::<u8>(),
+                    data.as_mut_ptr(),
                     len,
                 );
             }
-            Self::Heap(bytes)
+            Self::Heap { data, drop_fn }
         }
     }
 
+    /// Write the stored bytes to `dst` and mark this value as consumed.
+    ///
+    /// After this call, ownership of the component value has transferred
+    /// to the destination buffer; this `InsertValue` will NOT run the
+    /// type-erased drop.
     #[inline(always)]
-    pub(crate) fn write(&self, dst: *mut u8) {
+    pub(crate) fn write(&mut self, dst: *mut u8) {
+        // Safety: we copy the stored bytes to the destination.
+        // The destination is expected to be a properly-aligned,
+        // uninitialised (or already-dropped) slot.
         unsafe {
             match self {
-                Self::Inline { len, bytes } => {
+                Self::Inline { len, bytes, drop_fn } => {
                     ptr::copy_nonoverlapping(bytes.as_ptr().cast::<u8>(), dst, *len);
+                    // Clear drop_fn BEFORE we replace self, so the implicit
+                    // Drop triggered by `*self = Consumed` does NOT call
+                    // the destructor on bytes that were already moved out.
+                    *drop_fn = None;
                 }
-                Self::Heap(bytes) => {
-                    ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
+                Self::Heap { data, drop_fn } => {
+                    ptr::copy_nonoverlapping(data.as_ptr(), dst, data.len());
+                    *drop_fn = None;
+                }
+                Self::Consumed => {
+                    debug_assert!(false, "InsertValue::write called on a consumed value");
+                    return;
                 }
             }
+        }
+
+        // Mark as consumed (no-op from drop perspective since drop_fn is
+        // already None, but semantically clearer).
+        *self = Self::Consumed;
+    }
+}
+
+impl Drop for InsertValue {
+    fn drop(&mut self) {
+        match self {
+            Self::Inline { bytes, drop_fn: Some(drop_fn), .. } => {
+                // Safety: the value was never consumed and the bytes
+                // represent a valid, initialised value of the original type.
+                unsafe {
+                    drop_fn(bytes.as_mut_ptr().cast::<u8>());
+                }
+            }
+            Self::Heap { data, drop_fn: Some(drop_fn) } => {
+                unsafe {
+                    drop_fn(data.as_mut_ptr());
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -251,8 +308,8 @@ impl PendingEntityBuffer {
 
             for entry in pending.components {
                 match entry.command {
-                    PendingComponentCommand::Insert(value) => {
-                        world.insert_dynamic(entity, entry.component, &value);
+                    PendingComponentCommand::Insert(mut value) => {
+                        world.insert_dynamic(entity, entry.component, &mut value);
                     }
                     PendingComponentCommand::Remove => {
                         world.remove_dynamic(entity, entry.component);
@@ -267,6 +324,30 @@ impl PendingEntityBuffer {
 // Public Commands API
 // ---------------------------------------------------------------------------
 
+/// A deferred command buffer for batching structural ECS changes.
+///
+/// Commands are recorded and then applied atomically via [`apply`](Self::apply).
+/// This is useful when you need to make structural changes (spawn, despawn,
+/// insert, remove) from within a query loop or a system, where direct
+/// mutation of the [`World`] is not possible.
+///
+/// Commands targeting the same entity are **coalesced** — only the final
+/// state per component is applied, reducing archetype migrations.
+///
+/// # Examples
+///
+/// ```
+/// # use sky_engine::ecs::{World, Commands};
+/// # #[derive(Clone, Copy)] struct Health(f32);
+/// # let mut world = World::new();
+/// let entity = world.spawn((Health(100.0),));
+///
+/// let mut cmds = Commands::new();
+/// cmds.insert(entity, Health(50.0));
+/// cmds.apply(&mut world);
+///
+/// assert_eq!(world.get::<Health>(entity).unwrap().0, 50.0);
+/// ```
 #[derive(Default)]
 pub struct Commands {
     queue: Vec<Command>,
@@ -274,14 +355,17 @@ pub struct Commands {
 }
 
 impl Commands {
+    /// Creates a new, empty command buffer.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Returns `true` if no commands have been recorded.
     pub fn is_empty(&self) -> bool {
         self.queued_count == 0
     }
 
+    /// Returns the number of commands recorded so far.
     pub fn len(&self) -> usize {
         self.queued_count
     }
@@ -308,6 +392,8 @@ impl Commands {
         self.queue.push(Command::EntityBatch(batch));
     }
 
+    /// Records a deferred spawn.  Consecutive spawns of the same bundle
+    /// type are coalesced into a single batch for efficiency.
     pub fn spawn<B>(&mut self, bundle: B)
     where
         B: Bundle,
@@ -327,13 +413,15 @@ impl Commands {
             })));
     }
 
+    /// Records a deferred entity despawn.
     pub fn despawn(&mut self, entity: EntityId) {
         self.push_entity(EntityCommand::Despawn(entity));
     }
 
+    /// Records a deferred component insertion (or overwrite).
     pub fn insert<T>(&mut self, entity: EntityId, component: T)
     where
-        T: Copy + 'static,
+        T: 'static,
     {
         self.push_entity(EntityCommand::Insert {
             entity,
@@ -342,6 +430,7 @@ impl Commands {
         });
     }
 
+    /// Records a deferred component removal.
     pub fn remove<T>(&mut self, entity: EntityId)
     where
         T: 'static,
@@ -352,6 +441,7 @@ impl Commands {
         });
     }
 
+    /// Records a deferred resource insertion.
     pub fn insert_resource<R>(&mut self, resource: R)
     where
         R: 'static,
@@ -361,6 +451,7 @@ impl Commands {
         });
     }
 
+    /// Records a deferred resource removal.
     pub fn remove_resource<R>(&mut self)
     where
         R: 'static,
@@ -370,6 +461,7 @@ impl Commands {
         });
     }
 
+    /// Applies all recorded commands to the world and clears the buffer.
     pub fn apply(&mut self, world: &mut World) {
         for command in self.queue.drain(..) {
             match command {

@@ -23,6 +23,30 @@ struct TransitionPlan {
     target_data_index: Cell<Option<usize>>,
 }
 
+/// The central container for all ECS data.
+///
+/// A `World` owns every entity, component, and resource.  It provides methods
+/// for spawning and despawning entities, reading and writing components,
+/// scheduling systems, and running queries.
+///
+/// # Drop Semantics
+///
+/// When a `World` is dropped, all component destructors are called
+/// automatically.  Non-`Copy` components (e.g. `String`, `Vec<T>`) are
+/// handled correctly.
+///
+/// # Examples
+///
+/// ```
+/// use sky_engine::ecs::World;
+///
+/// #[derive(Clone, Copy)]
+/// struct Position { x: f32, y: f32 }
+///
+/// let mut world = World::new();
+/// let entity = world.spawn((Position { x: 0.0, y: 0.0 },));
+/// assert_eq!(world.get::<Position>(entity).unwrap().x, 0.0);
+/// ```
 pub struct World {
     pub time: Time,
     pub(crate) data: Vec<Data>,
@@ -42,6 +66,7 @@ impl Default for World {
 }
 
 impl World {
+    /// Creates an empty world with no entities, resources, or systems.
     pub fn new() -> Self {
         Self {
             time: Time::default(),
@@ -60,6 +85,10 @@ impl World {
     // Schedule API
     // -----------------------------------------------------------------------
 
+    /// Returns a `GroupBuilder` for the named system group.
+    ///
+    /// Groups execute in creation order during [`tick`](Self::tick).
+    /// If the group already exists, the builder appends to it.
     pub fn group(&mut self, name: &str) -> GroupBuilder<'_> {
         let schedule = self
             .schedule
@@ -69,6 +98,14 @@ impl World {
         GroupBuilder::new(schedule, index)
     }
 
+    /// Advances the world by one frame using wall-clock time.
+    ///
+    /// On the first call, delta is 0.  Subsequent calls measure elapsed
+    /// time since the previous tick, scaled by [`Time::time_scale`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if called recursively (e.g. from within a running system).
     pub fn tick(&mut self) {
         let mut schedule = self.schedule.take().expect("cannot call tick recursively");
 
@@ -85,6 +122,13 @@ impl World {
         self.schedule = Some(schedule);
     }
 
+    /// Advances the world by the given delta (in seconds).
+    ///
+    /// Useful for deterministic tests and fixed-step simulations.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called recursively.
     pub fn tick_with_delta(&mut self, delta: f32) {
         let mut schedule = self.schedule.take().expect("cannot call tick recursively");
 
@@ -129,6 +173,10 @@ impl World {
         self.time.elapsed += scaled_delta;
     }
 
+    /// Tears down all initialised systems in reverse order.
+    ///
+    /// Call this before dropping the world if your systems need a clean
+    /// shutdown (e.g. flushing buffers, releasing external resources).
     pub fn shutdown(&mut self) {
         let mut schedule = self.schedule.take().expect("cannot shutdown during tick");
 
@@ -203,6 +251,18 @@ impl World {
         entity
     }
 
+    /// Spawns a new entity with the given component bundle.
+    ///
+    /// Returns the [`EntityId`] of the newly created entity.  The bundle
+    /// type is typically a tuple of components:
+    ///
+    /// ```
+    /// # use sky_engine::ecs::World;
+    /// # #[derive(Clone, Copy)] struct Pos { x: f32, y: f32 }
+    /// # #[derive(Clone, Copy)] struct Vel { x: f32, y: f32 }
+    /// # let mut world = World::new();
+    /// let entity = world.spawn((Pos { x: 0.0, y: 0.0 }, Vel { x: 1.0, y: 2.0 }));
+    /// ```
     pub fn spawn<B: Bundle>(&mut self, bundle: B) -> EntityId {
         let (archetype, columns) = B::cached_meta();
         let entity = self.allocate_entity();
@@ -225,6 +285,10 @@ impl World {
         entity
     }
 
+    /// Spawns multiple entities from an iterator of bundles.
+    ///
+    /// More efficient than calling [`spawn`](Self::spawn) in a loop because
+    /// the archetype lookup and entity record allocation are amortised.
     pub fn spawn_batch<B: Bundle>(&mut self, bundles: impl IntoIterator<Item = B>) {
         let (archetype, columns) = B::cached_meta();
         let data_index = self.ensure_data_index(archetype);
@@ -255,30 +319,37 @@ impl World {
         }
     }
 
+    /// Returns `true` if `entity` is alive in this world.
     pub fn contains(&self, entity: EntityId) -> bool {
         self.entity_location(entity).is_some()
     }
 
+    /// Inserts a singleton resource, returning the previous value if one existed.
     pub fn insert_resource<R: 'static>(&mut self, resource: R) -> Option<R> {
         self.resources.insert(resource)
     }
 
+    /// Returns an immutable reference to resource `R`, or `None`.
     pub fn get_resource<R: 'static>(&self) -> Option<&R> {
         self.resources.get::<R>()
     }
 
+    /// Returns a mutable reference to resource `R`, or `None`.
     pub fn get_resource_mut<R: 'static>(&mut self) -> Option<&mut R> {
         self.resources.get_mut::<R>()
     }
 
+    /// Returns `true` if the world contains resource `R`.
     pub fn contains_resource<R: 'static>(&self) -> bool {
         self.resources.contains::<R>()
     }
 
+    /// Removes and returns resource `R`, or `None` if not present.
     pub fn remove_resource<R: 'static>(&mut self) -> Option<R> {
         self.resources.remove::<R>()
     }
 
+    /// Returns `true` if `entity` is alive and has component `T`.
     #[inline(always)]
     pub fn has<T: 'static>(&self, entity: EntityId) -> bool {
         let Some(location) = self.entity_location(entity) else {
@@ -290,10 +361,21 @@ impl World {
             .has_component(&register_rust_type::<T>())
     }
 
+    /// Destroys an entity and drops all its components.
+    ///
+    /// Returns `true` if the entity existed and was removed,
+    /// or `false` if the entity ID was stale or invalid.
     pub fn despawn(&mut self, entity: EntityId) -> bool {
         let Some(location) = self.entity_location(entity) else {
             return false;
         };
+
+        // Safety: location is valid and the entity is about to be destroyed.
+        // We must drop its components before the swap-remove overwrites the slot.
+        unsafe {
+            self.data[location.data_index].chunks[location.chunk_index]
+                .drop_entity_components(location.entity_index);
+        }
 
         let moved = self.data[location.data_index].remove_entity(ChunkEntityLocation {
             chunk_index: location.chunk_index,
@@ -319,6 +401,9 @@ impl World {
         true
     }
 
+    /// Returns a shared reference to component `T` on `entity`.
+    ///
+    /// Returns `None` if the entity is dead or does not have `T`.
     #[inline(always)]
     pub fn get<T: 'static>(&self, entity: EntityId) -> Option<&T> {
         let location = self.entity_location(entity)?;
@@ -336,6 +421,9 @@ impl World {
         })
     }
 
+    /// Returns an exclusive reference to component `T` on `entity`.
+    ///
+    /// Returns `None` if the entity is dead or does not have `T`.
     #[inline(always)]
     pub fn get_mut<T: 'static>(&mut self, entity: EntityId) -> Option<&mut T> {
         let location = self.entity_location(entity)?;
@@ -499,7 +587,14 @@ impl World {
         }
     }
 
-    pub fn insert<T: Copy + 'static>(&mut self, entity: EntityId, component: T) -> bool {
+    /// Adds or overwrites component `T` on `entity`.
+    ///
+    /// If the entity already has `T`, the old value is dropped and replaced
+    /// in-place (no archetype migration).  If the entity does not have `T`,
+    /// it is migrated to a new archetype that includes `T`.
+    ///
+    /// Returns `false` if the entity does not exist.
+    pub fn insert<T: 'static>(&mut self, entity: EntityId, component: T) -> bool {
         let Some(source_location) = self.entity_location(entity) else {
             return false;
         };
@@ -507,12 +602,22 @@ impl World {
         let component_ty = register_rust_type::<T>();
         let source_archetype = self.data[source_location.data_index].archetype;
 
+        // Overwrite path: entity already has this component.
         if source_archetype.has_component(&component_ty) {
-            if let Some(existing) = self.get_mut::<T>(entity) {
-                *existing = component;
-                return true;
+            let component_index = source_archetype.query_component_index(&component_ty).unwrap();
+            let chunk = &mut self.data[source_location.data_index].chunks
+                [source_location.chunk_index];
+            unsafe {
+                let ptr = chunk
+                    .column_ptr(component_index)
+                    .add(source_location.entity_index * std::mem::size_of::<T>())
+                    as *mut T;
+                // Safety: ptr points to a valid, initialised T.
+                // Drop the old value, then write the new one.
+                std::ptr::drop_in_place(ptr);
+                std::ptr::write(ptr, component);
             }
-            return false;
+            return true;
         }
 
         let plan = self
@@ -540,6 +645,9 @@ impl World {
                 )
             };
 
+            // Bitwise-copy existing columns to the new archetype chunk.
+            // This is a semantic move: the source slot should NOT be dropped
+            // for these columns.
             Self::copy_components_with_spans(
                 source_chunk,
                 source_location.entity_index,
@@ -555,7 +663,7 @@ impl World {
                 let ptr = target_chunk.data_ptr().add(
                     component_offset + target_location.entity_index * std::mem::size_of::<T>(),
                 );
-                *(ptr as *mut T) = component;
+                std::ptr::write(ptr as *mut T, component);
             }
         }
 
@@ -568,6 +676,8 @@ impl World {
             },
         );
 
+        // Source entity data was bitwise-moved to target; the swap-remove
+        // here only rearranges the source chunk — no drops needed.
         let moved = self.data[source_location.data_index].remove_entity(ChunkEntityLocation {
             chunk_index: source_location.chunk_index,
             entity_index: source_location.entity_index,
@@ -587,6 +697,10 @@ impl World {
         true
     }
 
+    /// Removes component `T` from `entity`, dropping it.
+    ///
+    /// The entity is migrated to a smaller archetype.  Returns `false` if
+    /// the entity does not exist or does not have `T`.
     pub fn remove<T: 'static>(&mut self, entity: EntityId) -> bool {
         let Some(source_location) = self.entity_location(entity) else {
             return false;
@@ -620,6 +734,7 @@ impl World {
                 )
             };
 
+            // Bitwise-copy kept columns to target (semantic move).
             Self::copy_components_with_spans(
                 source_chunk,
                 source_location.entity_index,
@@ -627,6 +742,20 @@ impl World {
                 target_location.entity_index,
                 &plan.copy_spans,
             );
+
+            // Drop the removed component column from the source entity.
+            // Safety: source_location is valid and this column is being
+            // discarded (not copied to the target archetype).
+            if let Some(removed_component_index) =
+                source_chunk.archetype.query_component_index(&component_ty)
+            {
+                unsafe {
+                    source_chunk.drop_single_component(
+                        removed_component_index,
+                        source_location.entity_index,
+                    );
+                }
+            }
         }
 
         self.set_entity_location(
@@ -638,6 +767,8 @@ impl World {
             },
         );
 
+        // Source entity data was bitwise-moved (kept columns) and dropped
+        // (removed column); the swap-remove only rearranges the chunk.
         let moved = self.data[source_location.data_index].remove_entity(ChunkEntityLocation {
             chunk_index: source_location.chunk_index,
             entity_index: source_location.entity_index,
@@ -661,7 +792,7 @@ impl World {
         &mut self,
         entity: EntityId,
         component: crate::reflect::Type,
-        value: &InsertValue,
+        value: &mut InsertValue,
     ) -> bool {
         let Some(source_location) = self.entity_location(entity) else {
             return false;
@@ -678,6 +809,10 @@ impl World {
                     .column_ptr(component_index)
                     .add(source_location.entity_index * component.size)
             };
+            // Safety: drop the old value before overwriting.
+            if let Some(drop_fn) = component.drop_fn() {
+                unsafe { drop_fn(ptr); }
+            }
             value.write(ptr);
             return true;
         }
@@ -796,6 +931,18 @@ impl World {
                 target_location.entity_index,
                 &plan.copy_spans,
             );
+
+            // Drop the removed component from the source entity.
+            if let Some(removed_component_index) =
+                source_chunk.archetype.query_component_index(&component)
+            {
+                unsafe {
+                    source_chunk.drop_single_component(
+                        removed_component_index,
+                        source_location.entity_index,
+                    );
+                }
+            }
         }
 
         self.set_entity_location(
@@ -830,6 +977,7 @@ impl World {
         self.archetype_epoch
     }
 
+    /// Returns the total number of live entities across all archetypes.
     pub fn entity_count(&self) -> usize {
         self.data
             .iter()
@@ -837,10 +985,14 @@ impl World {
             .sum()
     }
 
+    /// Returns the number of distinct archetypes currently stored.
     pub fn archetype_count(&self) -> usize {
         self.data.len()
     }
 
+    /// Removes all entities and their components, but keeps resources.
+    ///
+    /// Component destructors are called for every live entity.
     pub fn clear(&mut self) {
         self.data.clear();
         self.archetype_to_data_index.clear();
@@ -850,6 +1002,26 @@ impl World {
         self.archetype_epoch += 1;
     }
 
+    /// Creates a typed, cached query.
+    ///
+    /// The query parameter `Q` is usually a reference (`&T`), a mutable
+    /// reference (`&mut T`), an optional (`Option<&T>`), or a tuple of
+    /// those.  The returned [`PreparedQuery`] caches matched archetypes
+    /// and refreshes automatically when the world's archetype set changes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use sky_engine::ecs::World;
+    /// # #[derive(Clone, Copy)] struct Pos { x: f32, y: f32 }
+    /// # #[derive(Clone, Copy)] struct Vel { x: f32, y: f32 }
+    /// # let mut world = World::new();
+    /// # world.spawn((Pos { x: 0.0, y: 0.0 }, Vel { x: 1.0, y: 0.0 }));
+    /// let mut query = world.query::<(&mut Pos, &Vel)>();
+    /// query.for_each(&world, |(pos, vel)| {
+    ///     pos.x += vel.x;
+    /// });
+    /// ```
     pub fn query<Q>(&self) -> PreparedQuery<Q>
     where
         Q: QuerySpec,
@@ -857,6 +1029,21 @@ impl World {
         PreparedQuery::new()
     }
 
+    /// Creates a typed, cached query with an archetype filter.
+    ///
+    /// Filters narrow which archetypes are matched.  Use [`With<T>`] to
+    /// require that `T` is present, or [`Without<T>`] to exclude it.
+    /// Filter tuples combine with AND semantics.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use sky_engine::ecs::{World, With};
+    /// # #[derive(Clone, Copy)] struct Pos { x: f32, y: f32 }
+    /// # #[derive(Clone, Copy)] struct Enemy;
+    /// # let mut world = World::new();
+    /// let mut enemies = world.query_filtered::<&Pos, With<Enemy>>();
+    /// ```
     pub fn query_filtered<Q, Flt>(&self) -> PreparedQuery<Q, Flt>
     where
         Q: QuerySpec,
@@ -1305,5 +1492,225 @@ mod tests {
         assert_eq!(world.get::<Health>(a), None);
         // B: insert Health → Health present
         assert_eq!(world.get::<Health>(b), Some(&Health(20.0)));
+    }
+
+    // =======================================================================
+    // Drop semantics tests
+    // =======================================================================
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// A component whose Drop increments a shared counter.
+    #[derive(Clone)]
+    struct Droppable {
+        counter: Arc<AtomicUsize>,
+    }
+
+    impl Droppable {
+        fn new(counter: &Arc<AtomicUsize>) -> Self {
+            Self {
+                counter: counter.clone(),
+            }
+        }
+    }
+
+    impl Drop for Droppable {
+        fn drop(&mut self) {
+            self.counter.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn despawn_calls_drop_on_components() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let mut world = World::new();
+        let entity = world.spawn((Droppable::new(&counter),));
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+
+        world.despawn(entity);
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
+    }
+
+    /// A second droppable type to test multi-component bundles.
+    #[derive(Clone)]
+    struct DroppableB {
+        counter: Arc<AtomicUsize>,
+    }
+
+    impl DroppableB {
+        fn new(counter: &Arc<AtomicUsize>) -> Self {
+            Self {
+                counter: counter.clone(),
+            }
+        }
+    }
+
+    impl Drop for DroppableB {
+        fn drop(&mut self) {
+            self.counter.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn despawn_calls_drop_on_multiple_components() {
+        let counter_a = Arc::new(AtomicUsize::new(0));
+        let counter_b = Arc::new(AtomicUsize::new(0));
+        let mut world = World::new();
+        let entity = world.spawn((
+            Droppable::new(&counter_a),
+            DroppableB::new(&counter_b),
+        ));
+
+        world.despawn(entity);
+        assert_eq!(counter_a.load(Ordering::Relaxed), 1);
+        assert_eq!(counter_b.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn remove_component_calls_drop_on_removed_column() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let mut world = World::new();
+        let entity = world.spawn((
+            Position { x: 0.0, y: 0.0 },
+            Droppable::new(&counter),
+        ));
+
+        world.remove::<Droppable>(entity);
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
+        // Entity should still be alive with its Position.
+        assert!(world.contains(entity));
+        assert_eq!(
+            world.get::<Position>(entity),
+            Some(&Position { x: 0.0, y: 0.0 })
+        );
+    }
+
+    #[test]
+    fn insert_overwrite_calls_drop_on_old_value() {
+        let counter_old = Arc::new(AtomicUsize::new(0));
+        let counter_new = Arc::new(AtomicUsize::new(0));
+        let mut world = World::new();
+        let entity = world.spawn((Droppable::new(&counter_old),));
+
+        world.insert(entity, Droppable::new(&counter_new));
+        // Old value should have been dropped.
+        assert_eq!(counter_old.load(Ordering::Relaxed), 1);
+        // New value should not have been dropped yet.
+        assert_eq!(counter_new.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn clear_calls_drop_on_all_entity_components() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let mut world = World::new();
+        for _ in 0..10 {
+            world.spawn((Droppable::new(&counter),));
+        }
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+
+        world.clear();
+        assert_eq!(counter.load(Ordering::Relaxed), 10);
+    }
+
+    #[test]
+    fn world_drop_calls_drop_on_all_entity_components() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        {
+            let mut world = World::new();
+            for _ in 0..5 {
+                world.spawn((Droppable::new(&counter),));
+            }
+            assert_eq!(counter.load(Ordering::Relaxed), 0);
+        }
+        // World was dropped — all components should be dropped.
+        assert_eq!(counter.load(Ordering::Relaxed), 5);
+    }
+
+    #[test]
+    fn spawn_with_non_copy_component_and_read_back() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let mut world = World::new();
+        let entity = world.spawn((Droppable::new(&counter),));
+
+        // We can get an immutable reference to the non-Copy component.
+        let droppable = world.get::<Droppable>(entity).unwrap();
+        assert!(Arc::ptr_eq(&droppable.counter, &counter));
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn insert_new_component_does_not_drop_existing_components() {
+        let counter_existing = Arc::new(AtomicUsize::new(0));
+        let _counter_new = Arc::new(AtomicUsize::new(0));
+        let mut world = World::new();
+        let entity = world.spawn((Droppable::new(&counter_existing),));
+
+        // Insert a new component (causing archetype migration).
+        world.insert(entity, Position { x: 1.0, y: 2.0 });
+
+        // The existing Droppable should NOT have been dropped.
+        assert_eq!(counter_existing.load(Ordering::Relaxed), 0);
+        // Both components should be accessible.
+        assert!(world.get::<Droppable>(entity).is_some());
+        assert_eq!(
+            world.get::<Position>(entity),
+            Some(&Position { x: 1.0, y: 2.0 })
+        );
+    }
+
+    #[test]
+    fn commands_insert_non_copy_then_apply() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let mut world = World::new();
+        let entity = world.spawn((Position { x: 0.0, y: 0.0 },));
+
+        let mut cmds = Commands::new();
+        cmds.insert(entity, Droppable::new(&counter));
+        cmds.apply(&mut world);
+
+        // Component should be on the entity now, not dropped.
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+        assert!(world.get::<Droppable>(entity).is_some());
+
+        // Despawn should call drop.
+        world.despawn(entity);
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn commands_insert_value_dropped_when_not_consumed() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        {
+            let mut cmds = Commands::new();
+            let entity = super::EntityId::new(9999, 0); // non-existent
+            cmds.insert(entity, Droppable::new(&counter));
+            // Drop cmds without applying — the InsertValue should drop its payload.
+        }
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn copy_types_unaffected_by_drop_machinery() {
+        // Verify Copy types still work exactly as before.
+        let mut world = World::new();
+        let entity = world.spawn((
+            Position { x: 1.0, y: 2.0 },
+            Velocity { x: 3.0, y: 4.0 },
+        ));
+
+        assert_eq!(
+            world.get::<Position>(entity),
+            Some(&Position { x: 1.0, y: 2.0 })
+        );
+        world.insert(entity, Position { x: 5.0, y: 6.0 });
+        assert_eq!(
+            world.get::<Position>(entity),
+            Some(&Position { x: 5.0, y: 6.0 })
+        );
+        world.remove::<Velocity>(entity);
+        assert_eq!(world.get::<Velocity>(entity), None);
+        world.despawn(entity);
+        assert!(!world.contains(entity));
     }
 }

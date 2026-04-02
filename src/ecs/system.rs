@@ -4,6 +4,12 @@ use super::World;
 // System trait
 // ---------------------------------------------------------------------------
 
+/// A runnable unit of logic that operates on a [`World`].
+///
+/// Implement `init` for one-time setup, `run` for per-tick logic, and
+/// `teardown` for cleanup on [`World::shutdown`].
+///
+/// Closures `FnMut(&mut World)` automatically implement `System`.
 pub trait System: 'static {
     fn init(&mut self, _world: &mut World) {}
     fn run(&mut self, world: &mut World);
@@ -87,6 +93,7 @@ impl Schedule {
 // GroupBuilder — returned by world.group("name")
 // ---------------------------------------------------------------------------
 
+/// Builder returned by [`World::group`] for configuring a system group.
 pub struct GroupBuilder<'a> {
     schedule: &'a mut Schedule,
     group_index: usize,
@@ -100,11 +107,17 @@ impl<'a> GroupBuilder<'a> {
         }
     }
 
+    /// Sets this group to run at a fixed time step (in seconds).
+    ///
+    /// The group accumulates delta time and runs its systems once per
+    /// step, potentially multiple times per frame.
     pub fn fixed(&mut self, dt: f32) -> &mut Self {
         self.schedule.groups[self.group_index].tick_policy = TickPolicy::Fixed(dt);
         self
     }
 
+    /// Adds a system to this group. Systems within a group run in the
+    /// order they are added.
     pub fn add<S: System>(&mut self, system: S) -> &mut Self {
         self.schedule.groups[self.group_index]
             .systems

@@ -77,6 +77,11 @@ fn bundle_meta<B: 'static>(
     meta
 }
 
+/// Trait implemented by component tuples for spawning entities.
+///
+/// You do not need to implement this manually — it is auto-implemented
+/// for tuples of up to 16 `'static` types.  Both `Copy` and non-`Copy`
+/// types are supported.
 pub trait Bundle: 'static {
     fn cached_meta() -> (Archetype, &'static [(usize, usize)]);
 
@@ -93,7 +98,7 @@ pub trait Bundle: 'static {
 
 macro_rules! impl_bundle_tuple {
     ($(($Type:ident, $value:ident, $idx:tt)),+ $(,)?) => {
-        impl<$($Type: Copy + 'static),+> Bundle for ($($Type,)+) {
+        impl<$($Type: 'static),+> Bundle for ($($Type,)+) {
             fn cached_meta() -> (Archetype, &'static [(usize, usize)]) {
                 let meta = bundle_meta::<Self>(|| smallvec![$(register_rust_type::<$Type>()),+]);
                 (meta.archetype, &meta.columns)
