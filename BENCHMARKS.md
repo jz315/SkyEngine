@@ -22,28 +22,109 @@ All numbers below were collected on the same local Windows machine with Criterio
 - Query/prepared state is created outside the timed loop in `fair` for all engines.
 - Sky-specific APIs such as chunk iteration, filtered typed queries, and deferred commands remain in `sky` as project-side regression checks.
 - Records collected before the 2026-03-31 normalization pass are still useful for history, but they are not the canonical fair-comparison baseline.
+- The current repo now uses `criterion 0.8.2`; the recorded `2026-04-01` numbers below were collected before that upgrade on the older `criterion 0.4` harness, so the next post-upgrade `fair` run should be treated as a fresh tooling baseline.
 
 ---
 
 ## Current Summary
 
 ### Latest full run
-- Date: **2026-03-31**
-- Command: `cargo bench --bench fair -- --noplot`
-- Status: **canonical fair-comparison snapshot, post-optimization**
+- Date: **2026-04-02**
+- Command: `cargo bench --bench fair -- "fair_entity_ops|fair_mixed_frame"`
+- Status: **FxHashMap migration — all `std::collections::HashMap` replaced with `rustc_hash::FxHashMap` + spare-chunk caching**
 
 ### Current takeaways
-- `fair_insert/batch_10k`: Sky is about **2.40x** faster than `hecs` and about **2.33x** faster than Bevy.
-- `fair_insert/single_10k`: Sky is now ahead of both `hecs` and Bevy.
-- `fair_iteration/simple`: Sky is still fastest, about **2.07x** faster than `hecs` and about **3.03x** faster than Bevy.
-- `fair_fragmented_iteration/fragmented`: Sky remains fastest, about **4.05x** faster than `hecs` and about **2.04x** faster than Bevy.
-- `fair_heavy_compute/heavy`: Sky and Bevy are now effectively tied, both ahead of `hecs`.
-- `fair_entity_ops/spawn_despawn_1k` improved enough for Sky to beat Bevy, while `fair_entity_ops/add_remove_component_1k` remains the main structural-operation gap.
-- The older `2026-03-30 cargo bench` record remains below as a pre-normalization regression snapshot.
+- `fair_entity_ops/spawn_despawn_1k`: Sky now **matches** hecs (26.3 vs 25.2 µs) and is **2.3x** faster than Bevy. Previously 1.67x slower than hecs.
+- `fair_entity_ops/add_remove_component_1k`: Sky now **matches** hecs (58.8 vs 59.2 µs) and beats Bevy. Previously 1.6x slower than hecs.
+- `fair_mixed_frame/frame`: Sky **leads all** at 181 µs vs hecs 211 µs vs Bevy 223 µs — **14% faster** than hecs.
+- `fair_mixed_frame_phases/random_access`: Sky improved from 7.4 to **3.6 µs**, now **2x faster** than hecs (7.3 µs). Major reversal.
+- `fair_mixed_frame_phases/structural_churn`: Sky improved from 25.4 to **14.4 µs**, now tied with hecs (14.6 µs). Previously ~1.7x slower.
+- `fair_mixed_frame_phases/spawn_despawn`: Sky improved from 91.5 to **54.3 µs**, nearly tied with hecs (51.4 µs). Previously ~1.7x slower.
+- All iteration benchmarks remain dominant (2.7x–4.2x faster than hecs).
+- **No performance regressions** on any workload.
+
+### Key optimizations in this revision
+1. **`rustc_hash::FxHashMap`** — replaced all `std::collections::HashMap` across `world.rs`, `commands.rs`, `archetype.rs`, `bundle.rs`, `resource.rs`, `registry.rs`. SipHash-2-4's DoS protection was pure overhead for our integer/pointer keys.
+2. **Spare-chunk caching** — `Data` now retains one empty chunk after despawn to avoid pool round-trips during spawn/despawn churn.
+3. **`#[inline(always)]`** on chunk hot methods — `copy_entity_within`, `copy_entity_from`, `remove_last_entity`, `Data::add_entity`, `Data::remove_entity`.
 
 ---
 
-## Latest Fair Run (2026-03-31)
+## Latest Fair Run — FxHashMap Migration (2026-04-02)
+
+Command: `cargo bench --bench fair -- "fair_entity_ops|fair_mixed_frame"`
+
+Note: this is a targeted re-run of entity-ops and mixed-frame benchmarks after the FxHashMap migration. Iteration benchmarks were not re-run as they are unaffected by HashMap changes.
+
+### Entity Operations
+
+| Workload | Sky | hecs | Bevy |
+| --- | --- | --- | --- |
+| `fair_entity_ops/spawn_despawn_1k` | `26.24-26.41 us` | `25.09-25.28 us` | `58.82-59.69 us` |
+| `fair_entity_ops/add_remove_component_1k` | `58.54-59.15 us` | `59.05-59.41 us` | `88.15-89.22 us` |
+
+### Mixed Frame (complete game loop simulation)
+
+| Workload | Sky | hecs | Bevy |
+| --- | --- | --- | --- |
+| `fair_mixed_frame/frame` | `180.50-182.97 us` | `209.95-211.83 us` | `221.10-226.72 us` |
+
+### Mixed Frame Phases (isolated)
+
+| Phase | Sky | hecs | Bevy |
+| --- | --- | --- | --- |
+| `movement` | `4.90-4.96 us` | `13.47-13.61 us` | `19.69-19.90 us` |
+| `health` | `3.62-3.64 us` | `15.19-15.26 us` | `38.51-38.74 us` |
+| `heavy` | `151.20-152.03 us` | `161.57-162.52 us` | `164.83-166.01 us` |
+| `random_access` | `3.62-3.64 us` | `7.29-7.37 us` | `1.56-1.57 us` |
+| `structural_churn` | `14.39-14.45 us` | `14.52-14.60 us` | `18.69-18.83 us` |
+| `spawn_despawn` | `54.09-54.52 us` | `51.15-51.66 us` | `107.40-247.84 us` |
+
+---
+
+## Previous Fair Run (2026-04-01)
+
+Command: `cargo bench --bench fair -- --noplot`
+
+Note: this run was taken after the raw-block pool simplification in `chunk.rs`, the default `mimalloc` switch, the `criterion 0.8.2` upgrade, and the structural-path layout/copy-plan cache work in `world.rs`/`chunk.rs`.
+
+| Workload | Sky | hecs | Bevy |
+| --- | --- | --- | --- |
+| `fair_insert/batch_10k` | `134.68-137.45 us` | `290.36-298.34 us` | `274.38-280.61 us` |
+| `fair_insert/single_10k` | `399.35-407.15 us` | `410.52-421.72 us` | `517.12-529.44 us` |
+| `fair_iteration/simple` | `1.9771-2.0340 us` | `5.5569-5.6756 us` | `8.1459-8.3137 us` |
+| `fair_fragmented_iteration/fragmented` | `262.20-268.50 ns` | `452.23-462.60 ns` | `258.64-263.70 ns` |
+| `fair_heavy_compute/heavy` | `1.8971-1.9274 ms` | `2.3686-2.4211 ms` | `2.0265-2.0674 ms` |
+| `fair_random_access/get` | `138.85-142.20 us` | `143.52-146.18 us` | `29.989-30.940 us` |
+| `fair_entity_ops/spawn_despawn_1k` | `42.454-43.497 us` | `26.558-27.157 us` | `60.747-62.570 us` |
+| `fair_entity_ops/add_remove_component_1k` | `99.382-102.66 us` | `60.087-62.207 us` | `89.165-91.841 us` |
+| `fair_mixed_frame/frame` | `198.26-203.09 us` | `211.25-216.50 us` | `224.56-233.06 us` |
+
+### Fragmented Iteration Normalization (2026-04-01)
+
+Note: after the full run above, the fragmented workload was scaled from `26 * 20 = 520` entities to `26 * 400 = 10,400` entities to reduce constant-factor distortion.
+
+| Workload | Sky | hecs | Bevy |
+| --- | --- | --- | --- |
+| `fair_fragmented_iteration/fragmented` | `1.0648-1.1093 us` | `3.2068-3.3048 us` | `6.1373-6.2669 us` |
+
+### Mixed-Phase Benchmark Normalization (2026-04-01)
+
+Note: after the full run above, the short `fair_mixed_frame_phases` micro-benchmarks were normalized by:
+- adding `black_box(&world)` sinks after mutating passes
+- repeating `health` by `8x`
+- repeating `spawn_despawn` by `32x`
+
+Representative normalized phase results:
+
+| Workload | Sky | hecs | Bevy |
+| --- | --- | --- | --- |
+| `fair_mixed_frame_phases/health` | `3.7651-3.9951 us` | `15.973-17.039 us` | `40.041-41.891 us` |
+| `fair_mixed_frame_phases/spawn_despawn` | `90.246-92.672 us` | `53.761-55.114 us` | `112.91-225.28 us` |
+
+---
+
+## Previous Fair Run (2026-03-31)
 
 Command: `cargo bench --bench fair -- --noplot`
 

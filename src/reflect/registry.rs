@@ -1,6 +1,6 @@
 use std::any::{type_name, TypeId};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::ops::Deref;
 use std::sync::RwLock;
 
@@ -33,7 +33,7 @@ lazy_static::lazy_static! {
 }
 
 thread_local! {
-    static LOCAL_RUST_TYPES: RefCell<HashMap<TypeId, Type>> = RefCell::new(HashMap::new());
+    static LOCAL_RUST_TYPES: RefCell<FxHashMap<TypeId, Type>> = RefCell::new(FxHashMap::default());
 }
 
 #[derive(Debug)]
@@ -54,15 +54,15 @@ impl TypeInfo {
 }
 
 struct TypeMngr {
-    name_to_type: HashMap<String, Type>,
-    rust_type_to_type: HashMap<TypeId, Type>,
+    name_to_type: FxHashMap<String, Type>,
+    rust_type_to_type: FxHashMap<TypeId, Type>,
 }
 
 impl TypeMngr {
     fn new() -> Self {
         TypeMngr {
-            name_to_type: HashMap::new(),
-            rust_type_to_type: HashMap::new(),
+            name_to_type: FxHashMap::default(),
+            rust_type_to_type: FxHashMap::default(),
         }
     }
 

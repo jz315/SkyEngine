@@ -1,14 +1,15 @@
 use super::{create_archetype, Archetype, Chunk, MAX_COMPONENTS};
 use crate::reflect::{register_rust_type, Type};
+use rustc_hash::FxHashMap;
 use smallvec::{smallvec, SmallVec};
-use std::{any::TypeId, cell::RefCell, collections::HashMap, ptr, sync::RwLock};
+use std::{any::TypeId, cell::RefCell, ptr, sync::RwLock};
 
 lazy_static::lazy_static! {
-    static ref BUNDLE_META: RwLock<HashMap<TypeId, &'static BundleMeta>> = RwLock::new(HashMap::new());
+    static ref BUNDLE_META: RwLock<FxHashMap<TypeId, &'static BundleMeta>> = RwLock::new(FxHashMap::default());
 }
 
 thread_local! {
-    static LOCAL_BUNDLE_META: RefCell<HashMap<TypeId, &'static BundleMeta>> = RefCell::new(HashMap::new());
+    static LOCAL_BUNDLE_META: RefCell<FxHashMap<TypeId, &'static BundleMeta>> = RefCell::new(FxHashMap::default());
 }
 
 pub(crate) struct BundleMeta {

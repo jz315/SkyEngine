@@ -5,8 +5,9 @@ mod common;
 use common::*;
 
 use cgmath::{SquareMatrix, Transform as _};
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use hecs::{PreparedQuery, World};
+use std::hint::black_box;
 
 // ===========================================================================
 //  Helpers

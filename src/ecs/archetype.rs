@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
@@ -15,7 +15,7 @@ use super::Query;
 pub const MAX_COMPONENTS: usize = 32;
 
 lazy_static::lazy_static! {
-    static ref ARCHETYPE_CACHE: RwLock<HashMap<Vec<usize>, Archetype>> = RwLock::new(HashMap::new());
+    static ref ARCHETYPE_CACHE: RwLock<FxHashMap<Vec<usize>, Archetype>> = RwLock::new(FxHashMap::default());
 }
 
 thread_local! {

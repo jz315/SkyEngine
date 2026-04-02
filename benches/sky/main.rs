@@ -5,8 +5,10 @@ mod common;
 use common::*;
 
 use cgmath::{SquareMatrix, Transform as _};
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use sky_engine::ecs::{raw::PreparedQuery, Commands, With, World};
+use std::hint::black_box;
+use std::time::{Duration, Instant};
 
 // ===========================================================================
 //  Helpers
@@ -16,6 +18,20 @@ fn world_with_entities(n: usize) -> World {
     let mut world = World::new();
     world.spawn_batch((0..n).map(|_| suite_bundle()));
     world
+}
+
+fn world_with_light_entities_ids(n: usize) -> (World, Vec<sky_engine::ecs::EntityId>) {
+    let mut world = World::new();
+    let entities = (0..n).map(|_| world.spawn(light_bundle())).collect();
+    (world, entities)
+}
+
+fn world_with_light_entities_and_health_ids(n: usize) -> (World, Vec<sky_engine::ecs::EntityId>) {
+    let mut world = World::new();
+    let entities = (0..n)
+        .map(|_| world.spawn((suite_position(), suite_velocity(), Health(100.0))))
+        .collect();
+    (world, entities)
 }
 
 // ===========================================================================
@@ -279,6 +295,54 @@ fn bench_spawn_despawn(c: &mut Criterion) {
     });
 }
 
+fn bench_spawn_despawn_isolated(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sky_spawn_despawn_isolated");
+
+    group.bench_function("spawn_only_1k", |b| {
+        let mut world = World::new();
+        // Pre-warm: spawn+despawn once so free list is populated
+        let warm: Vec<_> = (0..ENTITY_OP_COUNT).map(|_| world.spawn(light_bundle())).collect();
+        for e in warm { world.despawn(e); }
+
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for _ in 0..iters {
+                let start = Instant::now();
+                let entities: Vec<_> = (0..ENTITY_OP_COUNT)
+                    .map(|_| world.spawn(light_bundle()))
+                    .collect();
+                total += start.elapsed();
+                black_box(&entities);
+                // cleanup outside timing
+                for entity in entities {
+                    world.despawn(entity);
+                }
+            }
+            total
+        });
+    });
+
+    group.bench_function("despawn_only_1k", |b| {
+        let mut world = World::new();
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for _ in 0..iters {
+                let entities: Vec<_> = (0..ENTITY_OP_COUNT)
+                    .map(|_| world.spawn(light_bundle()))
+                    .collect();
+                let start = Instant::now();
+                for entity in entities {
+                    world.despawn(entity);
+                }
+                total += start.elapsed();
+            }
+            total
+        });
+    });
+
+    group.finish();
+}
+
 fn bench_add_remove_component(c: &mut Criterion) {
     let mut world = World::new();
     let entities: Vec<_> = (0..ENTITY_OP_COUNT)
@@ -297,6 +361,124 @@ fn bench_add_remove_component(c: &mut Criterion) {
     });
 }
 
+fn bench_component_transition_ops(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sky_component_transition");
+
+    group.bench_function("add_component_1k_direct", |b| {
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for _ in 0..iters {
+                let (mut world, entities) = world_with_light_entities_ids(ENTITY_OP_COUNT);
+                let start = Instant::now();
+                for &entity in &entities {
+                    world.insert(entity, Health(100.0));
+                }
+                total += start.elapsed();
+                black_box(&world);
+            }
+            total
+        });
+    });
+
+    group.bench_function("remove_component_1k_direct", |b| {
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for _ in 0..iters {
+                let (mut world, entities) =
+                    world_with_light_entities_and_health_ids(ENTITY_OP_COUNT);
+                let start = Instant::now();
+                for &entity in &entities {
+                    world.remove::<Health>(entity);
+                }
+                total += start.elapsed();
+                black_box(&world);
+            }
+            total
+        });
+    });
+
+    group.bench_function("add_component_1k_deferred", |b| {
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for _ in 0..iters {
+                let (mut world, entities) = world_with_light_entities_ids(ENTITY_OP_COUNT);
+                let mut cmds = Commands::new();
+                for &entity in &entities {
+                    cmds.insert(entity, Health(100.0));
+                }
+                let start = Instant::now();
+                cmds.apply(&mut world);
+                total += start.elapsed();
+                black_box(&world);
+            }
+            total
+        });
+    });
+
+    group.bench_function("add_component_1k_generic_direct", |b| {
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for _ in 0..iters {
+                let (mut world, entities) = world_with_light_entities_ids(ENTITY_OP_COUNT);
+                let start = Instant::now();
+                for (index, &entity) in entities.iter().enumerate() {
+                    if index & 1 == 0 {
+                        world.insert(entity, Health(100.0));
+                    } else {
+                        world.insert(entity, Damage(5.0));
+                    }
+                }
+                total += start.elapsed();
+                black_box(&world);
+            }
+            total
+        });
+    });
+
+    group.bench_function("add_component_1k_generic_deferred", |b| {
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for _ in 0..iters {
+                let (mut world, entities) = world_with_light_entities_ids(ENTITY_OP_COUNT);
+                let mut cmds = Commands::new();
+                for (index, &entity) in entities.iter().enumerate() {
+                    if index & 1 == 0 {
+                        cmds.insert(entity, Health(100.0));
+                    } else {
+                        cmds.insert(entity, Damage(5.0));
+                    }
+                }
+                let start = Instant::now();
+                cmds.apply(&mut world);
+                total += start.elapsed();
+                black_box(&world);
+            }
+            total
+        });
+    });
+
+    group.bench_function("remove_component_1k_deferred", |b| {
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for _ in 0..iters {
+                let (mut world, entities) =
+                    world_with_light_entities_and_health_ids(ENTITY_OP_COUNT);
+                let mut cmds = Commands::new();
+                for &entity in &entities {
+                    cmds.remove::<Health>(entity);
+                }
+                let start = Instant::now();
+                cmds.apply(&mut world);
+                total += start.elapsed();
+                black_box(&world);
+            }
+            total
+        });
+    });
+
+    group.finish();
+}
+
 fn bench_commands(c: &mut Criterion) {
     let mut group = c.benchmark_group("sky_commands");
 
@@ -306,6 +488,24 @@ fn bench_commands(c: &mut Criterion) {
             let mut cmds = Commands::new();
             for _ in 0..ENTITY_OP_COUNT {
                 cmds.spawn(light_bundle());
+            }
+            cmds.apply(&mut world);
+        });
+    });
+
+    group.bench_function("add_remove_component_1k_deferred", |b| {
+        let mut world = World::new();
+        let entities: Vec<_> = (0..ENTITY_OP_COUNT)
+            .map(|_| world.spawn(light_bundle()))
+            .collect();
+
+        b.iter(|| {
+            let mut cmds = Commands::new();
+            for &entity in &entities {
+                cmds.insert(entity, Health(100.0));
+            }
+            for &entity in &entities {
+                cmds.remove::<Health>(entity);
             }
             cmds.apply(&mut world);
         });
@@ -338,7 +538,9 @@ criterion_group!(
     bench_heavy_compute,
     bench_random_access,
     bench_spawn_despawn,
+    bench_spawn_despawn_isolated,
     bench_add_remove_component,
+    bench_component_transition_ops,
     bench_commands,
 );
 criterion_main!(sky_benches);

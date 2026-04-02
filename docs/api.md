@@ -1,44 +1,81 @@
 # SkyEngine ECS API 文档
 
+本文档对应当前仓库中的实际 API，重点覆盖：
+
+- `World`：实体、组件、资源、调度入口
+- `PreparedQuery`：推荐的高性能 typed query API
+- `Commands`：延迟结构修改 API
+- `raw`：动态查询和底层 archetype / entity 入口
+
+SkyEngine 当前的设计重点是：
+
+- 查询热路径优先：`world.query::<Q>() -> PreparedQuery<Q>`
+- 存储为 chunked columnar SoA
+- 结构修改支持直接执行，也支持通过 `Commands` 延迟到阶段末批量应用
+
+---
+
 ## 快速上手
 
 ```rust
 use sky_engine::ecs::*;
 
-// 定义组件 — 任何 Copy + 'static 的 struct
 #[derive(Clone, Copy)]
-struct Position { x: f32, y: f32 }
+struct Position {
+    x: f32,
+    y: f32,
+}
 
 #[derive(Clone, Copy)]
-struct Velocity { x: f32, y: f32 }
+struct Velocity {
+    x: f32,
+    y: f32,
+}
 
 fn main() {
     let mut world = World::new();
 
-    // 创建实体
-    let entity = world.spawn((Position { x: 0.0, y: 0.0 }, Velocity { x: 1.0, y: 1.0 }));
+    let entity = world.spawn((
+        Position { x: 0.0, y: 0.0 },
+        Velocity { x: 1.0, y: 0.5 },
+    ));
 
-    // 查询并更新
     let mut query = world.query::<(&mut Position, &Velocity)>();
     query.for_each(&world, |(pos, vel)| {
         pos.x += vel.x;
         pos.y += vel.y;
     });
 
-    // 系统 + 调度
-    let mut schedule = Schedule::new();
-    schedule.add_system(SystemGroup::Simulation, |world: &mut World| {
-        // 游戏逻辑
-    });
-    schedule.run(&mut world);
+    assert!(world.contains(entity));
 }
 ```
 
 ---
 
-## World（世界）
+## 顶层导出
 
-所有实体、组件和资源的中央存储。
+`sky_engine::ecs` 当前公开导出：
+
+```rust
+use sky_engine::ecs::{
+    Bundle, Commands, EntityId, System, Time, With, Without, World,
+};
+```
+
+底层 raw API：
+
+```rust
+use sky_engine::ecs::raw::{
+    create_archetype, Archetype, ArchetypeBuilder, Chunk, PreparedQuery, Query, QueryIter,
+    WorldRawExt,
+};
+```
+
+---
+
+## World
+
+`World` 是实体、组件、资源和系统调度的中心。
 
 ```rust
 World::new() -> World
@@ -47,302 +84,495 @@ World::new() -> World
 ### 实体生命周期
 
 ```rust
-// 创建 — 立刻返回 EntityId
-world.spawn((Position { x: 0.0, y: 0.0 },))                                     -> EntityId
-world.spawn((Position { x: 0.0, y: 0.0 }, Velocity { x: 1.0, y: 1.0 }))         -> EntityId
+world.spawn(bundle) -> EntityId
+world.spawn_batch(bundles)
 
-// 检查
-world.contains(entity)                -> bool    // 实体是否存活
-world.has::<Position>(entity)         -> bool    // 实体是否拥有该组件
+world.contains(entity) -> bool
+world.entity_count() -> usize
+world.archetype_count() -> usize
 
-// 访问组件
-world.get::<Position>(entity)         -> Option<&Position>
-world.get_mut::<Position>(entity)     -> Option<&mut Position>
+world.has::<T>(entity) -> bool
+world.get::<T>(entity) -> Option<&T>
+world.get_mut::<T>(entity) -> Option<&mut T>
 
-// 修改结构
-world.insert(entity, Health { hp: 100 })  -> bool    // 添加组件（触发 archetype 迁移）
-world.remove::<Health>(entity)            -> bool    // 移除组件（触发 archetype 迁移）
-world.despawn(entity)                     -> bool    // 销毁实体
+world.insert(entity, component) -> bool
+world.remove::<T>(entity) -> bool
+world.despawn(entity) -> bool
 
-// 统计
-world.entity_count()      -> usize    // 存活实体数
-world.archetype_count()   -> usize    // archetype 数量
-world.clear()                          // 清除所有实体，保留资源
+world.clear()
 ```
 
-### 资源（全局单例）
+说明：
+
+- `spawn()` 立即创建实体并返回 `EntityId`
+- `spawn_batch()` 不返回 ID，适合纯批量创建
+- `insert/remove` 会触发 archetype 迁移
+- `clear()` 清空所有实体，但保留资源
+
+### 资源
 
 ```rust
-world.insert_resource(GameTime::default())   -> Option<GameTime>   // 返回旧值
-world.get_resource::<GameTime>()             -> Option<&GameTime>
-world.get_resource_mut::<GameTime>()         -> Option<&mut GameTime>
-world.contains_resource::<GameTime>()        -> bool
-world.remove_resource::<GameTime>()          -> Option<GameTime>
+world.insert_resource(resource) -> Option<R>
+world.get_resource::<R>() -> Option<&R>
+world.get_resource_mut::<R>() -> Option<&mut R>
+world.contains_resource::<R>() -> bool
+world.remove_resource::<R>() -> Option<R>
 ```
+
+资源是全局单例，不参与 archetype。
 
 ---
 
-## EntityId（实体标识）
+## EntityId
 
-代际索引 — 可以安全存储，despawn 后自动失效。
+`EntityId` 是带代际的实体句柄，可以长期保存。
 
 ```rust
-entity.index()       -> u32    // 槽位索引
-entity.generation()  -> u32    // 代数（防止悬垂引用）
-
-// 自动派生：Debug, Clone, Copy, PartialEq, Eq, Hash
+entity.index() -> u32
+entity.generation() -> u32
 ```
+
+实现了：
+
+- `Clone`
+- `Copy`
+- `Debug`
+- `PartialEq`
+- `Eq`
+- `Hash`
+
+如果实体被 `despawn` 后重用同一槽位，旧 `EntityId` 会因 generation 不匹配而失效。
 
 ---
 
-## 查询系统
+## Bundle
 
-### 创建查询
+实体创建使用 tuple bundle。每个组件都必须满足：
+
+- `Copy`
+- `'static`
+
+示例：
 
 ```rust
-// 基本查询
+world.spawn((Position { x: 0.0, y: 0.0 },));
+world.spawn((
+    Position { x: 0.0, y: 0.0 },
+    Velocity { x: 1.0, y: 1.0 },
+));
+```
+
+注意单元素 tuple 末尾的逗号：
+
+```rust
+(Position { x: 0.0, y: 0.0 },)
+```
+
+当前 tuple bundle 支持到 8 个组件。
+
+---
+
+## 查询：PreparedQuery
+
+### 推荐用法
+
+推荐使用 typed prepared query：
+
+```rust
+let mut query = world.query::<(&mut Position, &Velocity)>();
+let mut filtered = world.query_filtered::<&Position, With<Velocity>>();
+```
+
+`PreparedQuery<Q, Flt>` 会缓存匹配的 archetype，并在 `World` 的 archetype epoch 变化时自动刷新。
+
+### Query 参数
+
+支持的参数形式：
+
+| 写法 | 含义 |
+|------|------|
+| `&T` | 只读组件 |
+| `&mut T` | 可写组件 |
+| `Option<&T>` | 可选只读组件 |
+| `Option<&mut T>` | 可选可写组件 |
+
+tuple query 目前支持 1 到 8 个组件位。
+
+### 遍历接口
+
+```rust
+query.for_each(&world, |item| { ... });
+query.for_each_chunk(&world, |chunk| { ... });
+query.for_each_with_entity(&world, |entity, item| { ... });
+query.for_each_chunk_with_entities(&world, |entities, chunk| { ... });
+
+query.count(&world) -> usize
+query.is_empty(&world) -> bool
+query.cached_archetype_count() -> usize
+```
+
+示例：
+
+```rust
 let mut query = world.query::<(&mut Position, &Velocity)>();
 
-// 带过滤器的查询
-let mut query = world.query_filtered::<&Position, With<Velocity>>();
-let mut query = world.query_filtered::<&Position, (With<Velocity>, Without<Dead>)>();
-```
-
-### 查询参数
-
-| 语法 | 含义 |
-|------|------|
-| `&T` | 只读引用 |
-| `&mut T` | 可写引用 |
-| `Option<&T>` | 可选只读（有返回 Some，无返回 None） |
-| `Option<&mut T>` | 可选可写 |
-
-支持 1–8 个组件的元组。
-
-### 遍历方式
-
-```rust
-// 逐实体遍历
 query.for_each(&world, |(pos, vel)| {
     pos.x += vel.x;
+    pos.y += vel.y;
 });
 
-// 逐实体遍历（带 EntityId）
-query.for_each_with_entity(&world, |entity, (pos, vel)| {
-    // entity 是当前实体的 ID
-});
-
-// 逐 chunk 遍历（slice 访问，更利于 SIMD 向量化）
 query.for_each_chunk(&world, |(positions, velocities)| {
     for i in 0..positions.len() {
         positions[i].x += velocities[i].x;
+        positions[i].y += velocities[i].y;
     }
 });
-
-// 逐 chunk 遍历（带实体列表）
-query.for_each_chunk_with_entities(&world, |entities, (positions, velocities)| {
-    // entities: &[EntityId]
-});
-
-// 统计
-query.count(&world)      -> usize    // 匹配实体总数
-query.is_empty(&world)   -> bool     // 是否无匹配实体
 ```
 
 ### 过滤器
 
-```rust
-With<T>                          // 要求 archetype 包含 T
-Without<T>                       // 要求 archetype 不包含 T
-(With<A>, Without<B>)            // AND 组合（支持 2–4 个）
-```
-
-### 查询缓存
-
-`PreparedQuery` 会缓存匹配的 archetype 列表，新 archetype 注册时自动刷新。
-存储在 System struct 中可获得最佳性能：
+可用过滤器：
 
 ```rust
-struct MovementSystem {
-    query: PreparedQuery<(&mut Position, &Velocity)>,
-}
-
-impl System for MovementSystem {
-    fn run(&mut self, world: &mut World) {
-        self.query.for_each(world, |(pos, vel)| {
-            pos.x += vel.x;
-        });
-    }
-}
+With<T>
+Without<T>
+()
 ```
+
+支持 tuple AND 组合：
+
+```rust
+(With<A>, Without<B>)
+(With<A>, With<B>, Without<C>)
+(With<A>, With<B>, Without<C>, Without<D>)
+```
+
+示例：
+
+```rust
+let mut enemies = world.query_filtered::<&Position, With<Enemy>>();
+let mut moving_non_dead =
+    world.query_filtered::<(&mut Position, &Velocity), (With<Velocity>, Without<Dead>)>();
+```
+
+### 查询期间的结构修改
+
+`PreparedQuery` 的遍历 API 都接收 `&World`：
+
+```rust
+query.for_each(&world, ...);
+```
+
+而 `spawn / insert / remove / despawn` 需要 `&mut World`。
+
+这意味着：
+
+- 在正常 safe Rust 下，active query 期间不能直接做结构修改
+- 如果你需要在查询中安排结构变化，应该使用 `Commands`
+
+这也是当前推荐的系统写法。
 
 ---
 
-## System 与 Schedule（系统与调度）
+## Commands
 
-### System Trait
-
-```rust
-pub trait System: 'static {
-    fn init(&mut self, _world: &mut World) {}      // 首次运行时调用一次
-    fn run(&mut self, world: &mut World);           // 每帧调用
-    fn teardown(&mut self, _world: &mut World) {}   // shutdown 时调用
-}
-```
-
-### 两种写法
-
-**闭包** — 简单逻辑直接传：
+`Commands` 用于延迟结构修改和资源修改。
 
 ```rust
-schedule.add_system(SystemGroup::Simulation, |world: &mut World| {
-    let mut query = world.query::<(&mut Position, &Velocity)>();
-    query.for_each(world, |(pos, vel)| {
-        pos.x += vel.x;
-    });
-});
-```
-
-**Struct** — 需要状态或生命周期钩子：
-
-```rust
-struct WaveSpawner { timer: f32 }
-
-impl System for WaveSpawner {
-    fn init(&mut self, world: &mut World) {
-        world.insert_resource(Score { value: 0 });
-    }
-
-    fn run(&mut self, world: &mut World) {
-        self.timer -= 0.016;
-        if self.timer <= 0.0 {
-            self.timer = 5.0;
-            world.spawn((Enemy, Position { x: 0.0, y: 0.0 }));
-        }
-    }
-
-    fn teardown(&mut self, world: &mut World) {
-        // 清理逻辑
-    }
-}
-```
-
-### Schedule（调度器）
-
-```rust
-let mut schedule = Schedule::new();
-
-// 注册系统到不同分组
-schedule
-    .add_system(SystemGroup::Initialization, setup_system)
-    .add_system(SystemGroup::Simulation, MovementSystem::default())
-    .add_system(SystemGroup::Presentation, |world: &mut World| { /* 渲染 */ });
-
-// 执行顺序：Initialization → Simulation → Presentation
-schedule.run(&mut world);
-
-// 固定时间步长（仅执行 FixedStepSimulation 分组）
-schedule.run_fixed_step(&mut world);
-
-// 关闭（逆序调用 teardown）
-schedule.shutdown(&mut world);
-```
-
-### 系统分组
-
-| 分组 | 用途 |
-|------|------|
-| `Initialization` | 初始化、输入处理 |
-| `FixedStepSimulation` | 物理、确定性逻辑（通过 `run_fixed_step` 调用） |
-| `Simulation` | 主要游戏逻辑 |
-| `Presentation` | 渲染、音频、UI |
-
----
-
-## Commands（延迟命令）
-
-在查询迭代中需要做结构性修改时使用。
-
-```rust
-use sky_engine::ecs::Commands;
-
-fn run(&mut self, world: &mut World) {
-    let mut commands = Commands::new();
-
-    let mut query = world.query::<&Health>();
-    query.for_each_with_entity(world, |entity, health| {
-        if health.hp <= 0 {
-            commands.despawn(entity);                         // 延迟执行
-            commands.spawn((DroppedItem { value: 10 },));     // 延迟执行
-        }
-    });
-
-    commands.apply(world);  // 统一执行所有缓冲操作
-}
+let mut commands = Commands::new();
 ```
 
 ### 可用操作
 
 ```rust
-commands.spawn(bundle)                   // 延迟创建，不返回 ID
-commands.despawn(entity)                 // 延迟销毁
-commands.insert(entity, component)       // 延迟添加组件
-commands.remove::<T>(entity)             // 延迟移除组件
-commands.insert_resource(resource)       // 延迟插入资源
-commands.remove_resource::<T>()          // 延迟移除资源
-commands.apply(&mut world)               // 执行所有缓冲操作
+commands.spawn(bundle)
+commands.despawn(entity)
+commands.insert(entity, component)
+commands.remove::<T>(entity)
+
+commands.insert_resource(resource)
+commands.remove_resource::<R>()
+
+commands.apply(&mut world)
 commands.is_empty() -> bool
 commands.len() -> usize
 ```
 
-### 何时用 Commands，何时用 World
-
-| 场景 | 用法 |
-|------|------|
-| 在 `query.for_each` 内部 | `commands`（world 被借用，无法直接修改） |
-| 迭代外，需要 EntityId | `world.spawn()`（立刻返回可用 ID） |
-| 迭代外，不需要 EntityId | 都可以，`world.spawn()` 更直接 |
-
----
-
-## Bundle（组件打包）
-
-创建实体时，组件以元组形式打包。每个组件必须满足 `Copy + 'static`。
+### 推荐场景
 
 ```rust
-// 单组件（注意尾逗号）
-world.spawn((Position { x: 0.0, y: 0.0 },));
+let mut commands = Commands::new();
+let mut query = world.query::<&Health>();
 
-// 多组件
-world.spawn((Position { x: 0.0, y: 0.0 }, Velocity { x: 1.0, y: 1.0 }));
+query.for_each_with_entity(&world, |entity, health| {
+    if health.hp <= 0.0 {
+        commands.despawn(entity);
+        commands.spawn((Loot { value: 10 },));
+    }
+});
 
-// 最多支持 8 个组件
-world.spawn((A, B, C, D, E, F, G, H));
+commands.apply(&mut world);
 ```
 
-> **注意**：单元素元组 `(Pos { .. },)` 的尾逗号是必须的，否则 Rust 会将其解析为括号表达式。
+### 当前语义
+
+`Commands` 当前保留队列顺序和 barrier 语义：
+
+- entity 结构命令会按批次应用
+- `spawn` 会自动合并相邻同 bundle 类型的批量创建
+- 同一实体在同一批次中的重复 `insert/remove` 会折叠成最终状态
+- `despawn` 会吞掉该实体后续同批次组件修改
+
+### 何时用 Commands，何时直接改 World
+
+| 场景 | 建议 |
+|------|------|
+| active query / system update 中需要结构修改 | 用 `Commands` |
+| 迭代外立刻需要 `EntityId` | 用 `world.spawn()` |
+| 纯批量创建，不需要 ID | 优先 `spawn_batch()` 或 `commands.spawn()` |
+| 迭代外、单个直接修改 | 直接 `world.insert/remove/despawn` 即可 |
 
 ---
 
-## `ecs::raw`（底层 API）
+## 系统与调度
 
-用于动态/脚本化访问和工具开发。
+SkyEngine 当前没有公开独立的 `Schedule` 类型；调度器内置在 `World` 中。
+
+### System trait
 
 ```rust
-use sky_engine::ecs::raw::*;
+pub trait System: 'static {
+    fn init(&mut self, _world: &mut World) {}
+    fn run(&mut self, world: &mut World);
+    fn teardown(&mut self, _world: &mut World) {}
+}
+```
 
-// 手动构建 archetype
+闭包也可以直接作为系统：
+
+```rust
+world.group("sim").add(|world: &mut World| {
+    let mut query = world.query::<(&mut Position, &Velocity)>();
+    query.for_each(&world, |(pos, vel)| {
+        pos.x += vel.x;
+    });
+});
+```
+
+### 分组 API
+
+```rust
+world.group("sim").add(MySystem);
+world.group("render").add(|world: &mut World| { ... });
+world.group("physics").fixed(0.02).add(PhysicsSystem);
+```
+
+说明：
+
+- `group(name)` 会查找或创建同名分组
+- group 按创建顺序运行
+- 默认每帧运行一次
+- `.fixed(dt)` 会把该组改成固定步长组
+
+### 驱动调度
+
+```rust
+world.tick();                  // 使用真实时间差
+world.tick_with_delta(0.016);  // 指定 delta
+world.shutdown();              // 逆序 teardown
+```
+
+### Time
+
+`World` 暴露 `time: Time`：
+
+```rust
+world.time.delta
+world.time.elapsed
+world.time.frame_count
+world.time.time_scale
+```
+
+含义：
+
+- `delta`：当前组使用的 delta
+- `elapsed`：累计经过时间（受 `time_scale` 影响）
+- `frame_count`：tick 次数
+- `time_scale`：时间缩放
+
+---
+
+## raw API
+
+`ecs::raw` 适合：
+
+- 动态脚本/工具链
+- 兼容层
+- 需要手工构建 archetype 的场景
+
+它不是推荐的运行时热路径 API。
+
+### Archetype 构建
+
+```rust
+use sky_engine::ecs::raw::create_archetype;
+
 let archetype = create_archetype()
     .add_rust_component::<Position>()
     .add_rust_component::<Velocity>()
     .build();
+```
 
-// 动态查询（原始指针访问）
-let query = Query::new(vec![position_type, velocity_type]);
-let mut iter = QueryIter::new(&world, &query);
-iter.for_each2(|ptr_a, ptr_b| { /* unsafe 指针操作 */ });
+也可以直接按反射 `Type` 添加：
 
-// 底层实体创建（不写入组件数据）
+```rust
+use sky_engine::ecs::raw::create_archetype;
+use sky_engine::reflect::register_rust_type;
+
+let archetype = create_archetype()
+    .add_component(register_rust_type::<Position>())
+    .add_component(register_rust_type::<Velocity>())
+    .build();
+```
+
+### 低层实体创建
+
+```rust
 use sky_engine::ecs::raw::WorldRawExt;
+
 let entity = world.add_entity(archetype);
+```
+
+注意：
+
+- `raw::WorldRawExt::add_entity()` 只创建槽位
+- 它不会自动初始化组件数据
+- 适合测试、工具或自定义底层写入，不适合一般游戏逻辑
+
+### 动态查询
+
+```rust
+use sky_engine::ecs::raw::{Query, QueryIter};
+use sky_engine::reflect::register_rust_type;
+
+let query = Query::new(vec![
+    register_rust_type::<Position>(),
+    register_rust_type::<Velocity>(),
+]);
+
+let mut iter = QueryIter::new(&world, &query);
+iter.for_each2(|position, velocity| {
+    // 原始指针
+});
+```
+
+动态查询接口：
+
+```rust
+Query::new(types) -> Query
+query.types() -> &[Type]
+
+QueryIter::new(&world, &query) -> QueryIter
+iter.for_each2(|a, b| ...)
+iter.for_each_chunk2::<A, B, _>(|a_slice, b_slice| ...)
+iter.for_each(|a, b, c, d| ...)
+```
+
+说明：
+
+- `for_each2`：双组件原始指针遍历
+- `for_each_chunk2::<A, B>`：双组件 chunk slice 遍历
+- `for_each`：四组件原始指针遍历
+- 动态查询会拒绝重复组件类型
+
+---
+
+## 设计建议
+
+### 推荐
+
+- 运行时系统优先使用 `PreparedQuery`
+- 结构变化优先走 `Commands`
+- 高频纯创建优先 `spawn_batch`
+- 把 `PreparedQuery` 缓存在系统结构体里，重复复用
+
+### 不推荐
+
+- 在 active query 期间尝试直接结构修改
+- 把 `raw` 动态查询当作主运行时 API
+- 依赖 `src/main.rs` 作为 ECS API 的权威示例
+
+---
+
+## 一个更完整的系统示例
+
+```rust
+use sky_engine::ecs::*;
+
+#[derive(Clone, Copy)]
+struct Position {
+    x: f32,
+    y: f32,
+}
+
+#[derive(Clone, Copy)]
+struct Velocity {
+    x: f32,
+    y: f32,
+}
+
+#[derive(Clone, Copy)]
+struct Lifetime(f32);
+
+struct MovementSystem {
+    query: sky_engine::ecs::raw::PreparedQuery<(&mut Position, &Velocity)>,
+}
+
+impl Default for MovementSystem {
+    fn default() -> Self {
+        Self {
+            query: Default::default(),
+        }
+    }
+}
+
+impl System for MovementSystem {
+    fn run(&mut self, world: &mut World) {
+        self.query.for_each(&world, |(pos, vel)| {
+            pos.x += vel.x * world.time.delta;
+            pos.y += vel.y * world.time.delta;
+        });
+    }
+}
+
+struct LifetimeSystem;
+
+impl System for LifetimeSystem {
+    fn run(&mut self, world: &mut World) {
+        let mut commands = Commands::new();
+        let mut query = world.query::<&Lifetime>();
+
+        query.for_each_with_entity(&world, |entity, lifetime| {
+            if lifetime.0 <= 0.0 {
+                commands.despawn(entity);
+            }
+        });
+
+        commands.apply(world);
+    }
+}
+
+fn main() {
+    let mut world = World::new();
+    world.spawn((
+        Position { x: 0.0, y: 0.0 },
+        Velocity { x: 1.0, y: 0.0 },
+        Lifetime(3.0),
+    ));
+
+    world.group("sim").add(MovementSystem::default());
+    world.group("sim").add(LifetimeSystem);
+
+    world.tick_with_delta(0.016);
+}
 ```

@@ -401,7 +401,6 @@ mod tests {
 
     #[test]
     fn for_each_chunk_with_entities_provides_entity_slices() {
-
         let mut world = World::new();
         let e1 = world.spawn((Position { x: 1.0, y: 0.0 }, Velocity { x: 0.0, y: 0.0 }));
         let e2 = world.spawn((Position { x: 2.0, y: 0.0 }, Velocity { x: 0.0, y: 0.0 }));
@@ -538,8 +537,7 @@ mod tests {
         world.spawn((Position { x: 3.0, y: 0.0 },));
 
         // Want: has Velocity but NOT Extra
-        let mut query =
-            world.query_filtered::<&Position, (With<Velocity>, Without<Extra>)>();
+        let mut query = world.query_filtered::<&Position, (With<Velocity>, Without<Extra>)>();
         let mut count = 0;
         query.for_each(&world, |pos| {
             assert_eq!(pos.x, 2.0);

@@ -5,7 +5,8 @@ mod common;
 use common::*;
 
 use cgmath::{SquareMatrix, Transform as _};
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
+use std::hint::black_box;
 
 fn world_with_entities(n: usize) -> bevy_ecs::world::World {
     let mut world = bevy_ecs::world::World::new();

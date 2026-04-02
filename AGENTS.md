@@ -12,8 +12,10 @@
 - `src/ecs/query.rs`: typed prepared queries, dynamic query compatibility layer, and query tests.
 - `src/ecs/world.rs`: world storage and archetype epoch tracking.
 - `src/reflect/reflect.rs`: runtime type registry used by both dynamic and typed query setup.
-- `benches/sky.rs`: project benchmark targets for typed query hot paths.
-- `benches/hevy.rs`: `hecs` comparison benchmark.
+- `benches/common.rs`: shared components, constants, and helpers for all bench files.
+- `benches/sky/main.rs`: Sky Engine benchmarks (hot-path, insert, iter, entity ops).
+- `benches/hecs/main.rs`: hecs comparison benchmarks (mirrored workloads).
+- `benches/bevy/main.rs`: Bevy ECS comparison benchmarks (mirrored workloads).
 - `src/main.rs`: scratch/local playground, not the canonical API surface.
 
 ## Current Query Model
@@ -33,9 +35,11 @@
 ## Bench and Test Commands
 - Run tests: `cargo test`
 - Run project bench: `cargo bench --bench sky`
-- Compare against `hecs`: `cargo bench --bench sky --bench hevy`
-- The fair head-to-head workload is `sky_2_of_4` vs `hecs_2_of_4`.
-- `sky_4_of_4` is the project-side regression check for typed query generalization.
+- Run hecs comparison: `cargo bench --bench hecs`
+- Run bevy comparison: `cargo bench --bench bevy`
+- Run all benches: `cargo bench`
+- The fair head-to-head groups are `sky_hot_path` vs `hecs_hot_path`.
+- `sky_hot_path/4_of_4` is the project-side regression check for typed query generalization.
 
 ## Implementation Guidelines
 - Prefer typed archetype construction with `create_archetype().add_rust_component::<T>()`.

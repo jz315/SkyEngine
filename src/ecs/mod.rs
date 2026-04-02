@@ -1,10 +1,10 @@
-pub mod raw;
 mod archetype;
 mod bundle;
 mod chunk;
 mod commands;
 mod entity;
 mod query;
+pub mod raw;
 mod resource;
 pub(crate) mod system;
 pub(crate) mod time;

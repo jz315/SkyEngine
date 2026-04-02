@@ -1,11 +1,9 @@
-use std::{
-    any::{Any, TypeId},
-    collections::HashMap,
-};
+use rustc_hash::FxHashMap;
+use std::any::{Any, TypeId};
 
 #[derive(Default)]
 pub(crate) struct Resources {
-    values: HashMap<TypeId, Box<dyn Any>>,
+    values: FxHashMap<TypeId, Box<dyn Any>>,
 }
 
 impl Resources {

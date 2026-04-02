@@ -11,8 +11,10 @@ autobenches = false
 [dependencies]
 smallvec = "1.13.2"
 lazy_static = "1.4.0"
+mimalloc = "0.1.48"
 minifb = { version = "0.28.0", optional = true }
 rand = { version = "0.8", optional = true }
+rustc-hash = "2.1.2"
 
 [[example]]
 name = "particles"
@@ -21,7 +23,7 @@ required-features = ["demo"]
 [features]
 demo = ["minifb", "rand"]
 [dev-dependencies]
-criterion = "0.4"
+criterion = "0.8.2"
 cgmath = "0.18"
 hecs = "0.10.5"
 bevy_ecs = "0.18.1"

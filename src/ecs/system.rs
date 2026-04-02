@@ -145,18 +145,12 @@ mod tests {
 
     impl System for LifecycleSystem {
         fn init(&mut self, world: &mut World) {
-            world
-                .get_resource_mut::<LifecycleCounts>()
-                .unwrap()
-                .inited += 1;
+            world.get_resource_mut::<LifecycleCounts>().unwrap().inited += 1;
             world.spawn((Position { x: 1.0, y: 2.0 },));
         }
 
         fn run(&mut self, world: &mut World) {
-            world
-                .get_resource_mut::<LifecycleCounts>()
-                .unwrap()
-                .ran += 1;
+            world.get_resource_mut::<LifecycleCounts>().unwrap().ran += 1;
             let mut query = world.query::<&Position>();
             let count = query.count(world);
             world.get_resource_mut::<SeenCount>().unwrap().value = count;
@@ -257,10 +251,7 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(Trace::default());
 
-        world
-            .group("physics")
-            .fixed(0.02)
-            .add(TraceSystem("tick"));
+        world.group("physics").fixed(0.02).add(TraceSystem("tick"));
 
         world.tick_with_delta(0.05);
 
