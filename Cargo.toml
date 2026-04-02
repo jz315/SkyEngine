@@ -12,27 +12,58 @@ autobenches = false
 smallvec = "1.13.2"
 lazy_static = "1.4.0"
 mimalloc = "0.1.48"
+rustc-hash = "2.1.2"
+
+# GPU abstraction (feature-gated)
+bytemuck = { version = "1", features = ["derive"], optional = true }
+
+# wgpu backend (feature-gated)
+wgpu = { version = "24", optional = true }
+
+# Application framework (feature-gated)
+winit = { version = "0.30", optional = true }
+pollster = { version = "0.4", optional = true }
+
+# Asset loading (feature-gated)
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+
+# Existing optionals
 minifb = { version = "0.28.0", optional = true }
 rand = { version = "0.8", optional = true }
-rustc-hash = "2.1.2"
 hecs = { version = "0.10.5", optional = true }
 bevy_ecs = { version = "0.18.1", optional = true }
 
 [[example]]
+name = "clear_screen"
+required-features = ["app"]
+
+[[example]]
+name = "sprite_demo"
+required-features = ["app"]
+
+[[example]]
+name = "textured_demo"
+required-features = ["app"]
+
+[[example]]
+name = "perf_test"
+required-features = ["app"]
+
+[[example]]
 name = "particles"
-required-features = ["demo"]
+required-features = ["demo-legacy"]
 
 [[example]]
 name = "asteroids"
-required-features = ["demo"]
+required-features = ["demo-legacy"]
 
 [[example]]
 name = "boids"
-required-features = ["demo"]
+required-features = ["demo-legacy"]
 
 [[example]]
 name = "snake"
-required-features = ["demo"]
+required-features = ["demo-legacy"]
 
 [[example]]
 name = "boids_hecs"
@@ -43,28 +74,26 @@ name = "boids_bevy"
 required-features = ["compare"]
 
 [features]
-demo = ["minifb", "rand"]
-compare = ["demo", "hecs", "bevy_ecs"]
+# GPU abstraction layer (RHI only, no graphics lib)
+gpu = ["bytemuck"]
+# wgpu backend
+gpu-wgpu = ["gpu", "dep:wgpu"]
+# Application framework (window + input)
+app = ["gpu-wgpu", "dep:winit", "dep:pollster"]
+# Asset loading
+asset = ["dep:image"]
+# GPU-accelerated demos (future)
+demo = ["app", "asset", "dep:rand"]
+# Legacy CPU-rendered demos (existing minifb demos)
+demo-legacy = ["dep:minifb", "dep:rand"]
+# Comparison benchmarks
+compare = ["demo-legacy", "dep:hecs", "dep:bevy_ecs"]
 [dev-dependencies]
 criterion = "0.8.2"
 cgmath = "0.18"
 hecs = "0.10.5"
 bevy_ecs = "0.18.1"
-
-[[bench]]
-name = "sky"
-path = "benches/sky/main.rs"
-harness = false
-
-[[bench]]
-name = "hecs"
-path = "benches/hecs/main.rs"
-harness = false
-
-[[bench]]
-name = "bevy"
-path = "benches/bevy/main.rs"
-harness = false
+flecs_ecs = "0.2.2"
 
 [[bench]]
 name = "fair"

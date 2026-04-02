@@ -7,11 +7,10 @@ All numbers below were collected on the same local Windows machine with Criterio
 ## How to Run
 
 - Canonical fair comparison: `cargo bench --bench fair`
-- Sky regression suite: `cargo bench --bench sky`
-- hecs reference suite: `cargo bench --bench hecs`
-- bevy reference suite: `cargo bench --bench bevy`
 - Full run: `cargo bench`
-- Chunk-size sweep: edit `CHUNK_SIZE` in `src/ecs/chunk.rs`, then run `cargo bench --bench sky -- --noplot`
+- Run one engine slice: `cargo bench --bench fair -- sky`
+- Run one exact benchmark: `cargo bench --bench fair -- fair_random_access/get/sky --exact`
+- Chunk-size sweep: edit `CHUNK_SIZE` in `src/ecs/chunk.rs`, then rerun the relevant `fair` filters
 
 ---
 
@@ -20,7 +19,7 @@ All numbers below were collected on the same local Windows machine with Criterio
 - `fair` is the only canonical apples-to-apples comparison suite.
 - `fair` only includes workloads that Sky, hecs, and Bevy can all express through safe public APIs.
 - Query/prepared state is created outside the timed loop in `fair` for all engines.
-- Sky-specific APIs such as chunk iteration, filtered typed queries, and deferred commands remain in `sky` as project-side regression checks.
+- Engine-specific implementations now live under `benches/fair/` and are selected via Criterion filters rather than separate bench targets.
 - Records collected before the 2026-03-31 normalization pass are still useful for history, but they are not the canonical fair-comparison baseline.
 - The current repo now uses `criterion 0.8.2`; the recorded `2026-04-01` numbers below were collected before that upgrade on the older `criterion 0.4` harness, so the next post-upgrade `fair` run should be treated as a fresh tooling baseline.
 

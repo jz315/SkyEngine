@@ -4,7 +4,7 @@
 - This repo is a Rust ECS library built around chunk-based, archetype-oriented, columnar storage.
 - The performance-critical paths are typed prepared queries, chunk iteration, and structural entity/component transitions.
 - The runtime is functional today: entities, bundles, typed queries, optional query params, filters, deferred commands, resources, and a lightweight system schedule are all in active use.
-- Benchmarks are Criterion-based under `benches/`, with a strict separation between canonical cross-engine comparisons and Sky-only regression suites.
+- Benchmarks are Criterion-based under `benches/`, with a single canonical `fair` target and engine-specific implementations split under `benches/fair/`.
 
 ## Canonical API Surface
 - Main entry points live under `sky_engine::ecs`.
@@ -33,10 +33,10 @@
 - `src/reflect/registry.rs`: runtime type registry, layout metadata, and type-erased drop support.
 - `src/main.rs`: scratch/local playground, not the canonical API surface.
 - `benches/common.rs`: shared components, constants, and helpers for all benchmarks.
-- `benches/fair/main.rs`: canonical apples-to-apples comparison suite against `hecs` and `bevy_ecs`.
-- `benches/sky/main.rs`: Sky-only regression suite, including hot-path, filtered query, commands, and schedule benchmarks.
-- `benches/hecs/main.rs`: hecs-side reference/regression benchmarks.
-- `benches/bevy/main.rs`: Bevy ECS-side reference/regression benchmarks.
+- `benches/fair/main.rs`: canonical apples-to-apples comparison entry point against `hecs` and `bevy_ecs`.
+- `benches/fair/sky.rs`, `benches/fair/hecs.rs`, `benches/fair/bevy.rs`: engine-specific fair benchmark implementations.
+- `benches/fair/shared.rs`: shared fair-suite helpers.
+- `benches/sky/main.rs`, `benches/hecs/main.rs`, `benches/bevy/main.rs`, `benches/flecs/main.rs`: legacy bench sources kept in the tree; they are not wired as active Cargo bench targets.
 - `examples/queries.rs`: typed query examples.
 - `examples/commands.rs`: deferred command buffer example.
 - `examples/systems.rs`: schedule and grouped-system example.
@@ -88,10 +88,9 @@
 ## Benchmark and Test Commands
 - Run tests: `cargo test`
 - Run canonical fair comparison: `cargo bench --bench fair`
-- Run Sky regression suite: `cargo bench --bench sky`
-- Run hecs reference suite: `cargo bench --bench hecs`
-- Run Bevy reference suite: `cargo bench --bench bevy`
 - Run all benches: `cargo bench`
+- Run one engine slice: `cargo bench --bench fair -- sky`
+- Run one exact benchmark: `cargo bench --bench fair -- fair_random_access/get/sky --exact`
 - Run demo examples: `cargo run --example particles --release --features demo`
 - Other demo examples use the same `--features demo` pattern (`snake`, `boids`, `asteroids`).
 - Comparison examples require `--features compare`.
@@ -101,8 +100,7 @@
 - `benches/fair/main.rs` is the only canonical cross-engine comparison suite.
 - `fair` only includes workloads that Sky, hecs, and Bevy can all express through safe public APIs.
 - Query/prepared state must be created outside the timed loop in `fair` for every engine.
-- `benches/sky/main.rs` is the project-side regression suite for Sky-specific paths such as chunk iteration, filtered typed queries, commands, and schedule overhead.
-- `sky_hot_path` and `hecs_hot_path` are useful reference/regression groups, but they are not the canonical fairness baseline; `fair` is.
+- Engine-specific fair implementations live under `benches/fair/` and are selected via Criterion filters rather than separate bench targets.
 - Historical benchmark numbers live in `BENCHMARKS.md`; treat them as machine-specific and time-specific.
 
 ## Implementation Guidelines
