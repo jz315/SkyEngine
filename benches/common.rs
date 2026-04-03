@@ -3,7 +3,6 @@
 
 #![allow(dead_code)]
 
-use bevy_ecs::prelude::Component;
 use cgmath::{Matrix4, Rad, Vector3};
 
 // ---------------------------------------------------------------------------
@@ -40,56 +39,56 @@ pub const HOT_PATH_DELTA: f32 = 0.1;
 // Components — used across all engines
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, Component)]
+#[derive(Clone, Copy, bevy_ecs::prelude::Component, flecs_ecs::prelude::Component)]
 pub struct TransformComponent(pub Matrix4<f32>);
 
-#[derive(Clone, Copy, Component)]
+#[derive(Clone, Copy, bevy_ecs::prelude::Component, flecs_ecs::prelude::Component)]
 pub struct PositionComponent(pub Vector3<f32>);
 
-#[derive(Clone, Copy, Component)]
+#[derive(Clone, Copy, bevy_ecs::prelude::Component, flecs_ecs::prelude::Component)]
 pub struct RotationComponent(pub Vector3<f32>);
 
-#[derive(Clone, Copy, Component)]
+#[derive(Clone, Copy, bevy_ecs::prelude::Component, flecs_ecs::prelude::Component)]
 pub struct VelocityComponent(pub Vector3<f32>);
 
-#[derive(Clone, Copy, Component)]
+#[derive(Clone, Copy, bevy_ecs::prelude::Component, flecs_ecs::prelude::Component)]
 pub struct DataComponent(pub f32);
 
-#[derive(Clone, Copy, Default, Component)]
+#[derive(Clone, Copy, Default, bevy_ecs::prelude::Component, flecs_ecs::prelude::Component)]
 pub struct Health(pub f32);
 
-#[derive(Clone, Copy, Default, Component)]
+#[derive(Clone, Copy, Default, bevy_ecs::prelude::Component, flecs_ecs::prelude::Component)]
 pub struct Damage(pub f32);
 
-#[derive(Clone, Copy, Default, Component)]
+#[derive(Clone, Copy, Default, bevy_ecs::prelude::Component, flecs_ecs::prelude::Component)]
 pub struct Regen(pub f32);
 
-#[derive(Clone, Copy, Default, Component)]
+#[derive(Clone, Copy, Default, bevy_ecs::prelude::Component, flecs_ecs::prelude::Component)]
 pub struct IsEnemy;
 
-#[derive(Clone, Copy, Default, Component)]
+#[derive(Clone, Copy, Default, bevy_ecs::prelude::Component, flecs_ecs::prelude::Component)]
 pub struct IsAlly;
 
 /// Lightweight 2-field components for the hot-path head-to-head benchmarks.
-#[derive(Clone, Copy, Component)]
+#[derive(Clone, Copy, bevy_ecs::prelude::Component, flecs_ecs::prelude::Component)]
 pub struct Position2D {
     pub x: f32,
     pub y: f32,
 }
 
-#[derive(Clone, Copy, Component)]
+#[derive(Clone, Copy, bevy_ecs::prelude::Component, flecs_ecs::prelude::Component)]
 pub struct Velocity2D {
     pub x: f32,
     pub y: f32,
 }
 
-#[derive(Clone, Copy, Component)]
+#[derive(Clone, Copy, bevy_ecs::prelude::Component, flecs_ecs::prelude::Component)]
 pub struct AuxA {
     pub x: f32,
     pub y: f32,
 }
 
-#[derive(Clone, Copy, Component)]
+#[derive(Clone, Copy, bevy_ecs::prelude::Component, flecs_ecs::prelude::Component)]
 pub struct AuxB {
     pub x: f32,
     pub y: f32,
@@ -98,7 +97,13 @@ pub struct AuxB {
 macro_rules! define_fragment_tags {
     ($($name:ident),+ $(,)?) => {
         $(
-            #[derive(Clone, Copy, Default, Component)]
+            #[derive(
+                Clone,
+                Copy,
+                Default,
+                bevy_ecs::prelude::Component,
+                flecs_ecs::prelude::Component,
+            )]
             pub struct $name(pub f32);
         )+
     };

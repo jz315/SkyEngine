@@ -66,6 +66,7 @@ fn main() {
 
 - `cargo bench --bench fair` 是唯一的公平横向对比入口，只包含三家引擎都能等价表达的 workload，并且所有引擎都把 query/prepared state 放在计时区间之外。
 - `cargo bench --bench sky` 是项目自身的回归套件，保留 Sky 专有的热路径，例如 chunk 级迭代、类型化过滤查询和 commands 路径；这些不会混入公平对比结果。
+- `cargo bench --bench flecs` 新增了 `flecs_ecs` 的参考套件，可用于横向观察，但不会改变 `fair` 作为规范公平基线的定义。
 
 粒子模拟示例（80,000 并发实体）：
 
@@ -80,6 +81,7 @@ cargo bench --bench fair   # 公平横向对比
 cargo bench --bench sky    # Sky 回归套件
 cargo bench --bench hecs   # hecs 参考套件
 cargo bench --bench bevy   # bevy 参考套件
+cargo bench --bench flecs  # flecs 参考套件
 cargo bench                # 全部 bench
 ```
 

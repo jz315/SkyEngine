@@ -58,7 +58,7 @@ fn main() {
 
 ```rust
 use sky_engine::ecs::{
-    Bundle, Commands, EntityId, System, Time, With, Without, World,
+    Bundle, Commands, EntityId, PreparedQuery, System, Time, With, Without, World,
 };
 ```
 
@@ -149,8 +149,10 @@ entity.generation() -> u32
 
 实体创建使用 tuple bundle。每个组件都必须满足：
 
-- `Copy`
 - `'static`
+
+`Copy` 和非 `Copy` 组件都支持；非 `Copy` 组件会在 `despawn / remove / clear / World drop`
+时正确执行析构。
 
 示例：
 
@@ -168,7 +170,7 @@ world.spawn((
 (Position { x: 0.0, y: 0.0 },)
 ```
 
-当前 tuple bundle 支持到 8 个组件。
+当前 tuple bundle 支持到 8 个组件，并且同一个 bundle 中不允许重复组件类型。
 
 ---
 
@@ -504,6 +506,56 @@ iter.for_each(|a, b, c, d| ...)
 
 ---
 
+## 小游戏 Example：`tiny_defense`
+
+如果你想写一个“小而完整”的 ECS 示例，而不是只看孤立 API，推荐从一个
+ASCII 网格小游戏开始。它有几个优点：
+
+- 不依赖图形渲染，也不用 `demo` feature
+- 能同时覆盖组件、resource、query、filter、commands
+- 规则简单，方便把“玩法逻辑”直接映射到 ECS 数据流
+
+仓库里现在有一个对应示例：
+
+```sh
+cargo run --example tiny_defense
+```
+
+它是一个极简塔防玩法：
+
+- 炮塔实体带 `Position` 和 `Turret`
+- 敌人实体带 `Position`、`Velocity`、`Health` 和 `Enemy`
+- 子弹实体带 `Position`、`Velocity` 和 `Bullet`
+- `GameState` 作为 resource 保存波次、分数和基地血量
+
+这个例子刻意把几个常用 API 串起来：
+
+- `world.insert_resource(GameState { ... })`
+  管理全局游戏状态
+- `world.query_filtered::<&Position, With<Enemy>>()`
+  查找最近敌人，驱动炮塔 AI
+- `query.for_each_chunk(&world, |(positions, velocities)| { ... })`
+  批量移动敌人与子弹
+- `Commands::new()`
+  在 active query 内安排发射子弹，以及批量 `despawn`
+
+适合继续扩展的方向：
+
+- 改成 schedule 驱动：把 `spawn / ai / move / hit / cleanup` 拆成多个 group 或 system
+- 增加状态组件：例如 `Slow`, `Burning`, `DeadSoon`
+- 增加过滤组合：例如 `With<Enemy>` + `Without<Flying>` 做防空/地面分流
+- 把固定波次表改成 resource 配置，测试更复杂的生成逻辑
+
+如果你在想“什么样的小游戏最适合用来熟悉这个 API”，优先考虑这些特征：
+
+- 实体类型少，但结构变化频繁
+- 同屏实体能形成稳定批处理循环
+- 规则能自然拆成“查询 -> 决策 -> commands -> apply”
+
+这类小游戏通常比完整图形 demo 更适合作为 API 文档配套示例。
+
+---
+
 ## 一个更完整的系统示例
 
 ```rust
@@ -525,7 +577,7 @@ struct Velocity {
 struct Lifetime(f32);
 
 struct MovementSystem {
-    query: sky_engine::ecs::raw::PreparedQuery<(&mut Position, &Velocity)>,
+    query: PreparedQuery<(&mut Position, &Velocity)>,
 }
 
 impl Default for MovementSystem {

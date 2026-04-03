@@ -10,10 +10,16 @@
 use sky_engine::ecs::{With, Without, World};
 
 #[derive(Clone, Copy, Debug)]
-struct Position { x: f32, y: f32 }
+struct Position {
+    x: f32,
+    y: f32,
+}
 
 #[derive(Clone, Copy, Debug)]
-struct Velocity { x: f32, y: f32 }
+struct Velocity {
+    x: f32,
+    y: f32,
+}
 
 #[derive(Clone, Copy, Debug)]
 struct Health(f32);
@@ -28,12 +34,27 @@ fn main() {
     let mut world = World::new();
 
     // Spawn a player
-    world.spawn((Position { x: 0.0, y: 0.0 }, Velocity { x: 1.0, y: 0.0 }, Health(100.0), Player));
+    world.spawn((
+        Position { x: 0.0, y: 0.0 },
+        Velocity { x: 1.0, y: 0.0 },
+        Health(100.0),
+        Player,
+    ));
 
     // Spawn enemies — some with velocity, some stationary
-    world.spawn((Position { x: 10.0, y: 5.0 }, Velocity { x: -1.0, y: 0.0 }, Health(30.0), Enemy));
-    world.spawn((Position { x: 20.0, y: 0.0 }, Health(50.0), Enemy));  // no Velocity
-    world.spawn((Position { x: 30.0, y: 3.0 }, Velocity { x: -0.5, y: 0.0 }, Health(20.0), Enemy));
+    world.spawn((
+        Position { x: 10.0, y: 5.0 },
+        Velocity { x: -1.0, y: 0.0 },
+        Health(30.0),
+        Enemy,
+    ));
+    world.spawn((Position { x: 20.0, y: 0.0 }, Health(50.0), Enemy)); // no Velocity
+    world.spawn((
+        Position { x: 30.0, y: 3.0 },
+        Velocity { x: -0.5, y: 0.0 },
+        Health(20.0),
+        Enemy,
+    ));
 
     // --- 1. Simple query: all entities with Position ---
     println!("=== All positioned entities ===");
@@ -57,11 +78,12 @@ fn main() {
     // --- 4. Optional: Position + optional Velocity ---
     println!("\n=== Optional velocity ===");
     let mut q = world.query::<(&Position, Option<&Velocity>)>();
-    q.for_each(&world, |(pos, vel)| {
-        match vel {
-            Some(v) => println!("  ({:.0}, {:.0}) moving at ({:.1}, {:.1})", pos.x, pos.y, v.x, v.y),
-            None    => println!("  ({:.0}, {:.0}) stationary", pos.x, pos.y),
-        }
+    q.for_each(&world, |(pos, vel)| match vel {
+        Some(v) => println!(
+            "  ({:.0}, {:.0}) moving at ({:.1}, {:.1})",
+            pos.x, pos.y, v.x, v.y
+        ),
+        None => println!("  ({:.0}, {:.0}) stationary", pos.x, pos.y),
     });
 
     // --- 5. Chunk iteration for batch processing ---

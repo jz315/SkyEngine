@@ -1,6 +1,6 @@
+use rustc_hash::FxHashMap;
 use std::any::{type_name, TypeId};
 use std::cell::RefCell;
-use rustc_hash::FxHashMap;
 use std::ops::Deref;
 use std::sync::RwLock;
 

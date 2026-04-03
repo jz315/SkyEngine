@@ -388,11 +388,7 @@ impl Chunk {
     /// `entity_index` must be a valid, occupied slot.  `component_index`
     /// must be a valid column.  After this call that component value is
     /// logically uninitialised.
-    pub(crate) unsafe fn drop_single_component(
-        &self,
-        component_index: usize,
-        entity_index: usize,
-    ) {
+    pub(crate) unsafe fn drop_single_component(&self, component_index: usize, entity_index: usize) {
         let component = &self.archetype.components[component_index];
         if let Some(drop_fn) = component.drop_fn() {
             let ptr = self.component_ptr_unchecked(component_index, entity_index);
@@ -408,11 +404,7 @@ impl Chunk {
     /// the chunk is logically uninitialised.
     pub(crate) unsafe fn drop_all_entities(&self) {
         // Fast path: skip entirely if no component in this archetype needs drop.
-        let any_needs_drop = self
-            .archetype
-            .components
-            .iter()
-            .any(|c| c.needs_drop());
+        let any_needs_drop = self.archetype.components.iter().any(|c| c.needs_drop());
         if !any_needs_drop {
             return;
         }
@@ -646,8 +638,7 @@ impl Data {
                 // overwriting with the swap-move source.
                 // Safety: hole is a valid, occupied slot that is being removed.
                 unsafe {
-                    self.chunks[hole.chunk_index]
-                        .drop_entity_components(hole.entity_index);
+                    self.chunks[hole.chunk_index].drop_entity_components(hole.entity_index);
                 }
 
                 if hole.chunk_index == last.chunk_index {
@@ -665,8 +656,7 @@ impl Data {
                 // The hole IS the logical last entity — just drop it,
                 // no swap needed.
                 unsafe {
-                    self.chunks[hole.chunk_index]
-                        .drop_entity_components(hole.entity_index);
+                    self.chunks[hole.chunk_index].drop_entity_components(hole.entity_index);
                 }
             }
 

@@ -1,5 +1,5 @@
-use std::cell::Cell;
 use rustc_hash::FxHashMap;
+use std::cell::Cell;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;

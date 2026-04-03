@@ -27,33 +27,44 @@ const TICK_RATE: f32 = 0.10; // seconds per step
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
-struct GridPos { x: i32, y: i32 }
+struct GridPos {
+    x: i32,
+    y: i32,
+}
 
 #[derive(Clone, Copy)]
 struct Food;
 
 #[derive(Clone, Copy)]
 #[allow(dead_code)]
-struct SnakeSegment { order: u32 }
+struct SnakeSegment {
+    order: u32,
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 fn fill_cell(buf: &mut [u32], gx: i32, gy: i32, col: u32) {
-    if gx < 0 || gx >= COLS as i32 || gy < 0 || gy >= ROWS as i32 { return; }
+    if gx < 0 || gx >= COLS as i32 || gy < 0 || gy >= ROWS as i32 {
+        return;
+    }
     let px = gx as usize * GRID;
     let py = gy as usize * GRID;
     for dy in 1..GRID - 1 {
         for dx in 1..GRID - 1 {
             let idx = (py + dy) * W + (px + dx);
-            if idx < buf.len() { buf[idx] = col; }
+            if idx < buf.len() {
+                buf[idx] = col;
+            }
         }
     }
 }
 
 fn fill_cell_round(buf: &mut [u32], gx: i32, gy: i32, col: u32) {
-    if gx < 0 || gx >= COLS as i32 || gy < 0 || gy >= ROWS as i32 { return; }
+    if gx < 0 || gx >= COLS as i32 || gy < 0 || gy >= ROWS as i32 {
+        return;
+    }
     let cx = gx as f32 * GRID as f32 + GRID as f32 / 2.0;
     let cy = gy as f32 * GRID as f32 + GRID as f32 / 2.0;
     let r = GRID as f32 / 2.0 - 1.5;
@@ -65,15 +76,25 @@ fn fill_cell_round(buf: &mut [u32], gx: i32, gy: i32, col: u32) {
             let fy = py_start as f32 + dy as f32 + 0.5;
             if (fx - cx) * (fx - cx) + (fy - cy) * (fy - cy) <= r * r {
                 let idx = (py_start + dy) * W + (px_start + dx);
-                if idx < buf.len() { buf[idx] = col; }
+                if idx < buf.len() {
+                    buf[idx] = col;
+                }
             }
         }
     }
 }
 
 fn main() {
-    let mut window = Window::new("SkyEngine — Snake", W, H,
-        WindowOptions { resize: false, ..Default::default() }).unwrap();
+    let mut window = Window::new(
+        "SkyEngine — Snake",
+        W,
+        H,
+        WindowOptions {
+            resize: false,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     window.set_target_fps(60);
 
     let mut world = World::new();
@@ -86,7 +107,10 @@ fn main() {
     let start_y = ROWS as i32 / 2;
     for i in 0..3 {
         let e = world.spawn((
-            GridPos { x: start_x - i, y: start_y },
+            GridPos {
+                x: start_x - i,
+                y: start_y,
+            },
             SnakeSegment { order: i as u32 },
         ));
         snake.push_back(e);
@@ -109,10 +133,18 @@ fn main() {
 
         // --- Input (queue direction change) ---
         if !game_over {
-            if (window.is_key_down(Key::W) || window.is_key_down(Key::Up))    && dir.1 != 1  { next_dir = (0, -1); }
-            if (window.is_key_down(Key::S) || window.is_key_down(Key::Down))  && dir.1 != -1 { next_dir = (0,  1); }
-            if (window.is_key_down(Key::A) || window.is_key_down(Key::Left))  && dir.0 != 1  { next_dir = (-1, 0); }
-            if (window.is_key_down(Key::D) || window.is_key_down(Key::Right)) && dir.0 != -1 { next_dir = (1,  0); }
+            if (window.is_key_down(Key::W) || window.is_key_down(Key::Up)) && dir.1 != 1 {
+                next_dir = (0, -1);
+            }
+            if (window.is_key_down(Key::S) || window.is_key_down(Key::Down)) && dir.1 != -1 {
+                next_dir = (0, 1);
+            }
+            if (window.is_key_down(Key::A) || window.is_key_down(Key::Left)) && dir.0 != 1 {
+                next_dir = (-1, 0);
+            }
+            if (window.is_key_down(Key::D) || window.is_key_down(Key::Right)) && dir.0 != -1 {
+                next_dir = (1, 0);
+            }
         }
 
         // --- Tick ---
@@ -160,10 +192,8 @@ fn main() {
                 }
 
                 // Spawn new head
-                let new_head = world.spawn((
-                    GridPos { x: new_x, y: new_y },
-                    SnakeSegment { order: 0 },
-                ));
+                let new_head =
+                    world.spawn((GridPos { x: new_x, y: new_y }, SnakeSegment { order: 0 }));
                 snake.push_front(new_head);
 
                 if ate {
@@ -181,7 +211,11 @@ fn main() {
         // Background: dark checkerboard
         for gy in 0..ROWS {
             for gx in 0..COLS {
-                let col = if (gx + gy) % 2 == 0 { 0x1A1A2E } else { 0x16162A };
+                let col = if (gx + gy) % 2 == 0 {
+                    0x1A1A2E
+                } else {
+                    0x16162A
+                };
                 fill_cell(&mut buf, gx as i32, gy as i32, col);
             }
         }
@@ -199,7 +233,11 @@ fn main() {
             if let Some(pos) = world.get::<GridPos>(entity) {
                 let t = i as f32 / snake.len().max(1) as f32;
                 let g = (255.0 * (1.0 - t * 0.6)) as u32;
-                let col = if i == 0 { 0x44FF88 } else { (0x20 << 16) | (g << 8) | 0x40 };
+                let col = if i == 0 {
+                    0x44FF88
+                } else {
+                    (0x20 << 16) | (g << 8) | 0x40
+                };
                 fill_cell(&mut buf, pos.x, pos.y, col);
             }
         }
@@ -218,7 +256,11 @@ fn main() {
         let title = if game_over {
             format!("SkyEngine Snake | GAME OVER | Score: {}", score)
         } else {
-            format!("SkyEngine Snake | Score: {} | Length: {}", score, snake.len())
+            format!(
+                "SkyEngine Snake | Score: {} | Length: {}",
+                score,
+                snake.len()
+            )
         };
         window.set_title(&title);
         window.update_with_buffer(&buf, W, H).unwrap();

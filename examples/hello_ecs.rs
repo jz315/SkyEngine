@@ -9,10 +9,16 @@
 use sky_engine::ecs::World;
 
 #[derive(Clone, Copy, Debug)]
-struct Position { x: f32, y: f32 }
+struct Position {
+    x: f32,
+    y: f32,
+}
 
 #[derive(Clone, Copy, Debug)]
-struct Velocity { x: f32, y: f32 }
+struct Velocity {
+    x: f32,
+    y: f32,
+}
 
 fn main() {
     let mut world = World::new();
@@ -21,7 +27,10 @@ fn main() {
     for i in 0..5 {
         let f = i as f32;
         world.spawn((
-            Position { x: f * 10.0, y: 0.0 },
+            Position {
+                x: f * 10.0,
+                y: 0.0,
+            },
             Velocity { x: 1.0, y: 2.0 + f },
         ));
     }
@@ -29,8 +38,10 @@ fn main() {
     println!("=== Before movement ===");
     let mut q = world.query::<(&Position, &Velocity)>();
     q.for_each_with_entity(&world, |entity, (pos, vel)| {
-        println!("  Entity {:?}: pos=({:.1}, {:.1}) vel=({:.1}, {:.1})",
-            entity, pos.x, pos.y, vel.x, vel.y);
+        println!(
+            "  Entity {:?}: pos=({:.1}, {:.1}) vel=({:.1}, {:.1})",
+            entity, pos.x, pos.y, vel.x, vel.y
+        );
     });
 
     // Simulate 10 ticks

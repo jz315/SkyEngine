@@ -23,22 +23,34 @@ const H: usize = 600;
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
-struct Pos { x: f32, y: f32 }
+struct Pos {
+    x: f32,
+    y: f32,
+}
 
 #[derive(Clone, Copy)]
-struct Vel { x: f32, y: f32 }
+struct Vel {
+    x: f32,
+    y: f32,
+}
 
 #[derive(Clone, Copy)]
-struct Rot { angle: f32 }       // radians
+struct Rot {
+    angle: f32,
+} // radians
 
 #[derive(Clone, Copy)]
 struct Ship;
 
 #[derive(Clone, Copy)]
-struct Bullet { ttl: f32 }
+struct Bullet {
+    ttl: f32,
+}
 
 #[derive(Clone, Copy)]
-struct Asteroid { radius: f32 }
+struct Asteroid {
+    radius: f32,
+}
 
 // ---------------------------------------------------------------------------
 // Drawing helpers (software rasteriser)
@@ -65,10 +77,14 @@ fn draw_circle(buf: &mut [u32], cx: f32, cy: f32, r: f32, col: u32) {
     for i in 0..segs {
         let a0 = TAU * i as f32 / segs as f32;
         let a1 = TAU * (i + 1) as f32 / segs as f32;
-        draw_line(buf,
-            cx + a0.cos() * r, cy + a0.sin() * r,
-            cx + a1.cos() * r, cy + a1.sin() * r,
-            col);
+        draw_line(
+            buf,
+            cx + a0.cos() * r,
+            cy + a0.sin() * r,
+            cx + a1.cos() * r,
+            cy + a1.sin() * r,
+            col,
+        );
     }
 }
 
@@ -79,7 +95,8 @@ fn draw_ship(buf: &mut [u32], cx: f32, cy: f32, angle: f32, col: u32) {
         (angle + 2.4, sz * 0.7),
         (angle - 2.4, sz * 0.7),
     ];
-    let verts: Vec<(f32, f32)> = pts.iter()
+    let verts: Vec<(f32, f32)> = pts
+        .iter()
         .map(|(a, r)| (cx + a.cos() * r, cy + a.sin() * r))
         .collect();
     for i in 0..3 {
@@ -89,8 +106,12 @@ fn draw_ship(buf: &mut [u32], cx: f32, cy: f32, angle: f32, col: u32) {
 }
 
 fn wrap(v: &mut f32, lo: f32, hi: f32) {
-    if *v < lo { *v += hi - lo; }
-    if *v > hi { *v -= hi - lo; }
+    if *v < lo {
+        *v += hi - lo;
+    }
+    if *v > hi {
+        *v -= hi - lo;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -98,8 +119,16 @@ fn wrap(v: &mut f32, lo: f32, hi: f32) {
 // ---------------------------------------------------------------------------
 
 fn main() {
-    let mut window = Window::new("SkyEngine — Asteroids", W, H,
-        WindowOptions { resize: false, ..Default::default() }).unwrap();
+    let mut window = Window::new(
+        "SkyEngine — Asteroids",
+        W,
+        H,
+        WindowOptions {
+            resize: false,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     window.set_target_fps(60);
 
     let mut world = World::new();
@@ -108,9 +137,14 @@ fn main() {
 
     // Spawn ship
     let ship = world.spawn((
-        Pos { x: W as f32 / 2.0, y: H as f32 / 2.0 },
+        Pos {
+            x: W as f32 / 2.0,
+            y: H as f32 / 2.0,
+        },
         Vel { x: 0.0, y: 0.0 },
-        Rot { angle: -std::f32::consts::FRAC_PI_2 },
+        Rot {
+            angle: -std::f32::consts::FRAC_PI_2,
+        },
         Ship,
     ));
 
@@ -132,8 +166,12 @@ fn main() {
         // --- Input ---
         if world.contains(ship) {
             if let Some(rot) = world.get_mut::<Rot>(ship) {
-                if window.is_key_down(Key::Left)  { rot.angle -= 4.0 * dt; }
-                if window.is_key_down(Key::Right) { rot.angle += 4.0 * dt; }
+                if window.is_key_down(Key::Left) {
+                    rot.angle -= 4.0 * dt;
+                }
+                if window.is_key_down(Key::Right) {
+                    rot.angle += 4.0 * dt;
+                }
             }
             if window.is_key_down(Key::Up) {
                 let angle = world.get::<Rot>(ship).unwrap().angle;
@@ -147,8 +185,14 @@ fn main() {
                 let vel = *world.get::<Vel>(ship).unwrap();
                 let speed = 350.0;
                 world.spawn((
-                    Pos { x: pos.x + rot.angle.cos() * 14.0, y: pos.y + rot.angle.sin() * 14.0 },
-                    Vel { x: vel.x + rot.angle.cos() * speed, y: vel.y + rot.angle.sin() * speed },
+                    Pos {
+                        x: pos.x + rot.angle.cos() * 14.0,
+                        y: pos.y + rot.angle.sin() * 14.0,
+                    },
+                    Vel {
+                        x: vel.x + rot.angle.cos() * speed,
+                        y: vel.y + rot.angle.sin() * speed,
+                    },
                     Bullet { ttl: 1.5 },
                 ));
                 shoot_cooldown = 0.15;
@@ -183,7 +227,9 @@ fn main() {
                 }
             });
         }
-        for e in &dead_bullets { world.despawn(*e); }
+        for e in &dead_bullets {
+            world.despawn(*e);
+        }
 
         // --- Collision: bullets vs asteroids ---
         let mut hits: Vec<(EntityId, EntityId, Pos, f32)> = Vec::new(); // (bullet, asteroid, pos, radius)
@@ -207,7 +253,9 @@ fn main() {
             });
         }
         for (be, ae, apos, arad) in &hits {
-            if world.contains(*be) { world.despawn(*be); }
+            if world.contains(*be) {
+                world.despawn(*be);
+            }
             if world.contains(*ae) {
                 world.despawn(*ae);
                 score += 1;
@@ -260,8 +308,11 @@ fn main() {
             draw_ship(&mut buf, pos.x, pos.y, rot.angle, 0x44FF88);
         }
 
-        window.set_title(&format!("SkyEngine Asteroids | Score: {} | Entities: {}",
-            score, world.entity_count()));
+        window.set_title(&format!(
+            "SkyEngine Asteroids | Score: {} | Entities: {}",
+            score,
+            world.entity_count()
+        ));
         window.update_with_buffer(&buf, W, H).unwrap();
     }
 }
@@ -278,7 +329,10 @@ fn spawn_asteroid_at(world: &mut World, rng: &mut impl Rng, x: f32, y: f32, radi
     let speed = rng.gen_range(20.0..80.0);
     world.spawn((
         Pos { x, y },
-        Vel { x: angle.cos() * speed, y: angle.sin() * speed },
+        Vel {
+            x: angle.cos() * speed,
+            y: angle.sin() * speed,
+        },
         Asteroid { radius },
     ));
 }

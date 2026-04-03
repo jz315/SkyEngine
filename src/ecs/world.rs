@@ -486,10 +486,7 @@ impl World {
         let mut spans = SmallVec::new();
 
         for (source_index, component) in source.archetype.components.iter().enumerate() {
-            if skip_component_ids
-                .iter()
-                .any(|id| *id == component.id())
-            {
+            if skip_component_ids.iter().any(|id| *id == component.id()) {
                 continue;
             }
 
@@ -604,9 +601,11 @@ impl World {
 
         // Overwrite path: entity already has this component.
         if source_archetype.has_component(&component_ty) {
-            let component_index = source_archetype.query_component_index(&component_ty).unwrap();
-            let chunk = &mut self.data[source_location.data_index].chunks
-                [source_location.chunk_index];
+            let component_index = source_archetype
+                .query_component_index(&component_ty)
+                .unwrap();
+            let chunk =
+                &mut self.data[source_location.data_index].chunks[source_location.chunk_index];
             unsafe {
                 let ptr = chunk
                     .column_ptr(component_index)
@@ -811,7 +810,9 @@ impl World {
             };
             // Safety: drop the old value before overwriting.
             if let Some(drop_fn) = component.drop_fn() {
-                unsafe { drop_fn(ptr); }
+                unsafe {
+                    drop_fn(ptr);
+                }
             }
             value.write(ptr);
             return true;
@@ -1483,9 +1484,9 @@ mod tests {
         let b = world.spawn((Position { x: 3.0, y: 4.0 },));
 
         let mut cmds = Commands::new();
-        cmds.insert(a, Health(10.0));     // A first seen
-        cmds.insert(b, Health(20.0));     // B first seen
-        cmds.remove::<Health>(a);         // A again — coalesces with first A entry
+        cmds.insert(a, Health(10.0)); // A first seen
+        cmds.insert(b, Health(20.0)); // B first seen
+        cmds.remove::<Health>(a); // A again — coalesces with first A entry
         cmds.apply(&mut world);
 
         // A: insert Health then remove Health → net result: no Health
@@ -1557,10 +1558,7 @@ mod tests {
         let counter_a = Arc::new(AtomicUsize::new(0));
         let counter_b = Arc::new(AtomicUsize::new(0));
         let mut world = World::new();
-        let entity = world.spawn((
-            Droppable::new(&counter_a),
-            DroppableB::new(&counter_b),
-        ));
+        let entity = world.spawn((Droppable::new(&counter_a), DroppableB::new(&counter_b)));
 
         world.despawn(entity);
         assert_eq!(counter_a.load(Ordering::Relaxed), 1);
@@ -1571,10 +1569,7 @@ mod tests {
     fn remove_component_calls_drop_on_removed_column() {
         let counter = Arc::new(AtomicUsize::new(0));
         let mut world = World::new();
-        let entity = world.spawn((
-            Position { x: 0.0, y: 0.0 },
-            Droppable::new(&counter),
-        ));
+        let entity = world.spawn((Position { x: 0.0, y: 0.0 }, Droppable::new(&counter)));
 
         world.remove::<Droppable>(entity);
         assert_eq!(counter.load(Ordering::Relaxed), 1);
@@ -1694,10 +1689,7 @@ mod tests {
     fn copy_types_unaffected_by_drop_machinery() {
         // Verify Copy types still work exactly as before.
         let mut world = World::new();
-        let entity = world.spawn((
-            Position { x: 1.0, y: 2.0 },
-            Velocity { x: 3.0, y: 4.0 },
-        ));
+        let entity = world.spawn((Position { x: 1.0, y: 2.0 }, Velocity { x: 3.0, y: 4.0 }));
 
         assert_eq!(
             world.get::<Position>(entity),

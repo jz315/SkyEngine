@@ -1,16 +1,16 @@
 //! # Boids Flocking Simulation
 //!
-//! Classic boids algorithm implemented with Sky Engine's **System** scheduling API.
-//! Each behaviour rule is a separate system, grouped and ticked automatically.
+//! Classic boids algorithm implemented with Sky Engine's system scheduling API.
+//! The simulation keeps an ECS-driven update loop, but the hot path uses cached
+//! snapshot buffers so the flock stays responsive at higher boid counts.
 //!
 //! Interactive features:
-//! - **Mouse** acts as a predator — boids flee from cursor
-//! - **Left click** places an attractor (food source, fades after 5s)
-//! - **Space** triggers a panic scatter
-//! - Colour shifts from blue (slow) → green → yellow → red (fast)
-//! - Motion trails via framebuffer fade
+//! - Mouse acts as a predator, boids flee from cursor
+//! - Left click places an attractor that fades over time
+//! - Space triggers a panic scatter
+//! - Color shifts from blue to red with speed
 //!
-//! ```
+//! ```sh
 //! cargo run --example boids --features demo --release
 //! ```
 
@@ -22,31 +22,57 @@ use std::f32::consts::TAU;
 const W: usize = 1024;
 const H: usize = 768;
 const NUM_BOIDS: usize = 2000;
+
 const MAX_SPEED: f32 = 220.0;
 const MIN_SPEED: f32 = 40.0;
+const CRUISE_SPEED: f32 = 150.0;
 const VISUAL_RANGE: f32 = 55.0;
 const SEPARATION_RANGE: f32 = 18.0;
 const PREDATOR_RANGE: f32 = 120.0;
 const ATTRACTOR_RANGE: f32 = 200.0;
+const WALL_MARGIN: f32 = 80.0;
+
+const ALIGNMENT_WEIGHT: f32 = 0.65;
+const COHESION_WEIGHT: f32 = 0.45;
+const SEPARATION_WEIGHT: f32 = 210.0;
+const PREDATOR_WEIGHT: f32 = 540.0;
+const ATTRACTOR_WEIGHT: f32 = 120.0;
+const PANIC_WEIGHT: f32 = 320.0;
+const WALL_WEIGHT: f32 = 280.0;
+const MAX_STEERING: f32 = 260.0;
+const DRAG: f32 = 0.18;
+
+const ATTRACTOR_LIFETIME: f32 = 5.0;
+const BACKGROUND_COLOR: u32 = 0x05080C;
+const BOID_SIZE: f32 = 5.5;
+const TRAIL_LENGTH: f32 = 7.0;
 
 // ---------------------------------------------------------------------------
 // Components
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy)]
-struct Pos { x: f32, y: f32 }
+#[derive(Clone, Copy, Default)]
+struct Pos {
+    x: f32,
+    y: f32,
+}
 
-#[derive(Clone, Copy)]
-struct Vel { x: f32, y: f32 }
+#[derive(Clone, Copy, Default)]
+struct Vel {
+    x: f32,
+    y: f32,
+}
 
 #[derive(Clone, Copy)]
 struct Boid;
 
 #[derive(Clone, Copy)]
-struct Attractor { life: f32 }
+struct Attractor {
+    life: f32,
+}
 
 // ---------------------------------------------------------------------------
-// Resources — shared state between systems
+// Resources
 // ---------------------------------------------------------------------------
 
 struct Input {
@@ -59,35 +85,60 @@ struct Input {
 
 impl Default for Input {
     fn default() -> Self {
-        Self { mouse_x: -1000.0, mouse_y: -1000.0, mouse_valid: false, click: false, panic: false }
+        Self {
+            mouse_x: -1000.0,
+            mouse_y: -1000.0,
+            mouse_valid: false,
+            click: false,
+            panic: false,
+        }
     }
 }
 
-/// Spatial hash grid cell size — must be >= VISUAL_RANGE.
 const CELL_SIZE: f32 = VISUAL_RANGE;
-const GRID_COLS: usize = (W as f32 / CELL_SIZE) as usize + 1; // 19
-const GRID_ROWS: usize = (H as f32 / CELL_SIZE) as usize + 1; // 14
+const GRID_COLS: usize = (W as f32 / CELL_SIZE) as usize + 1;
+const GRID_ROWS: usize = (H as f32 / CELL_SIZE) as usize + 1;
 const GRID_CELLS: usize = GRID_COLS * GRID_ROWS;
 
-/// Snapshot of all boid positions/velocities + spatial hash grid.
+#[derive(Clone, Copy, Default)]
+struct AttractorPoint {
+    x: f32,
+    y: f32,
+    life: f32,
+}
+
+struct AttractorCache {
+    items: Vec<AttractorPoint>,
+}
+
+impl Default for AttractorCache {
+    fn default() -> Self {
+        Self { items: Vec::new() }
+    }
+}
+
 struct BoidSnapshot {
-    positions: Vec<(f32, f32)>,
-    velocities: Vec<(f32, f32)>,
-    /// Each cell stores indices into the positions/velocities arrays.
-    grid: Vec<Vec<usize>>,
+    positions: Vec<Pos>,
+    velocities: Vec<Vel>,
+    steering: Vec<Vel>,
+    cell_heads: Vec<i32>,
+    next: Vec<i32>,
 }
 
 impl Default for BoidSnapshot {
     fn default() -> Self {
         Self {
-            positions: Vec::new(),
-            velocities: Vec::new(),
-            grid: vec![Vec::new(); GRID_CELLS],
+            positions: Vec::with_capacity(NUM_BOIDS),
+            velocities: Vec::with_capacity(NUM_BOIDS),
+            steering: Vec::with_capacity(NUM_BOIDS),
+            cell_heads: vec![-1; GRID_CELLS],
+            next: Vec::with_capacity(NUM_BOIDS),
         }
     }
 }
 
 impl BoidSnapshot {
+    #[inline(always)]
     fn cell_index(x: f32, y: f32) -> usize {
         let col = ((x / CELL_SIZE) as usize).min(GRID_COLS - 1);
         let row = ((y / CELL_SIZE) as usize).min(GRID_ROWS - 1);
@@ -95,267 +146,427 @@ impl BoidSnapshot {
     }
 
     fn rebuild_grid(&mut self) {
-        for cell in self.grid.iter_mut() { cell.clear(); }
-        for (i, &(x, y)) in self.positions.iter().enumerate() {
-            let ci = Self::cell_index(x, y);
-            self.grid[ci].push(i);
+        if self.cell_heads.len() != GRID_CELLS {
+            self.cell_heads.resize(GRID_CELLS, -1);
+        }
+        self.cell_heads.fill(-1);
+
+        self.next.clear();
+        self.next.resize(self.positions.len(), -1);
+
+        self.steering.clear();
+        self.steering
+            .resize(self.positions.len(), Vel { x: 0.0, y: 0.0 });
+
+        // Linked-list buckets avoid per-cell Vec churn in the neighbor pass.
+        for (index, pos) in self.positions.iter().enumerate().rev() {
+            let cell = Self::cell_index(pos.x, pos.y);
+            self.next[index] = self.cell_heads[cell];
+            self.cell_heads[cell] = index as i32;
         }
     }
 }
 
-struct AttractorCache {
-    positions: Vec<(f32, f32)>,
+// ---------------------------------------------------------------------------
+// Math helpers
+// ---------------------------------------------------------------------------
+
+#[inline(always)]
+fn length_sq(x: f32, y: f32) -> f32 {
+    x * x + y * y
 }
-impl Default for AttractorCache {
-    fn default() -> Self { Self { positions: Vec::new() } }
+
+#[inline(always)]
+fn length(x: f32, y: f32) -> f32 {
+    length_sq(x, y).sqrt()
+}
+
+#[inline(always)]
+fn normalize_or_zero(x: f32, y: f32) -> (f32, f32) {
+    let len_sq = length_sq(x, y);
+    if len_sq > 1.0e-6 {
+        let inv_len = len_sq.sqrt().recip();
+        (x * inv_len, y * inv_len)
+    } else {
+        (0.0, 0.0)
+    }
+}
+
+#[inline(always)]
+fn limit_vector(x: f32, y: f32, max_len: f32) -> (f32, f32) {
+    let len_sq = length_sq(x, y);
+    if len_sq > max_len * max_len {
+        let scale = max_len / len_sq.sqrt();
+        (x * scale, y * scale)
+    } else {
+        (x, y)
+    }
+}
+
+#[inline(always)]
+fn steer_towards(
+    current_x: f32,
+    current_y: f32,
+    desired_x: f32,
+    desired_y: f32,
+    max_force: f32,
+) -> (f32, f32) {
+    limit_vector(desired_x - current_x, desired_y - current_y, max_force)
 }
 
 // ---------------------------------------------------------------------------
 // Systems
 // ---------------------------------------------------------------------------
 
-/// Collects all attractor positions and decays their lifetimes.
 struct AttractorDecaySystem {
-    q_read: PreparedQuery<(&'static Pos, &'static Attractor)>,
-    q_decay: PreparedQuery<&'static mut Attractor>,
+    query: PreparedQuery<(&'static Pos, &'static mut Attractor)>,
+    dead: Vec<EntityId>,
+    cached_items: Vec<AttractorPoint>,
 }
 
 impl AttractorDecaySystem {
     fn new() -> Self {
-        Self { q_read: PreparedQuery::new(), q_decay: PreparedQuery::new() }
+        Self {
+            query: PreparedQuery::new(),
+            dead: Vec::new(),
+            cached_items: Vec::new(),
+        }
     }
 }
 
 impl System for AttractorDecaySystem {
     fn run(&mut self, world: &mut World) {
         let dt = world.time.delta;
+        let (click, mouse_valid, mouse_x, mouse_y) = {
+            let input = world.get_resource::<Input>().unwrap();
+            (input.click, input.mouse_valid, input.mouse_x, input.mouse_y)
+        };
 
-        // Spawn attractor on click
-        let input = world.get_resource::<Input>().unwrap();
-        if input.click && input.mouse_valid {
-            let mx = input.mouse_x;
-            let my = input.mouse_y;
-            world.spawn((Pos { x: mx, y: my }, Attractor { life: 5.0 }));
+        if click && mouse_valid {
+            world.spawn((
+                Pos {
+                    x: mouse_x,
+                    y: mouse_y,
+                },
+                Attractor {
+                    life: ATTRACTOR_LIFETIME,
+                },
+            ));
         }
 
-        // Collect positions into local vec
-        let mut attr_positions: Vec<(f32, f32)> = Vec::new();
-        self.q_read.for_each(world, |(p, _)| {
-            attr_positions.push((p.x, p.y));
-        });
+        self.dead.clear();
+        self.cached_items.clear();
 
-        // Write to resource
+        let dead = &mut self.dead;
+        let cached_items = &mut self.cached_items;
+        self.query
+            .for_each_with_entity(world, |entity, (pos, attractor)| {
+                attractor.life -= dt;
+                if attractor.life <= 0.0 {
+                    dead.push(entity);
+                } else {
+                    cached_items.push(AttractorPoint {
+                        x: pos.x,
+                        y: pos.y,
+                        life: attractor.life,
+                    });
+                }
+            });
+
+        for &entity in &self.dead {
+            world.despawn(entity);
+        }
+
         let cache = world.get_resource_mut::<AttractorCache>().unwrap();
-        cache.positions = attr_positions;
-
-        // Decay
-        let mut dead: Vec<EntityId> = Vec::new();
-        self.q_decay.for_each_with_entity(world, |e, attr| {
-            attr.life -= dt;
-            if attr.life <= 0.0 { dead.push(e); }
-        });
-        for e in dead { world.despawn(e); }
+        cache.items.clear();
+        cache.items.extend_from_slice(&self.cached_items);
     }
 }
 
-/// Snapshots all boid positions/velocities for the neighbour pass.
 struct SnapshotSystem {
     query: PreparedQuery<(&'static Pos, &'static Vel, &'static Boid)>,
 }
 
 impl SnapshotSystem {
-    fn new() -> Self { Self { query: PreparedQuery::new() } }
+    fn new() -> Self {
+        Self {
+            query: PreparedQuery::new(),
+        }
+    }
 }
 
 impl System for SnapshotSystem {
     fn run(&mut self, world: &mut World) {
-        let mut positions: Vec<(f32, f32)> = Vec::new();
-        let mut velocities: Vec<(f32, f32)> = Vec::new();
+        let snapshot = world.get_resource_mut::<BoidSnapshot>().unwrap();
+        let mut positions = std::mem::take(&mut snapshot.positions);
+        let mut velocities = std::mem::take(&mut snapshot.velocities);
+        let steering = std::mem::take(&mut snapshot.steering);
+        let cell_heads = std::mem::take(&mut snapshot.cell_heads);
+        let next = std::mem::take(&mut snapshot.next);
 
-        self.query.for_each(world, |(p, v, _)| {
-            positions.push((p.x, p.y));
-            velocities.push((v.x, v.y));
-        });
+        positions.clear();
+        velocities.clear();
 
-        let snap = world.get_resource_mut::<BoidSnapshot>().unwrap();
-        snap.positions = positions;
-        snap.velocities = velocities;
-        snap.rebuild_grid();
+        self.query
+            .for_each_chunk(world, |(chunk_positions, chunk_velocities, _)| {
+                positions.extend_from_slice(chunk_positions);
+                velocities.extend_from_slice(chunk_velocities);
+            });
+
+        let snapshot = world.get_resource_mut::<BoidSnapshot>().unwrap();
+        snapshot.positions = positions;
+        snapshot.velocities = velocities;
+        snapshot.steering = steering;
+        snapshot.cell_heads = cell_heads;
+        snapshot.next = next;
+        snapshot.rebuild_grid();
     }
 }
 
-/// Core boid rules: separation, alignment, cohesion, predator avoidance,
-/// attractor pull, wall steering, and speed clamping.
-struct BoidRulesSystem {
-    query: PreparedQuery<(&'static Pos, &'static mut Vel, &'static Boid)>,
+struct BoidStepSystem {
+    query: PreparedQuery<(&'static mut Pos, &'static mut Vel, &'static Boid)>,
+    attractors: Vec<AttractorPoint>,
 }
 
-impl BoidRulesSystem {
-    fn new() -> Self { Self { query: PreparedQuery::new() } }
+impl BoidStepSystem {
+    fn new() -> Self {
+        Self {
+            query: PreparedQuery::new(),
+            attractors: Vec::new(),
+        }
+    }
 }
 
-impl System for BoidRulesSystem {
+impl System for BoidStepSystem {
     fn run(&mut self, world: &mut World) {
         let dt = world.time.delta;
-        let input = world.get_resource::<Input>().unwrap();
-        let mouse = (input.mouse_x, input.mouse_y);
-        let panic_mode = input.panic;
+        let (mouse_x, mouse_y, mouse_valid, panic_mode) = {
+            let input = world.get_resource::<Input>().unwrap();
+            (input.mouse_x, input.mouse_y, input.mouse_valid, input.panic)
+        };
 
-        // Take data out of resources (zero-alloc move, not clone)
-        let snap = world.get_resource_mut::<BoidSnapshot>().unwrap();
-        let positions = std::mem::take(&mut snap.positions);
-        let velocities = std::mem::take(&mut snap.velocities);
-        let grid = std::mem::take(&mut snap.grid);
+        self.attractors.clear();
+        self.attractors
+            .extend_from_slice(&world.get_resource::<AttractorCache>().unwrap().items);
 
-        let cache = world.get_resource_mut::<AttractorCache>().unwrap();
-        let attractors = std::mem::take(&mut cache.positions);
+        let snapshot = world.get_resource_mut::<BoidSnapshot>().unwrap();
+        let mut positions = std::mem::take(&mut snapshot.positions);
+        let mut velocities = std::mem::take(&mut snapshot.velocities);
+        let mut steering = std::mem::take(&mut snapshot.steering);
+        let cell_heads = std::mem::take(&mut snapshot.cell_heads);
+        let next = std::mem::take(&mut snapshot.next);
 
-        let mut idx = 0usize;
-        self.query.for_each(world, |(pos, vel, _)| {
-            let mut sep_x = 0.0f32;
-            let mut sep_y = 0.0f32;
-            let mut align_x = 0.0f32;
-            let mut align_y = 0.0f32;
-            let mut coh_x = 0.0f32;
-            let mut coh_y = 0.0f32;
-            let mut neighbours = 0u32;
+        let visual_range_sq = VISUAL_RANGE * VISUAL_RANGE;
+        let separation_range_sq = SEPARATION_RANGE * SEPARATION_RANGE;
+        let width = W as f32;
+        let height = H as f32;
 
-            // Spatial grid: only check 3×3 neighboring cells
+        for index in 0..positions.len() {
+            let pos = positions[index];
+            let vel = velocities[index];
+
+            let mut neighbour_count = 0.0f32;
+            let mut avg_vel_x = 0.0f32;
+            let mut avg_vel_y = 0.0f32;
+            let mut center_x = 0.0f32;
+            let mut center_y = 0.0f32;
+            let mut separation_x = 0.0f32;
+            let mut separation_y = 0.0f32;
+
             let col = (pos.x / CELL_SIZE) as i32;
             let row = (pos.y / CELL_SIZE) as i32;
-            for dr in -1..=1i32 {
-                for dc in -1..=1i32 {
-                    let nr = row + dr;
-                    let nc = col + dc;
-                    if nr < 0 || nr >= GRID_ROWS as i32 || nc < 0 || nc >= GRID_COLS as i32 {
+
+            for dr in -1..=1 {
+                for dc in -1..=1 {
+                    let next_row = row + dr;
+                    let next_col = col + dc;
+                    if next_row < 0
+                        || next_row >= GRID_ROWS as i32
+                        || next_col < 0
+                        || next_col >= GRID_COLS as i32
+                    {
                         continue;
                     }
-                    let cell_idx = nr as usize * GRID_COLS + nc as usize;
-                    for &j in &grid[cell_idx] {
-                        if j == idx { continue; }
-                        let dx = positions[j].0 - pos.x;
-                        let dy = positions[j].1 - pos.y;
-                        let dist_sq = dx * dx + dy * dy;
 
-                        if dist_sq < VISUAL_RANGE * VISUAL_RANGE {
-                            let dist = dist_sq.sqrt().max(0.01);
-                            align_x += velocities[j].0;
-                            align_y += velocities[j].1;
-                            coh_x += positions[j].0;
-                            coh_y += positions[j].1;
-                            neighbours += 1;
+                    let cell = next_row as usize * GRID_COLS + next_col as usize;
+                    let mut head = cell_heads[cell];
+                    while head >= 0 {
+                        let other = head as usize;
+                        head = next[other];
 
-                            if dist_sq < SEPARATION_RANGE * SEPARATION_RANGE {
-                                sep_x -= dx / dist;
-                                sep_y -= dy / dist;
-                            }
+                        if other == index {
+                            continue;
+                        }
+
+                        let dx = positions[other].x - pos.x;
+                        let dy = positions[other].y - pos.y;
+                        let dist_sq = length_sq(dx, dy);
+                        if dist_sq <= 1.0e-4 || dist_sq > visual_range_sq {
+                            continue;
+                        }
+
+                        neighbour_count += 1.0;
+                        avg_vel_x += velocities[other].x;
+                        avg_vel_y += velocities[other].y;
+                        center_x += positions[other].x;
+                        center_y += positions[other].y;
+
+                        if dist_sq < separation_range_sq {
+                            let dist = dist_sq.sqrt();
+                            let falloff = 1.0 - dist / SEPARATION_RANGE;
+                            separation_x -= dx / dist * falloff;
+                            separation_y -= dy / dist * falloff;
                         }
                     }
                 }
             }
 
-            if neighbours > 0 {
-                let n = neighbours as f32;
-                vel.x += (align_x / n - vel.x) * 0.05;
-                vel.y += (align_y / n - vel.y) * 0.05;
-                vel.x += (coh_x / n - pos.x) * 0.005;
-                vel.y += (coh_y / n - pos.y) * 0.005;
-                vel.x += sep_x * 2.0;
-                vel.y += sep_y * 2.0;
+            let mut accel_x = 0.0f32;
+            let mut accel_y = 0.0f32;
+            let preferred_speed = if panic_mode {
+                MAX_SPEED
+            } else {
+                CRUISE_SPEED.max(length(vel.x, vel.y))
+            };
+
+            if neighbour_count > 0.0 {
+                let inv_neighbours = neighbour_count.recip();
+
+                let (align_dir_x, align_dir_y) =
+                    normalize_or_zero(avg_vel_x * inv_neighbours, avg_vel_y * inv_neighbours);
+                let (align_x, align_y) = steer_towards(
+                    vel.x,
+                    vel.y,
+                    align_dir_x * preferred_speed,
+                    align_dir_y * preferred_speed,
+                    MAX_STEERING,
+                );
+                accel_x += align_x * ALIGNMENT_WEIGHT;
+                accel_y += align_y * ALIGNMENT_WEIGHT;
+
+                let center_dx = center_x * inv_neighbours - pos.x;
+                let center_dy = center_y * inv_neighbours - pos.y;
+                let (cohesion_dir_x, cohesion_dir_y) = normalize_or_zero(center_dx, center_dy);
+                let (cohesion_x, cohesion_y) = steer_towards(
+                    vel.x,
+                    vel.y,
+                    cohesion_dir_x * CRUISE_SPEED,
+                    cohesion_dir_y * CRUISE_SPEED,
+                    MAX_STEERING,
+                );
+                accel_x += cohesion_x * COHESION_WEIGHT;
+                accel_y += cohesion_y * COHESION_WEIGHT;
+
+                let (sep_dir_x, sep_dir_y) = normalize_or_zero(separation_x, separation_y);
+                accel_x += sep_dir_x * SEPARATION_WEIGHT;
+                accel_y += sep_dir_y * SEPARATION_WEIGHT;
             }
 
-            // Predator avoidance
-            let pdx = pos.x - mouse.0;
-            let pdy = pos.y - mouse.1;
-            let pdist_sq = pdx * pdx + pdy * pdy;
-            if pdist_sq < PREDATOR_RANGE * PREDATOR_RANGE && pdist_sq > 0.01 {
-                let pdist = pdist_sq.sqrt();
-                let strength = (1.0 - pdist / PREDATOR_RANGE) * 600.0;
-                vel.x += pdx / pdist * strength * dt;
-                vel.y += pdy / pdist * strength * dt;
-            }
-
-            // Attractor pull
-            for &(ax, ay) in &attractors {
-                let adx = ax - pos.x;
-                let ady = ay - pos.y;
-                let adist_sq = adx * adx + ady * ady;
-                if adist_sq < ATTRACTOR_RANGE * ATTRACTOR_RANGE && adist_sq > 1.0 {
-                    let adist = adist_sq.sqrt();
-                    vel.x += adx / adist * 80.0 * dt;
-                    vel.y += ady / adist * 80.0 * dt;
+            if mouse_valid {
+                let away_x = pos.x - mouse_x;
+                let away_y = pos.y - mouse_y;
+                let dist_sq = length_sq(away_x, away_y);
+                if dist_sq > 1.0e-4 && dist_sq < PREDATOR_RANGE * PREDATOR_RANGE {
+                    let dist = dist_sq.sqrt();
+                    let strength = 1.0 - dist / PREDATOR_RANGE;
+                    let (dir_x, dir_y) = normalize_or_zero(away_x, away_y);
+                    accel_x += dir_x * PREDATOR_WEIGHT * strength;
+                    accel_y += dir_y * PREDATOR_WEIGHT * strength;
                 }
             }
 
-            // Panic scatter
+            for attractor in &self.attractors {
+                let to_x = attractor.x - pos.x;
+                let to_y = attractor.y - pos.y;
+                let dist_sq = length_sq(to_x, to_y);
+                if dist_sq <= 1.0e-4 || dist_sq > ATTRACTOR_RANGE * ATTRACTOR_RANGE {
+                    continue;
+                }
+
+                let dist = dist_sq.sqrt();
+                let strength =
+                    (1.0 - dist / ATTRACTOR_RANGE) * (attractor.life / ATTRACTOR_LIFETIME);
+                let (dir_x, dir_y) = normalize_or_zero(to_x, to_y);
+                accel_x += dir_x * ATTRACTOR_WEIGHT * strength;
+                accel_y += dir_y * ATTRACTOR_WEIGHT * strength;
+            }
+
             if panic_mode {
-                let scatter_angle = (idx as f32 * 2.399) % TAU;
-                vel.x += scatter_angle.cos() * 500.0 * dt;
-                vel.y += scatter_angle.sin() * 500.0 * dt;
+                let scatter_angle = (index as f32 * 2.399_963_1) % TAU;
+                accel_x += scatter_angle.cos() * PANIC_WEIGHT;
+                accel_y += scatter_angle.sin() * PANIC_WEIGHT;
             }
 
-            // Wall steering
-            let margin = 60.0;
-            let turn = 150.0;
-            if pos.x < margin       { vel.x += turn * dt; }
-            if pos.x > W as f32 - margin { vel.x -= turn * dt; }
-            if pos.y < margin       { vel.y += turn * dt; }
-            if pos.y > H as f32 - margin { vel.y -= turn * dt; }
-
-            // Clamp speed
-            let speed = (vel.x * vel.x + vel.y * vel.y).sqrt();
-            let target_max = if panic_mode { MAX_SPEED * 1.5 } else { MAX_SPEED };
-            if speed > target_max {
-                vel.x = vel.x / speed * target_max;
-                vel.y = vel.y / speed * target_max;
+            if pos.x < WALL_MARGIN {
+                accel_x += (1.0 - pos.x / WALL_MARGIN) * WALL_WEIGHT;
+            } else if pos.x > width - WALL_MARGIN {
+                accel_x -= (1.0 - (width - pos.x) / WALL_MARGIN) * WALL_WEIGHT;
             }
-            if speed < MIN_SPEED && speed > 0.01 {
+
+            if pos.y < WALL_MARGIN {
+                accel_y += (1.0 - pos.y / WALL_MARGIN) * WALL_WEIGHT;
+            } else if pos.y > height - WALL_MARGIN {
+                accel_y -= (1.0 - (height - pos.y) / WALL_MARGIN) * WALL_WEIGHT;
+            }
+
+            let (accel_x, accel_y) = limit_vector(accel_x, accel_y, MAX_STEERING);
+            steering[index].x = accel_x;
+            steering[index].y = accel_y;
+        }
+
+        let drag = (1.0 - DRAG * dt).max(0.0);
+        let max_speed = if panic_mode {
+            MAX_SPEED * 1.35
+        } else {
+            MAX_SPEED
+        };
+
+        let mut index = 0usize;
+        self.query.for_each(world, |(pos, vel, _)| {
+            vel.x += steering[index].x * dt;
+            vel.y += steering[index].y * dt;
+            vel.x *= drag;
+            vel.y *= drag;
+
+            let speed = length(vel.x, vel.y);
+            if speed > max_speed {
+                vel.x = vel.x / speed * max_speed;
+                vel.y = vel.y / speed * max_speed;
+            } else if speed < MIN_SPEED && speed > 1.0e-4 {
                 vel.x = vel.x / speed * MIN_SPEED;
                 vel.y = vel.y / speed * MIN_SPEED;
             }
 
-            idx += 1;
+            pos.x = (pos.x + vel.x * dt).clamp(0.0, width - 1.0);
+            pos.y = (pos.y + vel.y * dt).clamp(0.0, height - 1.0);
+
+            if (pos.x <= 0.0 && vel.x < 0.0) || (pos.x >= width - 1.0 && vel.x > 0.0) {
+                vel.x *= -0.25;
+            }
+            if (pos.y <= 0.0 && vel.y < 0.0) || (pos.y >= height - 1.0 && vel.y > 0.0) {
+                vel.y *= -0.25;
+            }
+
+            positions[index] = *pos;
+            velocities[index] = *vel;
+            index += 1;
         });
 
-        // Put vecs back so allocations are reused next frame
-        let snap = world.get_resource_mut::<BoidSnapshot>().unwrap();
-        snap.positions = positions;
-        snap.velocities = velocities;
-        snap.grid = grid;
-        let cache = world.get_resource_mut::<AttractorCache>().unwrap();
-        cache.positions = attractors;
-    }
-}
-
-/// Integrates position from velocity.
-struct MoveSystem {
-    query: PreparedQuery<(&'static mut Pos, &'static Vel, &'static Boid)>,
-}
-
-impl MoveSystem {
-    fn new() -> Self { Self { query: PreparedQuery::new() } }
-}
-
-impl System for MoveSystem {
-    fn run(&mut self, world: &mut World) {
-        let dt = world.time.delta;
-        self.query.for_each(world, |(pos, vel, _)| {
-            pos.x += vel.x * dt;
-            pos.y += vel.y * dt;
-            if !(pos.x >= 0.0) { pos.x = 0.0; }
-            if !(pos.x <= W as f32 - 1.0) { pos.x = W as f32 - 1.0; }
-            if !(pos.y >= 0.0) { pos.y = 0.0; }
-            if !(pos.y <= H as f32 - 1.0) { pos.y = H as f32 - 1.0; }
-        });
+        let snapshot = world.get_resource_mut::<BoidSnapshot>().unwrap();
+        snapshot.positions = positions;
+        snapshot.velocities = velocities;
+        snapshot.steering = steering;
+        snapshot.cell_heads = cell_heads;
+        snapshot.next = next;
     }
 }
 
 // ---------------------------------------------------------------------------
-// Rendering helpers (unchanged)
+// Rendering helpers
 // ---------------------------------------------------------------------------
 
 fn speed_color(speed: f32) -> u32 {
-    let t = ((speed - MIN_SPEED) / (MAX_SPEED - MIN_SPEED)).max(0.0).min(1.0);
+    let t = ((speed - MIN_SPEED) / (MAX_SPEED - MIN_SPEED)).clamp(0.0, 1.0);
     let hue = 240.0 * (1.0 - t);
     hsv_to_u32(hue, 0.85, 1.0)
 }
@@ -365,51 +576,85 @@ fn hsv_to_u32(h: f32, s: f32, v: f32) -> u32 {
     let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
     let m = v - c;
     let (r, g, b) = match (h as u32) / 60 {
-        0 => (c, x, 0.0), 1 => (x, c, 0.0), 2 => (0.0, c, x),
-        3 => (0.0, x, c), 4 => (x, 0.0, c), _ => (c, 0.0, x),
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
     };
-    (((r+m)*255.0) as u32) << 16 | (((g+m)*255.0) as u32) << 8 | ((b+m)*255.0) as u32
+    (((r + m) * 255.0) as u32) << 16 | (((g + m) * 255.0) as u32) << 8 | ((b + m) * 255.0) as u32
 }
 
-fn plot(buf: &mut [u32], x: i32, y: i32, col: u32) {
+fn scale_color(color: u32, factor: f32) -> u32 {
+    let factor = factor.clamp(0.0, 1.0);
+    let r = (((color >> 16) & 0xFF) as f32 * factor) as u32;
+    let g = (((color >> 8) & 0xFF) as f32 * factor) as u32;
+    let b = ((color & 0xFF) as f32 * factor) as u32;
+    (r << 16) | (g << 8) | b
+}
+
+fn plot(buf: &mut [u32], x: i32, y: i32, color: u32) {
     if x >= 0 && x < W as i32 && y >= 0 && y < H as i32 {
-        buf[y as usize * W + x as usize] = col;
+        buf[y as usize * W + x as usize] = color;
     }
 }
 
-fn draw_line(buf: &mut [u32], x0: f32, y0: f32, x1: f32, y1: f32, col: u32) {
-    let dx = x1 - x0; let dy = y1 - y0;
+fn draw_line(buf: &mut [u32], x0: f32, y0: f32, x1: f32, y1: f32, color: u32) {
+    let dx = x1 - x0;
+    let dy = y1 - y0;
     let steps = dx.abs().max(dy.abs()).max(1.0) as usize;
-    for i in 0..=steps {
-        let t = i as f32 / steps as f32;
-        plot(buf, (x0+dx*t) as i32, (y0+dy*t) as i32, col);
+    for step in 0..=steps {
+        let t = step as f32 / steps as f32;
+        plot(buf, (x0 + dx * t) as i32, (y0 + dy * t) as i32, color);
     }
 }
 
-fn draw_boid(buf: &mut [u32], x: f32, y: f32, vx: f32, vy: f32, col: u32) {
-    let a = vy.atan2(vx); let sz = 6.0;
-    let (tx, ty) = (x + a.cos()*sz, y + a.sin()*sz);
-    let (lx, ly) = (x + (a+2.5).cos()*sz*0.6, y + (a+2.5).sin()*sz*0.6);
-    let (rx, ry) = (x + (a-2.5).cos()*sz*0.6, y + (a-2.5).sin()*sz*0.6);
-    draw_line(buf, tx, ty, lx, ly, col);
-    draw_line(buf, tx, ty, rx, ry, col);
-    draw_line(buf, lx, ly, rx, ry, col);
+fn draw_boid(buf: &mut [u32], x: f32, y: f32, vx: f32, vy: f32, color: u32) {
+    let angle = vy.atan2(vx);
+    let speed = length(vx, vy);
+    let trail = TRAIL_LENGTH * (speed / MAX_SPEED).clamp(0.35, 1.0);
+    let trail_color = scale_color(color, 0.35);
+
+    draw_line(
+        buf,
+        x,
+        y,
+        x - angle.cos() * trail,
+        y - angle.sin() * trail,
+        trail_color,
+    );
+
+    let tip_x = x + angle.cos() * BOID_SIZE;
+    let tip_y = y + angle.sin() * BOID_SIZE;
+    let left_x = x + (angle + 2.55).cos() * BOID_SIZE * 0.65;
+    let left_y = y + (angle + 2.55).sin() * BOID_SIZE * 0.65;
+    let right_x = x + (angle - 2.55).cos() * BOID_SIZE * 0.65;
+    let right_y = y + (angle - 2.55).sin() * BOID_SIZE * 0.65;
+
+    draw_line(buf, tip_x, tip_y, left_x, left_y, color);
+    draw_line(buf, tip_x, tip_y, right_x, right_y, color);
+    draw_line(
+        buf,
+        left_x,
+        left_y,
+        right_x,
+        right_y,
+        scale_color(color, 0.75),
+    );
+    plot(buf, tip_x as i32, tip_y as i32, 0xF6F8FF);
 }
 
-fn draw_ring(buf: &mut [u32], cx: f32, cy: f32, r: f32, col: u32) {
-    let segs = (r * 1.5).max(16.0) as usize;
-    for i in 0..segs {
-        let a = TAU * i as f32 / segs as f32;
-        plot(buf, (cx + a.cos()*r) as i32, (cy + a.sin()*r) as i32, col);
-    }
-}
-
-fn fade_buffer(buf: &mut [u32], factor: u32) {
-    for pixel in buf.iter_mut() {
-        let r = ((*pixel >> 16) & 0xFF).saturating_sub(factor);
-        let g = ((*pixel >> 8) & 0xFF).saturating_sub(factor);
-        let b = (*pixel & 0xFF).saturating_sub(factor);
-        *pixel = (r << 16) | (g << 8) | b;
+fn draw_ring(buf: &mut [u32], cx: f32, cy: f32, radius: f32, color: u32) {
+    let segments = (radius * 1.5).max(16.0) as usize;
+    for i in 0..segments {
+        let angle = TAU * i as f32 / segments as f32;
+        plot(
+            buf,
+            (cx + angle.cos() * radius) as i32,
+            (cy + angle.sin() * radius) as i32,
+            color,
+        );
     }
 }
 
@@ -418,49 +663,68 @@ fn fade_buffer(buf: &mut [u32], factor: u32) {
 // ---------------------------------------------------------------------------
 
 fn main() {
-    let mut window = Window::new("SkyEngine — Boids", W, H,
-        WindowOptions { resize: false, ..Default::default() }).unwrap();
+    let mut window = Window::new(
+        "SkyEngine - Boids",
+        W,
+        H,
+        WindowOptions {
+            resize: false,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     window.set_target_fps(0);
 
     let mut world = World::new();
     let mut buf = vec![0u32; W * H];
     let mut rng = rand::thread_rng();
 
-    // Resources
     world.insert_resource(Input::default());
     world.insert_resource(BoidSnapshot::default());
     world.insert_resource(AttractorCache::default());
 
-    // Spawn boids
     for _ in 0..NUM_BOIDS {
         let angle = rng.gen_range(0.0..TAU);
         let speed = rng.gen_range(MIN_SPEED..MAX_SPEED);
         world.spawn((
-            Pos { x: rng.gen_range(0.0..W as f32), y: rng.gen_range(0.0..H as f32) },
-            Vel { x: angle.cos() * speed, y: angle.sin() * speed },
+            Pos {
+                x: rng.gen_range(0.0..W as f32),
+                y: rng.gen_range(0.0..H as f32),
+            },
+            Vel {
+                x: angle.cos() * speed,
+                y: angle.sin() * speed,
+            },
             Boid,
         ));
     }
 
-    // Schedule systems
-    world.group("simulation")
+    world
+        .group("simulation")
         .add(AttractorDecaySystem::new())
         .add(SnapshotSystem::new())
-        .add(BoidRulesSystem::new())
-        .add(MoveSystem::new());
+        .add(BoidStepSystem::new());
 
     let mut last = std::time::Instant::now();
     let mut fps_timer = std::time::Instant::now();
     let mut fps_count = 0u32;
     let mut display_fps = 0.0f64;
+    let mut display_sim_ms = 0.0f64;
+    let mut display_draw_ms = 0.0f64;
+    let mut display_present_ms = 0.0f64;
+    let mut accum_sim = 0.0f64;
+    let mut accum_draw = 0.0f64;
+    let mut accum_present = 0.0f64;
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
         let now = std::time::Instant::now();
         let dt = (now - last).as_secs_f32().min(0.05);
         last = now;
 
-        // Update input resource
-        let mouse = window.get_mouse_pos(MouseMode::Clamp).unwrap_or((-1000.0, -1000.0));
+        let mouse = window
+            .get_mouse_pos(MouseMode::Clamp)
+            .unwrap_or((-1000.0, -1000.0));
+
         {
             let input = world.get_resource_mut::<Input>().unwrap();
             input.mouse_x = mouse.0;
@@ -470,48 +734,83 @@ fn main() {
             input.panic = window.is_key_down(Key::Space);
         }
 
-        // Tick all systems
+        let sim_start = std::time::Instant::now();
         world.tick_with_delta(dt);
+        let sim_ms = sim_start.elapsed().as_secs_f64() * 1000.0;
 
-        // --- Render ---
-        fade_buffer(&mut buf, 18);
+        let draw_start = std::time::Instant::now();
+        buf.fill(BACKGROUND_COLOR);
 
-        // Attractors
         {
-            let mut q = world.query::<(&Pos, &Attractor)>();
-            q.for_each(&world, |(pos, attr)| {
-                let alpha = (attr.life / 5.0).max(0.0).min(1.0);
-                let pulse = (attr.life * 4.0).sin() * 0.3 + 0.7;
-                let g = (200.0 * alpha * pulse) as u32;
-                draw_ring(&mut buf, pos.x, pos.y, ATTRACTOR_RANGE * 0.3, (g << 8) | 0x44);
-                draw_ring(&mut buf, pos.x, pos.y, ATTRACTOR_RANGE * 0.15, (g << 8) | 0x44);
-            });
+            let attractors = world.get_resource::<AttractorCache>().unwrap();
+            for attractor in &attractors.items {
+                let alpha = (attractor.life / ATTRACTOR_LIFETIME).clamp(0.0, 1.0);
+                let pulse = (attractor.life * 5.0).sin() * 0.25 + 0.75;
+                let outer = scale_color(0x66FF99, alpha * pulse);
+                let inner = scale_color(0xD8FFAA, alpha * 0.65);
+                draw_ring(
+                    &mut buf,
+                    attractor.x,
+                    attractor.y,
+                    ATTRACTOR_RANGE * 0.28,
+                    outer,
+                );
+                draw_ring(
+                    &mut buf,
+                    attractor.x,
+                    attractor.y,
+                    ATTRACTOR_RANGE * 0.14,
+                    inner,
+                );
+            }
         }
 
-        // Predator ring
         if mouse.0 >= 0.0 && mouse.0 < W as f32 {
-            draw_ring(&mut buf, mouse.0, mouse.1, PREDATOR_RANGE * 0.5, 0x442222);
+            draw_ring(&mut buf, mouse.0, mouse.1, PREDATOR_RANGE * 0.5, 0x7A2F22);
+            draw_ring(&mut buf, mouse.0, mouse.1, PREDATOR_RANGE * 0.25, 0xC44C33);
         }
 
-        // Boids
         {
-            let mut q = world.query::<(&Pos, &Vel, &Boid)>();
-            q.for_each(&world, |(pos, vel, _)| {
-                let speed = (vel.x * vel.x + vel.y * vel.y).sqrt();
-                draw_boid(&mut buf, pos.x, pos.y, vel.x, vel.y, speed_color(speed));
-            });
+            let snapshot = world.get_resource::<BoidSnapshot>().unwrap();
+            for (pos, vel) in snapshot.positions.iter().zip(snapshot.velocities.iter()) {
+                draw_boid(
+                    &mut buf,
+                    pos.x,
+                    pos.y,
+                    vel.x,
+                    vel.y,
+                    speed_color(length(vel.x, vel.y)),
+                );
+            }
         }
+        let draw_ms = draw_start.elapsed().as_secs_f64() * 1000.0;
 
         fps_count += 1;
+        accum_sim += sim_ms;
+        accum_draw += draw_ms;
+
         if fps_timer.elapsed().as_secs_f64() >= 0.5 {
-            display_fps = fps_count as f64 / fps_timer.elapsed().as_secs_f64();
+            let elapsed = fps_timer.elapsed().as_secs_f64();
+            display_fps = fps_count as f64 / elapsed;
+            let frames = fps_count.max(1) as f64;
+            display_sim_ms = accum_sim / frames;
+            display_draw_ms = accum_draw / frames;
+            display_present_ms = accum_present / frames;
             fps_count = 0;
+            accum_sim = 0.0;
+            accum_draw = 0.0;
+            accum_present = 0.0;
             fps_timer = std::time::Instant::now();
         }
 
         window.set_title(&format!(
-            "SkyEngine Boids | {} boids | {:.0} FPS | Mouse=predator  Click=attractor  Space=scatter",
-            NUM_BOIDS, display_fps));
+            "SkyEngine Boids | {} boids | {:.0} FPS | sim {:.2} ms draw {:.2} ms present {:.2} ms | Mouse=predator Click=attractor Space=scatter",
+            NUM_BOIDS, display_fps, display_sim_ms, display_draw_ms, display_present_ms
+        ));
+
+        let present_start = std::time::Instant::now();
         window.update_with_buffer(&buf, W, H).unwrap();
+        let present_ms = present_start.elapsed().as_secs_f64() * 1000.0;
+        accum_present += present_ms;
     }
 }

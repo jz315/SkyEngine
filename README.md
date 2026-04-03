@@ -66,6 +66,7 @@ Benchmarks are split into two tracks. Methodology, recorded numbers, and histori
 
 - `cargo bench --bench fair` is the canonical apples-to-apples comparison against `hecs` and `bevy_ecs`. It only includes workloads all engines can express, and it builds query/prepared state outside the timed loop for every engine.
 - `cargo bench --bench sky` is the project-side regression suite. It keeps Sky-specific hot paths such as chunk iteration, filtered typed queries, and command-buffer paths out of the fair comparison numbers.
+- `cargo bench --bench flecs` is an additional reference suite for `flecs_ecs`. It is useful for side-by-side context, but it does not change the canonical `fair` baseline.
 
 Particle simulation example (80,000 concurrent entities):
 
@@ -80,6 +81,7 @@ cargo bench --bench fair   # canonical cross-engine comparison
 cargo bench --bench sky    # Sky regression suite
 cargo bench --bench hecs   # hecs reference suite
 cargo bench --bench bevy   # bevy reference suite
+cargo bench --bench flecs  # flecs reference suite
 cargo bench                # all benches
 ```
 

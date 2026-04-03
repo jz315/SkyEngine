@@ -1,8 +1,8 @@
 use super::{Bundle, EntityId, World};
 use crate::reflect::{register_rust_type, Type};
+use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use std::any::Any;
-use rustc_hash::FxHashMap;
 use std::mem::{self, MaybeUninit};
 use std::ptr;
 
@@ -96,7 +96,11 @@ impl InsertValue {
                     len,
                 );
             }
-            Self::Inline { len, bytes, drop_fn }
+            Self::Inline {
+                len,
+                bytes,
+                drop_fn,
+            }
         } else {
             let mut data = vec![0u8; len].into_boxed_slice();
             unsafe {
@@ -122,7 +126,11 @@ impl InsertValue {
         // uninitialised (or already-dropped) slot.
         unsafe {
             match self {
-                Self::Inline { len, bytes, drop_fn } => {
+                Self::Inline {
+                    len,
+                    bytes,
+                    drop_fn,
+                } => {
                     ptr::copy_nonoverlapping(bytes.as_ptr().cast::<u8>(), dst, *len);
                     // Clear drop_fn BEFORE we replace self, so the implicit
                     // Drop triggered by `*self = Consumed` does NOT call
@@ -149,18 +157,23 @@ impl InsertValue {
 impl Drop for InsertValue {
     fn drop(&mut self) {
         match self {
-            Self::Inline { bytes, drop_fn: Some(drop_fn), .. } => {
+            Self::Inline {
+                bytes,
+                drop_fn: Some(drop_fn),
+                ..
+            } => {
                 // Safety: the value was never consumed and the bytes
                 // represent a valid, initialised value of the original type.
                 unsafe {
                     drop_fn(bytes.as_mut_ptr().cast::<u8>());
                 }
             }
-            Self::Heap { data, drop_fn: Some(drop_fn) } => {
-                unsafe {
-                    drop_fn(data.as_mut_ptr());
-                }
-            }
+            Self::Heap {
+                data,
+                drop_fn: Some(drop_fn),
+            } => unsafe {
+                drop_fn(data.as_mut_ptr());
+            },
             _ => {}
         }
     }
@@ -286,7 +299,8 @@ impl PendingEntityBuffer {
                 "PendingEntityBuffer: entry count exceeds u32 index capacity"
             );
             self.index.insert(entity, pos as u32);
-            self.entries.push((entity, PendingEntityCommands::default()));
+            self.entries
+                .push((entity, PendingEntityCommands::default()));
             &mut self.entries.last_mut().unwrap().1
         };
 

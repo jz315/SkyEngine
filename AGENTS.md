@@ -36,7 +36,6 @@
 - `benches/fair/main.rs`: canonical apples-to-apples comparison entry point against `hecs` and `bevy_ecs`.
 - `benches/fair/sky.rs`, `benches/fair/hecs.rs`, `benches/fair/bevy.rs`: engine-specific fair benchmark implementations.
 - `benches/fair/shared.rs`: shared fair-suite helpers.
-- `benches/sky/main.rs`, `benches/hecs/main.rs`, `benches/bevy/main.rs`, `benches/flecs/main.rs`: legacy bench sources kept in the tree; they are not wired as active Cargo bench targets.
 - `examples/queries.rs`: typed query examples.
 - `examples/commands.rs`: deferred command buffer example.
 - `examples/systems.rs`: schedule and grouped-system example.

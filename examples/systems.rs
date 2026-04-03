@@ -14,10 +14,16 @@ use sky_engine::ecs::{System, World};
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug)]
-struct Position { x: f32, y: f32 }
+struct Position {
+    x: f32,
+    y: f32,
+}
 
 #[derive(Clone, Copy, Debug)]
-struct Velocity { x: f32, y: f32 }
+struct Velocity {
+    x: f32,
+    y: f32,
+}
 
 #[derive(Clone, Copy, Debug)]
 struct Gravity(f32);
@@ -41,7 +47,10 @@ impl System for PhysicsSystem {
         // Spawn some entities on first tick
         for i in 0..5 {
             world.spawn((
-                Position { x: i as f32 * 20.0, y: 100.0 },
+                Position {
+                    x: i as f32 * 20.0,
+                    y: 100.0,
+                },
                 Velocity { x: 0.0, y: 0.0 },
                 Gravity(-9.81),
             ));
@@ -69,16 +78,13 @@ fn main() {
     world.insert_resource(FrameCount::default());
 
     // Schedule: physics group at fixed 50Hz, logging group every frame
-    world.group("physics")
-        .fixed(0.02)
-        .add(PhysicsSystem);
+    world.group("physics").fixed(0.02).add(PhysicsSystem);
 
     // Closure systems work too
-    world.group("logging")
-        .add(|world: &mut World| {
-            let frame = &mut world.get_resource_mut::<FrameCount>().unwrap().0;
-            *frame += 1;
-        });
+    world.group("logging").add(|world: &mut World| {
+        let frame = &mut world.get_resource_mut::<FrameCount>().unwrap().0;
+        *frame += 1;
+    });
 
     // Simulate 5 frames at 60fps
     println!("=== Simulating 5 frames ===\n");
@@ -88,8 +94,10 @@ fn main() {
         let mut q = world.query::<(&Position, &Velocity)>();
         println!("Frame {}:", frame);
         q.for_each_with_entity(&world, |entity, (pos, vel)| {
-            println!("  {:?}: pos=({:6.2}, {:6.2})  vel=({:6.2}, {:6.2})",
-                entity, pos.x, pos.y, vel.x, vel.y);
+            println!(
+                "  {:?}: pos=({:6.2}, {:6.2})  vel=({:6.2}, {:6.2})",
+                entity, pos.x, pos.y, vel.x, vel.y
+            );
         });
         println!();
     }

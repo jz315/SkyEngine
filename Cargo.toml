@@ -13,6 +13,7 @@ smallvec = "1.13.2"
 lazy_static = "1.4.0"
 mimalloc = "0.1.48"
 rustc-hash = "2.1.2"
+bitflags = "2"
 
 # GPU abstraction (feature-gated)
 bytemuck = { version = "1", features = ["derive"], optional = true }
@@ -47,6 +48,10 @@ required-features = ["app"]
 
 [[example]]
 name = "perf_test"
+required-features = ["app"]
+
+[[example]]
+name = "lighting_demo"
 required-features = ["app"]
 
 [[example]]
