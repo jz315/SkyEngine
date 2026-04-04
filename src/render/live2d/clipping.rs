@@ -25,10 +25,18 @@ pub struct ClippingContext {
     pub clipped_drawable_indices: Vec<usize>,
     /// Which RGBA channel this context uses (0=R, 1=G, 2=B, 3=A).
     pub channel_index: usize,
-    /// Layout bounds within the mask texture [x, y, w, h] in 0..1 range.
+    /// Layout sub-region within the mask texture: `[x, y, w, h]` in 0..1 range.
+    ///
+    /// **Convention note**: `y` here is in NDC-aligned (Y-up) coordinates, not
+    /// standard UV (Y-down). This matches how `mask_matrix` and `draw_matrix`
+    /// are constructed — both consume `ly` with the same convention, so the
+    /// mask write/read positions are consistent. The base_color NDC conversion
+    /// in `renderer.rs` also uses this same convention.
     pub layout_bounds: [f32; 4],
-    /// 4x4 matrix for transforming drawable positions to mask UV space.
+    /// 4×4 matrix mapping model coords → NDC [-1,1] for mask-pass rasterization.
     pub mask_matrix: [f32; 16],
+    /// 4×4 matrix mapping model coords → UV [0,1] (Y-flipped) for model-pass mask sampling.
+    pub draw_matrix: [f32; 16],
 }
 
 impl ClippingContext {
@@ -39,6 +47,7 @@ impl ClippingContext {
             channel_index: 0,
             layout_bounds: [0.0, 0.0, 1.0, 1.0],
             mask_matrix: identity_matrix(),
+            draw_matrix: identity_matrix(),
         }
     }
 }
@@ -153,19 +162,26 @@ impl ClippingManager {
 
     /// Update mask matrices for the current frame.
     ///
-    /// Called each frame before rendering masks. Computes the model-to-mask
-    /// UV transformation matrix for each clipping context based on the
-    /// bounding box of its mask drawables.
+    /// Called each frame before rendering masks. Generates two matrices per
+    /// clipping context (matching SakuraEngine's approach):
+    ///
+    /// - `mask_matrix`: maps model coords → NDC [-1,1] for mask-pass rasterization.
+    /// - `draw_matrix`: maps model coords → UV [0,1] with Y-flip for model-pass
+    ///   mask texture sampling (compensates for NDC→framebuffer Y inversion).
+    ///
+    /// The bounding box is computed from **clipped drawables** (the things being
+    /// masked, e.g. pupils), not from mask drawables (e.g. eye whites).
     pub fn update_matrices(&mut self, model: &Live2DModel) {
         for ctx in &mut self.contexts {
-            // Compute bounding box of all mask drawable vertices
+            // Compute bounding box of all CLIPPED drawable vertices
+            // (matching SakuraEngine's CalcClippedDrawTotalBounds)
             let mut min_x = f32::MAX;
             let mut min_y = f32::MAX;
             let mut max_x = f32::MIN;
             let mut max_y = f32::MIN;
 
-            for &mask_idx in &ctx.mask_drawable_indices {
-                let positions = model.drawable_vertex_positions(mask_idx);
+            for &clipped_idx in &ctx.clipped_drawable_indices {
+                let positions = model.drawable_vertex_positions(clipped_idx);
                 for pos in positions {
                     min_x = min_x.min(pos[0]);
                     min_y = min_y.min(pos[1]);
@@ -176,10 +192,11 @@ impl ClippingManager {
 
             if min_x >= max_x || min_y >= max_y {
                 ctx.mask_matrix = identity_matrix();
+                ctx.draw_matrix = identity_matrix();
                 continue;
             }
 
-            // Expand bounds slightly to avoid clipping edge pixels
+            // Expand bounds slightly (5% margin, same as SakuraEngine)
             let margin = 0.05;
             let w = max_x - min_x;
             let h = max_y - min_y;
@@ -188,34 +205,40 @@ impl ClippingManager {
             max_x += w * margin;
             max_y += h * margin;
 
-            let scale_x = 1.0 / (max_x - min_x);
-            let scale_y = 1.0 / (max_y - min_y);
-
-            // Map model coords → [0,1] UV within the mask texture layout region
             let lx = ctx.layout_bounds[0];
             let ly = ctx.layout_bounds[1];
             let lw = ctx.layout_bounds[2];
             let lh = ctx.layout_bounds[3];
 
-            // Column-major 4×4 matrix:
-            // Combines: translate(-min) → scale(1/(max-min)) → scale(layout_size) → translate(layout_offset)
+            let sx = lw / (max_x - min_x);
+            let sy = lh / (max_y - min_y);
+
+            // ── mask_matrix: model coords → NDC [-1,1] ─────────────────
+            // Transform chain (column-major, mat * vec):
+            //   Translate(-1,-1) * Scale(2,2) * Translate(lx,ly) * Scale(sx,sy) * Translate(-min_x,-min_y)
+            // Result: positions map to [-1,1] for correct rasterization into the mask texture.
             ctx.mask_matrix = [
-                scale_x * lw,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                scale_y * lh,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                1.0,
-                0.0,
-                -min_x * scale_x * lw + lx,
-                -min_y * scale_y * lh + ly,
-                0.0,
-                1.0,
+                2.0 * sx, 0.0, 0.0, 0.0,
+                0.0, 2.0 * sy, 0.0, 0.0,
+                0.0, 0.0, 1.0, 0.0,
+                -2.0 * min_x * sx + 2.0 * lx - 1.0,
+                -2.0 * min_y * sy + 2.0 * ly - 1.0,
+                0.0, 1.0,
+            ];
+
+            // ── draw_matrix: model coords → UV [0,1] with Y-flip ───────
+            // Compensates for NDC→framebuffer Y inversion:
+            //   NDC Y=+1 → framebuffer row 0 → UV v=0
+            //   NDC Y=-1 → framebuffer row H → UV v=1
+            // So: u = (ndc_x+1)/2,  v = (1-ndc_y)/2
+            // Equivalent to: Translate(0.5,0.5) * Scale(0.5,-0.5) * mask_matrix
+            ctx.draw_matrix = [
+                sx, 0.0, 0.0, 0.0,
+                0.0, -sy, 0.0, 0.0,
+                0.0, 0.0, 1.0, 0.0,
+                -min_x * sx + lx,
+                min_y * sy + 1.0 - ly,
+                0.0, 1.0,
             ];
         }
     }

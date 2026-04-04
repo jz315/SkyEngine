@@ -33,6 +33,12 @@ fn main() {
     let mut expression_names: Vec<String> = Vec::new();
     let mut initialized = false;
 
+    // FPS tracking
+    let mut fps_accum = 0.0_f32;
+    let mut fps_frames = 0u32;
+    let mut fps_display = 0.0_f32;
+    let base_title = config.title.clone();
+
     App::run(
         config,
         // Setup
@@ -42,6 +48,17 @@ fn main() {
         // Frame
         move |ctx: FrameContext<'_>| {
             let gpu = ctx.gpu;
+
+            // FPS counter — update title every 0.5s
+            fps_accum += ctx.dt;
+            fps_frames += 1;
+            if fps_accum >= 0.5 {
+                fps_display = fps_frames as f32 / fps_accum;
+                fps_accum = 0.0;
+                fps_frames = 0;
+                ctx.window
+                    .set_title(&format!("{} | {:.0} FPS", base_title, fps_display));
+            }
 
             // Lazy init (need GpuContext for texture uploads)
             if !initialized {

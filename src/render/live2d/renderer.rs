@@ -327,10 +327,18 @@ impl Live2DRenderer {
                     continue;
                 }
 
+                let lb = &ctx_entry.layout_bounds; // [x, y, w, h]
                 let uniforms = Live2DUniforms {
                     projection_matrix: ctx_entry.mask_matrix,
                     clip_matrix: ctx_entry.mask_matrix,
-                    base_color: ctx_entry.layout_bounds,
+                    // Convert layout bounds [x,y,w,h] → NDC [x_min, y_min, x_max, y_max]
+                    // to match the NDC-space clip_pos used in the mask_fs bounds test.
+                    base_color: [
+                        2.0 * lb[0] - 1.0,
+                        2.0 * lb[1] - 1.0,
+                        2.0 * (lb[0] + lb[2]) - 1.0,
+                        2.0 * (lb[1] + lb[3]) - 1.0,
+                    ],
                     multiply_color: [1.0, 1.0, 1.0, 1.0],
                     screen_color: [0.0, 0.0, 0.0, 0.0],
                     channel_flag: clipping.channel_flags[ctx_entry.channel_index],
@@ -510,7 +518,7 @@ impl Live2DRenderer {
                 let ctx_entry = &clip_mgr.contexts[ctx_idx];
                 return (
                     1.0,
-                    ctx_entry.mask_matrix,
+                    ctx_entry.draw_matrix,
                     clip_mgr.channel_flags[ctx_entry.channel_index],
                 );
             }

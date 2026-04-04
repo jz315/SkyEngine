@@ -1,8 +1,0 @@
-   Compiling sky_engine v0.1.0 (C:\Coding\SkyEngine)
-    Finished `release` profile [optimized + debuginfo] target(s) in 6.35s
-     Running `target\release\examples\live2d_demo.exe C:\Coding\CubismSdkForNative\CubismSdkForNative-5-r.5\Samples\Resources\Haru\Haru.model3.json`
-[SkyEngine GPU] Adapter: NVIDIA GeForce RTX 3070 | Backend: Vulkan | Format: Bgra8UnormSrgb
-[Live2D] GPU ready, model will load on first frame
-[Live2D] Loading model: C:\Coding\CubismSdkForNative\CubismSdkForNative-5-r.5\Samples\Resources\Haru\Haru.model3.json
-[Live2D] Loaded: 84 drawables, 2 textures, canvas CanvasInfo { size_pixels: [2400.0, 4500.0], origin_pixels: [1200.0, 2250.0], pixels_per_unit: 2400.0 }
-[Live2D] 3 clipping contexts
