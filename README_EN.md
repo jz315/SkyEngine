@@ -1,0 +1,351 @@
+<p align="center">
+  <h1 align="center">🚀 SkyEngine</h1>
+  <p align="center">
+    <strong>High Performance · Chunk-Columnar ECS · wgpu 2D Rendering · Pure Rust</strong>
+  </p>
+  <p align="center">
+    <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/Rust-2021_Edition-orange?logo=rust&logoColor=white" alt="Rust"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+    <a href="https://github.com/nicories/wgpu"><img src="https://img.shields.io/badge/GPU-wgpu_24-green?logo=webgpu" alt="wgpu"></a>
+    <a href="BENCHMARKS.md"><img src="https://img.shields.io/badge/Bench-Criterion-purple" alt="Criterion"></a>
+  </p>
+</p>
+
+<p align="center">
+  <a href="README.md">中文</a> · <a href="#-quick-start">Quick Start</a> · <a href="#-benchmarks">Benchmarks</a> · <a href="docs/api.md">API Docs</a> · <a href="#-examples">Examples</a>
+</p>
+
+---
+
+## 📖 Introduction
+
+**SkyEngine** is a high-performance game engine built from scratch in Rust, standing on two pillars:
+
+1. **Chunk-Columnar Archetype ECS** — Components of the same type are stored contiguously within fixed-size memory chunks, naturally aligning with hardware prefetching for extreme iteration performance.
+2. **wgpu 2D Rendering Framework** — A declarative render graph orchestrates GPU workloads, with built-in SpriteBatch, dynamic lighting, Bloom/ToneMap/Vignette post-processing, and Live2D Cubism SDK integration.
+
+SkyEngine takes the **library approach**: no proc macros, no global state, no imposed application structure. Use just the ECS, or combine it with the full rendering pipeline — everything is opt-in.
+
+> **Why SkyEngine?**
+> - In fair benchmarks, iteration performance is **2.7x–4.2x faster than hecs**, with overall frame simulation **14% ahead of hecs, 19% ahead of Bevy**.
+> - Pure Rust, zero-unsafe typed query API while retaining a low-level raw API for tooling and scripting.
+> - Batteries-included rendering: RenderGraph with automatic resource aliasing, transient allocation, and dead-pass culling — no manual GPU resource lifetime management.
+
+---
+
+## ✨ Key Features
+
+### 🏗️ ECS Core
+
+| Feature | Description |
+|---------|-------------|
+| **Chunk-Columnar Storage** | Each archetype organized into fixed-size chunks with per-type contiguous columns, aligning iteration with hardware prefetch |
+| **Typed Queries** | `world.query::<(&mut Pos, &Vel)>()` returns a `PreparedQuery` with automatic archetype caching |
+| **Optional Components** | Queries support `Option<&T>` / `Option<&mut T>` for optional component access |
+| **Compile-Time Filters** | `With<T>` / `Without<T>` and tuple combinations with zero runtime overhead |
+| **Batch Insert** | `spawn_batch()` skips per-entity lookups — 2x faster than hecs at 10K entities |
+| **Deferred Commands** | `Commands` schedules structural changes during active queries, coalesced and batch-applied |
+| **System Scheduling** | Groups + fixed-timestep policy, `world.tick()` drives a complete frame |
+| **Generational Entities** | `EntityId` with generation tracking — stale handles auto-invalidate on slot reuse |
+| **Chunk Iteration** | `for_each_chunk()` yields contiguous slices for manual SIMD vectorization |
+
+### 🎨 Rendering Framework (feature = `"app"`)
+
+| Feature | Description |
+|---------|-------------|
+| **Declarative RenderGraph** | Compile-time topological sort + resource aliasing + transient allocation + dead-pass culling |
+| **SpriteBatch** | High-performance 2D sprite batch rendering with texture atlases and material instances |
+| **Dynamic Lighting** | `LightPass` + `Light2D` point lights with color temperature, radius, and intensity |
+| **Post-Processing** | `Bloom` · `ToneMap` · `Vignette` — composable PostFx chain |
+| **Material System** | `MaterialInstance` + `MaterialPipelineCache` for data-driven pipelines |
+| **Texture Atlas** | `TextureAtlas` + `AtlasPacker` auto-packing to reduce draw calls |
+| **2D Camera** | `Camera2D` orthographic projection with zoom / pan / viewport fitting |
+| **Live2D Integration** | Cubism SDK v5 native bindings, per-drawable GPU rendering (feature = `"live2d"`) |
+
+---
+
+## 🛠️ Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Language | Rust 2021 Edition |
+| Global Allocator | mimalloc |
+| Hashing | rustc-hash (FxHashMap) |
+| GPU Backend | wgpu 24 |
+| Windowing | winit 0.30 |
+| Shaders | WGSL |
+| Benchmarking | Criterion 0.8 |
+| Comparison Engines | hecs · bevy_ecs · flecs_ecs |
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+- [Rust](https://www.rust-lang.org/tools/install) stable (1.80+ recommended)
+- GPU rendering examples require Vulkan / DX12 / Metal capable drivers
+
+### Installation
+
+```bash
+git clone https://github.com/your-username/SkyEngine.git
+cd SkyEngine
+```
+
+### Minimal ECS Example
+
+```rust
+use sky_engine::ecs::World;
+
+#[derive(Clone, Copy)]
+struct Position { x: f32, y: f32 }
+
+#[derive(Clone, Copy)]
+struct Velocity { x: f32, y: f32 }
+
+fn main() {
+    let mut world = World::new();
+
+    let entity = world.spawn((
+        Position { x: 0.0, y: 0.0 },
+        Velocity { x: 1.0, y: 2.0 },
+    ));
+
+    // Batch-spawn 10,000 entities
+    world.spawn_batch((0..10_000).map(|i| {
+        (Position { x: i as f32, y: 0.0 }, Velocity { x: 1.0, y: 1.0 })
+    }));
+
+    // Typed query — auto-cached archetype matching
+    let mut query = world.query::<(&mut Position, &Velocity)>();
+    query.for_each(&world, |(pos, vel)| {
+        pos.x += vel.x * 0.016;
+        pos.y += vel.y * 0.016;
+    });
+
+    // Chunk-level iteration — contiguous slices for SIMD
+    query.for_each_chunk(&world, |(positions, velocities)| {
+        for (p, v) in positions.iter_mut().zip(velocities.iter()) {
+            p.x += v.x * 0.016;
+        }
+    });
+
+    let pos = world.get::<Position>(entity).unwrap();
+    println!("({}, {})", pos.x, pos.y);
+}
+```
+
+---
+
+## 📊 Benchmarks
+
+All data from `cargo bench --bench fair` — apples-to-apples comparison using Criterion on the same Windows machine. Full history in [BENCHMARKS.md](BENCHMARKS.md).
+
+### Iteration Performance
+
+| Workload | Sky 🚀 | hecs | Bevy | Sky Advantage |
+|----------|--------|------|------|---------------|
+| Simple Iteration 10K | **1.98 µs** | 5.56 µs | 8.15 µs | ⚡ 2.8x |
+| Fragmented Iteration 10K | **1.06 µs** | 3.20 µs | 6.14 µs | ⚡ 3.0x |
+| Heavy Compute 100K | **1.90 ms** | 2.37 ms | 2.03 ms | ⚡ 1.2x |
+
+### Structural Operations
+
+| Workload | Sky 🚀 | hecs | Bevy | Sky Advantage |
+|----------|--------|------|------|---------------|
+| Batch Insert 10K | **135 µs** | 290 µs | 274 µs | ⚡ 2.1x |
+| Spawn/Despawn 1K | **26.3 µs** | 25.2 µs | 58.8 µs | ≈ hecs |
+| Add/Remove Component 1K | **58.8 µs** | 59.1 µs | 88.2 µs | ≈ hecs |
+
+### Full Frame Simulation
+
+| Workload | Sky 🚀 | hecs | Bevy |
+|----------|--------|------|------|
+| **Complete Game Frame** | **181 µs** | 211 µs | 223 µs |
+
+> 💡 Sky leads by **14% over hecs, 19% over Bevy** in full frame simulation
+
+```bash
+cargo bench --bench fair          # fair cross-engine comparison
+cargo bench --bench fair -- sky   # Sky only
+cargo bench --bench fair -- hecs  # hecs only
+cargo bench --bench fair -- bevy  # Bevy only
+```
+
+---
+
+## 🎮 Examples
+
+### ECS Tutorials (no GPU required)
+
+```bash
+cargo run --example hello_ecs       # minimal getting-started
+cargo run --example queries         # typed queries
+cargo run --example commands        # deferred command buffer
+cargo run --example systems         # system scheduling
+cargo run --example tiny_defense    # ASCII tower defense game
+```
+
+### GPU Rendering Showcases (`--features app`)
+
+```bash
+cargo run --example clear_screen         --features app
+cargo run --example sprite_demo          --features app
+cargo run --example textured_demo        --features app
+cargo run --example lighting_demo        --features app
+cargo run --example render_graph_showcase --features app
+cargo run --example perf_test            --features app
+```
+
+### Full Demos (`--features app`)
+
+```bash
+cargo run --example boids             --features app --release
+cargo run --example boids_classic     --features app --release
+cargo run --example cosmic_jellyfish  --features app --release
+cargo run --example neon_galaxy       --features app --release
+```
+
+### Live2D (`--features live2d`)
+
+```bash
+cargo run --example live2d_demo --features live2d --release
+```
+
+---
+
+## 📁 Project Structure
+
+```
+SkyEngine/
+├── src/
+│   ├── lib.rs                  # Crate root, global allocator, module exports
+│   ├── ecs/                    # 🏗️ ECS core
+│   │   ├── world.rs            #   World: entities, archetypes, resources, scheduling
+│   │   ├── archetype.rs        #   Archetype definition and builder
+│   │   ├── chunk.rs            #   Chunk allocation and columnar storage
+│   │   ├── query/              #   Typed queries, filters, dynamic queries
+│   │   ├── bundle.rs           #   Tuple Bundle trait
+│   │   ├── commands.rs         #   Deferred command buffer
+│   │   ├── system.rs           #   System trait and group scheduling
+│   │   ├── entity.rs           #   Generational EntityId
+│   │   ├── resource.rs         #   Typed singleton resources
+│   │   └── raw.rs              #   Low-level / compatibility API
+│   ├── gpu/                    # 🖥️ GPU context (feature: app)
+│   ├── render/                 # 🎨 2D rendering framework (feature: app)
+│   │   ├── core/               #   Camera2D, Color, Texture, RenderTarget
+│   │   ├── graph/              #   Declarative RenderGraph
+│   │   ├── passes/             #   SpriteBatch, LightPass, CompositePass
+│   │   ├── postfx/             #   Bloom, ToneMap, Vignette
+│   │   ├── resources/          #   TextureAtlas, Blackboard, Material
+│   │   ├── shaders/            #   WGSL shaders (8)
+│   │   ├── light.rs            #   Light2D point lights
+│   │   └── live2d/             #   Live2D Cubism renderer (feature: live2d)
+│   ├── app/                    # 🚀 Application framework (feature: app)
+│   └── reflect/                # 🔍 Runtime type registry
+├── examples/                   # 📚 Runnable examples (16+)
+├── benches/                    # 📊 Criterion benchmarks
+├── docs/                       # 📖 Documentation
+├── BENCHMARKS.md               # Benchmark methodology and history
+├── Cargo.toml
+└── LICENSE                     # MIT
+```
+
+---
+
+## ⚙️ Feature Flags
+
+| Feature | Description | Dependencies |
+|---------|-------------|-------------|
+| `app` | Full application framework (window + GPU + input) | wgpu, winit, pollster, bytemuck |
+| `asset` | Asset loading (textures, etc.) | image |
+| `demo` | GPU-accelerated demos | app + asset + rand |
+| `live2d` | Live2D Cubism SDK integration | app + asset + cubism-sys + serde_json |
+| `demo-legacy` | Legacy CPU-rendered demos | minifb + rand |
+| `compare` | Cross-engine comparison examples | demo-legacy + hecs + bevy_ecs |
+| `compare-bevy` | Full Bevy GPU comparison | bevy |
+
+```bash
+# ECS only — zero external dependencies
+cargo test
+
+# ECS + rendering
+cargo test --features app
+
+# Full demo
+cargo run --example boids --features app --release
+```
+
+---
+
+## 🗺️ Roadmap
+
+- [x] Chunk-columnar Archetype ECS
+- [x] Typed queries + compile-time filters
+- [x] Deferred commands and batch spawn
+- [x] System group scheduling
+- [x] wgpu GPU context
+- [x] Declarative RenderGraph
+- [x] SpriteBatch 2D rendering
+- [x] Dynamic lighting + post-processing pipeline
+- [x] Live2D Cubism integration
+- [ ] Parallel system scheduling
+- [ ] Hot-reloading asset pipeline
+- [ ] Scene serialization / deserialization
+- [ ] GPU-accelerated particle system
+- [ ] Editor GUI
+- [ ] Audio system
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! Please follow this workflow:
+
+1. **Fork** the repository
+2. Create a feature branch: `git checkout -b feature/amazing-feature`
+3. Commit your changes: `git commit -m 'feat: add amazing feature'`
+4. Push the branch: `git push origin feature/amazing-feature`
+5. Open a **Pull Request**
+
+### Development Guidelines
+
+- Run `cargo test` to ensure all tests pass
+- Run `cargo bench --bench fair` to confirm no performance regressions
+- Follow existing code style — avoid unnecessary abstractions in hot paths
+- Read `src/render/AGENTS.md` before modifying the rendering framework
+
+---
+
+## 📄 Documentation
+
+| Document | Description |
+|----------|-------------|
+| [API Reference](docs/api.md) | Full ECS API documentation |
+| [BENCHMARKS.md](BENCHMARKS.md) | Benchmark methodology and history |
+| [src/render/AGENTS.md](src/render/AGENTS.md) | Rendering module architecture guide |
+| [src/render/graph/AGENTS.md](src/render/graph/AGENTS.md) | RenderGraph detailed design docs |
+
+---
+
+## 🔗 See Also
+
+| Project | Description |
+|---------|-------------|
+| [hecs](https://github.com/Ralith/hecs) | Minimal archetype ECS |
+| [Bevy](https://github.com/bevyengine/bevy) | Full game engine with plugin ecosystem |
+| [flecs](https://github.com/SanderMertens/flecs) | Feature-rich ECS in C99 |
+| [wgpu](https://github.com/gfx-rs/wgpu) | Cross-platform GPU abstraction layer |
+
+---
+
+## 📜 License
+
+This project is licensed under the [MIT License](LICENSE).
+
+---
+
+<p align="center">
+  Built with Rust 🦀 and ❤️
+</p>
