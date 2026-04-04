@@ -43,7 +43,7 @@ static GLOBAL: MiMalloc = MiMalloc;
 pub mod ecs;
 pub mod reflect;
 
-#[cfg(feature = "gpu")]
+#[cfg(feature = "app")]
 pub mod gpu;
 
 #[cfg(feature = "app")]

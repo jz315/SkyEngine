@@ -209,10 +209,12 @@ fn can_attract_safely(
             return false;
         }
 
-        // intermediate cannot depend on target_pass (target would need to stay after it).
-        if has_path(intermediate_pass, target_pass, reverse_edges) {
-            return false;
-        }
+        // NOTE: We do NOT check `has_path(intermediate, target)` here.
+        // If intermediate depended on target (target → intermediate in the DAG),
+        // then the original topological sort would have placed target BEFORE
+        // intermediate.  Since target_pos > intermediate_pos, that path cannot
+        // exist in a valid topological order.  Checking it would only waste
+        // BFS traversals.
     }
 
     true

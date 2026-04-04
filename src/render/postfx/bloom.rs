@@ -1,17 +1,9 @@
 //! Bloom post-processing.
 
-use std::borrow::Cow;
-
-use rustc_hash::FxHashMap;
-
-use crate::gpu::{
-    BindGroup, BindGroupDesc, BindGroupEntry, BindGroupLayout, BindGroupLayoutDesc, BindingType,
-    Buffer, BufferDesc, BufferUsage, ColorAttachment, ColorTarget, Gpu, Sampler, ShaderStages,
-    TextureFormat,
-};
-use crate::render::fullscreen::{FullscreenPass, FullscreenPipeline};
+use crate::gpu::GpuContext;
+use crate::render::core::fullscreen::{FullscreenPass, FullscreenPipeline};
+use crate::render::core::target::RenderTarget;
 use crate::render::postfx::PostFx;
-use crate::render::target::RenderTarget;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -29,14 +21,10 @@ pub struct Bloom {
     blur_pipeline: FullscreenPipeline,
     upsample_pipeline: FullscreenPipeline,
     combine_pipeline: FullscreenPipeline,
-    sample_bgl: BindGroupLayout,
-    dual_bgl: BindGroupLayout,
-    params_bgl: BindGroupLayout,
-    params_buffer: Buffer,
-    params_bind_group: BindGroup,
-    sample_bind_groups: FxHashMap<(crate::gpu::Image, Sampler), BindGroup>,
-    dual_bind_groups:
-        FxHashMap<(crate::gpu::Image, Sampler, crate::gpu::Image, Sampler), BindGroup>,
+    sample_bgl: wgpu::BindGroupLayout,
+    dual_bgl: wgpu::BindGroupLayout,
+    params_buffer: wgpu::Buffer,
+    params_bind_group: wgpu::BindGroup,
     mip_chain: Vec<RenderTarget>,
     temp_targets: Vec<RenderTarget>,
     pub threshold: f32,
@@ -44,119 +32,195 @@ pub struct Bloom {
     pub radius: f32,
 }
 
+fn texture_sampler_bgl(device: &wgpu::Device, label: &str) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some(label),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    })
+}
+
+fn dual_texture_bgl(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("bloom_dual_bgl"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    })
+}
+
 impl Bloom {
-    pub fn new(gpu: &mut impl Gpu, width: u32, height: u32, target_format: TextureFormat) -> Self {
-        let sample_bgl = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
-            label: Cow::Borrowed("bloom_sample_bgl"),
-            entries: vec![
-                crate::gpu::BindGroupLayoutEntry {
+    pub fn new(
+        ctx: &GpuContext,
+        width: u32,
+        height: u32,
+        target_format: wgpu::TextureFormat,
+    ) -> Self {
+        let sample_bgl = texture_sampler_bgl(ctx.device(), "bloom_sample_bgl");
+        let dual_bgl = dual_texture_bgl(ctx.device());
+
+        let params_bgl = ctx
+            .device()
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("bloom_params_bgl"),
+                entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    ty: BindingType::Texture,
-                    visibility: ShaderStages::FRAGMENT,
-                },
-                crate::gpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    ty: BindingType::Sampler,
-                    visibility: ShaderStages::FRAGMENT,
-                },
-            ],
-        });
-        let dual_bgl = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
-            label: Cow::Borrowed("bloom_dual_bgl"),
-            entries: vec![
-                crate::gpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    ty: BindingType::Texture,
-                    visibility: ShaderStages::FRAGMENT,
-                },
-                crate::gpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    ty: BindingType::Sampler,
-                    visibility: ShaderStages::FRAGMENT,
-                },
-                crate::gpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    ty: BindingType::Texture,
-                    visibility: ShaderStages::FRAGMENT,
-                },
-                crate::gpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    ty: BindingType::Sampler,
-                    visibility: ShaderStages::FRAGMENT,
-                },
-            ],
-        });
-        let params_bgl = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
-            label: Cow::Borrowed("bloom_params_bgl"),
-            entries: vec![crate::gpu::BindGroupLayoutEntry {
-                binding: 0,
-                ty: BindingType::UniformBuffer,
-                visibility: ShaderStages::FRAGMENT,
-            }],
-        });
-        let params_buffer = gpu.create_buffer(&BufferDesc {
-            label: Cow::Borrowed("bloom_params_buf"),
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+
+        let params_buffer = ctx.device().create_buffer(&wgpu::BufferDescriptor {
+            label: Some("bloom_params_buf"),
             size: std::mem::size_of::<BloomUniform>() as u64,
-            usage: BufferUsage::UNIFORM | BufferUsage::COPY_DST,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
-        let params_bind_group = gpu.create_bind_group(&BindGroupDesc {
-            label: Cow::Borrowed("bloom_params_bg"),
-            layout: params_bgl,
-            entries: vec![BindGroupEntry::Buffer {
+
+        let params_bind_group = ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bloom_params_bg"),
+            layout: &params_bgl,
+            entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                buffer: params_buffer,
-                offset: 0,
-                size: std::mem::size_of::<BloomUniform>() as u64,
+                resource: params_buffer.as_entire_binding(),
             }],
         });
+
+        let additive_blend = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        };
 
         let bright_pipeline = FullscreenPipeline::new(
-            gpu,
+            ctx,
             BLOOM_SHADER,
             "fs_bright",
-            &[sample_bgl, params_bgl],
+            &[&sample_bgl, &params_bgl],
             target_format,
             None,
-            "bloom_bright_pipeline",
+            "bloom_bright",
         );
         let downsample_pipeline = FullscreenPipeline::new(
-            gpu,
+            ctx,
             BLOOM_SHADER,
             "fs_downsample",
-            &[sample_bgl, params_bgl],
+            &[&sample_bgl, &params_bgl],
             target_format,
             None,
-            "bloom_downsample_pipeline",
+            "bloom_downsample",
         );
         let blur_pipeline = FullscreenPipeline::new(
-            gpu,
+            ctx,
             BLOOM_SHADER,
             "fs_blur",
-            &[sample_bgl, params_bgl],
+            &[&sample_bgl, &params_bgl],
             target_format,
             None,
-            "bloom_blur_pipeline",
+            "bloom_blur",
         );
         let upsample_pipeline = FullscreenPipeline::new(
-            gpu,
+            ctx,
             BLOOM_SHADER,
             "fs_upsample",
-            &[sample_bgl, params_bgl],
+            &[&sample_bgl, &params_bgl],
             target_format,
-            Some(crate::gpu::BlendState::ADDITIVE),
-            "bloom_upsample_pipeline",
+            Some(additive_blend),
+            "bloom_upsample",
         );
         let combine_pipeline = FullscreenPipeline::new(
-            gpu,
+            ctx,
             BLOOM_SHADER,
             "fs_combine",
-            &[dual_bgl, params_bgl],
+            &[&dual_bgl, &params_bgl],
             target_format,
             None,
-            "bloom_combine_pipeline",
+            "bloom_combine",
         );
 
-        let mut bloom = Self {
+        // Build mip chain
+        let mut mip_chain = Vec::new();
+        let mut temp_targets = Vec::new();
+        for level in 0..BLOOM_LEVELS {
+            let scale = 1u32 << (level as u32 + 1);
+            let lw = (width / scale).max(1);
+            let lh = (height / scale).max(1);
+            mip_chain.push(RenderTarget::new(
+                ctx,
+                lw,
+                lh,
+                target_format,
+                format!("bloom_mip_{level}"),
+            ));
+            temp_targets.push(RenderTarget::new(
+                ctx,
+                lw,
+                lh,
+                target_format,
+                format!("bloom_tmp_{level}"),
+            ));
+        }
+
+        Self {
             bright_pipeline,
             downsample_pipeline,
             blur_pipeline,
@@ -164,68 +228,35 @@ impl Bloom {
             combine_pipeline,
             sample_bgl,
             dual_bgl,
-            params_bgl,
             params_buffer,
             params_bind_group,
-            sample_bind_groups: FxHashMap::default(),
-            dual_bind_groups: FxHashMap::default(),
-            mip_chain: Vec::new(),
-            temp_targets: Vec::new(),
+            mip_chain,
+            temp_targets,
             threshold: 0.8,
             intensity: 0.3,
             radius: 1.0,
-        };
-        bloom.resize(gpu, width, height, target_format);
-        bloom
+        }
     }
 
     pub fn resize(
         &mut self,
-        gpu: &mut impl Gpu,
+        ctx: &GpuContext,
         width: u32,
         height: u32,
-        target_format: TextureFormat,
+        target_format: wgpu::TextureFormat,
     ) {
-        if self.mip_chain.len() != BLOOM_LEVELS {
-            self.mip_chain.clear();
-            self.temp_targets.clear();
-            for level in 0..BLOOM_LEVELS {
-                let scale = 1u32 << (level as u32 + 1);
-                let level_width = (width / scale).max(1);
-                let level_height = (height / scale).max(1);
-                self.mip_chain.push(RenderTarget::new(
-                    gpu,
-                    level_width,
-                    level_height,
-                    target_format,
-                    format!("bloom_mip_{level}"),
-                ));
-                self.temp_targets.push(RenderTarget::new(
-                    gpu,
-                    level_width,
-                    level_height,
-                    target_format,
-                    format!("bloom_tmp_{level}"),
-                ));
-            }
-            self.sample_bind_groups.clear();
-            self.dual_bind_groups.clear();
-            return;
-        }
-
         for level in 0..BLOOM_LEVELS {
             let scale = 1u32 << (level as u32 + 1);
-            let level_width = (width / scale).max(1);
-            let level_height = (height / scale).max(1);
-            self.mip_chain[level].resize(gpu, level_width, level_height);
-            self.temp_targets[level].resize(gpu, level_width, level_height);
+            let lw = (width / scale).max(1);
+            let lh = (height / scale).max(1);
+            self.mip_chain[level].resize(ctx, lw, lh, target_format);
+            self.temp_targets[level].resize(ctx, lw, lh, target_format);
         }
-        self.invalidate_cache(gpu);
     }
 
     fn update_uniform(
         &self,
-        gpu: &mut impl Gpu,
+        ctx: &GpuContext,
         threshold: f32,
         intensity: f32,
         texel: [f32; 2],
@@ -235,266 +266,252 @@ impl Bloom {
             params: [threshold, intensity, self.radius, 0.0],
             texel_dir: [texel[0], texel[1], dir[0], dir[1]],
         };
-        gpu.write_buffer(self.params_buffer, 0, bytemuck::bytes_of(&uniform));
+        ctx.queue()
+            .write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&uniform));
     }
 
-    pub fn apply(&mut self, gpu: &mut impl Gpu, input: &RenderTarget, output: &RenderTarget) {
-        self.resize(gpu, input.width(), input.height(), output.format());
+    fn create_sample_bg(&self, ctx: &GpuContext, target: &RenderTarget) -> wgpu::BindGroup {
+        ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bloom_sample_bg"),
+            layout: &self.sample_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(target.view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(ctx.sampler_linear()),
+                },
+            ],
+        })
+    }
 
+    fn run_single_input(
+        &self,
+        ctx: &mut GpuContext,
+        pipeline: &wgpu::RenderPipeline,
+        input_bg: &wgpu::BindGroup,
+        output: &RenderTarget,
+        clear: bool,
+    ) {
+        let load = if clear {
+            wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+        } else {
+            wgpu::LoadOp::Load
+        };
+        ctx.with_render_pass(
+            &wgpu::RenderPassDescriptor {
+                label: Some("bloom_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: output.view(),
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                ..Default::default()
+            },
+            |pass| {
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, input_bg, &[]);
+                pass.set_bind_group(1, &self.params_bind_group, &[]);
+                FullscreenPass::draw(pass);
+            },
+        );
+    }
+
+    pub fn apply(&mut self, ctx: &mut GpuContext, input: &RenderTarget, output: &RenderTarget) {
+        self.resize(ctx, input.width(), input.height(), output.format());
+        let bright_pipeline = self.bright_pipeline.pipeline(ctx, output.format());
+        let downsample_pipeline = self.downsample_pipeline.pipeline(ctx, output.format());
+        let blur_pipeline = self.blur_pipeline.pipeline(ctx, output.format());
+        let upsample_pipeline = self.upsample_pipeline.pipeline(ctx, output.format());
+        let combine_pipeline = self.combine_pipeline.pipeline(ctx, output.format());
+
+        // Bright pass
         self.update_uniform(
-            gpu,
+            ctx,
             self.threshold,
             self.intensity,
             [1.0 / input.width() as f32, 1.0 / input.height() as f32],
             [0.0, 0.0],
         );
-        let bright_bg = self.sample_bind_group(gpu, input.image(), input.sampler());
-        self.run_single_input(
-            gpu,
-            self.bright_pipeline.pipeline(),
-            bright_bg,
-            self.mip_chain[0].image(),
-            Some([0.0, 0.0, 0.0, 1.0]),
-        );
-
-        for level in 1..BLOOM_LEVELS {
-            let source = &self.mip_chain[level - 1];
-            let source_image = source.image();
-            let source_sampler = source.sampler();
-            let source_width = source.width();
-            let source_height = source.height();
-            let target_image = self.mip_chain[level].image();
-            self.update_uniform(
-                gpu,
-                self.threshold,
-                self.intensity,
-                [1.0 / source_width as f32, 1.0 / source_height as f32],
-                [0.0, 0.0],
-            );
-            let bind_group = self.sample_bind_group(gpu, source_image, source_sampler);
-            self.run_single_input(
-                gpu,
-                self.downsample_pipeline.pipeline(),
-                bind_group,
-                target_image,
-                Some([0.0, 0.0, 0.0, 1.0]),
-            );
-        }
-
-        for level in 0..BLOOM_LEVELS {
-            let source = &self.mip_chain[level];
-            let source_image = source.image();
-            let source_sampler = source.sampler();
-            let texel = [1.0 / source.width() as f32, 1.0 / source.height() as f32];
-            let temp_image = self.temp_targets[level].image();
-
-            self.update_uniform(gpu, self.threshold, self.intensity, texel, [1.0, 0.0]);
-            let h_bg = self.sample_bind_group(gpu, source_image, source_sampler);
-            self.run_single_input(
-                gpu,
-                self.blur_pipeline.pipeline(),
-                h_bg,
-                temp_image,
-                Some([0.0, 0.0, 0.0, 1.0]),
-            );
-
-            self.update_uniform(gpu, self.threshold, self.intensity, texel, [0.0, 1.0]);
-            let temp_sampler = self.temp_targets[level].sampler();
-            let v_bg = self.sample_bind_group(gpu, temp_image, temp_sampler);
-            self.run_single_input(
-                gpu,
-                self.blur_pipeline.pipeline(),
-                v_bg,
-                self.mip_chain[level].image(),
-                Some([0.0, 0.0, 0.0, 1.0]),
-            );
-        }
-
-        for level in (1..BLOOM_LEVELS).rev() {
-            let source = &self.mip_chain[level];
-            let source_image = source.image();
-            let source_sampler = source.sampler();
-            let source_width = source.width();
-            let source_height = source.height();
-            let target_image = self.mip_chain[level - 1].image();
-            self.update_uniform(
-                gpu,
-                self.threshold,
-                self.intensity,
-                [1.0 / source_width as f32, 1.0 / source_height as f32],
-                [0.0, 0.0],
-            );
-            let bind_group = self.sample_bind_group(gpu, source_image, source_sampler);
-            self.run_single_input(
-                gpu,
-                self.upsample_pipeline.pipeline(),
-                bind_group,
-                target_image,
-                None,
-            );
-        }
-
-        self.update_uniform(gpu, self.threshold, self.intensity, [0.0, 0.0], [0.0, 0.0]);
-        let combine_bg = self.dual_bind_group(
-            gpu,
-            input.image(),
-            input.sampler(),
-            self.mip_chain[0].image(),
-            self.mip_chain[0].sampler(),
-        );
-        gpu.with_render_pass(
-            &crate::gpu::RenderPassDesc {
-                label: Cow::Borrowed("bloom_combine_pass"),
-                color_attachments: vec![ColorAttachment {
-                    target: ColorTarget::Image(output.image()),
-                    clear: Some([0.0, 0.0, 0.0, 1.0]),
-                }],
-                depth_stencil: None,
-            },
-            |pass| {
-                pass.set_pipeline(self.combine_pipeline.pipeline());
-                pass.set_bind_group(0, combine_bg);
-                pass.set_bind_group(1, self.params_bind_group);
-                FullscreenPass::draw(pass);
-            },
-        );
-    }
-
-    fn run_single_input(
-        &self,
-        gpu: &mut impl Gpu,
-        pipeline: crate::gpu::Pipeline,
-        input_bind_group: BindGroup,
-        output_image: crate::gpu::Image,
-        clear: Option<[f32; 4]>,
-    ) {
-        gpu.with_render_pass(
-            &crate::gpu::RenderPassDesc {
-                label: Cow::Borrowed("bloom_single_pass"),
-                color_attachments: vec![ColorAttachment {
-                    target: ColorTarget::Image(output_image),
-                    clear,
-                }],
-                depth_stencil: None,
-            },
-            |pass| {
-                pass.set_pipeline(pipeline);
-                pass.set_bind_group(0, input_bind_group);
-                pass.set_bind_group(1, self.params_bind_group);
-                FullscreenPass::draw(pass);
-            },
-        );
-    }
-
-    fn sample_bind_group(
-        &mut self,
-        gpu: &mut impl Gpu,
-        image: crate::gpu::Image,
-        sampler: Sampler,
-    ) -> BindGroup {
-        if let Some(bind_group) = self.sample_bind_groups.get(&(image, sampler)) {
-            return *bind_group;
-        }
-
-        let bind_group = gpu.create_bind_group(&BindGroupDesc {
-            label: Cow::Borrowed("bloom_sample_bg"),
-            layout: self.sample_bgl,
-            entries: vec![
-                BindGroupEntry::Texture { binding: 0, image },
-                BindGroupEntry::Sampler {
-                    binding: 1,
-                    sampler,
-                },
-            ],
-        });
-        self.sample_bind_groups.insert((image, sampler), bind_group);
-        bind_group
-    }
-
-    fn dual_bind_group(
-        &mut self,
-        gpu: &mut impl Gpu,
-        image_a: crate::gpu::Image,
-        sampler_a: Sampler,
-        image_b: crate::gpu::Image,
-        sampler_b: Sampler,
-    ) -> BindGroup {
-        let key = (image_a, sampler_a, image_b, sampler_b);
-        if let Some(bind_group) = self.dual_bind_groups.get(&key) {
-            return *bind_group;
-        }
-
-        let bind_group = gpu.create_bind_group(&BindGroupDesc {
-            label: Cow::Borrowed("bloom_dual_bg"),
-            layout: self.dual_bgl,
-            entries: vec![
-                BindGroupEntry::Texture {
+        let bright_bg = ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bloom_bright_bg"),
+            layout: &self.sample_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
                     binding: 0,
-                    image: image_a,
+                    resource: wgpu::BindingResource::TextureView(input.view()),
                 },
-                BindGroupEntry::Sampler {
+                wgpu::BindGroupEntry {
                     binding: 1,
-                    sampler: sampler_a,
-                },
-                BindGroupEntry::Texture {
-                    binding: 2,
-                    image: image_b,
-                },
-                BindGroupEntry::Sampler {
-                    binding: 3,
-                    sampler: sampler_b,
+                    resource: wgpu::BindingResource::Sampler(ctx.sampler_linear()),
                 },
             ],
         });
-        self.dual_bind_groups.insert(key, bind_group);
-        bind_group
-    }
-
-    pub fn invalidate_cache(&mut self, gpu: &mut impl Gpu) {
-        for bind_group in self
-            .sample_bind_groups
-            .drain()
-            .map(|(_, bind_group)| bind_group)
         {
-            gpu.destroy_bind_group(bind_group);
+            let mip0 = &self.mip_chain[0];
+            self.run_single_input(ctx, bright_pipeline.as_ref(), &bright_bg, mip0, true);
         }
-        for bind_group in self
-            .dual_bind_groups
-            .drain()
-            .map(|(_, bind_group)| bind_group)
-        {
-            gpu.destroy_bind_group(bind_group);
-        }
-    }
 
-    pub fn destroy(&mut self, gpu: &mut impl Gpu) {
-        self.invalidate_cache(gpu);
-        for target in &self.mip_chain {
-            target.destroy(gpu);
+        // Downsample
+        for level in 1..BLOOM_LEVELS {
+            let bg = self.create_sample_bg(ctx, &self.mip_chain[level - 1]);
+            let src = &self.mip_chain[level - 1];
+            self.update_uniform(
+                ctx,
+                self.threshold,
+                self.intensity,
+                [1.0 / src.width() as f32, 1.0 / src.height() as f32],
+                [0.0, 0.0],
+            );
+            let target = &self.mip_chain[level];
+            self.run_single_input(ctx, downsample_pipeline.as_ref(), &bg, target, true);
         }
-        for target in &self.temp_targets {
-            target.destroy(gpu);
+
+        // Blur (horizontal then vertical)
+        for level in 0..BLOOM_LEVELS {
+            let texel = [
+                1.0 / self.mip_chain[level].width() as f32,
+                1.0 / self.mip_chain[level].height() as f32,
+            ];
+
+            // Horizontal
+            self.update_uniform(ctx, self.threshold, self.intensity, texel, [1.0, 0.0]);
+            let h_bg = self.create_sample_bg(ctx, &self.mip_chain[level]);
+            let temp = &self.temp_targets[level];
+            self.run_single_input(ctx, blur_pipeline.as_ref(), &h_bg, temp, true);
+
+            // Vertical
+            self.update_uniform(ctx, self.threshold, self.intensity, texel, [0.0, 1.0]);
+            let v_bg = self.create_sample_bg(ctx, &self.temp_targets[level]);
+            let mip = &self.mip_chain[level];
+            self.run_single_input(ctx, blur_pipeline.as_ref(), &v_bg, mip, true);
         }
-        gpu.destroy_bind_group(self.params_bind_group);
-        gpu.destroy_buffer(self.params_buffer);
-        gpu.destroy_bind_group_layout(self.params_bgl);
-        gpu.destroy_bind_group_layout(self.dual_bgl);
-        gpu.destroy_bind_group_layout(self.sample_bgl);
-        self.combine_pipeline.destroy(gpu);
-        self.upsample_pipeline.destroy(gpu);
-        self.blur_pipeline.destroy(gpu);
-        self.downsample_pipeline.destroy(gpu);
-        self.bright_pipeline.destroy(gpu);
+
+        // Upsample
+        for level in (1..BLOOM_LEVELS).rev() {
+            let src = &self.mip_chain[level];
+            self.update_uniform(
+                ctx,
+                self.threshold,
+                self.intensity,
+                [1.0 / src.width() as f32, 1.0 / src.height() as f32],
+                [0.0, 0.0],
+            );
+            let bg = self.create_sample_bg(ctx, &self.mip_chain[level]);
+            let target = &self.mip_chain[level - 1];
+            self.run_single_input(ctx, upsample_pipeline.as_ref(), &bg, target, false);
+        }
+
+        // Combine
+        self.update_uniform(ctx, self.threshold, self.intensity, [0.0, 0.0], [0.0, 0.0]);
+        let combine_bg = ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bloom_combine_bg"),
+            layout: &self.dual_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(input.view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(ctx.sampler_linear()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(self.mip_chain[0].view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(ctx.sampler_linear()),
+                },
+            ],
+        });
+        ctx.with_render_pass(
+            &wgpu::RenderPassDescriptor {
+                label: Some("bloom_combine_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: output.view(),
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                ..Default::default()
+            },
+            |pass| {
+                pass.set_pipeline(combine_pipeline.as_ref());
+                pass.set_bind_group(0, &combine_bg, &[]);
+                pass.set_bind_group(1, &self.params_bind_group, &[]);
+                FullscreenPass::draw(pass);
+            },
+        );
     }
 }
 
 impl PostFx for Bloom {
-    fn apply_to_target<G: Gpu>(
+    fn apply_to_target(
         &mut self,
-        gpu: &mut G,
+        ctx: &mut GpuContext,
         input: &RenderTarget,
         output: &RenderTarget,
     ) {
-        Bloom::apply(self, gpu, input, output);
+        Bloom::apply(self, ctx, input, output);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .expect("No suitable GPU adapter found for render tests");
+
+        pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("render_test_device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::Performance,
+            },
+            None,
+        ))
+        .expect("Failed to create test GPU device")
+    }
+
+    #[test]
+    fn resize_reformats_internal_targets() {
+        let (device, queue) = create_test_device();
+        let ctx = crate::gpu::GpuContext::new_headless(
+            device,
+            queue,
+            wgpu::TextureFormat::Bgra8Unorm,
+            [64, 64],
+        );
+        let mut bloom = Bloom::new(&ctx, 64, 64, wgpu::TextureFormat::Rgba16Float);
+
+        bloom.resize(&ctx, 64, 64, wgpu::TextureFormat::Rgba8Unorm);
+
+        assert!(bloom
+            .mip_chain
+            .iter()
+            .all(|target| target.format() == wgpu::TextureFormat::Rgba8Unorm));
+        assert!(bloom
+            .temp_targets
+            .iter()
+            .all(|target| target.format() == wgpu::TextureFormat::Rgba8Unorm));
     }
 }

@@ -1,14 +1,17 @@
 # AGENTS.md
 
 ## Overview
-- This repo is a Rust ECS library built around chunk-based, archetype-oriented, columnar storage.
-- The performance-critical paths are typed prepared queries, chunk iteration, and structural entity/component transitions.
-- The runtime is functional today: entities, bundles, typed queries, optional query params, filters, deferred commands, resources, and a lightweight system schedule are all in active use.
+- This repo is a Rust game engine with a chunk-based ECS core and a `wgpu`-based 2D rendering framework.
+- **ECS**: the performance-critical paths are typed prepared queries, chunk iteration, and structural entity/component transitions. Entities, bundles, typed queries, optional query params, filters, deferred commands, resources, and a lightweight system schedule are all in active use.
+- **Rendering**: a declarative render graph (`RenderGraph`) orchestrates GPU workloads. Higher-level passes (`SpriteBatch`, `LightPass`, `CompositePass`, `PostFx`) compose on top. The GPU backend is `wgpu`.
+- **App lifecycle**: `AppRunner` manages the winit event loop, GPU context, and frame lifecycle behind the `app` feature flag.
 - Benchmarks are Criterion-based under `benches/`, with a single canonical `fair` target and engine-specific implementations split under `benches/fair/`.
 
 ## Canonical API Surface
-- Main entry points live under `sky_engine::ecs`.
-- Primary runtime types: `World`, `EntityId`, `Bundle`, `PreparedQuery`, `Commands`, `With`, `Without`, `System`, and `Time`.
+- **ECS** entry points: `sky_engine::ecs` — `World`, `EntityId`, `Bundle`, `PreparedQuery`, `Commands`, `With`, `Without`, `System`, `Time`.
+- **Render** entry points: `sky_engine::render` — `RenderGraph`, `PhysicalResources`, `SpriteBatch`, `Material*`, `LightPass`, `Bloom`, `ToneMap`, `Vignette`, `Camera2D`, `Texture`, `RenderTarget`.
+- **GPU** entry points: `sky_engine::gpu` — `GpuContext` (wraps wgpu device/queue/surface).
+- **App** entry points: `sky_engine::app` (behind `features = ["app"]`) — `AppRunner`, `AppConfig`, `Input`.
 - Preferred entity construction is bundle-based: `world.spawn((A, B, ...))` and `world.spawn_batch(...)`.
 - Preferred query construction is typed: `world.query::<Q>()` or `world.query_filtered::<Q, Flt>()`.
 - Low-level compatibility/benchmark helpers live under `sky_engine::ecs::raw`.
@@ -45,6 +48,21 @@
 - `README.md`, `README_CN.md`: user-facing overview and quick-start docs.
 - `BENCHMARKS.md`: benchmark policy, history, and recorded local results.
 - `docs/api.md`: API notes/reference material.
+- `src/gpu/context.rs`: `GpuContext` — wgpu device/queue/surface wrapper, headless mode for tests, frame encoder lifecycle.
+- `src/gpu/mod.rs`: GPU module re-exports.
+- `src/render/`: 2D rendering framework (see `src/render/AGENTS.md` for full module docs).
+- `src/render/mod.rs`: render module re-exports.
+- `src/render/core/`: foundational GPU types — `Camera2D`, `Color`, `Texture`, `RenderTarget`, `FullscreenPass`.
+- `src/render/graph/`: declarative render graph system (see `src/render/graph/AGENTS.md` for detailed docs).
+- `src/render/passes/`: high-level rendering passes — `SpriteBatch`, `LightPass`, `CompositePass`.
+- `src/render/postfx/`: post-processing effects — `Bloom`, `ToneMap`, `Vignette`.
+- `src/render/resources/`: shared resource systems — `TextureAtlas`, `Blackboard`, `Material*`.
+- `src/render/shaders/`: all WGSL shader sources.
+- `src/render/light.rs`: `Light2D` — 2D point light descriptor and color temperature utility.
+- `src/render/live2d/`: Live2D Cubism model renderer (see `src/render/live2d/AGENTS.md`, feature-gated).
+- `src/app/runner.rs`: `AppRunner` — winit event loop, frame lifecycle, GPU context management.
+- `src/app/config.rs`: `AppConfig` — window title, size, vsync.
+- `src/app/input.rs`: `Input` — keyboard/mouse state tracking.
 
 ## Current Query Model
 - Preferred runtime path: `world.query::<Q>() -> PreparedQuery<Q>` and `world.query_filtered::<Q, Flt>() -> PreparedQuery<Q, Flt>`.
@@ -85,7 +103,12 @@
 - `Cargo.toml` keeps `[profile.release] debug = true` so profilers can resolve hot code.
 
 ## Benchmark and Test Commands
-- Run tests: `cargo test`
+- Run all tests (ECS only): `cargo test`
+- Run all tests (ECS + render): `cargo test --features app`
+- Run render graph tests: `cargo test --features app graph`
+- Run a specific render test: `cargo test --features app render::graph::tests::linear_chain_orders_correctly`
+- Run reorder tests only: `cargo test --features app reorder::tests`
+- Run alias tests only: `cargo test --features app alias::tests`
 - Run canonical fair comparison: `cargo bench --bench fair`
 - Run all benches: `cargo bench`
 - Run one engine slice: `cargo bench --bench fair -- sky`
@@ -94,6 +117,7 @@
 - Other demo examples use the same `--features demo` pattern (`snake`, `boids`, `asteroids`).
 - Comparison examples require `--features compare`.
 - Chunk-size sweeps are done by editing `CHUNK_SIZE` in `src/ecs/chunk.rs` and rerunning the relevant benches.
+- Render graph tests requiring GPU use `create_test_device()` or `GpuContext::new_headless()` and need a GPU-capable environment.
 
 ## Benchmark Policy
 - `benches/fair/main.rs` is the only canonical cross-engine comparison suite.
@@ -116,6 +140,27 @@
 - If schedule code changes, preserve group creation order and fixed-step accumulator semantics.
 - Do not rely on `src/main.rs` for correctness, benchmarks, or API direction; it is not the source of truth.
 - Examples are useful usage references, but benchmark behavior and correctness expectations come from `src/` tests plus the bench suites.
+
+## Render Graph Guidelines
+- The render graph has its own detailed `AGENTS.md` at `src/render/graph/AGENTS.md`; read it before modifying graph internals.
+- All resource handle validation must use the `handle_token` mechanism; never index into `textures`/`buffers` without checking the token first.
+- `compile()` is the single source of truth for execution order. It is idempotent; repeated calls return the cached result.
+- `allocate_physical_resources()` must be called after `compile()` and before accessing physical resources.
+- `buffer_usage_for()` must only be called after compilation (enforced by `debug_assert`).
+- `execute_copy_pass()` must remain `&self` (not `&mut self`) to avoid borrow conflicts with `PhysicalResources` during execution.
+- `alias_group_count()` only counts multi-member groups (groups where actual physical sharing occurs).
+- `resource_has_external_sink` and `resource_has_external_source` intentionally share the same implementation — imported resources are both sources and sinks.
+- Copy passes must flush the current frame encoder before submitting their own command buffers.
+- All new `CopyOp` variants must register proper reads/writes in `CopyPassSetup` for dependency analysis.
+- `queue.write_texture()` (used by `UploadToTexture`) does NOT require 256-byte `bytes_per_row` alignment; `encoder.copy_buffer_to_texture()` does.
+- Transient pool keys must be cheap to hash (`FxHashMap`).
+- Do not add heavyweight per-frame allocations to the compilation pipeline.
+
+## GPU Context Guidelines
+- `GpuContext` wraps the wgpu `Device`, `Queue`, and optional `Surface`.
+- `GpuContext::new_headless()` creates a surfaceless context for unit testing render graph allocation without a window.
+- The `surface` field is `Option<wgpu::Surface>` — always check `has_surface()` before calling surface-dependent methods.
+- Frame lifecycle: `begin_frame()` → encoder operations → `end_frame()` submits and presents.
 
 ## Commit Hygiene
 - Do not commit profiler artifacts such as `sky-profile*.json.gz` or `*.syms.json`.

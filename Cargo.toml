@@ -27,72 +27,148 @@ pollster = { version = "0.4", optional = true }
 
 # Asset loading (feature-gated)
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+serde_json = { version = "1", optional = true }
+cubism-sys = { path = "cubism-sys", optional = true }
 
 # Existing optionals
 minifb = { version = "0.28.0", optional = true }
 rand = { version = "0.8", optional = true }
 hecs = { version = "0.10.5", optional = true }
 bevy_ecs = { version = "0.18.1", optional = true }
+bevy = { version = "0.18.1", default-features = false, features = ["bevy_winit", "bevy_render", "bevy_core_pipeline", "bevy_sprite", "bevy_gizmos", "bevy_text", "bevy_post_process", "default_font", "png", "x11"], optional = true }
+
+# ── ECS tutorials (no GPU needed) ─────────────────────────────────────────────
+
+[[example]]
+name = "hello_ecs"
+path = "examples/ecs/hello_ecs.rs"
+
+[[example]]
+name = "queries"
+path = "examples/ecs/queries.rs"
+
+[[example]]
+name = "commands"
+path = "examples/ecs/commands.rs"
+
+[[example]]
+name = "systems"
+path = "examples/ecs/systems.rs"
+
+[[example]]
+name = "tiny_defense"
+path = "examples/ecs/tiny_defense.rs"
+
+# ── Render API showcases (GPU, --features app) ───────────────────────────────
 
 [[example]]
 name = "clear_screen"
+path = "examples/render/clear_screen.rs"
 required-features = ["app"]
 
 [[example]]
 name = "sprite_demo"
+path = "examples/render/sprite_demo.rs"
 required-features = ["app"]
 
 [[example]]
 name = "textured_demo"
+path = "examples/render/textured_demo.rs"
 required-features = ["app"]
 
 [[example]]
 name = "perf_test"
+path = "examples/render/perf_test.rs"
 required-features = ["app"]
 
 [[example]]
 name = "lighting_demo"
+path = "examples/render/lighting_demo.rs"
 required-features = ["app"]
 
 [[example]]
+name = "render_graph_showcase"
+path = "examples/render/render_graph_showcase.rs"
+required-features = ["app"]
+
+# ── Full demo showcases (GPU, --features app) ────────────────────────────────
+
+[[example]]
+name = "boids"
+path = "examples/demo/boids.rs"
+required-features = ["app"]
+
+[[example]]
+name = "boids_classic"
+path = "examples/demo/boids_classic.rs"
+required-features = ["app"]
+
+[[example]]
+name = "cosmic_jellyfish"
+path = "examples/demo/cosmic_jellyfish.rs"
+required-features = ["app"]
+
+[[example]]
+name = "neon_galaxy"
+path = "examples/demo/neon_galaxy.rs"
+required-features = ["app"]
+
+# ── Live2D (--features live2d) ───────────────────────────────────────────────
+
+[[example]]
+name = "live2d_demo"
+path = "examples/render/live2d_demo.rs"
+required-features = ["live2d"]
+
+# ── Legacy CPU-rendered (minifb, --features demo-legacy) ─────────────────────
+
+[[example]]
 name = "particles"
+path = "examples/legacy/particles.rs"
 required-features = ["demo-legacy"]
 
 [[example]]
 name = "asteroids"
-required-features = ["demo-legacy"]
-
-[[example]]
-name = "boids"
+path = "examples/legacy/asteroids.rs"
 required-features = ["demo-legacy"]
 
 [[example]]
 name = "snake"
+path = "examples/legacy/snake.rs"
 required-features = ["demo-legacy"]
+
+# ── Cross-engine comparisons (--features compare) ───────────────────────────
 
 [[example]]
 name = "boids_hecs"
+path = "examples/legacy/boids_hecs.rs"
 required-features = ["compare"]
 
 [[example]]
 name = "boids_bevy"
+path = "examples/legacy/boids_bevy.rs"
 required-features = ["compare"]
 
+[[example]]
+name = "boids_bevy_gpu"
+path = "examples/compare/boids_bevy_gpu.rs"
+required-features = ["compare-bevy"]
+
 [features]
-# GPU abstraction layer (RHI only, no graphics lib)
-gpu = ["bytemuck"]
-# wgpu backend
-gpu-wgpu = ["gpu", "dep:wgpu"]
-# Application framework (window + input)
-app = ["gpu-wgpu", "dep:winit", "dep:pollster"]
+# Application framework (window + GPU + input)
+app = ["dep:wgpu", "dep:winit", "dep:pollster", "dep:bytemuck"]
 # Asset loading
 asset = ["dep:image"]
 # GPU-accelerated demos (future)
 demo = ["app", "asset", "dep:rand"]
+# Live2D Cubism SDK integration
+live2d = ["app", "asset", "dep:cubism-sys", "dep:serde_json"]
 # Legacy CPU-rendered demos (existing minifb demos)
 demo-legacy = ["dep:minifb", "dep:rand"]
 # Comparison benchmarks
 compare = ["demo-legacy", "dep:hecs", "dep:bevy_ecs"]
+# Full Bevy GPU comparison
+compare-bevy = ["dep:bevy"]
 [dev-dependencies]
 criterion = "0.8.2"
 cgmath = "0.18"

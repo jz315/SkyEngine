@@ -2710,3 +2710,148 @@ fn blackboard_ref_is_read_only_view() {
     let bb = graph.blackboard_ref();
     assert_eq!(*bb.get::<u32>("answer").unwrap(), 42);
 }
+
+// ── Bug: write_color_loaded missing read dependency ─────────────────
+//
+// write_color_loaded() declares LoadOp::Load, meaning the pass semantically
+// READS existing attachment contents (to blend over them).  However, it only
+// calls push_write() — not push_read().  This means the dependency analysis
+// won't create an edge from the prior writer to this pass.
+//
+// Result: the compiler CAN legally schedule the "blend" pass BEFORE the
+// "fill" pass that wrote the data it needs.  This is a data-race in the
+// render graph.
+
+#[test]
+fn bug_write_color_loaded_missing_read_dependency() {
+    // Setup:
+    //   Pass "fill"  — writes to T using write_color_cleared (produces data)
+    //   Pass "blend" — uses write_color_loaded on T (needs data from "fill")
+    //   Pass "present" — reads T, writes surface (keeps both alive)
+    //
+    // Expected: "fill" must come before "blend" because "blend" depends on
+    //           T's contents via LoadOp::Load.
+    //
+    // Bug: "blend" has T in its writes but NOT in its reads.  The compiler
+    //      sees no dependency edge from "fill" to "blend".
+
+    let mut graph = RenderGraph::new();
+    let t = graph.create_texture(|b| {
+        b.name("color_target")
+            .size(TargetSize::Exact(64, 64))
+            .format(TextureFormat::Rgba8Unorm);
+    });
+
+    graph.add_render_pass("fill", |s| {
+        s.write_color_cleared(0, t, [1.0, 0.0, 0.0, 1.0]);
+    });
+    graph.add_render_pass("blend", |s| {
+        // LoadOp::Load → semantically READS the attachment's prior contents.
+        // BUG: this only declares a write, not a read.
+        s.write_color_loaded(0, t);
+    });
+    graph.add_render_pass("present", |s| {
+        s.read(t);
+        s.write_surface();
+    });
+
+    // The "blend" pass SHOULD have the texture in its reads list because
+    // LoadOp::Load requires reading prior contents.
+    let blend_pass = &graph.passes[1];
+    assert!(
+        blend_pass.reads.contains(&ResourceRef::Texture(t)),
+        "BUG: write_color_loaded() does not declare a read dependency on the \
+         texture it will Load.  The compiler cannot guarantee correct ordering \
+         between the prior writer ('fill') and this pass ('blend').\n\
+         blend_pass.reads = {:?}",
+        blend_pass.reads,
+    );
+}
+
+#[test]
+fn bug_write_color_loaded_ordering_can_be_wrong() {
+    // This test directly demonstrates the ordering consequence of the bug.
+    // With two independent passes where only write_color_loaded creates the
+    // link, the compiler may not enforce correct ordering.
+
+    let mut graph = RenderGraph::new();
+    let t = graph.create_texture(|b| {
+        b.name("target");
+    });
+
+    // "producer" writes T normally.
+    graph.add_render_pass("producer", |s| {
+        s.write(t);
+    });
+
+    // "consumer_blend" uses write_color_loaded — semantically needs T's data.
+    // But due to the bug, this pass only has T in writes, not reads.
+    graph.add_render_pass("consumer_blend", |s| {
+        s.write_color_loaded(0, t);
+        s.write_surface(); // keep alive
+    });
+
+    let passes = graph.compile().unwrap();
+
+    // If the bug is fixed, the dependency edge producer→consumer_blend would
+    // guarantee "producer" comes first.
+    //
+    // With the bug present, the compiler sees:
+    //   producer: writes T
+    //   consumer_blend: writes T (no read on T)
+    // It creates an edge: (writer of T in producer) → (writer of T in consumer_blend)
+    // which happens to work ONLY because both are sequential writers.
+    //
+    // But if we interleave another pass, the Kahn's topological sort may not
+    // respect the semantic dependency.  Let's verify the actual pass data:
+    let consumer_pass = passes.iter().find(|p| p.name == "consumer_blend").unwrap();
+    assert!(
+        consumer_pass
+            .reads
+            .contains(&ResourceRef::Texture(graph.get_texture("target").unwrap())),
+        "BUG: consumer_blend should have texture in reads due to LoadOp::Load, \
+         reads = {:?}",
+        consumer_pass.reads,
+    );
+}
+
+// ── Bug: set_depth_stencil_loaded missing read dependency ───────────
+//
+// set_depth_stencil_loaded() is meant to preserve existing depth contents
+// (no clear), but it only calls push_write().  Like write_color_loaded(),
+// it needs the prior depth data to be present, which means it semantically
+// reads the resource.
+
+#[test]
+fn bug_set_depth_stencil_loaded_missing_read_dependency() {
+    let mut graph = RenderGraph::new();
+    let depth = graph.create_texture(|b| {
+        b.name("depth")
+            .format(TextureFormat::Depth32Float)
+            .size(TargetSize::Exact(64, 64));
+    });
+
+    // "z_prepass" writes the depth buffer.
+    graph.add_render_pass("z_prepass", |s| {
+        s.set_depth_stencil_cleared(depth, 1.0);
+        s.write_surface();
+    });
+
+    // "main_pass" loads the existing depth buffer (no clear).
+    // BUG: set_depth_stencil_loaded only pushes a write, not a read.
+    graph.add_render_pass("main_pass", |s| {
+        s.set_depth_stencil_loaded(depth);
+        s.write_surface();
+    });
+
+    // Verify that "main_pass" has depth in its reads.
+    let main_pass = &graph.passes[1];
+    assert!(
+        main_pass.reads.contains(&ResourceRef::Texture(depth)),
+        "BUG: set_depth_stencil_loaded() does not declare a read dependency \
+         on the depth texture it will Load.  The compiler cannot guarantee \
+         that 'z_prepass' runs before 'main_pass'.\n\
+         main_pass.reads = {:?}",
+        main_pass.reads,
+    );
+}

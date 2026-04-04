@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use crate::render::target::RenderTarget;
+use crate::render::core::target::RenderTarget;
 
 pub(crate) type TextureFormat = wgpu::TextureFormat;
 

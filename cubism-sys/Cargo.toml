@@ -1,0 +1,8 @@
+[package]
+name = "cubism-sys"
+version = "0.1.0"
+edition = "2021"
+description = "Raw FFI bindings to Live2D Cubism SDK Core"
+license = "MIT"
+links = "Live2DCubismCore"
+build = "build.rs"

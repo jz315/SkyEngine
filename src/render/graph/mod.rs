@@ -70,8 +70,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::gpu::GpuContext;
-use crate::render::blackboard::Blackboard;
-use crate::render::target::RenderTarget;
+use crate::render::core::target::RenderTarget;
+use crate::render::resources::blackboard::Blackboard;
 
 pub use alias::AliasingStats;
 pub use builder::{BufferBuilder, CopyPassSetup, PassSetup, TextureBuilder};

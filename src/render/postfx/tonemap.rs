@@ -1,17 +1,9 @@
 //! HDR tonemapping.
 
-use std::borrow::Cow;
-
-use rustc_hash::FxHashMap;
-
-use crate::gpu::{
-    BindGroup, BindGroupDesc, BindGroupEntry, BindGroupLayout, BindGroupLayoutDesc, BindingType,
-    Buffer, BufferDesc, BufferUsage, ColorAttachment, ColorTarget, Gpu, ShaderStages,
-    TextureFormat,
-};
-use crate::render::fullscreen::{FullscreenPass, FullscreenPipeline};
+use crate::gpu::GpuContext;
+use crate::render::core::fullscreen::{FullscreenPass, FullscreenPipeline};
+use crate::render::core::target::RenderTarget;
 use crate::render::postfx::PostFx;
-use crate::render::target::RenderTarget;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -23,60 +15,76 @@ const TONEMAP_SHADER: &str = include_str!("../shaders/tonemap.wgsl");
 
 pub struct ToneMap {
     pipeline: FullscreenPipeline,
-    texture_bgl: BindGroupLayout,
-    params_bgl: BindGroupLayout,
-    params_buffer: Buffer,
-    params_bind_group: BindGroup,
-    bind_groups: FxHashMap<(crate::gpu::Image, crate::gpu::Sampler), BindGroup>,
+    texture_bgl: wgpu::BindGroupLayout,
+    params_buffer: wgpu::Buffer,
+    params_bind_group: wgpu::BindGroup,
     pub exposure: f32,
     pub gamma: f32,
 }
 
 impl ToneMap {
-    pub fn new(gpu: &mut impl Gpu, target_format: TextureFormat) -> Self {
-        let texture_bgl = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
-            label: Cow::Borrowed("tonemap_texture_bgl"),
-            entries: vec![
-                crate::gpu::BindGroupLayoutEntry {
+    pub fn new(ctx: &GpuContext, target_format: wgpu::TextureFormat) -> Self {
+        let texture_bgl = ctx
+            .device()
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("tonemap_texture_bgl"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+
+        let params_bgl = ctx
+            .device()
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("tonemap_params_bgl"),
+                entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    ty: BindingType::Texture,
-                    visibility: ShaderStages::FRAGMENT,
-                },
-                crate::gpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    ty: BindingType::Sampler,
-                    visibility: ShaderStages::FRAGMENT,
-                },
-            ],
-        });
-        let params_bgl = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
-            label: Cow::Borrowed("tonemap_params_bgl"),
-            entries: vec![crate::gpu::BindGroupLayoutEntry {
-                binding: 0,
-                ty: BindingType::UniformBuffer,
-                visibility: ShaderStages::FRAGMENT,
-            }],
-        });
-        let params_buffer = gpu.create_buffer(&BufferDesc {
-            label: Cow::Borrowed("tonemap_params_buf"),
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+
+        let params_buffer = ctx.device().create_buffer(&wgpu::BufferDescriptor {
+            label: Some("tonemap_params_buf"),
             size: std::mem::size_of::<ToneMapUniform>() as u64,
-            usage: BufferUsage::UNIFORM | BufferUsage::COPY_DST,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
-        let params_bind_group = gpu.create_bind_group(&BindGroupDesc {
-            label: Cow::Borrowed("tonemap_params_bg"),
-            layout: params_bgl,
-            entries: vec![BindGroupEntry::Buffer {
+
+        let params_bind_group = ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("tonemap_params_bg"),
+            layout: &params_bgl,
+            entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                buffer: params_buffer,
-                offset: 0,
-                size: std::mem::size_of::<ToneMapUniform>() as u64,
+                resource: params_buffer.as_entire_binding(),
             }],
         });
+
         let pipeline = FullscreenPipeline::new(
-            gpu,
+            ctx,
             TONEMAP_SHADER,
             "fs_main",
-            &[texture_bgl, params_bgl],
+            &[&texture_bgl, &params_bgl],
             target_format,
             None,
             "tonemap_pipeline",
@@ -85,101 +93,92 @@ impl ToneMap {
         Self {
             pipeline,
             texture_bgl,
-            params_bgl,
             params_buffer,
             params_bind_group,
-            bind_groups: FxHashMap::default(),
             exposure: 1.0,
             gamma: 2.2,
         }
     }
 
-    pub fn apply_to_surface(&mut self, gpu: &mut impl Gpu, input: &RenderTarget) {
-        self.apply_inner(gpu, input, ColorTarget::Surface);
+    pub fn apply_to_surface(&mut self, ctx: &mut GpuContext, input: &RenderTarget) {
+        let bind_group = self.create_texture_bg(ctx, input);
+        let pipeline = self.pipeline.pipeline(ctx, ctx.surface_format());
+        let uniform = ToneMapUniform {
+            params: [self.exposure, self.gamma.max(0.001), 0.0, 0.0],
+        };
+        ctx.queue()
+            .write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&uniform));
+
+        ctx.with_surface_pass("tonemap_pass", Some(wgpu::Color::BLACK), |pass| {
+            pass.set_pipeline(pipeline.as_ref());
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.set_bind_group(1, &self.params_bind_group, &[]);
+            FullscreenPass::draw(pass);
+        });
     }
 
     pub fn apply_to_target(
         &mut self,
-        gpu: &mut impl Gpu,
+        ctx: &mut GpuContext,
         input: &RenderTarget,
         output: &RenderTarget,
     ) {
-        self.apply_inner(gpu, input, ColorTarget::Image(output.image()));
-    }
-
-    fn apply_inner(&mut self, gpu: &mut impl Gpu, input: &RenderTarget, output: ColorTarget) {
-        let bind_group = self.texture_bind_group(gpu, input.image(), input.sampler());
+        let bind_group = self.create_texture_bg(ctx, input);
+        let pipeline = self.pipeline.pipeline(ctx, output.format());
         let uniform = ToneMapUniform {
             params: [self.exposure, self.gamma.max(0.001), 0.0, 0.0],
         };
-        gpu.write_buffer(self.params_buffer, 0, bytemuck::bytes_of(&uniform));
+        ctx.queue()
+            .write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&uniform));
 
-        gpu.with_render_pass(
-            &crate::gpu::RenderPassDesc {
-                label: Cow::Borrowed("tonemap_pass"),
-                color_attachments: vec![ColorAttachment {
-                    target: output,
-                    clear: Some([0.0, 0.0, 0.0, 1.0]),
-                }],
-                depth_stencil: None,
+        ctx.with_render_pass(
+            &wgpu::RenderPassDescriptor {
+                label: Some("tonemap_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: output.view(),
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                ..Default::default()
             },
             |pass| {
-                pass.set_pipeline(self.pipeline.pipeline());
-                pass.set_bind_group(0, bind_group);
-                pass.set_bind_group(1, self.params_bind_group);
+                pass.set_pipeline(pipeline.as_ref());
+                pass.set_bind_group(0, &bind_group, &[]);
+                pass.set_bind_group(1, &self.params_bind_group, &[]);
                 FullscreenPass::draw(pass);
             },
         );
     }
 
-    fn texture_bind_group(
-        &mut self,
-        gpu: &mut impl Gpu,
-        image: crate::gpu::Image,
-        sampler: crate::gpu::Sampler,
-    ) -> BindGroup {
-        if let Some(bind_group) = self.bind_groups.get(&(image, sampler)) {
-            return *bind_group;
-        }
-
-        let bind_group = gpu.create_bind_group(&BindGroupDesc {
-            label: Cow::Borrowed("tonemap_texture_bg"),
-            layout: self.texture_bgl,
-            entries: vec![
-                BindGroupEntry::Texture { binding: 0, image },
-                BindGroupEntry::Sampler {
+    fn create_texture_bg(&self, ctx: &GpuContext, input: &RenderTarget) -> wgpu::BindGroup {
+        ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("tonemap_texture_bg"),
+            layout: &self.texture_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(input.view()),
+                },
+                wgpu::BindGroupEntry {
                     binding: 1,
-                    sampler,
+                    resource: wgpu::BindingResource::Sampler(ctx.sampler_linear()),
                 },
             ],
-        });
-        self.bind_groups.insert((image, sampler), bind_group);
-        bind_group
-    }
-
-    pub fn invalidate_cache(&mut self, gpu: &mut impl Gpu) {
-        for bind_group in self.bind_groups.drain().map(|(_, bind_group)| bind_group) {
-            gpu.destroy_bind_group(bind_group);
-        }
-    }
-
-    pub fn destroy(&mut self, gpu: &mut impl Gpu) {
-        self.invalidate_cache(gpu);
-        gpu.destroy_bind_group(self.params_bind_group);
-        gpu.destroy_buffer(self.params_buffer);
-        gpu.destroy_bind_group_layout(self.params_bgl);
-        gpu.destroy_bind_group_layout(self.texture_bgl);
-        self.pipeline.destroy(gpu);
+        })
     }
 }
 
 impl PostFx for ToneMap {
-    fn apply_to_target<G: Gpu>(
+    fn apply_to_target(
         &mut self,
-        gpu: &mut G,
+        ctx: &mut GpuContext,
         input: &RenderTarget,
         output: &RenderTarget,
     ) {
-        ToneMap::apply_to_target(self, gpu, input, output);
+        ToneMap::apply_to_target(self, ctx, input, output);
     }
 }

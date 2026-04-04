@@ -213,6 +213,7 @@ impl PassSetup {
             !self.color_outputs.iter().any(|o| o.slot == slot),
             "MRT slot {slot} already declared for this pass"
         );
+        self.push_read(ResourceRef::Texture(handle));
         self.push_write(ResourceRef::Texture(handle));
         self.color_outputs.push(ColorOutput {
             slot,
@@ -255,6 +256,7 @@ impl PassSetup {
 
     /// Declare a depth attachment whose previous contents must be preserved.
     pub fn set_depth_stencil_loaded(&mut self, handle: TextureHandle) {
+        self.push_read(ResourceRef::Texture(handle));
         self.push_write(ResourceRef::Texture(handle));
         self.depth_stencil = Some(DepthStencilOutput {
             handle,

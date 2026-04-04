@@ -1,2 +1,14 @@
     Checking sky_engine v0.1.0 (C:\Coding\SkyEngine)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.37s
+warning: field `moc` is never read
+  --> src\render\live2d\model.rs:53:5
+   |
+49 | pub struct Live2DModel {
+   |            ----------- field in this struct
+...
+53 |     moc: *mut csmMoc,
+   |     ^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `sky_engine` (lib) generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.46s

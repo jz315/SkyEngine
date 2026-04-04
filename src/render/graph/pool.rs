@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use rustc_hash::FxHashMap;
 
 use crate::gpu::GpuContext;
-use crate::render::target::RenderTarget;
+use crate::render::core::target::RenderTarget;
 
 use super::types::TextureFormat;
 

@@ -231,7 +231,7 @@ impl RenderGraph {
                 }
             } else {
                 match self.physical_textures[tex_idx].as_mut() {
-                    Some(existing) => existing.resize(ctx, w, h),
+                    Some(existing) => existing.resize(ctx, w, h, desc.format),
                     None => {
                         self.physical_textures[tex_idx] =
                             Some(RenderTarget::new(ctx, w, h, desc.format, desc.name.clone()));
