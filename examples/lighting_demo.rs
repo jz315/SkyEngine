@@ -8,7 +8,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use sky_engine::app::{App, AppConfig};
-use sky_engine::gpu::{Gpu, TextureFormat};
+use sky_engine::gpu::GpuContext;
 use sky_engine::render::{
     Bloom, Camera2D, Color, CompositePass, Light2D, LightPass, RenderGraph, Sprite, SpriteBatch,
     TargetSize, Texture, ToneMap, Vignette,
@@ -42,13 +42,15 @@ struct RenderState {
 }
 
 impl RenderState {
-    fn new(gpu: &mut impl Gpu) -> Self {
+    fn new(gpu: &GpuContext) -> Self {
         let [sw, sh] = gpu.surface_size();
-        let mut vignette = Vignette::new(gpu, TextureFormat::Rgba16Float);
+        let hdr = wgpu::TextureFormat::Rgba16Float;
+
+        let mut vignette = Vignette::new(gpu, hdr);
         vignette.intensity = 0.35;
         vignette.smoothness = 0.28;
 
-        let mut bloom = Bloom::new(gpu, sw, sh, TextureFormat::Rgba16Float);
+        let mut bloom = Bloom::new(gpu, sw, sh, hdr);
         bloom.threshold = 0.55;
         bloom.intensity = 0.45;
         bloom.radius = 1.15;
@@ -63,33 +65,17 @@ impl RenderState {
             normal_batch: SpriteBatch::new(gpu),
             circle_tex: Texture::circle(gpu, 96),
             normal_tex: Texture::circle_normal(gpu, 96),
-            light_pass: LightPass::new(gpu, TextureFormat::Rgba16Float),
-            composite_pass: CompositePass::new(gpu, TextureFormat::Rgba16Float),
+            light_pass: LightPass::new(gpu, hdr),
+            composite_pass: CompositePass::new(gpu, hdr),
             vignette,
             bloom,
             tonemap,
         }
     }
 
-    fn resize(&mut self, gpu: &mut impl Gpu, width: u32, height: u32) {
-        self.light_pass.invalidate_cache(gpu);
-        self.composite_pass.invalidate_cache(gpu);
-        self.vignette.invalidate_cache(gpu);
-        self.tonemap.invalidate_cache(gpu);
+    fn resize(&mut self, gpu: &GpuContext, width: u32, height: u32) {
         self.bloom
-            .resize(gpu, width, height, TextureFormat::Rgba16Float);
-    }
-
-    fn destroy(&mut self, gpu: &mut impl Gpu) {
-        self.tonemap.destroy(gpu);
-        self.bloom.destroy(gpu);
-        self.vignette.destroy(gpu);
-        self.composite_pass.destroy(gpu);
-        self.light_pass.destroy(gpu);
-        self.normal_tex.destroy(gpu);
-        self.circle_tex.destroy(gpu);
-        self.normal_batch.destroy(gpu);
-        self.scene_batch.destroy(gpu);
+            .resize(gpu, width, height, wgpu::TextureFormat::Rgba16Float);
     }
 }
 
@@ -113,39 +99,37 @@ fn main() {
     let sim_time = Rc::new(RefCell::new(0.0f32));
     let orbs = Rc::new(RefCell::new(sprites));
 
-    // ── Declare virtual resources once ──────────────────────────────
     let scene_rt = graph.create_texture(|b| {
         b.name("scene_rt")
             .size(TargetSize::Surface)
-            .format(TextureFormat::Rgba16Float);
+            .format(wgpu::TextureFormat::Rgba16Float);
     });
     let normal_rt = graph.create_texture(|b| {
         b.name("normal_rt")
             .size(TargetSize::Surface)
-            .format(TextureFormat::Rgba8Unorm);
+            .format(wgpu::TextureFormat::Rgba8Unorm);
     });
     let light_rt = graph.create_texture(|b| {
         b.name("light_rt")
             .size(TargetSize::Surface)
-            .format(TextureFormat::Rgba16Float);
+            .format(wgpu::TextureFormat::Rgba16Float);
     });
     let hdr_rt = graph.create_texture(|b| {
         b.name("hdr_rt")
             .size(TargetSize::Surface)
-            .format(TextureFormat::Rgba16Float);
+            .format(wgpu::TextureFormat::Rgba16Float);
     });
     let graded_rt = graph.create_texture(|b| {
         b.name("graded_rt")
             .size(TargetSize::Surface)
-            .format(TextureFormat::Rgba16Float);
+            .format(wgpu::TextureFormat::Rgba16Float);
     });
     let bloom_rt = graph.create_texture(|b| {
         b.name("bloom_rt")
             .size(TargetSize::Surface)
-            .format(TextureFormat::Rgba16Float);
+            .format(wgpu::TextureFormat::Rgba16Float);
     });
 
-    // ── Declare passes (dependency info only) ──────────────────────
     let scene_pass = graph.add_render_pass("scene_batch", |s| {
         s.write_color_cleared(0, scene_rt, [0.015, 0.016, 0.02, 1.0]);
     });
@@ -180,7 +164,6 @@ fn main() {
     let shutdown_graph = Rc::clone(&graph);
     let frame_state = Rc::clone(&render_state);
     let resize_state = Rc::clone(&render_state);
-    let shutdown_state = Rc::clone(&render_state);
     let frame_time = Rc::clone(&sim_time);
     let frame_orbs = Rc::clone(&orbs);
 
@@ -202,7 +185,7 @@ fn main() {
             let [w, h] = ctx.gpu.surface_size();
             let mouse = ctx.input.mouse_position();
             let mouse_world = {
-                let rs = state_ref.as_mut().unwrap();
+                let rs = state_ref.as_mut().expect("render state should exist");
                 rs.camera.set_viewport(w as f32, h as f32);
                 rs.camera.screen_to_world(mouse[0], mouse[1])
             };
@@ -231,50 +214,39 @@ fn main() {
                 }
             }
 
-            let mut lights = Vec::with_capacity(5);
-            lights.push(
+            let lights = vec![
                 Light2D::new(-260.0, -50.0, 240.0)
                     .temperature(2600.0)
                     .intensity(2.1)
                     .falloff(1.7)
                     .color(Color::rgb(1.0, 0.78, 0.45)),
-            );
-            lights.push(
                 Light2D::new(260.0, 180.0, 320.0)
                     .temperature(9200.0)
                     .intensity(1.2)
                     .falloff(2.0)
                     .color(Color::rgb(0.65, 0.8, 1.0)),
-            );
-            lights.push(
                 Light2D::new(220.0, -170.0, 200.0)
                     .temperature(3400.0)
                     .intensity(1.55)
                     .falloff(1.9)
                     .color(Color::rgb(1.0, 0.92, 0.75)),
-            );
-            lights.push(
                 Light2D::new(-70.0, 180.0, 160.0)
                     .temperature(5600.0)
                     .intensity(0.9)
                     .falloff(1.4)
                     .color(Color::rgb(0.9, 0.3, 0.8)),
-            );
-            lights.push(
                 Light2D::new(mouse_world[0], mouse_world[1], 150.0)
                     .temperature(5000.0)
                     .intensity(1.8)
                     .falloff(1.4)
                     .color(Color::rgb(1.0, 0.95, 0.85)),
-            );
+            ];
 
             let camera = {
-                let rs = state_ref.as_mut().unwrap();
-                let circle_tex = rs.circle_tex;
-                let normal_tex = rs.normal_tex;
+                let rs = state_ref.as_mut().expect("render state should exist");
 
                 rs.scene_batch.begin();
-                rs.scene_batch.set_texture(&circle_tex);
+                rs.scene_batch.set_texture(&rs.circle_tex);
                 for orb in &*orbs_ref {
                     let pulse = 1.0 + 0.18 * (time * 1.8 + orb.pulse).sin();
                     let lightness = 0.46 + 0.14 * (time * 0.7 + orb.pulse).cos();
@@ -286,7 +258,7 @@ fn main() {
                 }
 
                 rs.normal_batch.begin();
-                rs.normal_batch.set_texture(&normal_tex);
+                rs.normal_batch.set_texture(&rs.normal_tex);
                 for orb in &*orbs_ref {
                     let pulse = 1.0 + 0.18 * (time * 1.8 + orb.pulse).sin();
                     rs.normal_batch.draw(
@@ -299,11 +271,13 @@ fn main() {
             };
 
             let mut graph = frame_graph.borrow_mut();
-            graph.execute(ctx.gpu, |pass, gpu, textures| {
-                let rs = state_ref.as_mut().unwrap();
+            let execute_result = graph.try_execute(ctx.gpu, |pass, gpu, textures| {
+                let rs = state_ref.as_mut().expect("render state should exist");
 
                 if pass.handle == scene_pass {
-                    let target = textures.get(scene_rt);
+                    let target = textures
+                        .render_target(scene_rt)
+                        .expect("scene_rt should resolve to a render target");
                     rs.scene_batch.draw_to_target(
                         gpu,
                         &camera,
@@ -311,7 +285,9 @@ fn main() {
                         Some([0.015, 0.016, 0.02, 1.0]),
                     );
                 } else if pass.handle == normal_pass {
-                    let target = textures.get(normal_rt);
+                    let target = textures
+                        .render_target(normal_rt)
+                        .expect("normal_rt should resolve to a render target");
                     rs.normal_batch.draw_to_target(
                         gpu,
                         &camera,
@@ -319,8 +295,12 @@ fn main() {
                         Some([0.5, 0.5, 1.0, 1.0]),
                     );
                 } else if pass.handle == lighting_pass {
-                    let normal_target = textures.get(normal_rt);
-                    let output = textures.get(light_rt);
+                    let normal_target = textures
+                        .render_target(normal_rt)
+                        .expect("normal_rt should resolve to a render target");
+                    let output = textures
+                        .render_target(light_rt)
+                        .expect("light_rt should resolve to a render target");
                     rs.light_pass.render(
                         gpu,
                         &lights,
@@ -330,36 +310,54 @@ fn main() {
                         [0.07, 0.075, 0.09, 1.0],
                     );
                 } else if pass.handle == composite_pass {
-                    let scene = textures.get(scene_rt);
-                    let lightmap = textures.get(light_rt);
-                    let output = textures.get(hdr_rt);
+                    let scene = textures
+                        .render_target(scene_rt)
+                        .expect("scene_rt should resolve to a render target");
+                    let lightmap = textures
+                        .render_target(light_rt)
+                        .expect("light_rt should resolve to a render target");
+                    let output = textures
+                        .render_target(hdr_rt)
+                        .expect("hdr_rt should resolve to a render target");
                     rs.composite_pass
                         .render_to_target(gpu, scene, lightmap, output);
                 } else if pass.handle == vignette_pass {
-                    let input = textures.get(hdr_rt);
-                    let output = textures.get(graded_rt);
+                    let input = textures
+                        .render_target(hdr_rt)
+                        .expect("hdr_rt should resolve to a render target");
+                    let output = textures
+                        .render_target(graded_rt)
+                        .expect("graded_rt should resolve to a render target");
                     rs.vignette.apply_to_target(gpu, input, output);
                 } else if pass.handle == bloom_pass {
-                    let input = textures.get(graded_rt);
-                    let output = textures.get(bloom_rt);
+                    let input = textures
+                        .render_target(graded_rt)
+                        .expect("graded_rt should resolve to a render target");
+                    let output = textures
+                        .render_target(bloom_rt)
+                        .expect("bloom_rt should resolve to a render target");
                     rs.bloom.apply(gpu, input, output);
                 } else if pass.handle == tonemap_pass {
-                    let input = textures.get(bloom_rt);
+                    let input = textures
+                        .render_target(bloom_rt)
+                        .expect("bloom_rt should resolve to a render target");
                     rs.tonemap.apply_to_surface(gpu, input);
                 }
+                Ok(())
             });
+
+            if let Err(err) = execute_result {
+                eprintln!("[lighting_demo] render graph error: {err}");
+            }
         },
         move |_world, gpu, _old_size, new_size| {
-            resize_graph.borrow_mut().destroy_physical_resources(gpu);
+            resize_graph.borrow_mut().destroy_physical_resources();
             if let Some(state) = resize_state.borrow_mut().as_mut() {
                 state.resize(gpu, new_size[0], new_size[1]);
             }
         },
-        move |_world, gpu| {
-            shutdown_graph.borrow_mut().destroy_physical_resources(gpu);
-            if let Some(state) = shutdown_state.borrow_mut().as_mut() {
-                state.destroy(gpu);
-            }
+        move |_world, _gpu| {
+            shutdown_graph.borrow_mut().destroy_physical_resources();
         },
     );
 }
