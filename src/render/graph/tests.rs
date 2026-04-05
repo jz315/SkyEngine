@@ -764,8 +764,12 @@ fn imported_texture_skips_pool() {
     assert!(!desc.transient);
     assert_eq!(desc.size, TargetSize::Exact(4, 2));
     assert_eq!(desc.format, wgpu::TextureFormat::Rgba16Float);
+    assert_eq!(desc.sample_count, 1);
+    assert_eq!(desc.mip_level_count, 1);
     assert_eq!(imported.size, [4, 2]);
     assert_eq!(imported.format, wgpu::TextureFormat::Rgba16Float);
+    assert_eq!(imported.sample_count, 1);
+    assert_eq!(imported.mip_level_count, 1);
     assert_eq!(graph.resolve_texture_extent(ext, [1920, 1080]), [4, 2]);
 }
 
@@ -1182,6 +1186,17 @@ fn default_texture_is_transient() {
         b.name("tmp");
     });
     assert!(graph.textures[t.0].transient);
+}
+
+#[test]
+fn texture_builder_tracks_sample_and_mip_counts() {
+    let mut graph = RenderGraph::new();
+    let t = graph.create_texture(|b| {
+        b.name("msaa_color").sample_count(4).mip_level_count(3);
+    });
+
+    assert_eq!(graph.textures[t.0].sample_count, 4);
+    assert_eq!(graph.textures[t.0].mip_level_count, 3);
 }
 
 // ── Resolve texture extent ──────────────────────────────────────────
@@ -2336,6 +2351,8 @@ fn import_external_texture_resolves_correctly() {
         view: Arc::clone(&view),
         size: [128, 128],
         format: wgpu::TextureFormat::Rgba8Unorm,
+        sample_count: 1,
+        mip_level_count: 1,
     };
 
     let ctx = crate::gpu::GpuContext::new_headless(

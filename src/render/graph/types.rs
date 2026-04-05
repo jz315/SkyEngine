@@ -127,6 +127,8 @@ pub(crate) struct TextureDesc {
     pub name: Cow<'static, str>,
     pub size: TargetSize,
     pub format: TextureFormat,
+    pub sample_count: u32,
+    pub mip_level_count: u32,
     pub transient: bool,
     pub imported: Option<ImportedTexture>,
 }
@@ -138,6 +140,8 @@ pub struct ImportedTexture {
     pub view: Arc<wgpu::TextureView>,
     pub size: [u32; 2],
     pub format: TextureFormat,
+    pub sample_count: u32,
+    pub mip_level_count: u32,
 }
 
 /// A reference to a physical texture during graph execution.
@@ -146,6 +150,8 @@ pub struct PhysicalTextureRef<'a> {
     pub view: &'a wgpu::TextureView,
     pub size: [u32; 2],
     pub format: TextureFormat,
+    pub sample_count: u32,
+    pub mip_level_count: u32,
     pub render_target: Option<&'a RenderTarget>,
 }
 
@@ -249,6 +255,8 @@ impl<'a> PhysicalResources<'a> {
                 view: rt.view(),
                 size: [rt.width(), rt.height()],
                 format: rt.format(),
+                sample_count: rt.sample_count(),
+                mip_level_count: rt.mip_level_count(),
                 render_target: Some(rt),
             };
         }
@@ -261,6 +269,8 @@ impl<'a> PhysicalResources<'a> {
             view: &imp.view,
             size: imp.size,
             format: imp.format,
+            sample_count: imp.sample_count,
+            mip_level_count: imp.mip_level_count,
             render_target: None,
         }
     }

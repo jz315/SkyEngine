@@ -7,7 +7,7 @@
 //! Controls: WASD or Arrow keys
 //!
 //! ```
-//! cargo run --example snake --features demo
+//! cargo run --example snake --features demo-legacy
 //! ```
 
 use minifb::{Key, Window, WindowOptions};

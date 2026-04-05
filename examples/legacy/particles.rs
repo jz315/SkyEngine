@@ -1,3 +1,13 @@
+//! # Particle Fountain
+//!
+//! Legacy CPU-rendered particle stress demo built on SkyEngine ECS + minifb.
+//! Useful as a historical reference for high-entity-count spawn/update loops
+//! without the GPU rendering stack.
+//!
+//! ```bash
+//! cargo run --example particles --features demo-legacy
+//! ```
+
 use minifb::{Key, Window, WindowOptions};
 use rand::Rng;
 use sky_engine::ecs::{EntityId, World};

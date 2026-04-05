@@ -10,6 +10,8 @@ pub struct TextureBuilder {
     pub(crate) name: Cow<'static, str>,
     pub(crate) size: TargetSize,
     pub(crate) format: TextureFormat,
+    pub(crate) sample_count: u32,
+    pub(crate) mip_level_count: u32,
     pub(crate) transient: bool,
     pub(crate) imported: Option<ImportedTexture>,
 }
@@ -20,6 +22,8 @@ impl TextureBuilder {
             name: Cow::Borrowed("unnamed_texture"),
             size: TargetSize::Surface,
             format: TextureFormat::Rgba8Unorm,
+            sample_count: 1,
+            mip_level_count: 1,
             transient: true,
             imported: None,
         }
@@ -40,6 +44,16 @@ impl TextureBuilder {
         self
     }
 
+    pub fn sample_count(&mut self, sample_count: u32) -> &mut Self {
+        self.sample_count = sample_count.max(1);
+        self
+    }
+
+    pub fn mip_level_count(&mut self, mip_level_count: u32) -> &mut Self {
+        self.mip_level_count = mip_level_count.max(1);
+        self
+    }
+
     pub fn persistent(&mut self) -> &mut Self {
         self.transient = false;
         self
@@ -54,11 +68,15 @@ impl TextureBuilder {
         let format = texture.format();
         self.size = TargetSize::Exact(size.width, size.height);
         self.format = format;
+        self.sample_count = texture.sample_count();
+        self.mip_level_count = texture.mip_level_count();
         self.imported = Some(ImportedTexture {
             texture,
             view,
             size: [size.width, size.height],
             format,
+            sample_count: self.sample_count,
+            mip_level_count: self.mip_level_count,
         });
         self.transient = false;
         self
@@ -67,6 +85,8 @@ impl TextureBuilder {
     pub fn import_external(&mut self, tex: ImportedTexture) -> &mut Self {
         self.size = TargetSize::Exact(tex.size[0], tex.size[1]);
         self.format = tex.format;
+        self.sample_count = tex.sample_count;
+        self.mip_level_count = tex.mip_level_count;
         self.imported = Some(tex);
         self.transient = false;
         self

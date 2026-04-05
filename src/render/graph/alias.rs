@@ -45,6 +45,10 @@ pub(crate) struct AliasGroup {
     pub members: Vec<usize>,
     /// The shared format (all members must match exactly).
     pub format: TextureFormat,
+    /// The shared sample count (all members must match exactly).
+    pub sample_count: u32,
+    /// The shared mip count (all members must match exactly).
+    pub mip_level_count: u32,
     /// Maximum width needed across all members.
     pub width: u32,
     /// Maximum height needed across all members.
@@ -149,6 +153,8 @@ pub(crate) fn compute_texture_aliases(
             if !can_fit_in_group(
                 tex_idx,
                 desc.format,
+                desc.sample_count,
+                desc.mip_level_count,
                 lifetime,
                 group,
                 textures,
@@ -177,6 +183,8 @@ pub(crate) fn compute_texture_aliases(
             groups.push(AliasGroup {
                 members: vec![tex_idx],
                 format: desc.format,
+                sample_count: desc.sample_count,
+                mip_level_count: desc.mip_level_count,
                 width: w,
                 height: h,
             });
@@ -217,6 +225,8 @@ pub(crate) fn compute_texture_aliases(
 fn can_fit_in_group(
     candidate_idx: usize,
     candidate_format: TextureFormat,
+    candidate_sample_count: u32,
+    candidate_mip_level_count: u32,
     candidate_lifetime: &ResourceLifetime,
     group: &AliasGroup,
     textures: &[TextureDesc],
@@ -225,6 +235,12 @@ fn can_fit_in_group(
 ) -> bool {
     // Format must match exactly (no cross-format aliasing in wgpu).
     if candidate_format != group.format {
+        return false;
+    }
+    if candidate_sample_count != group.sample_count {
+        return false;
+    }
+    if candidate_mip_level_count != group.mip_level_count {
         return false;
     }
 
@@ -289,11 +305,29 @@ mod tests {
 
     const TOKEN: u64 = 42;
 
+    fn make_group(
+        members: Vec<usize>,
+        format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+    ) -> AliasGroup {
+        AliasGroup {
+            members,
+            format,
+            sample_count: 1,
+            mip_level_count: 1,
+            width,
+            height,
+        }
+    }
+
     fn make_tex(name: &'static str, format: wgpu::TextureFormat, transient: bool) -> TextureDesc {
         TextureDesc {
             name: Cow::Borrowed(name),
             size: TargetSize::Exact(256, 256),
             format,
+            sample_count: 1,
+            mip_level_count: 1,
             transient,
             imported: None,
         }
@@ -304,6 +338,8 @@ mod tests {
             name: Cow::Borrowed(name),
             size: TargetSize::Exact(w, h),
             format: wgpu::TextureFormat::Rgba8Unorm,
+            sample_count: 1,
+            mip_level_count: 1,
             transient: true,
             imported: None,
         }
@@ -318,6 +354,8 @@ mod tests {
             name: Cow::Borrowed(name),
             size,
             format,
+            sample_count: 1,
+            mip_level_count: 1,
             transient: true,
             imported: None,
         }
@@ -987,42 +1025,22 @@ mod tests {
 
     #[test]
     fn waste_no_expansion() {
-        let group = AliasGroup {
-            members: vec![0],
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            width: 512,
-            height: 512,
-        };
+        let group = make_group(vec![0], wgpu::TextureFormat::Rgba8Unorm, 512, 512);
         let waste = calculate_group_waste(256, 256, &group);
         assert_eq!(waste, 512 * 512);
     }
 
     #[test]
     fn waste_with_expansion() {
-        let group = AliasGroup {
-            members: vec![0],
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            width: 256,
-            height: 256,
-        };
+        let group = make_group(vec![0], wgpu::TextureFormat::Rgba8Unorm, 256, 256);
         let waste = calculate_group_waste(512, 512, &group);
         assert_eq!(waste, 512 * 512);
     }
 
     #[test]
     fn waste_comparison_prefers_smaller() {
-        let small_group = AliasGroup {
-            members: vec![0],
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            width: 128,
-            height: 128,
-        };
-        let large_group = AliasGroup {
-            members: vec![1],
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            width: 1024,
-            height: 1024,
-        };
+        let small_group = make_group(vec![0], wgpu::TextureFormat::Rgba8Unorm, 128, 128);
+        let large_group = make_group(vec![1], wgpu::TextureFormat::Rgba8Unorm, 1024, 1024);
         let waste_small = calculate_group_waste(100, 100, &small_group);
         let waste_large = calculate_group_waste(100, 100, &large_group);
         assert!(
@@ -1035,12 +1053,7 @@ mod tests {
     fn waste_partial_width_expansion() {
         // Group is 256×512. Adding 512×256.
         // Result: 512×512 = 262144 pixels.
-        let group = AliasGroup {
-            members: vec![0],
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            width: 256,
-            height: 512,
-        };
+        let group = make_group(vec![0], wgpu::TextureFormat::Rgba8Unorm, 256, 512);
         let waste = calculate_group_waste(512, 256, &group);
         assert_eq!(waste, 512 * 512);
     }
@@ -1049,12 +1062,7 @@ mod tests {
 
     #[test]
     fn cant_fit_same_texture_index() {
-        let group = AliasGroup {
-            members: vec![0],
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            width: 256,
-            height: 256,
-        };
+        let group = make_group(vec![0], wgpu::TextureFormat::Rgba8Unorm, 256, 256);
         let textures = vec![make_tex("t0", wgpu::TextureFormat::Rgba8Unorm, true)];
         let mut lifetimes = FxHashMap::default();
         insert_lifetime(&mut lifetimes, 0, 0, 5);
@@ -1063,6 +1071,8 @@ mod tests {
         let result = can_fit_in_group(
             0,
             wgpu::TextureFormat::Rgba8Unorm,
+            1,
+            1,
             &lt,
             &group,
             &textures,
@@ -1074,12 +1084,7 @@ mod tests {
 
     #[test]
     fn cant_fit_wrong_format() {
-        let group = AliasGroup {
-            members: vec![0],
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            width: 256,
-            height: 256,
-        };
+        let group = make_group(vec![0], wgpu::TextureFormat::Rgba8Unorm, 256, 256);
         let textures = vec![
             make_tex("a", wgpu::TextureFormat::Rgba8Unorm, true),
             make_tex("b", wgpu::TextureFormat::Rgba16Float, true),
@@ -1092,6 +1097,8 @@ mod tests {
         let result = can_fit_in_group(
             1,
             wgpu::TextureFormat::Rgba16Float,
+            1,
+            1,
             &lt,
             &group,
             &textures,
@@ -1103,12 +1110,7 @@ mod tests {
 
     #[test]
     fn can_fit_compatible() {
-        let group = AliasGroup {
-            members: vec![0],
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            width: 256,
-            height: 256,
-        };
+        let group = make_group(vec![0], wgpu::TextureFormat::Rgba8Unorm, 256, 256);
         let textures = vec![
             make_tex("a", wgpu::TextureFormat::Rgba8Unorm, true),
             make_tex("b", wgpu::TextureFormat::Rgba8Unorm, true),
@@ -1121,6 +1123,8 @@ mod tests {
         let result = can_fit_in_group(
             1,
             wgpu::TextureFormat::Rgba8Unorm,
+            1,
+            1,
             &lt,
             &group,
             &textures,
@@ -1135,12 +1139,7 @@ mod tests {
 
     #[test]
     fn cant_fit_missing_lifetime() {
-        let group = AliasGroup {
-            members: vec![0],
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            width: 256,
-            height: 256,
-        };
+        let group = make_group(vec![0], wgpu::TextureFormat::Rgba8Unorm, 256, 256);
         let textures = vec![
             make_tex("a", wgpu::TextureFormat::Rgba8Unorm, true),
             make_tex("b", wgpu::TextureFormat::Rgba8Unorm, true),
@@ -1151,6 +1150,8 @@ mod tests {
         let result = can_fit_in_group(
             1,
             wgpu::TextureFormat::Rgba8Unorm,
+            1,
+            1,
             &lt,
             &group,
             &textures,
@@ -1163,12 +1164,7 @@ mod tests {
     #[test]
     fn can_fit_multi_member_group() {
         // Group already has indices [0, 1]. Check if index 2 can fit.
-        let group = AliasGroup {
-            members: vec![0, 1],
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            width: 256,
-            height: 256,
-        };
+        let group = make_group(vec![0, 1], wgpu::TextureFormat::Rgba8Unorm, 256, 256);
         let textures = vec![
             make_tex("a", wgpu::TextureFormat::Rgba8Unorm, true),
             make_tex("b", wgpu::TextureFormat::Rgba8Unorm, true),
@@ -1183,6 +1179,8 @@ mod tests {
         let result = can_fit_in_group(
             2,
             wgpu::TextureFormat::Rgba8Unorm,
+            1,
+            1,
             &lt,
             &group,
             &textures,
@@ -1198,12 +1196,7 @@ mod tests {
     #[test]
     fn cant_fit_conflicts_with_second_member() {
         // Group has [0, 1]. Index 2 conflicts with index 1 but not 0.
-        let group = AliasGroup {
-            members: vec![0, 1],
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            width: 256,
-            height: 256,
-        };
+        let group = make_group(vec![0, 1], wgpu::TextureFormat::Rgba8Unorm, 256, 256);
         let textures = vec![
             make_tex("a", wgpu::TextureFormat::Rgba8Unorm, true),
             make_tex("b", wgpu::TextureFormat::Rgba8Unorm, true),
@@ -1218,6 +1211,8 @@ mod tests {
         let result = can_fit_in_group(
             2,
             wgpu::TextureFormat::Rgba8Unorm,
+            1,
+            1,
             &lt,
             &group,
             &textures,
@@ -1225,5 +1220,31 @@ mod tests {
             TOKEN,
         );
         assert!(!result, "conflict with 2nd member should reject");
+    }
+
+    #[test]
+    fn cant_fit_mismatched_sample_count() {
+        let group = make_group(vec![0], wgpu::TextureFormat::Rgba8Unorm, 256, 256);
+        let textures = vec![
+            make_tex("a", wgpu::TextureFormat::Rgba8Unorm, true),
+            make_tex("b", wgpu::TextureFormat::Rgba8Unorm, true),
+        ];
+        let mut lifetimes = FxHashMap::default();
+        insert_lifetime(&mut lifetimes, 0, 0, 1);
+        insert_lifetime(&mut lifetimes, 1, 2, 3);
+        let lt = make_lifetime(2, 3);
+
+        let result = can_fit_in_group(
+            1,
+            wgpu::TextureFormat::Rgba8Unorm,
+            4,
+            1,
+            &lt,
+            &group,
+            &textures,
+            &lifetimes,
+            TOKEN,
+        );
+        assert!(!result, "sample-count mismatch should prevent fitting");
     }
 }

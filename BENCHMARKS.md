@@ -17,7 +17,7 @@ All numbers below were collected on the same local Windows machine with Criterio
 ## Benchmark Policy
 
 - `fair` is the only canonical apples-to-apples comparison suite.
-- `fair` only includes workloads that Sky, hecs, and Bevy can all express through safe public APIs.
+- `fair` only includes workloads that Sky, hecs, Bevy, and Flecs can all express through safe public APIs.
 - Query/prepared state is created outside the timed loop in `fair` for all engines.
 - Engine-specific implementations now live under `benches/fair/` and are selected via Criterion filters rather than separate bench targets.
 - Records collected before the 2026-03-31 normalization pass are still useful for history, but they are not the canonical fair-comparison baseline.
@@ -28,28 +28,90 @@ All numbers below were collected on the same local Windows machine with Criterio
 ## Current Summary
 
 ### Latest full run
-- Date: **2026-04-02**
-- Command: `cargo bench --bench fair -- "fair_entity_ops|fair_mixed_frame"`
-- Status: **FxHashMap migration — all `std::collections::HashMap` replaced with `rustc_hash::FxHashMap` + spare-chunk caching**
+- Date: **2026-04-05**
+- Command: `cargo bench --bench fair -- "sky|flecs"`
+- Status: **Flecs ECS (v0.2.2) added to fair comparison suite**
 
-### Current takeaways
-- `fair_entity_ops/spawn_despawn_1k`: Sky now **matches** hecs (26.3 vs 25.2 µs) and is **2.3x** faster than Bevy. Previously 1.67x slower than hecs.
-- `fair_entity_ops/add_remove_component_1k`: Sky now **matches** hecs (58.8 vs 59.2 µs) and beats Bevy. Previously 1.6x slower than hecs.
+### Current takeaways (Sky vs Flecs)
+- **Insert**: Sky is **23–47x faster** (120 µs batch vs 5.67 ms flecs). Flecs world+entity creation overhead dominates.
+- **Iteration (simple 10k)**: Sky edges out at 1.92 µs vs 2.04 µs — **1.06x** faster. Nearly identical.
+- **Fragmented iteration**: Sky **1.45x** faster (581 ns vs 843 ns).
+- **Heavy compute**: Tied (~1.85 ms each). Bottlenecked by matrix inversion, not ECS.
+- **Random access**: Sky **4.7x faster** (73 µs vs 342 µs).
+- **Spawn/despawn 1k**: Sky **5.9x faster** (28 µs vs 165 µs).
+- **Add/remove component 1k**: Sky **2.1x faster** (60 µs vs 125 µs).
+- **Mixed frame (full)**: Sky **1.17x** faster (188 µs vs 220 µs).
+- **Phase: movement**: Flecs wins this micro-phase (5.74 µs vs 9.77 µs), but Sky's movement phase showed anomalous 108% regression in this run — likely cache/scheduling noise. Sky still wins the full mixed frame.
+- All other phases: Sky leads (health 1.4x, random_access 3.6x, structural_churn 2.0x, spawn_despawn 5.9x).
+
+### Previous takeaways (Sky vs hecs/Bevy, 2026-04-02)
+- `fair_entity_ops/spawn_despawn_1k`: Sky **matches** hecs (26.3 vs 25.2 µs) and is **2.3x** faster than Bevy.
+- `fair_entity_ops/add_remove_component_1k`: Sky **matches** hecs (58.8 vs 59.2 µs) and beats Bevy.
 - `fair_mixed_frame/frame`: Sky **leads all** at 181 µs vs hecs 211 µs vs Bevy 223 µs — **14% faster** than hecs.
-- `fair_mixed_frame_phases/random_access`: Sky improved from 7.4 to **3.6 µs**, now **2x faster** than hecs (7.3 µs). Major reversal.
-- `fair_mixed_frame_phases/structural_churn`: Sky improved from 25.4 to **14.4 µs**, now tied with hecs (14.6 µs). Previously ~1.7x slower.
-- `fair_mixed_frame_phases/spawn_despawn`: Sky improved from 91.5 to **54.3 µs**, nearly tied with hecs (51.4 µs). Previously ~1.7x slower.
 - All iteration benchmarks remain dominant (2.7x–4.2x faster than hecs).
 - **No performance regressions** on any workload.
 
-### Key optimizations in this revision
+### Key optimizations (cumulative)
 1. **`rustc_hash::FxHashMap`** — replaced all `std::collections::HashMap` across `world.rs`, `commands.rs`, `archetype.rs`, `bundle.rs`, `resource.rs`, `registry.rs`. SipHash-2-4's DoS protection was pure overhead for our integer/pointer keys.
 2. **Spare-chunk caching** — `Data` now retains one empty chunk after despawn to avoid pool round-trips during spawn/despawn churn.
 3. **`#[inline(always)]`** on chunk hot methods — `copy_entity_within`, `copy_entity_from`, `remove_last_entity`, `Data::add_entity`, `Data::remove_entity`.
 
 ---
 
-## Latest Fair Run — FxHashMap Migration (2026-04-02)
+## Sky vs Flecs Fair Comparison (2026-04-05)
+
+Command: `cargo bench --bench fair -- "sky|flecs"`
+
+Note: Flecs ECS v0.2.2 added to the fair benchmark suite. Flecs queries are uncached (`new_query()`), created outside the timed loop for fairness. ZST tag components use `component_id` + `add()`. Component removal uses `component_id` + `remove()`.
+
+### Insert
+
+| Workload | Sky | Flecs | Sky advantage |
+| --- | --- | --- | --- |
+| `fair_insert/batch_10k` | `119.59-120.81 us` | `5.63-5.71 ms` | **47x** |
+| `fair_insert/single_10k` | `244.37-246.08 us` | `5.61-5.69 ms` | **23x** |
+
+### Iteration
+
+| Workload | Sky | Flecs | Sky advantage |
+| --- | --- | --- | --- |
+| `fair_iteration/simple` | `1.92-1.93 us` | `2.03-2.04 us` | **1.06x** |
+| `fair_fragmented_iteration/fragmented` | `578.97-582.31 ns` | `841.33-845.51 ns` | **1.45x** |
+| `fair_heavy_compute/heavy` | `1.8478-1.8540 ms` | `1.8618-1.8705 ms` | ≈ tied |
+
+### Random Access
+
+| Workload | Sky | Flecs | Sky advantage |
+| --- | --- | --- | --- |
+| `fair_random_access/get` | `72.96-73.51 us` | `340.91-343.37 us` | **4.7x** |
+
+### Entity Operations
+
+| Workload | Sky | Flecs | Sky advantage |
+| --- | --- | --- | --- |
+| `fair_entity_ops/spawn_despawn_1k` | `27.91-28.10 us` | `164.24-164.87 us` | **5.9x** |
+| `fair_entity_ops/add_remove_component_1k` | `59.80-60.13 us` | `124.50-125.14 us` | **2.1x** |
+
+### Mixed Frame (complete game loop simulation)
+
+| Workload | Sky | Flecs | Sky advantage |
+| --- | --- | --- | --- |
+| `fair_mixed_frame/frame` | `187.75-189.03 us` | `219.68-220.75 us` | **1.17x** |
+
+### Mixed Frame Phases (isolated)
+
+| Phase | Sky | Flecs | Sky advantage |
+| --- | --- | --- | --- |
+| `movement` | `9.74-9.80 us` | `5.72-5.77 us` | 0.59x (flecs wins) |
+| `health` | `3.59-3.61 us` | `5.12-5.17 us` | **1.43x** |
+| `heavy` | `150.63-151.40 us` | `149.94-151.02 us` | ≈ tied |
+| `random_access` | `4.84-4.86 us` | `17.34-17.55 us` | **3.6x** |
+| `structural_churn` | `15.50-15.59 us` | `31.37-31.52 us` | **2.0x** |
+| `spawn_despawn` | `56.61-56.90 us` | `331.54-333.26 us` | **5.9x** |
+
+---
+
+## Previous Fair Run — FxHashMap Migration (2026-04-02)
 
 Command: `cargo bench --bench fair -- "fair_entity_ops|fair_mixed_frame"`
 

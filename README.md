@@ -19,17 +19,17 @@
 
 ## 📖 简介
 
-**SkyEngine** 是一款用 Rust 从零构建的高性能游戏引擎，核心由两大支柱组成：
+**SkyEngine** 是一款用 Rust 从零构建的 2D 游戏引擎。
 
-1. **Archetype ECS** — 组件按类型在固定大小的内存块（Chunk）中连续排列，天然对齐硬件预取，实现极致迭代性能。
-2. **wgpu 2D 渲染框架** — 基于声明式渲染图（RenderGraph）编排 GPU 工作负载，内置 SpriteBatch、动态光照、Bloom/ToneMap/Vignette 后处理管线和 Live2D Cubism SDK 集成。
+它提供了一套高性能、易用的 ECS 游戏开发框架和基于 wgpu 的现代 2D 渲染管线，让开发者能够开箱即用快速上手，开发出高性能的游戏。
 
-SkyEngine 走的是 **库（Library）路线**：不依赖 proc macro，不引入全局状态，不强制应用结构。你可以只用 ECS，也可以搭配完整的渲染管线 — 一切按需组合。
+> 🚧 项目目前处于快速开发阶段，欢迎贡献！
 
 > **为什么选择 SkyEngine？**
-> - 在公平对比基准中，迭代性能 **2.7x–4.2x 优于 hecs**，整体帧模拟 **领先 hecs 14%、领先 Bevy 19%**。
-> - 纯 Rust 零 unsafe 的类型化查询 API，同时保留底层 raw API 给工具链和脚本。
-> - 渲染框架一步到位：RenderGraph 自动资源别名、瞬态分配、死 Pass 剔除 — 不用手动管理 GPU 资源生命周期。
+> - 在公平基准测试中，迭代性能 **2.7x–4.2x 优于 hecs**，完整帧模拟 **领先 hecs 14%、领先 Bevy 19%**
+> - 无 proc macro，无全局状态，API 简洁直观
+> - 内置渲染图、精灵批渲染、动态光照和后处理管线，开箱可用
+
 
 ---
 
@@ -64,32 +64,16 @@ SkyEngine 走的是 **库（Library）路线**：不依赖 proc macro，不引�
 
 ---
 
-## 🛠️ 技术栈
-
-| 层级 | 技术 |
-|------|------|
-| 语言 | Rust 2021 Edition |
-| 全局分配器 | mimalloc |
-| 哈希 | rustc-hash (FxHashMap) |
-| GPU 后端 | wgpu 24 |
-| 窗口 | winit 0.30 |
-| 着色器 | WGSL |
-| 基准测试 | Criterion 0.8 |
-| 对比引擎 | hecs · bevy_ecs · flecs_ecs |
-
----
-
 ## 🚀 快速上手
 
 ### 前置条件
 
 - [Rust](https://www.rust-lang.org/tools/install) 稳定版（推荐 1.80+）
-- GPU 渲染示例需要支持 Vulkan / DX12 / Metal 的显卡驱动
 
 ### 安装
 
 ```bash
-git clone https://github.com/your-username/SkyEngine.git
+git clone https://github.com/jz315/SkyEngine.git
 cd SkyEngine
 ```
 
@@ -229,40 +213,85 @@ cargo bench --bench fair -- bevy
 
 ## 🎮 示例展示
 
-### ECS 教程（无 GPU 依赖）
+完整示例索引见 [`examples/README.md`](examples/README.md)。如果你是第一次接触这个仓库，建议按“ECS 入门 → Render API → 完整 Demo”的顺序阅读。
+
+### 1. ECS 入门（无 GPU 依赖）
 
 ```bash
 cargo run --example hello_ecs       # 最小入门示例
 cargo run --example queries         # 类型化查询
 cargo run --example commands        # 延迟命令缓冲
 cargo run --example systems         # 系统调度
-cargo run --example tiny_defense    # ASCII 塔防小游戏
+cargo run --example tiny_defense    # ECS-only 完整小例子
 ```
 
-### GPU 渲染展示（需 `--features app`）
+### 2. Render 学习路径（需 `--features app`）
+
+建议按下面的顺序学：
+
+1. `clear_screen`：先理解窗口、GPU 上下文和每帧 clear
+2. `sprite_demo`：再看 `Camera2D` + `SpriteBatch` 的基础精灵绘制
+3. `textured_demo`：从纯色 sprite 过渡到纹理与混合绘制
+4. `lighting_demo`：进入法线、光照合成、Bloom、ToneMap
+5. `render_graph_showcase`：再看声明式 `RenderGraph` 如何组织资源与 pass
+6. `perf_test`：最后观察渲染路径的吞吐与规模变化
+
+`live2d_demo` 属于渲染专项分支，建议在掌握上面主线后再看。
 
 ```bash
-cargo run --example clear_screen         --features app      # 最简窗口
-cargo run --example sprite_demo          --features app      # 精灵渲染
-cargo run --example textured_demo        --features app      # 纹理加载
-cargo run --example lighting_demo        --features app      # 动态光照
+cargo run --example clear_screen          --features app      # 最简窗口 / swapchain
+cargo run --example sprite_demo           --features app      # 精灵批渲染
+cargo run --example textured_demo         --features app      # 纹理加载与显示
+cargo run --example lighting_demo         --features app      # 2D 动态光照
 cargo run --example render_graph_showcase --features app      # RenderGraph 完整管线
-cargo run --example perf_test            --features app      # GPU 性能测试
+cargo run --example perf_test             --features app --release  # GPU 压力测试
 ```
 
-### 完整 Demo（需 `--features app`）
+### Render 主线图
 
-```bash
-cargo run --example boids             --features app --release  # Boids 群集仿真
-cargo run --example boids_classic     --features app --release  # 经典 Boids
-cargo run --example cosmic_jellyfish  --features app --release  # 宇宙水母 — 光照 + Bloom
-cargo run --example neon_galaxy       --features app --release  # 霓虹星系 — 后处理管线
+```text
+clear_screen
+  ↓
+sprite_demo
+  ↓
+textured_demo
+  ↓
+lighting_demo
+  ↓
+render_graph_showcase
+  ↓
+perf_test
+
+specialized branch: live2d_demo
 ```
 
-### Live2D（需 `--features live2d`）
+### 3. 完整 Showcase Demo（需 `--features app`）
 
 ```bash
-cargo run --example live2d_demo --features live2d --release  # Live2D Cubism 模型渲染
+cargo run --example boids            --features app --release  # 群集仿真 + 光照
+cargo run --example boids_classic    --features app --release  # 经典 Boids 规则展示
+cargo run --example cosmic_jellyfish --features app --release  # 宇宙水母 + Bloom
+cargo run --example neon_galaxy      --features app --release  # 霓虹星系 + 后处理
+```
+
+### 4. Live2D（需 `--features live2d`）
+
+```bash
+cargo run --example live2d_demo --features live2d --release -- <path-to-model3.json>
+```
+
+### 5. 对比 / 历史示例（非推荐入门路径）
+
+```bash
+# Cross-engine comparison
+cargo run --example boids_bevy_gpu --features compare-bevy --release
+cargo run --example boids_hecs     --features compare --release
+cargo run --example boids_bevy     --features compare --release
+
+# Legacy CPU-rendered demos
+cargo run --example particles --features demo-legacy
+cargo run --example asteroids --features demo-legacy
+cargo run --example snake     --features demo-legacy
 ```
 
 ---
@@ -301,10 +330,12 @@ SkyEngine/
 │   │   └── input.rs            #   Input — 键鼠状态
 │   └── reflect/                # 🔍 运行时类型注册
 ├── examples/                   # 📚 可运行示例
+│   ├── README.md               #   示例索引与推荐学习路径
 │   ├── ecs/                    #   纯 ECS 教程 (5 个)
-│   ├── render/                 #   渲染 API 展示 (7 个)
-│   ├── demo/                   #   完整 GPU Demo (4 个)
-│   └── legacy/                 #   旧版 CPU 渲染 Demo
+│   ├── render/                 #   渲染 API 展示 + Live2D
+│   ├── demo/                   #   完整 GPU Showcase Demo
+│   ├── compare/                #   跨引擎对比示例
+│   └── legacy/                 #   历史保留的 SkyEngine CPU Demo
 ├── benches/                    # 📊 Criterion 基准测试
 │   └── fair/                   #   公平横向对比 (Sky vs hecs vs Bevy)
 ├── docs/                       # 📖 文档
@@ -363,24 +394,7 @@ cargo run --example boids --features app --release
 
 ---
 
-## 🤝 贡献指南
 
-欢迎贡献！请遵循以下流程：
-
-1. **Fork** 本仓库
-2. 创建特性分支：`git checkout -b feature/amazing-feature`
-3. 提交更改：`git commit -m 'feat: add amazing feature'`
-4. 推送分支：`git push origin feature/amazing-feature`
-5. 创建 **Pull Request**
-
-### 开发规范
-
-- 运行 `cargo test` 确保所有测试通过
-- 运行 `cargo bench --bench fair` 确认无性能回退
-- 遵循现有代码风格，性能关键路径避免不必要的抽象
-- 渲染框架修改请先阅读 `src/render/AGENTS.md`
-
----
 
 ## 📄 文档
 
@@ -401,6 +415,12 @@ cargo run --example boids --features app --release
 | [Bevy](https://github.com/bevyengine/bevy) | 完整游戏引擎，插件生态 |
 | [flecs](https://github.com/SanderMertens/flecs) | C99 实现，功能丰富的 ECS |
 | [wgpu](https://github.com/gfx-rs/wgpu) | 跨平台 GPU 抽象层 |
+
+---
+
+## 🙏 致谢
+
+- [SakuraEngine](https://github.com/SakuraEngine/SakuraEngine)  — Live2D Cubism 集成的物理模拟、遮罩裁剪、姿态管理、呼吸/眨眼等运行时效果参考了 SakuraEngine 的实现，特此感谢。
 
 ---
 

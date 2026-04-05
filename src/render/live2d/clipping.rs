@@ -218,12 +218,22 @@ impl ClippingManager {
             //   Translate(-1,-1) * Scale(2,2) * Translate(lx,ly) * Scale(sx,sy) * Translate(-min_x,-min_y)
             // Result: positions map to [-1,1] for correct rasterization into the mask texture.
             ctx.mask_matrix = [
-                2.0 * sx, 0.0, 0.0, 0.0,
-                0.0, 2.0 * sy, 0.0, 0.0,
-                0.0, 0.0, 1.0, 0.0,
+                2.0 * sx,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                2.0 * sy,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
                 -2.0 * min_x * sx + 2.0 * lx - 1.0,
                 -2.0 * min_y * sy + 2.0 * ly - 1.0,
-                0.0, 1.0,
+                0.0,
+                1.0,
             ];
 
             // ── draw_matrix: model coords → UV [0,1] with Y-flip ───────
@@ -233,12 +243,22 @@ impl ClippingManager {
             // So: u = (ndc_x+1)/2,  v = (1-ndc_y)/2
             // Equivalent to: Translate(0.5,0.5) * Scale(0.5,-0.5) * mask_matrix
             ctx.draw_matrix = [
-                sx, 0.0, 0.0, 0.0,
-                0.0, -sy, 0.0, 0.0,
-                0.0, 0.0, 1.0, 0.0,
+                sx,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                -sy,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
                 -min_x * sx + lx,
                 min_y * sy + 1.0 - ly,
-                0.0, 1.0,
+                0.0,
+                1.0,
             ];
         }
     }

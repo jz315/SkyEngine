@@ -6,13 +6,28 @@ use crate::render::core::target::RenderTarget;
 
 const COMPOSITE_SHADER: &str = include_str!("../shaders/composite.wgsl");
 
-/// scene_color * lightmap_color -> output
+/// scene_color * lightmap_color with ambient expected in the lightmap.
 pub struct CompositePass {
     pipeline: FullscreenPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
 }
 
 impl CompositePass {
+    fn targets_alias(lhs: &RenderTarget, rhs: &RenderTarget) -> bool {
+        std::ptr::eq(lhs.texture(), rhs.texture())
+    }
+
+    fn validate_targets(scene: &RenderTarget, lightmap: &RenderTarget, output: &RenderTarget) {
+        assert!(
+            !Self::targets_alias(scene, output),
+            "CompositePass requires distinct scene and output targets",
+        );
+        assert!(
+            !Self::targets_alias(lightmap, output),
+            "CompositePass requires distinct lightmap and output targets",
+        );
+    }
+
     pub fn new(ctx: &GpuContext, target_format: wgpu::TextureFormat) -> Self {
         let bind_group_layout =
             ctx.device()
@@ -77,6 +92,8 @@ impl CompositePass {
         lightmap: &RenderTarget,
         output: &RenderTarget,
     ) {
+        Self::validate_targets(scene, lightmap, output);
+
         let bind_group = self.create_bind_group(ctx, scene, lightmap);
         let pipeline = self.pipeline.pipeline(ctx, output.format());
         ctx.with_render_pass(
@@ -144,5 +161,55 @@ impl CompositePass {
                 },
             ],
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::panic::{self, AssertUnwindSafe};
+
+    fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .expect("No suitable GPU adapter found for render tests");
+
+        pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("render_test_device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::Performance,
+            },
+            None,
+        ))
+        .expect("Failed to create test GPU device")
+    }
+
+    #[test]
+    fn composite_pass_rejects_aliasing_output_targets() {
+        let (device, queue) = create_test_device();
+        let mut ctx = crate::gpu::GpuContext::new_headless(
+            device,
+            queue,
+            wgpu::TextureFormat::Bgra8Unorm,
+            [4, 4],
+        );
+        let mut pass = CompositePass::new(&ctx, wgpu::TextureFormat::Rgba16Float);
+        let shared = RenderTarget::new(&ctx, 4, 4, wgpu::TextureFormat::Rgba16Float, "shared");
+        let lightmap = RenderTarget::new(&ctx, 4, 4, wgpu::TextureFormat::Rgba16Float, "light");
+
+        ctx.begin_frame()
+            .expect("headless begin_frame should succeed");
+        let result = panic::catch_unwind(AssertUnwindSafe(|| {
+            pass.render_to_target(&mut ctx, &shared, &lightmap, &shared);
+        }));
+        ctx.end_frame();
+
+        assert!(result.is_err());
     }
 }

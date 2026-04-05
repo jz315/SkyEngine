@@ -1,12 +1,26 @@
-//! 2D orthographic camera.
+//! View and camera helpers.
 
-/// GPU-ready camera uniform shared by sprite and fullscreen passes.
+/// GPU-ready view uniform shared by 2D and future 3D render paths.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct CameraUniform {
+pub struct ViewUniform {
     pub view_proj: [f32; 16],
-    pub camera: [f32; 4],   // x, y, zoom, 0
+    pub camera: [f32; 4],
     pub viewport: [f32; 4], // width, height, inv_width, inv_height
+}
+
+/// Backwards-compatible alias for the existing 2D camera uniform name.
+pub type CameraUniform = ViewUniform;
+
+/// Any renderable view that can provide a packed GPU uniform.
+pub trait RenderView {
+    fn view_uniform(&self) -> ViewUniform;
+
+    #[inline]
+    fn viewport_size(&self) -> [f32; 2] {
+        let uniform = self.view_uniform();
+        [uniform.viewport[0], uniform.viewport[1]]
+    }
 }
 
 /// A 2D orthographic camera that produces a view-projection matrix.
@@ -83,8 +97,7 @@ impl Camera2D {
         ]
     }
 
-    /// Return the packed uniform consumed by render shaders.
-    pub fn uniform(&self) -> CameraUniform {
+    fn build_uniform(&self) -> ViewUniform {
         let inv_width = if self.viewport_width > 0.0 {
             self.viewport_width.recip()
         } else {
@@ -96,7 +109,7 @@ impl Camera2D {
             0.0
         };
 
-        CameraUniform {
+        ViewUniform {
             view_proj: self.view_projection(),
             camera: [self.position[0], self.position[1], self.zoom, 0.0],
             viewport: [
@@ -106,6 +119,11 @@ impl Camera2D {
                 inv_height,
             ],
         }
+    }
+
+    /// Return the packed uniform consumed by render shaders.
+    pub fn uniform(&self) -> CameraUniform {
+        self.build_uniform()
     }
 
     /// Viewport width in pixels.
@@ -132,6 +150,13 @@ impl Camera2D {
         let world_y = self.position[1] - (screen_y / viewport_height - 0.5) * 2.0 * hh;
 
         [world_x, world_y]
+    }
+}
+
+impl RenderView for Camera2D {
+    #[inline]
+    fn view_uniform(&self) -> ViewUniform {
+        self.build_uniform()
     }
 }
 

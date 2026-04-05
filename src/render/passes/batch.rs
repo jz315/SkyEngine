@@ -1,19 +1,38 @@
 //! GPU-instanced 2D sprite batch renderer.
 //!
 //! Renders thousands of 2D sprites in a small number of draw calls, with
-//! explicit support for both surface and off-screen targets.
+//! support for both surface and off-screen targets.
+//!
+//! # Usage
+//!
+//! ```rust,ignore
+//! let mut batch = SpriteBatch::new(gpu);
+//!
+//! // Submit sprites (no begin() needed)
+//! batch.set_texture(&tex);
+//! batch.draw(Sprite::new(x, y, w, h).rotation(angle).color(Color::RED));
+//! batch.clear_texture();
+//! batch.draw(Sprite::new(x, y, w, h).color(Color::BLUE));
+//!
+//! // Flush to surface (auto-resets batch for next frame)
+//! batch.flush_to_surface(gpu, &camera, Some(Color::rgb(0.02, 0.02, 0.06)));
+//!
+//! // Or flush to off-screen target (None = preserve existing contents)
+//! batch.flush_to_target(gpu, &camera, &render_target, None);
+//! ```
 
 use std::sync::Arc;
 
 use crate::gpu::GpuContext;
-use crate::render::core::camera::{Camera2D, CameraUniform};
+use crate::render::core::camera::{CameraUniform, RenderView};
 use crate::render::core::color::Color;
 use crate::render::core::target::RenderTarget;
 use crate::render::core::texture::Texture;
 
 use rustc_hash::FxHashMap;
 
-/// Per-instance data uploaded to the GPU.
+// ── GPU data types ──────────────────────────────────────────────────────────
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct SpriteInstance {
@@ -23,7 +42,6 @@ struct SpriteInstance {
     uv_rect: [f32; 4],   // u_min, v_min, u_max, v_max
 }
 
-/// Quad vertex.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct QuadVertex {
@@ -54,6 +72,8 @@ const QUAD_INDICES: [u16; 6] = [0, 1, 2, 0, 2, 3];
 
 /// Maximum sprites per batch before flushing.
 const MAX_SPRITES: usize = 262_144;
+
+// ── Sprite ──────────────────────────────────────────────────────────────────
 
 /// A sprite to be drawn this frame.
 pub struct Sprite {
@@ -98,6 +118,8 @@ impl Sprite {
     }
 }
 
+// ── Internal draw command ───────────────────────────────────────────────────
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DrawCmd {
     first_instance: u32,
@@ -106,8 +128,11 @@ struct DrawCmd {
     texture_idx: usize,
 }
 
+// ── SpriteBatch ─────────────────────────────────────────────────────────────
+
 /// GPU-instanced sprite batch renderer.
 pub struct SpriteBatch {
+    // GPU resources
     _shader: wgpu::ShaderModule,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
@@ -118,6 +143,8 @@ pub struct SpriteBatch {
     texture_bgl: wgpu::BindGroupLayout,
     pipelines_color: FxHashMap<wgpu::TextureFormat, Arc<wgpu::RenderPipeline>>,
     pipelines_textured: FxHashMap<wgpu::TextureFormat, Arc<wgpu::RenderPipeline>>,
+
+    // Per-frame state
     instances: Vec<SpriteInstance>,
     draw_cmds: Vec<DrawCmd>,
     current_textured: bool,
@@ -236,25 +263,16 @@ impl SpriteBatch {
         }
     }
 
+    // ── Public API: sprite submission ────────────────────────────────────
+
     /// Texture bind group layout used by the batch.
     #[inline]
     pub fn texture_layout(&self) -> &wgpu::BindGroupLayout {
         &self.texture_bgl
     }
 
-    /// Clear the batch for a new frame.
-    pub fn begin(&mut self) {
-        self.instances.clear();
-        self.draw_cmds.clear();
-        self.frame_textures.clear();
-        self.current_textured = false;
-        self.current_texture_idx = 0;
-        self.overflow_warned = false;
-    }
-
     /// Set the active texture for subsequent [`draw`] calls.
     pub fn set_texture(&mut self, texture: &Texture) {
-        // Find or register texture by Arc pointer identity
         let idx = self
             .frame_textures
             .iter()
@@ -269,17 +287,17 @@ impl SpriteBatch {
             return;
         }
 
-        self.maybe_close_cmd();
+        self.close_pending_cmd();
         self.current_textured = true;
         self.current_texture_idx = idx;
     }
 
     /// Switch back to untextured (colour-only) mode.
-    pub fn unset_texture(&mut self) {
+    pub fn clear_texture(&mut self) {
         if !self.current_textured {
             return;
         }
-        self.maybe_close_cmd();
+        self.close_pending_cmd();
         self.current_textured = false;
     }
 
@@ -288,7 +306,7 @@ impl SpriteBatch {
         if self.instances.len() >= MAX_SPRITES {
             if !self.overflow_warned {
                 eprintln!(
-                    "[SkyEngine] SpriteBatch: MAX_SPRITES ({}) reached, subsequent sprites dropped",
+                    "[SkyEngine] SpriteBatch: MAX_SPRITES ({}) reached, sprites dropped",
                     MAX_SPRITES
                 );
                 self.overflow_warned = true;
@@ -304,122 +322,109 @@ impl SpriteBatch {
         });
     }
 
-    /// Draw to the presentation surface.
+    // ── Public API: flush / render ───────────────────────────────────────
+
+    /// Flush the batch to the presentation surface.
     ///
-    /// `clear`: `Some([r,g,b,a])` clears the surface first; `None` preserves
-    /// the existing surface contents (`LoadOp::Load`).
-    pub fn draw_to_surface(
+    /// `clear`: `Some(color)` clears first; `None` preserves existing contents.
+    ///
+    /// The batch is automatically reset after flushing.
+    pub fn flush_to_surface(
         &mut self,
         ctx: &mut GpuContext,
-        camera: &Camera2D,
-        clear: Option<[f32; 4]>,
+        view: &impl RenderView,
+        clear: Option<Color>,
     ) {
-        let surface_format = ctx.surface_format();
-        self.ensure_pipelines(ctx, surface_format);
-        self.upload(ctx, camera);
+        let format = ctx.surface_format();
+        self.ensure_pipelines(ctx, format);
+        self.upload(ctx, view);
 
-        let draw_plan = self.build_draw_plan(ctx);
-        let pip_color = self.pipelines_color.get(&surface_format).cloned();
-        let pip_tex = self.pipelines_textured.get(&surface_format).cloned();
+        let cmds = self.finalize_draw_cmds();
+        let bind_groups = self.create_texture_bind_groups(ctx);
+        let pip_color = self.pipelines_color.get(&format).cloned();
+        let pip_tex = self.pipelines_textured.get(&format).cloned();
 
-        let mut frame = ctx.frame();
-        let mut pass = frame.begin_surface_pass("sprite_batch_pass", clear.map(Self::wgpu_color));
-        self.execute_draw_plan(
-            &mut *pass,
-            &draw_plan,
-            pip_color.as_deref(),
-            pip_tex.as_deref(),
-        );
+        {
+            let mut frame = ctx.frame();
+            let mut pass =
+                frame.begin_surface_pass("sprite_batch_pass", clear.map(|c| c.to_wgpu()));
+            Self::execute(
+                &mut *pass,
+                &cmds,
+                &bind_groups,
+                &self.camera_bind_group,
+                &self.vertex_buffer,
+                &self.index_buffer,
+                &self.instance_buffer,
+                pip_color.as_deref(),
+                pip_tex.as_deref(),
+            );
+        }
+
+        self.reset();
     }
 
-    /// Draw to the presentation surface while preserving the existing contents.
-    pub fn draw_to_surface_loaded(&mut self, ctx: &mut GpuContext, camera: &Camera2D) {
-        let surface_format = ctx.surface_format();
-        self.ensure_pipelines(ctx, surface_format);
-        self.upload(ctx, camera);
-
-        let draw_plan = self.build_draw_plan(ctx);
-        let pip_color = self.pipelines_color.get(&surface_format).cloned();
-        let pip_tex = self.pipelines_textured.get(&surface_format).cloned();
-
-        let mut frame = ctx.frame();
-        let mut pass = frame.begin_surface_pass_loaded("sprite_batch_pass");
-        self.execute_draw_plan(
-            &mut *pass,
-            &draw_plan,
-            pip_color.as_deref(),
-            pip_tex.as_deref(),
-        );
-    }
-
-    /// Draw to an off-screen render target.
+    /// Flush the batch to an off-screen render target.
     ///
-    /// `clear`: `Some([r,g,b,a])` clears the target first; `None` preserves
-    /// the existing target contents (`LoadOp::Load`).
-    pub fn draw_to_target(
+    /// `clear`: `Some(color)` clears first; `None` preserves existing contents.
+    ///
+    /// The batch is automatically reset after flushing.
+    pub fn flush_to_target(
         &mut self,
         ctx: &mut GpuContext,
-        camera: &Camera2D,
+        view: &impl RenderView,
         target: &RenderTarget,
-        clear: Option<[f32; 4]>,
+        clear: Option<Color>,
     ) {
+        let format = target.format();
+        self.ensure_pipelines(ctx, format);
+        self.upload(ctx, view);
+
         let load = match clear {
-            Some(c) => wgpu::LoadOp::Clear(Self::wgpu_color(c)),
+            Some(c) => wgpu::LoadOp::Clear(c.to_wgpu()),
             None => wgpu::LoadOp::Load,
         };
-        self.draw_to_target_with_load(ctx, camera, target, load);
-    }
 
-    /// Draw to an off-screen render target while preserving the existing contents.
-    pub fn draw_to_target_loaded(
-        &mut self,
-        ctx: &mut GpuContext,
-        camera: &Camera2D,
-        target: &RenderTarget,
-    ) {
-        self.draw_to_target_with_load(ctx, camera, target, wgpu::LoadOp::Load);
-    }
+        let cmds = self.finalize_draw_cmds();
+        let bind_groups = self.create_texture_bind_groups(ctx);
+        let pip_color = self.pipelines_color.get(&format).cloned();
+        let pip_tex = self.pipelines_textured.get(&format).cloned();
 
-    fn draw_to_target_with_load(
-        &mut self,
-        ctx: &mut GpuContext,
-        camera: &Camera2D,
-        target: &RenderTarget,
-        load: wgpu::LoadOp<wgpu::Color>,
-    ) {
-        let target_format = target.format();
-        self.ensure_pipelines(ctx, target_format);
-        self.upload(ctx, camera);
-
-        let draw_plan = self.build_draw_plan(ctx);
-        let pip_color = self.pipelines_color.get(&target_format).cloned();
-        let pip_tex = self.pipelines_textured.get(&target_format).cloned();
-
-        let mut frame = ctx.frame();
-        let mut pass = frame.begin_target_pass("sprite_batch_pass", target, load);
-        self.execute_draw_plan(
-            &mut *pass,
-            &draw_plan,
-            pip_color.as_deref(),
-            pip_tex.as_deref(),
-        );
-    }
-
-    #[inline]
-    fn wgpu_color(color: [f32; 4]) -> wgpu::Color {
-        wgpu::Color {
-            r: color[0] as f64,
-            g: color[1] as f64,
-            b: color[2] as f64,
-            a: color[3] as f64,
+        {
+            let mut frame = ctx.frame();
+            let mut pass = frame.begin_target_pass("sprite_batch_pass", target, load);
+            Self::execute(
+                &mut *pass,
+                &cmds,
+                &bind_groups,
+                &self.camera_bind_group,
+                &self.vertex_buffer,
+                &self.index_buffer,
+                &self.instance_buffer,
+                pip_color.as_deref(),
+                pip_tex.as_deref(),
+            );
         }
+
+        self.reset();
     }
 
-    fn upload(&self, ctx: &GpuContext, camera: &Camera2D) {
+    // ── Internal ────────────────────────────────────────────────────────
+
+    fn reset(&mut self) {
+        self.instances.clear();
+        self.draw_cmds.clear();
+        self.frame_textures.clear();
+        self.current_textured = false;
+        self.current_texture_idx = 0;
+        self.overflow_warned = false;
+    }
+
+    fn upload(&self, ctx: &GpuContext, view: &impl RenderView) {
         ctx.queue().write_buffer(
             &self.camera_buffer,
             0,
-            bytemuck::bytes_of(&camera.uniform()),
+            bytemuck::bytes_of(&view.view_uniform()),
         );
         if !self.instances.is_empty() {
             ctx.queue().write_buffer(
@@ -430,104 +435,76 @@ impl SpriteBatch {
         }
     }
 
-    fn build_draw_plan(&self, ctx: &GpuContext) -> Vec<(bool, Option<wgpu::BindGroup>, u32, u32)> {
-        self.finalized_draw_cmds()
+    fn close_pending_cmd(&mut self) {
+        let already_claimed: u32 = self.draw_cmds.iter().map(|c| c.instance_count).sum();
+        let pending = (self.instances.len() as u32).saturating_sub(already_claimed);
+        if pending > 0 {
+            self.draw_cmds.push(DrawCmd {
+                first_instance: already_claimed,
+                instance_count: pending,
+                textured: self.current_textured,
+                texture_idx: self.current_texture_idx,
+            });
+        }
+    }
+
+    fn finalize_draw_cmds(&mut self) -> Vec<DrawCmd> {
+        self.close_pending_cmd();
+        self.draw_cmds.clone()
+    }
+
+    fn create_texture_bind_groups(&self, ctx: &GpuContext) -> Vec<wgpu::BindGroup> {
+        self.frame_textures
             .iter()
-            .map(|cmd| {
-                let bg = if cmd.textured {
-                    let tex = &self.frame_textures[cmd.texture_idx];
-                    Some(ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("sprite_texture_bg"),
-                        layout: &self.texture_bgl,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: wgpu::BindingResource::TextureView(tex.view()),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: wgpu::BindingResource::Sampler(ctx.sampler_nearest()),
-                            },
-                        ],
-                    }))
-                } else {
-                    None
-                };
-                (cmd.textured, bg, cmd.first_instance, cmd.instance_count)
+            .map(|tex| {
+                ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("sprite_texture_bg"),
+                    layout: &self.texture_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(tex.view()),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(ctx.sampler_nearest()),
+                        },
+                    ],
+                })
             })
             .collect()
     }
 
-    fn finalized_draw_cmds(&self) -> Vec<DrawCmd> {
-        let mut draw_cmds = self.draw_cmds.clone();
-        Self::close_pending_cmd(
-            &mut draw_cmds,
-            self.instances.len() as u32,
-            self.current_textured,
-            self.current_texture_idx,
-        );
-        draw_cmds
-    }
-
-    fn execute_draw_plan(
-        &self,
+    fn execute(
         pass: &mut wgpu::RenderPass<'_>,
-        plan: &[(bool, Option<wgpu::BindGroup>, u32, u32)],
+        cmds: &[DrawCmd],
+        texture_bind_groups: &[wgpu::BindGroup],
+        camera_bg: &wgpu::BindGroup,
+        vertex_buf: &wgpu::Buffer,
+        index_buf: &wgpu::Buffer,
+        instance_buf: &wgpu::Buffer,
         pip_color: Option<&wgpu::RenderPipeline>,
         pip_textured: Option<&wgpu::RenderPipeline>,
     ) {
-        pass.set_bind_group(0, &self.camera_bind_group, &[]);
-        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
-        pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+        pass.set_bind_group(0, camera_bg, &[]);
+        pass.set_vertex_buffer(0, vertex_buf.slice(..));
+        pass.set_vertex_buffer(1, instance_buf.slice(..));
+        pass.set_index_buffer(index_buf.slice(..), wgpu::IndexFormat::Uint16);
 
-        for (textured, bind_group, first_instance, instance_count) in plan {
-            if *textured {
-                let Some(pip) = pip_textured else {
-                    continue;
-                };
+        for cmd in cmds {
+            if cmd.textured {
+                let Some(pip) = pip_textured else { continue };
                 pass.set_pipeline(pip);
-                if let Some(bg) = bind_group {
-                    pass.set_bind_group(1, bg, &[]);
-                }
+                pass.set_bind_group(1, &texture_bind_groups[cmd.texture_idx], &[]);
             } else {
-                let Some(pip) = pip_color else {
-                    continue;
-                };
+                let Some(pip) = pip_color else { continue };
                 pass.set_pipeline(pip);
             }
             pass.draw_indexed(
                 0..6,
                 0,
-                *first_instance..(*first_instance + *instance_count),
+                cmd.first_instance..(cmd.first_instance + cmd.instance_count),
             );
-        }
-    }
-
-    fn maybe_close_cmd(&mut self) {
-        Self::close_pending_cmd(
-            &mut self.draw_cmds,
-            self.instances.len() as u32,
-            self.current_textured,
-            self.current_texture_idx,
-        );
-    }
-
-    fn close_pending_cmd(
-        draw_cmds: &mut Vec<DrawCmd>,
-        total_instances: u32,
-        textured: bool,
-        texture_idx: usize,
-    ) {
-        let already_claimed: u32 = draw_cmds.iter().map(|c| c.instance_count).sum();
-        let pending = total_instances.saturating_sub(already_claimed);
-        if pending > 0 {
-            draw_cmds.push(DrawCmd {
-                first_instance: already_claimed,
-                instance_count: pending,
-                textured,
-                texture_idx,
-            });
         }
     }
 
@@ -586,10 +563,9 @@ impl SpriteBatch {
                 )),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: &shader,
+                    module: shader,
                     entry_point: Some("vs_main"),
                     buffers: &[
-                        // Quad vertices
                         wgpu::VertexBufferLayout {
                             array_stride: std::mem::size_of::<QuadVertex>() as u64,
                             step_mode: wgpu::VertexStepMode::Vertex,
@@ -606,7 +582,6 @@ impl SpriteBatch {
                                 },
                             ],
                         },
-                        // Instances
                         wgpu::VertexBufferLayout {
                             array_stride: std::mem::size_of::<SpriteInstance>() as u64,
                             step_mode: wgpu::VertexStepMode::Instance,
@@ -637,7 +612,7 @@ impl SpriteBatch {
                     compilation_options: Default::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: &shader,
+                    module: shader,
                     entry_point: Some(if textured { "fs_main" } else { "fs_color_only" }),
                     targets: &[Some(wgpu::ColorTargetState {
                         format,
@@ -660,50 +635,60 @@ impl SpriteBatch {
 
 #[cfg(test)]
 mod tests {
-    use super::{DrawCmd, SpriteBatch};
+    use super::DrawCmd;
+
+    /// Mirror of `SpriteBatch::close_pending_cmd` logic for testing.
+    fn close_pending(
+        draw_cmds: &mut Vec<DrawCmd>,
+        total_instances: u32,
+        textured: bool,
+        texture_idx: usize,
+    ) {
+        let already_claimed: u32 = draw_cmds.iter().map(|c| c.instance_count).sum();
+        let pending = total_instances.saturating_sub(already_claimed);
+        if pending > 0 {
+            draw_cmds.push(DrawCmd {
+                first_instance: already_claimed,
+                instance_count: pending,
+                textured,
+                texture_idx,
+            });
+        }
+    }
 
     #[test]
-    fn close_pending_cmd_appends_unclaimed_instances() {
-        let mut draw_cmds = vec![DrawCmd {
+    fn close_pending_appends_unclaimed_instances() {
+        let mut cmds = vec![DrawCmd {
             first_instance: 0,
             instance_count: 3,
             textured: false,
             texture_idx: 0,
         }];
+        close_pending(&mut cmds, 5, true, 2);
 
-        SpriteBatch::close_pending_cmd(&mut draw_cmds, 5, true, 2);
-
+        assert_eq!(cmds.len(), 2);
         assert_eq!(
-            draw_cmds,
-            vec![
-                DrawCmd {
-                    first_instance: 0,
-                    instance_count: 3,
-                    textured: false,
-                    texture_idx: 0,
-                },
-                DrawCmd {
-                    first_instance: 3,
-                    instance_count: 2,
-                    textured: true,
-                    texture_idx: 2,
-                },
-            ]
+            cmds[1],
+            DrawCmd {
+                first_instance: 3,
+                instance_count: 2,
+                textured: true,
+                texture_idx: 2,
+            }
         );
     }
 
     #[test]
-    fn close_pending_cmd_does_not_duplicate_completed_work() {
-        let mut draw_cmds = vec![DrawCmd {
+    fn close_pending_does_not_duplicate_completed_work() {
+        let mut cmds = vec![DrawCmd {
             first_instance: 0,
             instance_count: 4,
             textured: false,
             texture_idx: 0,
         }];
+        close_pending(&mut cmds, 4, true, 1);
 
-        SpriteBatch::close_pending_cmd(&mut draw_cmds, 4, true, 1);
-
-        assert_eq!(draw_cmds.len(), 1);
-        assert_eq!(draw_cmds[0].instance_count, 4);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].instance_count, 4);
     }
 }

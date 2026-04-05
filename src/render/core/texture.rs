@@ -29,7 +29,121 @@ impl std::fmt::Display for TextureError {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .expect("No suitable GPU adapter found for texture tests");
+
+        pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("texture_test_device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::Performance,
+            },
+            None,
+        ))
+        .expect("Failed to create test GPU device")
+    }
+
+    #[test]
+    fn texture_create_desc_tracks_metadata() {
+        let (device, queue) = create_test_device();
+        let ctx =
+            GpuContext::new_headless(device, queue, wgpu::TextureFormat::Rgba8Unorm, [16, 16]);
+
+        let texture = Texture::create(
+            &ctx,
+            TextureCreateDesc::new_2d(16, 8, wgpu::TextureFormat::Rgba8Unorm)
+                .mip_level_count(3)
+                .label("mipped_texture"),
+        );
+
+        assert_eq!(texture.width(), 16);
+        assert_eq!(texture.height(), 8);
+        assert_eq!(texture.depth_or_array_layers(), 1);
+        assert_eq!(texture.mip_level_count(), 3);
+        assert_eq!(texture.sample_count(), 1);
+        assert_eq!(texture.dimension(), wgpu::TextureDimension::D2);
+    }
+}
+
 impl std::error::Error for TextureError {}
+
+/// Explicit descriptor for creating an empty GPU texture.
+pub struct TextureCreateDesc {
+    pub size: wgpu::Extent3d,
+    pub format: wgpu::TextureFormat,
+    pub usage: wgpu::TextureUsages,
+    pub dimension: wgpu::TextureDimension,
+    pub mip_level_count: u32,
+    pub sample_count: u32,
+    pub label: Cow<'static, str>,
+    pub view_dimension: Option<wgpu::TextureViewDimension>,
+}
+
+impl TextureCreateDesc {
+    pub fn new_2d(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
+        Self {
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            dimension: wgpu::TextureDimension::D2,
+            mip_level_count: 1,
+            sample_count: 1,
+            label: Cow::Borrowed("texture"),
+            view_dimension: None,
+        }
+    }
+
+    #[inline]
+    pub fn usage(mut self, usage: wgpu::TextureUsages) -> Self {
+        self.usage = usage;
+        self
+    }
+
+    #[inline]
+    pub fn dimension(mut self, dimension: wgpu::TextureDimension) -> Self {
+        self.dimension = dimension;
+        self
+    }
+
+    #[inline]
+    pub fn mip_level_count(mut self, mip_level_count: u32) -> Self {
+        self.mip_level_count = mip_level_count.max(1);
+        self
+    }
+
+    #[inline]
+    pub fn sample_count(mut self, sample_count: u32) -> Self {
+        self.sample_count = sample_count.max(1);
+        self
+    }
+
+    #[inline]
+    pub fn label(mut self, label: impl Into<Cow<'static, str>>) -> Self {
+        self.label = label.into();
+        self
+    }
+
+    #[inline]
+    pub fn view_dimension(mut self, view_dimension: wgpu::TextureViewDimension) -> Self {
+        self.view_dimension = Some(view_dimension);
+        self
+    }
+}
 
 /// Explicit descriptor for uploading a raw RGBA8 texture.
 pub struct TextureUploadDesc<'a> {
@@ -97,9 +211,11 @@ impl<'a> TextureFileDesc<'a> {
 struct TextureInner {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
-    width: u32,
-    height: u32,
+    size: wgpu::Extent3d,
     format: wgpu::TextureFormat,
+    dimension: wgpu::TextureDimension,
+    mip_level_count: u32,
+    sample_count: u32,
 }
 
 /// A GPU texture — holds a wgpu texture and its default view.
@@ -115,6 +231,33 @@ struct TextureInner {
 pub struct Texture(Arc<TextureInner>);
 
 impl Texture {
+    pub fn create(ctx: &GpuContext, desc: TextureCreateDesc) -> Self {
+        let texture = ctx.device().create_texture(&wgpu::TextureDescriptor {
+            label: Some(desc.label.as_ref()),
+            size: desc.size,
+            mip_level_count: desc.mip_level_count.max(1),
+            sample_count: desc.sample_count.max(1),
+            dimension: desc.dimension,
+            format: desc.format,
+            usage: desc.usage,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: desc.view_dimension,
+            ..Default::default()
+        });
+
+        Self(Arc::new(TextureInner {
+            texture,
+            view,
+            size: desc.size,
+            format: desc.format,
+            dimension: desc.dimension,
+            mip_level_count: desc.mip_level_count.max(1),
+            sample_count: desc.sample_count.max(1),
+        }))
+    }
+
     pub fn from_upload_desc(ctx: &GpuContext, desc: TextureUploadDesc<'_>) -> Self {
         Self::try_from_upload_desc(ctx, desc).expect("Texture::from_upload_desc failed")
     }
@@ -131,26 +274,14 @@ impl Texture {
             });
         }
 
-        let texture = ctx.device().create_texture(&wgpu::TextureDescriptor {
-            label: Some(desc.label.as_ref()),
-            size: wgpu::Extent3d {
-                width: desc.width,
-                height: desc.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: desc.format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let create_desc = TextureCreateDesc::new_2d(desc.width, desc.height, desc.format)
+            .usage(wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST)
+            .label(desc.label);
+        let texture = Self::create(ctx, create_desc);
 
         ctx.queue().write_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: &texture,
+                texture: texture.texture(),
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
@@ -168,13 +299,7 @@ impl Texture {
             },
         );
 
-        Ok(Self(Arc::new(TextureInner {
-            texture,
-            view,
-            width: desc.width,
-            height: desc.height,
-            format: desc.format,
-        })))
+        Ok(texture)
     }
 
     /// Create a texture from raw RGBA8 pixel data.
@@ -292,19 +417,49 @@ impl Texture {
     /// Texture width in pixels.
     #[inline]
     pub fn width(&self) -> u32 {
-        self.0.width
+        self.0.size.width
     }
 
     /// Texture height in pixels.
     #[inline]
     pub fn height(&self) -> u32 {
-        self.0.height
+        self.0.size.height
+    }
+
+    /// Texture depth or array layer count.
+    #[inline]
+    pub fn depth_or_array_layers(&self) -> u32 {
+        self.0.size.depth_or_array_layers
+    }
+
+    /// Full logical texture size.
+    #[inline]
+    pub fn size(&self) -> wgpu::Extent3d {
+        self.0.size
     }
 
     /// Texture pixel format.
     #[inline]
     pub fn format(&self) -> wgpu::TextureFormat {
         self.0.format
+    }
+
+    /// Texture dimension.
+    #[inline]
+    pub fn dimension(&self) -> wgpu::TextureDimension {
+        self.0.dimension
+    }
+
+    /// Number of mip levels allocated for the texture.
+    #[inline]
+    pub fn mip_level_count(&self) -> u32 {
+        self.0.mip_level_count
+    }
+
+    /// Number of samples per texel.
+    #[inline]
+    pub fn sample_count(&self) -> u32 {
+        self.0.sample_count
     }
 
     /// Generate a 1×1 white pixel texture (used as default/fallback).

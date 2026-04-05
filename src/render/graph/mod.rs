@@ -272,6 +272,8 @@ impl RenderGraph {
             name: builder.name,
             size: builder.size,
             format: builder.format,
+            sample_count: builder.sample_count,
+            mip_level_count: builder.mip_level_count,
             transient: builder.transient,
             imported: builder.imported,
         });

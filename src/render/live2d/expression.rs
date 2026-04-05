@@ -188,7 +188,11 @@ impl Live2DExpressionPlayer {
     }
 
     pub fn set_expression(&mut self, name: &str) -> bool {
-        if let Some(index) = self.expressions.iter().position(|expression| expression.name == name) {
+        if let Some(index) = self
+            .expressions
+            .iter()
+            .position(|expression| expression.name == name)
+        {
             self.active = Some(ActiveExpression {
                 expression_index: index,
                 time_seconds: 0.0,
@@ -210,9 +214,7 @@ impl Live2DExpressionPlayer {
     }
 }
 
-fn expression_entries_from_model_json(
-    json: &serde_json::Value,
-) -> Option<&Vec<serde_json::Value>> {
+fn expression_entries_from_model_json(json: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
     json.get("FileReferences")
         .and_then(|value| value.get("Expressions"))
         .and_then(|value| value.as_array())
@@ -254,8 +256,17 @@ mod tests {
 
     #[test]
     fn unknown_blend_falls_back_to_add() {
-        assert_eq!(ExpressionBlend::from_json_value(Some("Nope")), ExpressionBlend::Add);
-        assert_eq!(ExpressionBlend::from_json_value(Some("Multiply")), ExpressionBlend::Multiply);
-        assert_eq!(ExpressionBlend::from_json_value(Some("Overwrite")), ExpressionBlend::Overwrite);
+        assert_eq!(
+            ExpressionBlend::from_json_value(Some("Nope")),
+            ExpressionBlend::Add
+        );
+        assert_eq!(
+            ExpressionBlend::from_json_value(Some("Multiply")),
+            ExpressionBlend::Multiply
+        );
+        assert_eq!(
+            ExpressionBlend::from_json_value(Some("Overwrite")),
+            ExpressionBlend::Overwrite
+        );
     }
 }

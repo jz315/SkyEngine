@@ -28,7 +28,7 @@ pollster = { version = "0.4", optional = true }
 # Asset loading (feature-gated)
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 serde_json = { version = "1", optional = true }
-cubism-sys = { path = "cubism-sys", optional = true }
+cubism-sys = { package = "live2d-cubism-core-sys", version = "0.1", optional = true }
 
 # Existing optionals
 minifb = { version = "0.28.0", optional = true }
@@ -141,12 +141,12 @@ required-features = ["demo-legacy"]
 
 [[example]]
 name = "boids_hecs"
-path = "examples/legacy/boids_hecs.rs"
+path = "examples/compare/boids_hecs.rs"
 required-features = ["compare"]
 
 [[example]]
 name = "boids_bevy"
-path = "examples/legacy/boids_bevy.rs"
+path = "examples/compare/boids_bevy.rs"
 required-features = ["compare"]
 
 [[example]]
@@ -183,3 +183,6 @@ harness = false
 
 [profile.release]
 debug = true
+
+[patch.crates-io]
+live2d-cubism-core-sys = { path = "cubism-sys" }

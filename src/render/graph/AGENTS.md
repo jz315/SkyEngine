@@ -40,7 +40,8 @@ Compilation is **idempotent** and cached; the cache is invalidated when passes o
 
 ## Physical Resource Management
 - **Alias groups**: transient textures in the same alias group share physical `RenderTarget` objects.  Each group allocates one target with `max(width) × max(height)` dimensions.  `alias_group_count()` only counts multi-member groups (groups with actual sharing).  Non-aliased transient textures use the normal pool path.
-- **Transient textures**: allocated from `TransientPool` on first use, returned after frame execution via `release_transient_resources()`. Pool key is `{format, width, height}`.
+- **Transient textures**: allocated from `TransientPool` on first use, returned after frame execution via `release_transient_resources()`. Pool key is `{format, width, height, sample_count, mip_level_count}`.
+- Virtual texture descriptors also track `sample_count` and `mip_level_count`; pooling and aliasing require those values to match exactly.
 - **Persistent textures**: owned by the graph, resized on surface size changes, not pooled, and treated as cross-frame external sources/sinks by the compiler.
 - **Imported textures**: external `Arc<wgpu::Texture>` + `Arc<wgpu::TextureView>`, never pooled or resized.  Imported resources are treated as both external sources and external sinks (intentional — the caller retains a reference and observes writes).
 - **Transient buffers**: allocated from `TransientBufferPool`, keyed by `{size_bytes, usage}`.
@@ -102,6 +103,7 @@ Compilation is **idempotent** and cached; the cache is invalidated when passes o
 - **No barrier generation**: wgpu handles resource state transitions internally; no explicit barrier phase (by design — unnecessary under wgpu).
 - **No bind-table management**: descriptor set / bind group creation is left to the caller.
 - **Texture-only aliasing**: buffer aliasing is not implemented (low impact since buffers are typically few and small).
+- **2D physical targets**: render-graph-managed physical textures are still backed by `RenderTarget` and therefore assume 2D attachments, even though sample/mip metadata is now tracked explicitly.
 - These remaining limitations are tracked against the SakuraEngine reference implementation's 12-phase pipeline (see `SakuraEngine_ref/engine/modules/render/render_graph/claude.md`).
 
 ## Relation to Broader Render Module

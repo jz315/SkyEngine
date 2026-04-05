@@ -13,9 +13,9 @@
 render/
 ├── core/         — Foundational GPU types (camera, color, texture, render target, fullscreen pass)
 ├── graph/        — Declarative render graph system (has its own AGENTS.md)
-├── passes/       — High-level rendering passes (SpriteBatch, LightPass, CompositePass)
+├── passes/       — High-level rendering passes (SpriteBatch, MeshPass, LightPass, CompositePass)
 ├── postfx/       — Post-processing effect chain (Bloom, ToneMap, Vignette)
-├── resources/    — Shared resource systems (TextureAtlas, Blackboard, Material)
+├── resources/    — Shared resource systems (TextureAtlas, Blackboard, Material, Mesh)
 ├── shaders/      — All WGSL shader sources
 ├── live2d/       — Live2D Cubism model renderer (has its own AGENTS.md, feature-gated)
 ├── light.rs      — Light2D descriptor and color temperature utility
@@ -43,7 +43,9 @@ render/
 
 #### `core/camera.rs`
 - `Camera2D` — 2D orthographic camera with position, zoom, and viewport dimensions.
-- `CameraUniform` — `#[repr(C)]` GPU-ready struct: 4×4 view-projection matrix, camera params, viewport info.  Shared by sprite, light, and fullscreen passes.
+- `ViewUniform` — `#[repr(C)]` GPU-ready view struct: 4×4 view-projection matrix, camera params, viewport info.
+- `CameraUniform` is kept as a backwards-compatible alias to `ViewUniform`.
+- `RenderView` is the pass-facing abstraction; `Camera2D` implements it so future 3D views can share the same pass entry points.
 - Coordinate convention: origin at screen centre, +X right, +Y up.
 - `screen_to_world()` converts screen pixels to world coordinates (Y-flipped).
 - All projection math guards against zero viewport/zoom (clamps to `f32::EPSILON`).
@@ -58,7 +60,9 @@ render/
 #### `core/texture.rs`
 - `Texture` — `Arc`-wrapped GPU texture with default view.  Cheaply cloneable, reference-counted.
 - Samplers are **not** bundled — use `GpuContext::sampler_linear()` / `sampler_nearest()` when creating bind groups.
+- `TextureCreateDesc` is the low-level creation path for non-upload textures and future non-2D uses.
 - Creation paths:
+  - `create()` — explicit descriptor path for empty/custom textures
   - `from_rgba8()` / `from_rgba8_with_label()` / `from_rgba8_with_format()` — raw pixel upload.
   - `from_upload_desc()` / `try_from_upload_desc()` — explicit descriptor API.
   - `from_png()` / `from_file_desc()` / `try_from_file_desc()` — file loading (behind `feature = "asset"`).
@@ -68,8 +72,10 @@ render/
 
 #### `core/target.rs`
 - `RenderTarget` — persistent off-screen texture with view, auto-resizable.
+- `RenderTargetDescriptor` exposes non-default target configuration such as sample count and mip count while preserving the simple `RenderTarget::new(...)` path.
 - Usage flags: `RENDER_ATTACHMENT | TEXTURE_BINDING | COPY_SRC | COPY_DST`.
 - `resize()` recreates the texture only if dimensions or format actually changed.  Clamps to 1×1 minimum (avoids wgpu panics on window minimize).
+- `resize_with()` can also change sample count and mip count.
 - Implements `ColorTargetView` trait for `GpuContext::with_render_pass()` compatibility.
 - Used extensively by the render graph as the physical backing for transient/persistent textures.
 
@@ -87,10 +93,18 @@ render/
 - `SpriteBatch` — GPU-instanced 2D sprite renderer.  Handles thousands of sprites in minimal draw calls.
 - Per-instance data: transform (x, y, w, h), rotation (sin/cos), color (RGBA), UV rect.
 - `MAX_SPRITES = 262,144` per batch before overflow warning.
-- Workflow: `begin()` → `set_texture()` / `unset_texture()` → `draw(Sprite)` → `draw_to_surface()` / `draw_to_target()`.
+- Workflow: `set_texture()` / `clear_texture()` → `draw(Sprite)` → `flush_to_surface()` / `flush_to_target()`.
 - Automatic draw command batching: texture changes trigger new draw commands; same-texture sprites are coalesced.
 - Pipeline caching per target format (separate pipelines for textured vs color-only fragments).
 - `Sprite` — per-sprite descriptor with builder-style `.rotation()`, `.color()`, `.uv()`.
+
+#### `passes/mesh_pass.rs`
+- `MeshPass` — custom geometry renderer for non-sprite meshes using `RenderView` + `MaterialPipelineCache`.
+- Fixed shader contract: bind group `0` is the view uniform (`ViewUniform`).
+- `create_pipeline_cache()` wraps `MaterialPipelineCache` so material bind-group slots are resolved around the reserved view slot.
+- `MeshDraw` supports indexed and non-indexed draws, custom vertex/index ranges, base vertex, and instancing range.
+- `render_to_target()` renders without depth; `render_to_target_with_depth()` validates color/depth sample-count and format compatibility.
+- `render_to_surface()` is single-sample and intentionally depthless in the current implementation.
 
 #### `passes/light_pass.rs`
 - `LightPass` — instanced additive light accumulation pass with normal map support.
@@ -99,12 +113,15 @@ render/
 - Supports optional normal map input; falls back to flat (+Z) normal when none provided.
 - Additive blending (`One + One`) accumulates light contributions into a lightmap `RenderTarget`.
 - Ambient light is applied as the clear color of the lightmap.
+- `render()` rejects aliasing between the sampled normal target and the lightmap output target.
 - Per-format pipeline caching.
 
 #### `passes/composite_pass.rs`
 - `CompositePass` — fullscreen scene × lightmap compositing pass.
-- Multiplies `scene_color * lightmap_color → output`.
+- Multiplies `scene_color * lightmap_color`, with ambient expected to already be baked into the lightmap by `LightPass`.
+- Preserves overbright scene energy so HDR sprites can still bloom after compositing.
 - Built on `FullscreenPipeline` with a dual-texture bind group (scene + lightmap).
+- `render_to_target()` rejects aliasing between sampled inputs and the output target.
 - Can render to either a `RenderTarget` or the presentation surface.
 
 ---
@@ -160,8 +177,14 @@ render/
 - `MaterialPipelineCache` — shader + per-format render pipeline cache.
   - `MaterialPipelineDesc` — describes vertex/fragment entry points, blend state, vertex layout, bind group slot assignments.
   - Automatic bind group slot resolution: properties and resources slots are auto-assigned if not specified, and conflict-checked.
+  - `new_with_fixed_layouts()` / `try_new_with_fixed_layouts()` reserve caller-owned bind-group slots such as `MeshPass`'s view uniform.
 
 - `MaterialInstance` — combines `MaterialProperties` + `MaterialResourceBindings` into one reusable unit.
+
+#### `resources/mesh.rs`
+- `Mesh` — persistent GPU vertex/index buffers for custom geometry.
+- `MeshIndexData` accepts either borrowed `u16` or `u32` index slices during creation.
+- Uses persistent GPU buffers with `COPY_DST` enabled so future dynamic updates can reuse the same backing storage shape.
 
 ---
 
@@ -187,7 +210,7 @@ render/
 
 A typical lit 2D scene frame follows this order:
 
-1. **Scene pass**: `SpriteBatch::draw_to_target()` → renders sprites into an HDR `RenderTarget`.
+1. **Scene pass**: `SpriteBatch::flush_to_target()` → renders sprites into an HDR `RenderTarget`.
 2. **Light pass**: `LightPass::render()` → renders lights into a lightmap `RenderTarget` (with ambient clear).
 3. **Composite pass**: `CompositePass::render_to_target()` → multiplies scene × lightmap → composited `RenderTarget`.
 4. **Post-FX chain**: `Bloom::apply()` → `ToneMap::apply_to_target()` → `Vignette::apply_to_surface()`.
@@ -197,6 +220,7 @@ A typical lit 2D scene frame follows this order:
 
 All rendering passes use per-target-format pipeline caching via `FxHashMap<TextureFormat, Arc<RenderPipeline>>`.  This avoids redundant pipeline creation when rendering to different format targets across frames.  The pattern is used consistently in:
 - `SpriteBatch` (separate color and textured pipeline maps)
+- `MeshPass`
 - `LightPass`
 - `FullscreenPipeline` (used by CompositePass and all PostFx)
 - `MaterialPipelineCache`

@@ -177,40 +177,85 @@ cargo bench --bench fair -- bevy  # Bevy only
 
 ## 🎮 Examples
 
-### ECS Tutorials (no GPU required)
+See [`examples/README.md`](examples/README.md) for the full example index and recommended learning order. If you're new to the repo, start with ECS tutorials, then move to render showcases, then the full demos.
+
+### 1. ECS Tutorials (no GPU required)
 
 ```bash
-cargo run --example hello_ecs       # minimal getting-started
+cargo run --example hello_ecs       # minimal starting point
 cargo run --example queries         # typed queries
-cargo run --example commands        # deferred command buffer
+cargo run --example commands        # deferred structural changes
 cargo run --example systems         # system scheduling
-cargo run --example tiny_defense    # ASCII tower defense game
+cargo run --example tiny_defense    # ECS-only complete mini game
 ```
 
-### GPU Rendering Showcases (`--features app`)
+### 2. Render Learning Path (`--features app`)
+
+Recommended order:
+
+1. `clear_screen` — understand the window, GPU context, and per-frame clear pass
+2. `sprite_demo` — add `Camera2D` and `SpriteBatch`
+3. `textured_demo` — move from flat-color sprites to textures and mixed drawing
+4. `lighting_demo` — introduce normals, lighting composition, bloom, and tonemapping
+5. `render_graph_showcase` — study how the declarative `RenderGraph` organizes resources and passes
+6. `perf_test` — inspect throughput and scaling after the main path is clear
+
+`live2d_demo` is a specialized render branch and is best read after the main path.
 
 ```bash
-cargo run --example clear_screen         --features app
-cargo run --example sprite_demo          --features app
-cargo run --example textured_demo        --features app
-cargo run --example lighting_demo        --features app
+cargo run --example clear_screen          --features app
+cargo run --example sprite_demo           --features app
+cargo run --example textured_demo         --features app
+cargo run --example lighting_demo         --features app
 cargo run --example render_graph_showcase --features app
-cargo run --example perf_test            --features app
+cargo run --example perf_test             --features app --release
 ```
 
-### Full Demos (`--features app`)
+### Render Path Map
 
-```bash
-cargo run --example boids             --features app --release
-cargo run --example boids_classic     --features app --release
-cargo run --example cosmic_jellyfish  --features app --release
-cargo run --example neon_galaxy       --features app --release
+```text
+clear_screen
+  ↓
+sprite_demo
+  ↓
+textured_demo
+  ↓
+lighting_demo
+  ↓
+render_graph_showcase
+  ↓
+perf_test
+
+specialized branch: live2d_demo
 ```
 
-### Live2D (`--features live2d`)
+### 3. Full Showcase Demos (`--features app`)
 
 ```bash
-cargo run --example live2d_demo --features live2d --release
+cargo run --example boids            --features app --release
+cargo run --example boids_classic    --features app --release
+cargo run --example cosmic_jellyfish --features app --release
+cargo run --example neon_galaxy      --features app --release
+```
+
+### 4. Live2D (`--features live2d`)
+
+```bash
+cargo run --example live2d_demo --features live2d --release -- <path-to-model3.json>
+```
+
+### 5. Compare / Legacy Examples (not part of the main learning path)
+
+```bash
+# Cross-engine comparison
+cargo run --example boids_bevy_gpu --features compare-bevy --release
+cargo run --example boids_hecs     --features compare --release
+cargo run --example boids_bevy     --features compare --release
+
+# Historical CPU-rendered demos
+cargo run --example particles --features demo-legacy
+cargo run --example asteroids --features demo-legacy
+cargo run --example snake     --features demo-legacy
 ```
 
 ---
@@ -244,7 +289,13 @@ SkyEngine/
 │   │   └── live2d/             #   Live2D Cubism renderer (feature: live2d)
 │   ├── app/                    # 🚀 Application framework (feature: app)
 │   └── reflect/                # 🔍 Runtime type registry
-├── examples/                   # 📚 Runnable examples (16+)
+├── examples/                   # 📚 Runnable examples
+│   ├── README.md               #   Example index and learning path
+│   ├── ecs/                    #   ECS tutorials
+│   ├── render/                 #   Render API showcases + Live2D
+│   ├── demo/                   #   Full showcase demos
+│   ├── compare/                #   Cross-engine comparisons
+│   └── legacy/                 #   Historical SkyEngine CPU demos
 ├── benches/                    # 📊 Criterion benchmarks
 ├── docs/                       # 📖 Documentation
 ├── BENCHMARKS.md               # Benchmark methodology and history

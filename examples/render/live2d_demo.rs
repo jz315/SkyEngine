@@ -1,10 +1,12 @@
-//! Live2D model rendering demo.
+//! # Live2D Demo
 //!
-//! Usage:
-//!   cargo run --example live2d_demo --features live2d --release -- <path-to-model3.json>
+//! Focused integration example for loading and rendering a Cubism model
+//! through SkyEngine's Live2D pipeline.
 //!
-//! Example:
-//!   cargo run --example live2d_demo --features live2d --release -- assets/Haru/Haru.model3.json
+//! ```bash
+//! cargo run --example live2d_demo --features live2d --release -- <path-to-model3.json>
+//! cargo run --example live2d_demo --features live2d --release -- assets/Haru/Haru.model3.json
+//! ```
 
 use sky_engine::app::{App, AppConfig, FrameContext, KeyCode};
 use sky_engine::ecs::World;
@@ -23,7 +25,7 @@ fn main() {
         title: format!("SkyEngine — Live2D: {}", model_path),
         width: 1280,
         height: 720,
-        vsync: true,
+        vsync: false,
         resizable: true,
     };
 
@@ -156,7 +158,5 @@ fn pressed_expression_index(input: &sky_engine::app::Input) -> Option<usize> {
         KeyCode::Digit9,
     ];
 
-    HOTKEYS
-        .iter()
-        .position(|&key| input.key_pressed(key))
+    HOTKEYS.iter().position(|&key| input.key_pressed(key))
 }

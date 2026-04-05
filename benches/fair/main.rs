@@ -2,6 +2,7 @@
 mod common;
 
 mod bevy;
+mod flecs;
 mod hecs;
 mod shared;
 mod sky;
@@ -13,6 +14,7 @@ fn bench_insert(c: &mut Criterion) {
     sky::bench_insert(&mut group);
     hecs::bench_insert(&mut group);
     bevy::bench_insert(&mut group);
+    flecs::bench_insert(&mut group);
     group.finish();
 }
 
@@ -21,6 +23,7 @@ fn bench_iteration(c: &mut Criterion) {
     sky::bench_iteration(&mut group);
     hecs::bench_iteration(&mut group);
     bevy::bench_iteration(&mut group);
+    flecs::bench_iteration(&mut group);
     group.finish();
 }
 
@@ -29,6 +32,7 @@ fn bench_fragmented_iteration(c: &mut Criterion) {
     sky::bench_fragmented_iteration(&mut group);
     hecs::bench_fragmented_iteration(&mut group);
     bevy::bench_fragmented_iteration(&mut group);
+    flecs::bench_fragmented_iteration(&mut group);
     group.finish();
 }
 
@@ -37,6 +41,7 @@ fn bench_heavy_compute(c: &mut Criterion) {
     sky::bench_heavy_compute(&mut group);
     hecs::bench_heavy_compute(&mut group);
     bevy::bench_heavy_compute(&mut group);
+    flecs::bench_heavy_compute(&mut group);
     group.finish();
 }
 
@@ -45,6 +50,7 @@ fn bench_random_access(c: &mut Criterion) {
     sky::bench_random_access(&mut group);
     hecs::bench_random_access(&mut group);
     bevy::bench_random_access(&mut group);
+    flecs::bench_random_access(&mut group);
     group.finish();
 }
 
@@ -53,6 +59,7 @@ fn bench_entity_ops(c: &mut Criterion) {
     sky::bench_entity_ops(&mut group);
     hecs::bench_entity_ops(&mut group);
     bevy::bench_entity_ops(&mut group);
+    flecs::bench_entity_ops(&mut group);
     group.finish();
 }
 
@@ -61,6 +68,7 @@ fn bench_mixed_frame(c: &mut Criterion) {
     sky::bench_mixed_frame(&mut group);
     hecs::bench_mixed_frame(&mut group);
     bevy::bench_mixed_frame(&mut group);
+    flecs::bench_mixed_frame(&mut group);
     group.finish();
 }
 
@@ -69,6 +77,7 @@ fn bench_mixed_frame_phases(c: &mut Criterion) {
     sky::bench_mixed_frame_phases(&mut group);
     hecs::bench_mixed_frame_phases(&mut group);
     bevy::bench_mixed_frame_phases(&mut group);
+    flecs::bench_mixed_frame_phases(&mut group);
     group.finish();
 }
 

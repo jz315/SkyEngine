@@ -356,10 +356,6 @@ fn main() {
 
             // ── Build sprites & lights ──────────────────────────────────
             let rs = state_ref.as_mut().unwrap();
-
-            rs.scene_batch.begin();
-            rs.normal_batch.begin();
-
             // Stars background
             {
                 let stars = frame_stars.borrow();
@@ -497,19 +493,19 @@ fn main() {
 
                 if pass.handle == scene_pass {
                     let target = textures.render_target(scene_rt).expect("scene_rt");
-                    rs.scene_batch.draw_to_target(
+                    rs.scene_batch.flush_to_target(
                         gpu,
                         &camera,
                         target,
-                        Some([0.005, 0.003, 0.012, 1.0]),
+                        Some(Color::new(0.005, 0.003, 0.012, 1.0)),
                     );
                 } else if pass.handle == normal_pass {
                     let target = textures.render_target(normal_rt).expect("normal_rt");
-                    rs.normal_batch.draw_to_target(
+                    rs.normal_batch.flush_to_target(
                         gpu,
                         &camera,
                         target,
-                        Some([0.5, 0.5, 1.0, 1.0]),
+                        Some(Color::new(0.5, 0.5, 1.0, 1.0)),
                     );
                 } else if pass.handle == lighting_pass {
                     let normal_target = textures.render_target(normal_rt).expect("normal_rt");

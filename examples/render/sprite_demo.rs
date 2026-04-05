@@ -90,7 +90,6 @@ fn main() {
             }
 
             // Build batch
-            batch.begin();
             for s in sprites.iter() {
                 let color = Color::hsl(s.hue, 0.8, 0.6);
                 batch.draw(
@@ -101,8 +100,7 @@ fn main() {
             }
 
             // Draw (clear + render)
-            let bg = [0.02, 0.02, 0.06, 1.0];
-            batch.draw_to_surface(ctx.gpu, &camera, Some(bg));
+            batch.flush_to_surface(ctx.gpu, &camera, Some(Color::rgb(0.02, 0.02, 0.06)));
         },
     );
 }

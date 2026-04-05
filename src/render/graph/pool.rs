@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use rustc_hash::FxHashMap;
 
 use crate::gpu::GpuContext;
-use crate::render::core::target::RenderTarget;
+use crate::render::core::target::{RenderTarget, RenderTargetDescriptor};
 
 use super::types::TextureFormat;
 
@@ -16,6 +16,8 @@ pub(crate) struct PoolKey {
     pub format: TextureFormat,
     pub width: u32,
     pub height: u32,
+    pub sample_count: u32,
+    pub mip_level_count: u32,
 }
 
 pub(crate) struct TransientPool {
@@ -40,7 +42,13 @@ impl TransientPool {
                 return target;
             }
         }
-        RenderTarget::new(ctx, key.width, key.height, key.format, label)
+        RenderTarget::from_descriptor(
+            ctx,
+            RenderTargetDescriptor::new(key.width, key.height, key.format)
+                .sample_count(key.sample_count)
+                .mip_level_count(key.mip_level_count)
+                .label(label),
+        )
     }
 
     pub fn release(&mut self, key: PoolKey, target: RenderTarget) {

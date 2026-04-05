@@ -668,7 +668,7 @@ const SPIRIT_CORE: Color = Color::new(1.0, 0.95, 0.85, 1.0);
 const SPIRIT_GLOW: Color = Color::new(1.0, 0.78, 0.42, 1.0);
 const TRAIL_COLD: Color = Color::new(0.45, 0.55, 0.85, 1.0);
 const TRAIL_WARM: Color = Color::new(1.0, 0.88, 0.55, 1.0);
-const BG_COLOR: [f32; 4] = [0.022, 0.025, 0.055, 1.0];
+const BG_COLOR: Color = Color::new(0.022, 0.025, 0.055, 1.0);
 const AMBIENT_COLOR: Color = Color::new(0.10, 0.08, 0.18, 1.0);
 
 // ─── Graph handles (set once in setup, used every frame) ────────────────────
@@ -765,7 +765,7 @@ impl AppLifecycle for SpiritWispsApp {
                 .format(wgpu::TextureFormat::Rgba16Float);
         });
         let scene_pass = graph.add_render_pass("scene_batch", |s| {
-            s.write_color_cleared(0, scene_rt, BG_COLOR);
+            s.write_color_cleared(0, scene_rt, BG_COLOR.to_array());
         });
         let normal_pass = graph.add_render_pass("normal_batch", |s| {
             s.write_color_cleared(0, normal_rt, [0.5, 0.5, 1.0, 1.0]);
@@ -858,11 +858,7 @@ impl AppLifecycle for SpiritWispsApp {
         // ── Build sprites & lights ──────────────────────────────────────
         let rs = self.render.as_mut().unwrap();
         let h = &self.handles.as_ref().unwrap();
-        rs.camera.position = [W * 0.5, H * 0.5];
-
-        rs.scene_batch.begin();
-        rs.normal_batch.begin();
-        self.lights.clear();
+        rs.camera.position = [W * 0.5, H * 0.5];        self.lights.clear();
 
         // Dust
         rs.scene_batch.set_texture(&rs.dot_tex);
@@ -1022,11 +1018,11 @@ impl AppLifecycle for SpiritWispsApp {
             if pass.handle == h.scene_pass {
                 let target = textures.render_target(h.scene_rt).expect("scene_rt");
                 rs.scene_batch
-                    .draw_to_target(gpu, &camera, target, Some(BG_COLOR));
+                    .flush_to_target(gpu, &camera, target, Some(BG_COLOR));
             } else if pass.handle == h.normal_pass {
                 let target = textures.render_target(h.normal_rt).expect("normal_rt");
                 rs.normal_batch
-                    .draw_to_target(gpu, &camera, target, Some([0.5, 0.5, 1.0, 1.0]));
+                    .flush_to_target(gpu, &camera, target, Some(Color::new(0.5, 0.5, 1.0, 1.0)));
             } else if pass.handle == h.lighting_pass {
                 let normal = textures.render_target(h.normal_rt).expect("normal_rt");
                 let output = textures.render_target(h.light_rt).expect("light_rt");

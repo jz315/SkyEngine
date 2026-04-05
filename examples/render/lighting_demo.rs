@@ -243,10 +243,7 @@ fn main() {
             ];
 
             let camera = {
-                let rs = state_ref.as_mut().expect("render state should exist");
-
-                rs.scene_batch.begin();
-                rs.scene_batch.set_texture(&rs.circle_tex);
+                let rs = state_ref.as_mut().expect("render state should exist");                rs.scene_batch.set_texture(&rs.circle_tex);
                 for orb in &*orbs_ref {
                     let pulse = 1.0 + 0.18 * (time * 1.8 + orb.pulse).sin();
                     let lightness = 0.46 + 0.14 * (time * 0.7 + orb.pulse).cos();
@@ -255,10 +252,7 @@ fn main() {
                         Sprite::new(orb.x, orb.y, orb.size * pulse, orb.size * pulse)
                             .color(Color::new(tint.r, tint.g, tint.b, 0.95)),
                     );
-                }
-
-                rs.normal_batch.begin();
-                rs.normal_batch.set_texture(&rs.normal_tex);
+                }                rs.normal_batch.set_texture(&rs.normal_tex);
                 for orb in &*orbs_ref {
                     let pulse = 1.0 + 0.18 * (time * 1.8 + orb.pulse).sin();
                     rs.normal_batch.draw(
@@ -278,21 +272,21 @@ fn main() {
                     let target = textures
                         .render_target(scene_rt)
                         .expect("scene_rt should resolve to a render target");
-                    rs.scene_batch.draw_to_target(
+                    rs.scene_batch.flush_to_target(
                         gpu,
                         &camera,
                         target,
-                        Some([0.015, 0.016, 0.02, 1.0]),
+                        Some(Color::new(0.015, 0.016, 0.02, 1.0)),
                     );
                 } else if pass.handle == normal_pass {
                     let target = textures
                         .render_target(normal_rt)
                         .expect("normal_rt should resolve to a render target");
-                    rs.normal_batch.draw_to_target(
+                    rs.normal_batch.flush_to_target(
                         gpu,
                         &camera,
                         target,
-                        Some([0.5, 0.5, 1.0, 1.0]),
+                        Some(Color::new(0.5, 0.5, 1.0, 1.0)),
                     );
                 } else if pass.handle == lighting_pass {
                     let normal_target = textures

@@ -4,6 +4,7 @@
 //! actual wgpu textures and buffers.
 
 use super::*;
+use crate::render::core::target::RenderTargetDescriptor;
 
 impl RenderGraph {
     // ── Physical resource management ────────────────────────────────────
@@ -166,6 +167,8 @@ impl RenderGraph {
                 format: group.format,
                 width: max_w,
                 height: max_h,
+                sample_count: group.sample_count,
+                mip_level_count: group.mip_level_count,
             };
             let shared_label: Cow<'static, str> = {
                 let first_name = &self.textures[group.members[0]].name;
@@ -205,6 +208,8 @@ impl RenderGraph {
                                 format: target.format(),
                                 width: target.width(),
                                 height: target.height(),
+                                sample_count: target.sample_count(),
+                                mip_level_count: target.mip_level_count(),
                             },
                             target,
                         );
@@ -222,6 +227,8 @@ impl RenderGraph {
                 format: desc.format,
                 width: w,
                 height: h,
+                sample_count: desc.sample_count,
+                mip_level_count: desc.mip_level_count,
             };
 
             if desc.transient {
@@ -231,10 +238,21 @@ impl RenderGraph {
                 }
             } else {
                 match self.physical_textures[tex_idx].as_mut() {
-                    Some(existing) => existing.resize(ctx, w, h, desc.format),
+                    Some(existing) => existing.resize_with(
+                        ctx,
+                        RenderTargetDescriptor::new(w, h, desc.format)
+                            .sample_count(desc.sample_count)
+                            .mip_level_count(desc.mip_level_count)
+                            .label(desc.name.clone()),
+                    ),
                     None => {
-                        self.physical_textures[tex_idx] =
-                            Some(RenderTarget::new(ctx, w, h, desc.format, desc.name.clone()));
+                        self.physical_textures[tex_idx] = Some(RenderTarget::from_descriptor(
+                            ctx,
+                            RenderTargetDescriptor::new(w, h, desc.format)
+                                .sample_count(desc.sample_count)
+                                .mip_level_count(desc.mip_level_count)
+                                .label(desc.name.clone()),
+                        ));
                     }
                 }
             }
@@ -306,6 +324,8 @@ impl RenderGraph {
                         format: target.format(),
                         width: target.width(),
                         height: target.height(),
+                        sample_count: target.sample_count(),
+                        mip_level_count: target.mip_level_count(),
                     };
                     self.transient_pool.release(key, target);
                 }

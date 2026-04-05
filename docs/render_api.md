@@ -26,6 +26,12 @@ Application / AppRunner
 - frame-local buffer uploads via `FrameUploadArena`
 - reusable dynamic uniform buffers via `DynamicUniformBuffer<T>`
 
+`render::core::camera` also exposes a small view abstraction now:
+
+- `ViewUniform` is the packed GPU view struct
+- `CameraUniform` remains as a compatibility alias
+- `RenderView` is the pass-facing trait implemented by `Camera2D`
+
 `RenderGraph` still keeps its own copy/upload execution path and submit boundaries. It does not currently reuse the frame upload arena.
 
 ---
@@ -208,6 +214,10 @@ This is the intended engine-level solution for per-draw uniforms. Renderers shou
 
 `Texture` remains an `Arc`-backed texture + default view wrapper, but creation is now descriptor-first.
 
+Additional low-level entry point:
+
+- `TextureCreateDesc` for creating empty/custom textures with explicit usage, dimension, mip count, and sample count
+
 ### Explicit descriptors
 
 - `TextureUploadDesc<'a>` for raw RGBA8 uploads
@@ -260,6 +270,10 @@ This keeps old call sites stable while removing the assumption that every upload
 
 `RenderTarget` is the persistent off-screen color target wrapper.
 
+Additional low-level entry point:
+
+- `RenderTargetDescriptor` for non-default sample/mip configuration
+
 Key methods:
 
 - `RenderTarget::new(...)`
@@ -285,10 +299,39 @@ What changed:
 Typical flow:
 
 ```rust
-batch.begin();
 batch.set_texture(&texture);
 batch.draw(Sprite::new(x, y, w, h));
-batch.draw_to_surface(&mut ctx, &camera, Some(clear));
+batch.clear_texture(); // optional: return to solid-color mode
+batch.flush_to_surface(&mut ctx, &camera, Some(clear));
+```
+
+---
+
+## Mesh / MeshPass (`src/render/resources/mesh.rs`, `src/render/passes/mesh_pass.rs`)
+
+`Mesh` is the persistent custom-geometry counterpart to `SpriteBatch`'s internal quad buffers.
+
+- `Mesh::from_vertices(...)` for non-indexed geometry
+- `Mesh::from_vertices_indices(...)` for indexed geometry via `MeshIndexData::U16` / `MeshIndexData::U32`
+- vertex and index buffers are created with `COPY_DST`, so the resource shape is future-proof for dynamic updates
+
+`MeshPass` is the runtime renderer for those meshes:
+
+- shader contract reserves bind group `0` for the shared `ViewUniform`
+- `create_pipeline_cache(...)` builds a `MaterialPipelineCache` with that reserved view slot
+- `MeshDraw` configures the mesh, optional material, draw ranges, base vertex, and instance range
+- `render_to_target_with_depth(...)` validates color/depth sample-count and format compatibility before encoding draw calls
+- `render_to_surface(...)` currently supports single-sample, depthless surface rendering
+
+Typical flow:
+
+```rust
+let mesh = Mesh::from_vertices_indices(&ctx, &vertices, MeshIndexData::U16(&indices), "tri");
+let mut mesh_pass = MeshPass::new(&ctx);
+let mut pipeline = mesh_pass.create_pipeline_cache(&ctx, desc, None, None)?;
+let mut draws = [MeshDraw::new(&mesh, &mut pipeline)];
+
+mesh_pass.render_to_target(&mut ctx, &target, &camera, Some(Color::BLACK), &mut draws)?;
 ```
 
 ---

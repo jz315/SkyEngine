@@ -39,12 +39,15 @@
 - `benches/fair/main.rs`: canonical apples-to-apples comparison entry point against `hecs` and `bevy_ecs`.
 - `benches/fair/sky.rs`, `benches/fair/hecs.rs`, `benches/fair/bevy.rs`: engine-specific fair benchmark implementations.
 - `benches/fair/shared.rs`: shared fair-suite helpers.
-- `examples/queries.rs`: typed query examples.
-- `examples/commands.rs`: deferred command buffer example.
-- `examples/systems.rs`: schedule and grouped-system example.
-- `examples/hello_ecs.rs`: minimal getting-started example.
-- `examples/particles.rs`, `examples/asteroids.rs`, `examples/boids.rs`, `examples/snake.rs`: demo-feature examples.
-- `examples/boids_hecs.rs`, `examples/boids_bevy.rs`: comparison-feature examples.
+- `examples/ecs/queries.rs`: typed query example.
+- `examples/ecs/commands.rs`: deferred command buffer example.
+- `examples/ecs/systems.rs`: schedule and grouped-system example.
+- `examples/ecs/hello_ecs.rs`: minimal getting-started example.
+- `examples/ecs/tiny_defense.rs`: ECS-only mini game example.
+- `examples/render/`: focused render API showcases (`clear_screen`, `sprite_demo`, `textured_demo`, `lighting_demo`, `render_graph_showcase`, `perf_test`, `live2d_demo`).
+- `examples/demo/`: full GPU showcase demos (`boids`, `boids_classic`, `cosmic_jellyfish`, `neon_galaxy`).
+- `examples/legacy/particles.rs`, `examples/legacy/asteroids.rs`, `examples/legacy/snake.rs`: legacy CPU-rendered demos.
+- `examples/compare/boids_hecs.rs`, `examples/compare/boids_bevy.rs`, `examples/compare/boids_bevy_gpu.rs`: comparison examples.
 - `README.md`, `README_CN.md`: user-facing overview and quick-start docs.
 - `BENCHMARKS.md`: benchmark policy, history, and recorded local results.
 - `docs/api.md`: API notes/reference material.
@@ -113,9 +116,9 @@
 - Run all benches: `cargo bench`
 - Run one engine slice: `cargo bench --bench fair -- sky`
 - Run one exact benchmark: `cargo bench --bench fair -- fair_random_access/get/sky --exact`
-- Run demo examples: `cargo run --example particles --release --features demo`
-- Other demo examples use the same `--features demo` pattern (`snake`, `boids`, `asteroids`).
-- Comparison examples require `--features compare`.
+- Run legacy CPU demos with `--features demo-legacy` (`particles`, `snake`, `asteroids`).
+- Run render and showcase demos with `--features app` (`boids`, `boids_classic`, `cosmic_jellyfish`, `neon_galaxy`, render examples).
+- Comparison examples require `--features compare` or `--features compare-bevy` depending on the target example.
 - Chunk-size sweeps are done by editing `CHUNK_SIZE` in `src/ecs/chunk.rs` and rerunning the relevant benches.
 - Render graph tests requiring GPU use `create_test_device()` or `GpuContext::new_headless()` and need a GPU-capable environment.
 

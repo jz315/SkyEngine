@@ -202,9 +202,7 @@ impl Live2DMotionPlayer {
     }
 }
 
-fn idle_entries_from_model_json(
-    json: &serde_json::Value,
-) -> Option<&Vec<serde_json::Value>> {
+fn idle_entries_from_model_json(json: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
     json.get("FileReferences")
         .and_then(|value| value.get("Motions"))
         .and_then(|value| value.get("Idle"))
@@ -424,6 +422,9 @@ mod tests {
             }
         });
 
-        assert_eq!(idle_entries_from_model_json(&json).map(|value| value.len()), Some(2));
+        assert_eq!(
+            idle_entries_from_model_json(&json).map(|value| value.len()),
+            Some(2)
+        );
     }
 }

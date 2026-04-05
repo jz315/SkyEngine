@@ -5,7 +5,7 @@ use std::sync::Arc;
 use rustc_hash::FxHashMap;
 
 use crate::gpu::GpuContext;
-use crate::render::core::camera::{Camera2D, CameraUniform};
+use crate::render::core::camera::{CameraUniform, RenderView};
 use crate::render::core::target::RenderTarget;
 use crate::render::core::texture::Texture;
 use crate::render::light::Light2D;
@@ -50,6 +50,19 @@ pub struct LightPass {
 }
 
 impl LightPass {
+    fn targets_alias(lhs: &RenderTarget, rhs: &RenderTarget) -> bool {
+        std::ptr::eq(lhs.texture(), rhs.texture())
+    }
+
+    fn validate_targets(normal_target: Option<&RenderTarget>, lightmap: &RenderTarget) {
+        if let Some(normal_target) = normal_target {
+            assert!(
+                !Self::targets_alias(normal_target, lightmap),
+                "LightPass requires distinct normal and lightmap targets",
+            );
+        }
+    }
+
     fn create_pipeline(
         &self,
         ctx: &GpuContext,
@@ -262,14 +275,16 @@ impl LightPass {
         lights: &[Light2D],
         normal_target: Option<&RenderTarget>,
         lightmap: &RenderTarget,
-        camera: &Camera2D,
+        view: &impl RenderView,
         ambient: [f32; 4],
     ) {
+        Self::validate_targets(normal_target, lightmap);
+
         let pipeline = self.pipeline_for(ctx, lightmap.format());
         ctx.queue().write_buffer(
             &self.camera_buffer,
             0,
-            bytemuck::bytes_of(&camera.uniform()),
+            bytemuck::bytes_of(&view.view_uniform()),
         );
 
         let capped_lights = if lights.len() > MAX_LIGHTS {
@@ -360,6 +375,8 @@ impl LightPass {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::core::target::RenderTarget;
+    use std::panic::{self, AssertUnwindSafe};
 
     fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
@@ -396,5 +413,35 @@ mod tests {
         assert_eq!(pass.pipeline_count(), 1);
         let _ = pass.pipeline_for(&ctx, wgpu::TextureFormat::Rgba8Unorm);
         assert_eq!(pass.pipeline_count(), 2);
+    }
+
+    #[test]
+    fn light_pass_rejects_aliasing_normal_and_lightmap_targets() {
+        let (device, queue) = create_test_device();
+        let mut ctx = crate::gpu::GpuContext::new_headless(
+            device,
+            queue,
+            wgpu::TextureFormat::Bgra8Unorm,
+            [4, 4],
+        );
+        let mut pass = LightPass::new(&ctx, wgpu::TextureFormat::Rgba16Float);
+        let target = RenderTarget::new(&ctx, 4, 4, wgpu::TextureFormat::Rgba16Float, "shared");
+        let camera = crate::render::core::camera::Camera2D::new(4.0, 4.0);
+
+        ctx.begin_frame()
+            .expect("headless begin_frame should succeed");
+        let result = panic::catch_unwind(AssertUnwindSafe(|| {
+            pass.render(
+                &mut ctx,
+                &[],
+                Some(&target),
+                &target,
+                &camera,
+                [0.0, 0.0, 0.0, 1.0],
+            );
+        }));
+        ctx.end_frame();
+
+        assert!(result.is_err());
     }
 }

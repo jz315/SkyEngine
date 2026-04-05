@@ -94,9 +94,7 @@ fn main() {
                 eprintln!("╠──────────────────────────────────────────────────╣");
             }
 
-            // Draw
-            batch.begin();
-            batch.set_texture(circle);
+            // Draw            batch.set_texture(circle);
             let n = current_count as usize;
             for i in 0..n {
                 let (x, y, size, hue, spin) = positions[i];
@@ -105,7 +103,7 @@ fn main() {
                 let color = Color::hsl(h, 0.8, 0.6);
                 batch.draw(Sprite::new(x, y, size, size).rotation(angle).color(color));
             }
-            batch.draw_to_surface(ctx.gpu, &camera, Some([0.02, 0.02, 0.05, 1.0]));
+            batch.flush_to_surface(ctx.gpu, &camera, Some(Color::new(0.02, 0.02, 0.05, 1.0)));
         },
     );
 }

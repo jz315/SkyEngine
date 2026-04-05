@@ -11,7 +11,7 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::gpu::GpuContext;
 
@@ -42,6 +42,9 @@ pub enum MaterialError {
     MissingPropertiesLayout,
     MissingResourceLayout,
     ConflictingBindGroupSlot {
+        slot: u32,
+    },
+    OccupiedBindGroupSlot {
         slot: u32,
     },
 }
@@ -94,6 +97,9 @@ impl std::fmt::Display for MaterialError {
                     f,
                     "Material properties and resources both use bind group slot {slot}"
                 )
+            }
+            Self::OccupiedBindGroupSlot { slot } => {
+                write!(f, "Bind group slot {slot} is already reserved")
             }
         }
     }
@@ -592,6 +598,7 @@ fn resolve_bind_group_slots(
     has_properties_layout: bool,
     resource_slot: Option<u32>,
     has_resource_layout: bool,
+    fixed_slots: &[u32],
 ) -> Result<(Option<u32>, Option<u32>, Option<u32>), MaterialError> {
     if property_slot.is_some() && !has_properties_layout {
         return Err(MaterialError::MissingPropertiesLayout);
@@ -599,33 +606,57 @@ fn resolve_bind_group_slots(
     if resource_slot.is_some() && !has_resource_layout {
         return Err(MaterialError::MissingResourceLayout);
     }
+    if let (Some(prop_slot), Some(res_slot)) = (property_slot, resource_slot) {
+        if has_properties_layout && has_resource_layout && prop_slot == res_slot {
+            return Err(MaterialError::ConflictingBindGroupSlot { slot: prop_slot });
+        }
+    }
 
-    let mut resolved_property_slot = if has_properties_layout {
-        property_slot
+    let mut occupied: FxHashSet<u32> = fixed_slots.iter().copied().collect();
+
+    if has_properties_layout {
+        if let Some(slot) = property_slot {
+            if occupied.contains(&slot) {
+                return Err(MaterialError::OccupiedBindGroupSlot { slot });
+            }
+            occupied.insert(slot);
+        }
+    }
+    if has_resource_layout {
+        if let Some(slot) = resource_slot {
+            if occupied.contains(&slot) {
+                return Err(MaterialError::OccupiedBindGroupSlot { slot });
+            }
+            occupied.insert(slot);
+        }
+    }
+
+    let mut next_free_slot = || -> u32 {
+        let mut slot = 0u32;
+        while occupied.contains(&slot) {
+            slot += 1;
+        }
+        occupied.insert(slot);
+        slot
+    };
+
+    let resolved_property_slot = if has_properties_layout {
+        Some(match property_slot {
+            Some(slot) => slot,
+            None => next_free_slot(),
+        })
     } else {
         None
     };
-    let mut resolved_resource_slot = if has_resource_layout {
-        resource_slot
+
+    let resolved_resource_slot = if has_resource_layout {
+        Some(match resource_slot {
+            Some(slot) => slot,
+            None => next_free_slot(),
+        })
     } else {
         None
     };
-
-    if has_properties_layout && resolved_property_slot.is_none() {
-        resolved_property_slot = Some(if resolved_resource_slot == Some(0) {
-            1
-        } else {
-            0
-        });
-    }
-
-    if has_resource_layout && resolved_resource_slot.is_none() {
-        resolved_resource_slot = Some(if resolved_property_slot == Some(0) {
-            1
-        } else {
-            0
-        });
-    }
 
     if let (Some(prop_slot), Some(res_slot)) = (resolved_property_slot, resolved_resource_slot) {
         if prop_slot == res_slot {
@@ -636,6 +667,7 @@ fn resolve_bind_group_slots(
     let max_slot = resolved_property_slot
         .into_iter()
         .chain(resolved_resource_slot)
+        .chain(fixed_slots.iter().copied())
         .max();
 
     Ok((resolved_property_slot, resolved_resource_slot, max_slot))
@@ -657,13 +689,56 @@ impl MaterialPipelineCache {
         properties_layout: Option<&wgpu::BindGroupLayout>,
         bindings_layout: Option<&wgpu::BindGroupLayout>,
     ) -> Self {
-        Self::try_new(ctx, desc, properties_layout, bindings_layout)
-            .expect("MaterialPipelineCache::new failed")
+        Self::new_with_fixed_layouts(ctx, desc, &[], properties_layout, bindings_layout)
+    }
+
+    pub fn new_with_fixed_layouts(
+        ctx: &GpuContext,
+        desc: MaterialPipelineDesc,
+        fixed_layouts: &[(u32, &wgpu::BindGroupLayout)],
+        properties_layout: Option<&wgpu::BindGroupLayout>,
+        bindings_layout: Option<&wgpu::BindGroupLayout>,
+    ) -> Self {
+        Self::try_new_with_fixed_layouts(
+            ctx,
+            desc,
+            fixed_layouts,
+            properties_layout,
+            bindings_layout,
+        )
+        .expect("MaterialPipelineCache::new_with_fixed_layouts failed")
     }
 
     pub fn try_new(
         ctx: &GpuContext,
         desc: MaterialPipelineDesc,
+        properties_layout: Option<&wgpu::BindGroupLayout>,
+        bindings_layout: Option<&wgpu::BindGroupLayout>,
+    ) -> Result<Self, MaterialError> {
+        Self::try_new_with_fixed_layouts(ctx, desc, &[], properties_layout, bindings_layout)
+    }
+
+    pub fn try_new_with_fixed_layouts(
+        ctx: &GpuContext,
+        desc: MaterialPipelineDesc,
+        fixed_layouts: &[(u32, &wgpu::BindGroupLayout)],
+        properties_layout: Option<&wgpu::BindGroupLayout>,
+        bindings_layout: Option<&wgpu::BindGroupLayout>,
+    ) -> Result<Self, MaterialError> {
+        let mut seen_fixed_slots = FxHashSet::default();
+        for (slot, _) in fixed_layouts {
+            if !seen_fixed_slots.insert(*slot) {
+                return Err(MaterialError::OccupiedBindGroupSlot { slot: *slot });
+            }
+        }
+
+        Self::try_new_inner(ctx, desc, fixed_layouts, properties_layout, bindings_layout)
+    }
+
+    fn try_new_inner(
+        ctx: &GpuContext,
+        desc: MaterialPipelineDesc,
+        fixed_layouts: &[(u32, &wgpu::BindGroupLayout)],
         properties_layout: Option<&wgpu::BindGroupLayout>,
         bindings_layout: Option<&wgpu::BindGroupLayout>,
     ) -> Result<Self, MaterialError> {
@@ -674,11 +749,13 @@ impl MaterialPipelineCache {
                 source: wgpu::ShaderSource::Wgsl(desc.shader_source.clone()),
             });
 
+        let fixed_slots: Vec<u32> = fixed_layouts.iter().map(|(slot, _)| *slot).collect();
         let (resolved_property_slot, resolved_resource_slot, max_slot) = resolve_bind_group_slots(
             desc.material_properties_slot,
             properties_layout.is_some(),
             desc.material_resources_slot,
             bindings_layout.is_some(),
+            &fixed_slots,
         )?;
 
         let bind_group_layouts = if let Some(max_slot) = max_slot {
@@ -690,6 +767,9 @@ impl MaterialPipelineCache {
                     });
 
             let mut layouts = vec![empty_layout; max_slot as usize + 1];
+            for (slot, layout) in fixed_layouts {
+                layouts[*slot as usize] = (*layout).clone();
+            }
             if let (Some(slot), Some(layout)) = (resolved_property_slot, properties_layout) {
                 layouts[slot as usize] = layout.clone();
             }
@@ -778,6 +858,22 @@ impl MaterialPipelineCache {
     ) -> &wgpu::RenderPipeline {
         self.try_pipeline(ctx, target_format)
             .expect("MaterialPipelineCache::pipeline failed")
+    }
+
+    pub fn try_pipeline_arc(
+        &mut self,
+        ctx: &GpuContext,
+        target_format: wgpu::TextureFormat,
+    ) -> Result<Arc<wgpu::RenderPipeline>, MaterialError> {
+        if !self.pipelines.contains_key(&target_format) {
+            let pipeline = Arc::new(self.create_pipeline(ctx, target_format));
+            self.pipelines.insert(target_format, pipeline);
+        }
+        Ok(Arc::clone(
+            self.pipelines
+                .get(&target_format)
+                .expect("pipeline inserted for requested target format"),
+        ))
     }
 
     #[inline]
@@ -870,7 +966,7 @@ mod tests {
     #[test]
     fn resolve_bind_group_slots_assigns_defaults() {
         let (prop_slot, res_slot, max_slot) =
-            resolve_bind_group_slots(None, true, None, true).unwrap();
+            resolve_bind_group_slots(None, true, None, true, &[]).unwrap();
 
         assert_eq!(prop_slot, Some(0));
         assert_eq!(res_slot, Some(1));
@@ -880,7 +976,7 @@ mod tests {
     #[test]
     fn resolve_bind_group_slots_avoids_collisions() {
         let (prop_slot, res_slot, max_slot) =
-            resolve_bind_group_slots(None, true, Some(0), true).unwrap();
+            resolve_bind_group_slots(None, true, Some(0), true, &[]).unwrap();
 
         assert_eq!(prop_slot, Some(1));
         assert_eq!(res_slot, Some(0));
@@ -889,11 +985,31 @@ mod tests {
 
     #[test]
     fn resolve_bind_group_slots_rejects_conflicts() {
-        let err = resolve_bind_group_slots(Some(2), true, Some(2), true).unwrap_err();
+        let err = resolve_bind_group_slots(Some(2), true, Some(2), true, &[]).unwrap_err();
 
         assert!(matches!(
             err,
             MaterialError::ConflictingBindGroupSlot { slot: 2 }
+        ));
+    }
+
+    #[test]
+    fn resolve_bind_group_slots_skips_reserved_slots() {
+        let (prop_slot, res_slot, max_slot) =
+            resolve_bind_group_slots(None, true, None, true, &[0]).unwrap();
+
+        assert_eq!(prop_slot, Some(1));
+        assert_eq!(res_slot, Some(2));
+        assert_eq!(max_slot, Some(2));
+    }
+
+    #[test]
+    fn resolve_bind_group_slots_rejects_reserved_slot_conflicts() {
+        let err = resolve_bind_group_slots(Some(0), true, None, false, &[0]).unwrap_err();
+
+        assert!(matches!(
+            err,
+            MaterialError::OccupiedBindGroupSlot { slot: 0 }
         ));
     }
 }

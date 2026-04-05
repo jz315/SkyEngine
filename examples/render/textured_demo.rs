@@ -140,8 +140,6 @@ fn main() {
             }
 
             // ── Draw ────────────────────────────────────────────────────
-            batch.begin();
-
             // Layer 1: background stars (untextured tiny squares)
             for s in &stars {
                 let t = (time * s.twinkle_speed).sin() * 0.5 + 0.5;
@@ -173,7 +171,7 @@ fn main() {
             }
 
             // Draw all
-            batch.draw_to_surface(ctx.gpu, &camera, Some([0.01, 0.01, 0.03, 1.0]));
+            batch.flush_to_surface(ctx.gpu, &camera, Some(Color::new(0.01, 0.01, 0.03, 1.0)));
         },
     );
 }

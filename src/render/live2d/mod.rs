@@ -13,9 +13,9 @@ pub mod pose;
 pub mod renderer;
 mod runtime;
 
+pub use expression::Live2DExpressionPlayer;
 pub use loader::Live2DModelResource;
 pub use model::Live2DModel;
-pub use expression::Live2DExpressionPlayer;
 pub use physics::Live2DPhysics;
 pub use pose::Live2DPose;
 pub use renderer::Live2DRenderer;

@@ -13,7 +13,7 @@
 //! - Each boid emits a tiny point light — the flock glows!
 //!
 //! ```sh
-//! cargo run --example boids --features app --release
+//! cargo run --example boids_classic --features app --release
 //! ```
 
 use std::cell::RefCell;
@@ -784,10 +784,6 @@ fn main() {
             rs.camera.position = [W * 0.5, H * 0.5];
 
             // ── Build sprites ───────────────────────────────────────
-
-            rs.scene_batch.begin();
-            rs.normal_batch.begin();
-
             // Boid bodies (textured circles)
             rs.scene_batch.set_texture(&rs.circle_tex);
             rs.normal_batch.set_texture(&rs.normal_tex);
@@ -925,19 +921,19 @@ fn main() {
 
                 if pass.handle == scene_pass {
                     let target = textures.render_target(scene_rt).expect("scene_rt");
-                    rs.scene_batch.draw_to_target(
+                    rs.scene_batch.flush_to_target(
                         gpu,
                         &camera,
                         target,
-                        Some([0.02, 0.03, 0.06, 1.0]),
+                        Some(Color::new(0.02, 0.03, 0.06, 1.0)),
                     );
                 } else if pass.handle == normal_pass {
                     let target = textures.render_target(normal_rt).expect("normal_rt");
-                    rs.normal_batch.draw_to_target(
+                    rs.normal_batch.flush_to_target(
                         gpu,
                         &camera,
                         target,
-                        Some([0.5, 0.5, 1.0, 1.0]),
+                        Some(Color::new(0.5, 0.5, 1.0, 1.0)),
                     );
                 } else if pass.handle == lighting_pass {
                     let normal_target = textures.render_target(normal_rt).expect("normal_rt");

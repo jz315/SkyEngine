@@ -7,7 +7,7 @@
 //! Controls: ← → rotate, ↑ thrust, Space shoot
 //!
 //! ```
-//! cargo run --example asteroids --features demo
+//! cargo run --example asteroids --features demo-legacy
 //! ```
 
 use minifb::{Key, Window, WindowOptions};

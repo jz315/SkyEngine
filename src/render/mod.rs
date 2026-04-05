@@ -11,11 +11,11 @@ pub mod resources;
 pub mod live2d;
 
 pub use core::{
-    camera::{Camera2D, CameraUniform},
+    camera::{Camera2D, CameraUniform, RenderView, ViewUniform},
     color::Color,
     fullscreen::{compose_fullscreen_shader, FullscreenPass, FullscreenPipeline},
-    target::RenderTarget,
-    texture::{Texture, TextureError, TextureFileDesc, TextureUploadDesc},
+    target::{RenderTarget, RenderTargetDescriptor},
+    texture::{Texture, TextureCreateDesc, TextureError, TextureFileDesc, TextureUploadDesc},
 };
 pub use graph::{
     AliasingStats, BufferBuilder, BufferHandle, ColorOutput, CompiledPass, CopyOp, CopyPassSetup,
@@ -28,6 +28,7 @@ pub use passes::{
     batch::{Sprite, SpriteBatch},
     composite_pass::CompositePass,
     light_pass::LightPass,
+    mesh_pass::{MeshDraw, MeshPass, MeshPassError},
 };
 pub use postfx::{bloom::Bloom, tonemap::ToneMap, vignette::Vignette, PostFx};
 pub use resources::{
@@ -37,4 +38,5 @@ pub use resources::{
         MaterialBindingLayout, MaterialError, MaterialInstance, MaterialPipelineCache,
         MaterialPipelineDesc, MaterialProperties, MaterialResourceBindings, PropertyType,
     },
+    mesh::{Mesh, MeshError, MeshIndexData},
 };

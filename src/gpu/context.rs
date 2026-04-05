@@ -846,7 +846,10 @@ impl GpuContext {
     pub fn upload_vertices<T: bytemuck::Pod>(&mut self, data: &[T]) -> UploadSlice {
         let device = &self.device;
         let queue = &self.queue;
-        assert!(self.frame.is_some(), "upload_vertices requires active frame");
+        assert!(
+            self.frame.is_some(),
+            "upload_vertices requires active frame"
+        );
         self.uploads.write_vertices(device, queue, data)
     }
 
@@ -854,7 +857,10 @@ impl GpuContext {
     pub fn upload_indices_u16(&mut self, indices: &[u16]) -> UploadSlice {
         let device = &self.device;
         let queue = &self.queue;
-        assert!(self.frame.is_some(), "upload_indices_u16 requires active frame");
+        assert!(
+            self.frame.is_some(),
+            "upload_indices_u16 requires active frame"
+        );
         self.uploads.write_indices_u16(device, queue, indices)
     }
 

@@ -1,8 +1,17 @@
 [package]
-name = "cubism-sys"
+name = "live2d-cubism-core-sys"
 version = "0.1.0"
 edition = "2021"
-description = "Raw FFI bindings to Live2D Cubism SDK Core"
+description = "Raw FFI bindings to the Live2D Cubism SDK Native Core (v5). Does not bundle the proprietary Cubism Core library — users must obtain it separately from Live2D."
 license = "MIT"
+repository = "https://github.com/jz315/live2d-cubism-core-sys"
+keywords = ["live2d", "cubism", "ffi", "bindings", "vtuber"]
+categories = ["external-ffi-bindings", "game-development"]
+readme = "README.md"
 links = "Live2DCubismCore"
 build = "build.rs"
+
+[package.metadata.docs.rs]
+# docs.rs has no access to the proprietary SDK.
+# build.rs detects the DOCS_RS env var and skips native linking,
+# so documentation can be built and published without the SDK.
