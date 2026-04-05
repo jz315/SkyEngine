@@ -736,8 +736,6 @@ fn main() {
         },
         // ── frame ───────────────────────────────────────────────────────
         move |ctx| {
-            let dt = ctx.dt.min(0.05);
-
             // Lazy-init render state on first frame
             let mut state_ref = frame_state.borrow_mut();
             if state_ref.is_none() {
@@ -768,8 +766,9 @@ fn main() {
                     input.click = ctx.input.mouse_left();
                     input.panic = ctx.input.key_held(KeyCode::Space);
                 }
-                world.tick_with_delta(dt);
+                world.tick();
             }
+            let dt = frame_world.borrow().time.delta.min(0.05);
 
             // ── Collect snapshot for rendering ──────────────────────
             let world = frame_world.borrow();

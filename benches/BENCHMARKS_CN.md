@@ -47,8 +47,8 @@ cargo bench --bench fair -- fair_random_access/get/sky --exact
 
 | 工作负载 | Sky | hecs | Bevy | Flecs | Sky 优势 |
 |---------|-----|------|------|-------|---------|
-| `batch_10k` (批量插入) | **120 µs** | 294 µs | 277 µs | 5.67 ms | vs hecs/Bevy **2.1–2.4x**<br>vs Flecs **47x** |
-| `single_10k` (单实体插入) | **245 µs** | 416 µs | 523 µs | 5.65 ms | vs hecs/Bevy **1.7–2.1x**<br>vs Flecs **23x** |
+| `batch_10k` (批量插入) | **120 µs** | 294 µs | 277 µs | 5.67 ms | 比 hecs/Bevy 快 **2.1–2.4x**<br>比 Flecs 快 **47x** |
+| `single_10k` (单实体插入) | **245 µs** | 416 µs | 523 µs | 5.65 ms | 比 hecs/Bevy 快 **1.7–2.1x**<br>比 Flecs 快 **23x** |
 
 ### 2. 顺序迭代性能
 
@@ -79,7 +79,7 @@ cargo bench --bench fair -- fair_random_access/get/sky --exact
 
 #### 帧阶段分别模拟
 
-| 阶段 | Sky | hecs | Bevy | Flecs | 关键洞察 |
+| 阶段 | Sky | hecs | Bevy | Flecs | 备注 |
 |-----|-----|------|------|-------|---------|
 | `movement` (移动系统) | 4.93 µs | 13.5 µs | 19.8 µs | 5.75 µs | 块列式存储优势显著 |
 | `health` (生命系统) | 3.62 µs | 15.2 µs | 38.6 µs | 5.15 µs | 迭代密集型任务领先 |

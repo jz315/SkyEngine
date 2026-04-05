@@ -35,8 +35,6 @@ pub struct FrameContext<'a> {
     /// The application window.  Use `window.set_title()` to update the title
     /// bar (e.g. for FPS display).
     pub window: &'a winit::window::Window,
-    /// Time since last frame in seconds.
-    pub dt: f32,
 }
 
 // ── AppLifecycle trait ──────────────────────────────────────────────────────
@@ -300,7 +298,6 @@ struct AppState {
     gpu: GpuContext,
     world: World,
     input: Input,
-    last_time: std::time::Instant,
 }
 
 struct LifecycleHandler {
@@ -372,7 +369,6 @@ impl ApplicationHandler for LifecycleHandler {
             gpu,
             world,
             input,
-            last_time: std::time::Instant::now(),
         });
     }
 
@@ -448,10 +444,6 @@ impl ApplicationHandler for LifecycleHandler {
             }
 
             WindowEvent::RedrawRequested => {
-                let now = std::time::Instant::now();
-                let dt = now.duration_since(state.last_time).as_secs_f32();
-                state.last_time = now;
-
                 match state.gpu.begin_frame() {
                     Ok(()) => {
                         self.lifecycle.frame(FrameContext {
@@ -459,7 +451,6 @@ impl ApplicationHandler for LifecycleHandler {
                             gpu: &mut state.gpu,
                             input: &state.input,
                             window: &state.window,
-                            dt,
                         });
                         state.gpu.end_frame();
                     }

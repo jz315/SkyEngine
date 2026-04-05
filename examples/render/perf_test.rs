@@ -54,7 +54,8 @@ fn main() {
         },
         |_world, _gpu| {},
         move |ctx| {
-            let dt = ctx.dt;
+            ctx.world.tick();
+            let dt = ctx.world.time.delta;
             time += dt;
             frame_count += 1;
             fps_timer += dt;

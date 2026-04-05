@@ -320,7 +320,8 @@ fn main() {
         },
         // ── Frame ───────────────────────────────────────────────────────
         move |ctx| {
-            *frame_time.borrow_mut() += ctx.dt;
+            ctx.world.tick();
+            *frame_time.borrow_mut() += ctx.world.time.delta;
             let time = *frame_time.borrow();
 
             // Lazy-init render state

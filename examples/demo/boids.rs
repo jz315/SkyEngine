@@ -812,7 +812,6 @@ impl AppLifecycle for SpiritWispsApp {
     }
 
     fn frame(&mut self, ctx: FrameContext<'_>) {
-        let dt = ctx.dt.min(0.05);
         let [win_w, win_h] = ctx.gpu.surface_size();
         let mouse = ctx.input.mouse_position();
         let mouse_sim_x = (mouse[0] / win_w as f32) * W;
@@ -829,7 +828,8 @@ impl AppLifecycle for SpiritWispsApp {
             input.click = ctx.input.mouse_left();
             input.panic = ctx.input.key_held(KeyCode::Space);
         }
-        ctx.world.tick_with_delta(dt);
+        ctx.world.tick();
+        let dt = ctx.world.time.delta.min(0.05);
 
         // ── Read ECS data ───────────────────────────────────────────────
         let snapshot = ctx.world.get_resource::<BoidSnapshot>().unwrap();

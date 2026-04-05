@@ -55,16 +55,18 @@ fn main() {
                 renderer = Some(Renderer2D::new(ctx.gpu, Renderer2DConfig::unlit()));
             }
             let renderer = renderer.as_mut().expect("renderer should exist");
+            ctx.world.tick();
+            let dt = ctx.world.time.delta;
 
             let [w, h] = ctx.gpu.surface_size();
             let mut query =
                 ctx.world
                     .query::<(&mut Transform2D, &mut Sprite2D, &Velocity, &Spin, &mut Hue)>();
             query.for_each(ctx.world, |(transform, sprite, velocity, spin, hue)| {
-                transform.x += velocity.x * ctx.dt;
-                transform.y += velocity.y * ctx.dt;
-                transform.rotation += spin.0 * ctx.dt;
-                hue.0 = (hue.0 + 20.0 * ctx.dt) % 360.0;
+                transform.x += velocity.x * dt;
+                transform.y += velocity.y * dt;
+                transform.rotation += spin.0 * dt;
+                hue.0 = (hue.0 + 20.0 * dt) % 360.0;
                 sprite.color = Color::hsl(hue.0, 0.8, 0.6);
 
                 let hw = w as f32 * 0.5 + sprite.width;

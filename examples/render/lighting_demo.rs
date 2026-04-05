@@ -83,6 +83,8 @@ fn main() {
                 renderer = Some(Renderer2D::new(ctx.gpu, Renderer2DConfig::lit_hdr()));
             }
             let renderer = renderer.as_mut().expect("renderer should exist");
+            ctx.world.tick();
+            let dt = ctx.world.time.delta;
 
             let [w, h] = ctx.gpu.surface_size();
             let mut camera_query = ctx.world.query_filtered::<&Camera2D, With<PrimaryCamera2D>>();
@@ -106,9 +108,9 @@ fn main() {
                 &mut Pulse,
             )>();
             orbs.for_each(ctx.world, |(transform, sprite, light, velocity, hue, pulse)| {
-                transform.x += velocity.x * ctx.dt;
-                transform.y += velocity.y * ctx.dt;
-                pulse.0 += ctx.dt * 0.8;
+                transform.x += velocity.x * dt;
+                transform.y += velocity.y * dt;
+                pulse.0 += dt * 0.8;
 
                 let half_w = w as f32 * 0.5 + sprite.width;
                 let half_h = h as f32 * 0.5 + sprite.height;
@@ -129,7 +131,7 @@ fn main() {
                 transform.scale_x = pulse_scale;
                 transform.scale_y = pulse_scale;
 
-                let shifted_hue = (hue.base + hue.shift * ctx.dt + pulse.0 * 4.0) % 360.0;
+                let shifted_hue = (hue.base + hue.shift * dt + pulse.0 * 4.0) % 360.0;
                 let lightness = 0.46 + 0.14 * (pulse.0 * 0.7).cos();
                 let tint = Color::hsl(shifted_hue, 0.72, lightness);
                 sprite.color = Color::new(tint.r, tint.g, tint.b, 0.95);
@@ -140,7 +142,7 @@ fn main() {
             mouse_light.for_each(ctx.world, |(transform, light, _)| {
                 transform.x = mouse_world[0];
                 transform.y = mouse_world[1];
-                light.intensity = 1.8 + 0.25 * (ctx.dt * 60.0).sin().abs();
+                light.intensity = 1.8 + 0.25 * (dt * 60.0).sin().abs();
             });
 
             renderer.render_world(ctx.gpu, ctx.world);

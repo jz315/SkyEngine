@@ -49,10 +49,12 @@ fn main() {
         },
         // Frame
         move |ctx: FrameContext<'_>| {
+            ctx.world.tick();
+            let dt = ctx.world.time.delta;
             let gpu = ctx.gpu;
 
             // FPS counter — update title every 0.5s
-            fps_accum += ctx.dt;
+            fps_accum += dt;
             fps_frames += 1;
             if fps_accum >= 0.5 {
                 fps_display = fps_frames as f32 / fps_accum;
@@ -124,7 +126,7 @@ fn main() {
                 }
 
                 // Update runtime state (pose -> model)
-                res.update(ctx.dt);
+                res.update(dt);
 
                 // Clear surface
                 gpu.with_surface_pass(

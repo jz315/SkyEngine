@@ -255,7 +255,8 @@ fn main() {
         },
         // ── frame ───────────────────────────────────────────────────────
         move |ctx| {
-            let dt = ctx.dt.min(0.05);
+            ctx.world.tick();
+            let dt = ctx.world.time.delta.min(0.05);
             *frame_time.borrow_mut() += dt;
             let time = *frame_time.borrow();
 

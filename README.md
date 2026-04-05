@@ -21,41 +21,24 @@
 
 **SkyEngine** 是一款 Rust 原生 2D 游戏引擎。核心特性包括：
 
-- **ECS 架构**：高性能、易用的实体组件系统
+- **ECS 架构**：高性能的实体组件系统
 - **现代渲染**：基于 wgpu 的 2D 渲染管线
 - **简单易用**：用户友好的API，详细的文档
 
 🚧 项目目前处于快速开发阶段，欢迎贡献！
 
-> **为什么选择 SkyEngine？**
-> - 在基准测试中，迭代性能 **2.7x–4.2x 优于 hecs**，完整帧模拟 **领先 hecs 14%、领先 Bevy 19%**
-> - 精心设计的接口，API 简洁直观
-> - 原生支持AI协作
+---
+
+### 为什么选择 SkyEngine？
+- 在性能测试中，我们ECS处于领先地位。
+  - 迭代性能 **2.7x–4.2x 优于 hecs**
+  - 完整帧模拟 **领先 hecs 14%、领先 Bevy 19%**
+- 精心设计的接口，API 简洁直观
+- 原生支持AI协作
 
 
 ---
 
-## ✨ 核心特性
-
-### 🏗️ ECS 核心
-
-
-
-### 🎨 渲染框架 
-
-| 特性 | 说明 |
-|------|------|
-| **现代 2D 门面** | `Renderer2D` + `Scene2D`，默认面向 ECS 与场景描述 |
-| **声明式 RenderGraph** | 编译期拓扑排序 + 资源别名 + 瞬态分配 + 死 Pass 自动剔除 |
-| **SpriteBatch** | 高性能 2D 精灵批渲染，支持纹理图集、材质实例 |
-| **动态光照** | `LightPass` + `Light2D` 点光源，支持色温、半径、强度 |
-| **后处理管线** | `Bloom` · `ToneMap` · `Vignette` — 可任意组合的 PostFx 链 |
-| **材质系统** | `MaterialInstance` + `MaterialPipelineCache` 数据驱动管线 |
-| **纹理图集** | `TextureAtlas` + `AtlasPacker` 自动装箱，减少 Draw Call |
-| **2D 相机** | `Camera2D` 正交投影，支持缩放 / 平移 / 视口适配 |
-| **Live2D 集成** | Cubism SDK v5 原生绑定，逐 Drawable GPU 渲染（feature = `"live2d"`） |
-
----
 
 ## 🚀 快速上手
 
@@ -114,59 +97,11 @@ fn main() {
 }
 ```
 
-### 带系统调度的完整示例
-
-```rust
-use sky_engine::ecs::*;
-
-#[derive(Clone, Copy)]
-struct Position { x: f32, y: f32 }
-
-#[derive(Clone, Copy)]
-struct Velocity { x: f32, y: f32 }
-
-#[derive(Clone, Copy)]
-struct Lifetime(f32);
-
-fn main() {
-    let mut world = World::new();
-
-    world.spawn((
-        Position { x: 0.0, y: 0.0 },
-        Velocity { x: 1.0, y: 0.0 },
-        Lifetime(3.0),
-    ));
-
-    // 运动系统
-    world.group("sim").add(|world: &mut World| {
-        let mut query = world.query::<(&mut Position, &Velocity)>();
-        let dt = world.time.delta;
-        query.for_each(world, |(pos, vel)| {
-            pos.x += vel.x * dt;
-            pos.y += vel.y * dt;
-        });
-    });
-
-    // 生命周期系统 — 使用 Commands 延迟销毁
-    world.group("sim").add(|world: &mut World| {
-        let mut commands = Commands::new();
-        let mut query = world.query::<&Lifetime>();
-        query.for_each_with_entity(world, |entity, lt| {
-            if lt.0 <= 0.0 { commands.despawn(entity); }
-        });
-        commands.apply(world);
-    });
-
-    // 一行驱动帧更新
-    world.tick_with_delta(0.016);
-}
-```
-
 ---
 
 ## 📊 性能基准
 
-所有数据来自 `cargo bench --bench fair` 公平横向对比，使用 Criterion 框架在同一台 Windows 机器上采集。详细历史记录见 [BENCHMARKS.md](BENCHMARKS.md)。
+所有数据来自 `cargo bench --bench fair` 公平横向对比，使用 Criterion 框架在同一台 Windows 机器上采集。详细历史记录见 [BENCHMARKS.md](benches\BENCHMARKS_CN.md)。
 
 ### 迭代性能
 
@@ -174,7 +109,7 @@ fn main() {
 |---------|--------|------|------|----------|
 | 简单迭代 10K | **1.98 µs** | 5.56 µs | 8.15 µs | ⚡ 2.8x |
 | 碎片化迭代 10K | **1.06 µs** | 3.20 µs | 6.14 µs | ⚡ 3.0x |
-| 重计算 100K | **1.90 ms** | 2.37 ms | 2.03 ms | ⚡ 1.2x |
+| 矩阵计算 100K | **1.90 ms** | 2.37 ms | 2.03 ms | ⚡ 1.2x |
 
 ### 结构操作
 
@@ -200,6 +135,7 @@ cargo bench --bench fair
 cargo bench --bench fair -- sky
 cargo bench --bench fair -- hecs
 cargo bench --bench fair -- bevy
+cargo bench --bench fair -- flecs
 ```
 
 ---
@@ -208,86 +144,7 @@ cargo bench --bench fair -- bevy
 
 完整示例索引见 [`examples/README.md`](examples/README.md)。如果你是第一次接触这个仓库，建议按“ECS 入门 → Render API → 完整 Demo”的顺序阅读。
 
-### 1. ECS 入门（无 GPU 依赖）
 
-```bash
-cargo run --example hello_ecs       # 最小入门示例
-cargo run --example queries         # 类型化查询
-cargo run --example commands        # 延迟命令缓冲
-cargo run --example systems         # 系统调度
-cargo run --example tiny_defense    # ECS-only 完整小例子
-```
-
-### 2. Render 学习路径（需 `--features app`）
-
-建议按下面的顺序学：
-
-1. `clear_screen`：先理解窗口、GPU 上下文和每帧 clear
-2. `sprite_demo`：先看 ECS 驱动的 `Renderer2D` 精灵路径
-3. `textured_demo`：再看手动 `Scene2D` 如何复用一帧场景描述
-4. `lighting_demo`：进入高层 2D 光照、Bloom、ToneMap、Vignette
-5. `render_graph_showcase`：最后再看 `render::expert` 下的 `RenderGraph` / pass API
-6. `perf_test`：最后观察渲染路径的吞吐与规模变化
-
-`live2d_demo` 属于渲染专项分支，建议在掌握上面主线后再看。
-
-默认入口是 `sky_engine::render::{Renderer2D, Scene2D, ...}`；需要低层控制时再显式切到 `sky_engine::render::expert::*`。
-
-```bash
-cargo run --example clear_screen          --features app      # 最简窗口 / swapchain
-cargo run --example sprite_demo           --features app      # 精灵批渲染
-cargo run --example textured_demo         --features app      # 纹理加载与显示
-cargo run --example lighting_demo         --features app      # 2D 动态光照
-cargo run --example render_graph_showcase --features app      # RenderGraph 完整管线
-cargo run --example perf_test             --features app --release  # GPU 压力测试
-```
-
-### Render 主线图
-
-```text
-clear_screen
-  ↓
-sprite_demo
-  ↓
-textured_demo
-  ↓
-lighting_demo
-  ↓
-render_graph_showcase
-  ↓
-perf_test
-
-specialized branch: live2d_demo
-```
-
-### 3. 完整 Showcase Demo（需 `--features app`）
-
-```bash
-cargo run --example boids            --features app --release  # 群集仿真 + 光照
-cargo run --example boids_classic    --features app --release  # 经典 Boids 规则展示
-cargo run --example cosmic_jellyfish --features app --release  # 宇宙水母 + Bloom
-cargo run --example neon_galaxy      --features app --release  # 霓虹星系 + 后处理
-```
-
-### 4. Live2D（需 `--features live2d`）
-
-```bash
-cargo run --example live2d_demo --features live2d --release -- <path-to-model3.json>
-```
-
-### 5. 对比 / 历史示例（非推荐入门路径）
-
-```bash
-# Cross-engine comparison
-cargo run --example boids_bevy_gpu --features compare-bevy --release
-cargo run --example boids_hecs     --features compare --release
-cargo run --example boids_bevy     --features compare --release
-
-# Legacy CPU-rendered demos
-cargo run --example particles --features demo-legacy
-cargo run --example asteroids --features demo-legacy
-cargo run --example snake     --features demo-legacy
-```
 
 ---
 

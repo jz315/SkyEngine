@@ -89,7 +89,8 @@ fn main() {
         AppConfig::new("SkyEngine — Scene2D Textured Demo", 960, 640),
         |_world, _gpu| {},
         move |ctx| {
-            let dt = ctx.dt;
+            ctx.world.tick();
+            let dt = ctx.world.time.delta;
             time += dt;
 
             if renderer.is_none() {
