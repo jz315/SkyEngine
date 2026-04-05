@@ -43,6 +43,9 @@ static GLOBAL: MiMalloc = MiMalloc;
 pub mod ecs;
 pub mod reflect;
 
+#[cfg(feature = "asset")]
+pub mod asset;
+
 #[cfg(feature = "app")]
 pub mod gpu;
 
@@ -51,3 +54,6 @@ pub mod render;
 
 #[cfg(feature = "app")]
 pub mod app;
+
+#[cfg(feature = "audio")]
+pub mod audio;
