@@ -15,9 +15,10 @@ use std::rc::Rc;
 use sky_engine::app::{App, AppConfig};
 use sky_engine::ecs::World;
 use sky_engine::gpu::GpuContext;
-use sky_engine::render::{
-    Bloom, Camera2D, Color, CompositePass, Light2D, LightPass, RenderGraph, Sprite, SpriteBatch,
-    TargetSize, Texture, ToneMap, Vignette,
+use sky_engine::render::{Camera2D, Color, Sprite, Texture};
+use sky_engine::render::expert::{
+    Bloom, CompositePass, Light2D, LightPass, RenderGraph, SpriteBatch, TargetSize, ToneMap,
+    Vignette,
 };
 
 // ── Configuration ───────────────────────────────────────────────────────────

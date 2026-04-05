@@ -8,7 +8,8 @@
 //! ```
 
 use sky_engine::app::{App, AppConfig};
-use sky_engine::render::{Camera2D, Color, Sprite, SpriteBatch, Texture};
+use sky_engine::render::{Camera2D, Color, Sprite, Texture};
+use sky_engine::render::expert::SpriteBatch;
 
 fn main() {
     let mut batch: Option<SpriteBatch> = None;
@@ -94,7 +95,8 @@ fn main() {
                 eprintln!("╠──────────────────────────────────────────────────╣");
             }
 
-            // Draw            batch.set_texture(circle);
+            // Draw
+            batch.set_texture(circle);
             let n = current_count as usize;
             for i in 0..n {
                 let (x, y, size, hue, spin) = positions[i];

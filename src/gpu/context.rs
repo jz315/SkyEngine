@@ -720,6 +720,12 @@ impl GpuContext {
         self.surface_config.format
     }
 
+    /// Returns `true` when this context owns a presentation surface.
+    #[inline]
+    pub fn has_surface(&self) -> bool {
+        self.surface.is_some()
+    }
+
     /// Human-readable GPU adapter name (e.g. "NVIDIA GeForce RTX 4090").
     pub fn adapter_name(&self) -> &str {
         &self.adapter_name

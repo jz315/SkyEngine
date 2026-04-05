@@ -2,7 +2,10 @@
 
 ## Overview
 - This module is SkyEngine's `wgpu`-based 2D rendering framework.
-- It provides a layered architecture: core GPU primitives → declarative render graph → high-level passes & post-processing → resource management.
+- Public API is intentionally split into two layers:
+  - `sky_engine::render::*` is the curated high-level 2D facade (`Renderer2D`, `Scene2D`, ECS render components/resources).
+  - `sky_engine::render::expert::*` is the explicit low-level entry point for `RenderGraph`, passes, post-fx, targets, and resource systems.
+- Internally it still uses a layered architecture: core GPU primitives → declarative render graph → passes & post-processing → resource management.
 - The GPU backend is `wgpu` (WebGPU/Vulkan/DX12/Metal).  All rendering goes through `GpuContext` (`src/gpu/context.rs`).
 - Shader language is WGSL.  All shaders live under `shaders/`.
 - The module is gated behind `features = ["app"]` for window/surface-dependent code.  The optional `live2d` sub-module requires `features = ["live2d"]`.
@@ -29,8 +32,9 @@ render/
 ## File Map
 
 ### `mod.rs`
-- Module declarations and canonical public re-exports.
-- All downstream code should import render types through `sky_engine::render::*`, not through internal sub-module paths.
+- Module declarations and curated high-level public re-exports.
+- Normal application code should start from `sky_engine::render::*`.
+- Low-level rendering code should opt into `sky_engine::render::expert::*` instead of internal module paths.
 
 ### `light.rs`
 - `Light2D` — 2D point light descriptor with position, color, radius, intensity, temperature (Kelvin), and falloff.

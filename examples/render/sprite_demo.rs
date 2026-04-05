@@ -1,111 +1,92 @@
-//! GPU-accelerated sprite demo.
+//! GPU-accelerated ECS sprite demo.
 //!
-//! Spawns thousands of coloured, rotating sprites rendered in a single
-//! instanced draw call via the SpriteBatch.
+//! Spawns thousands of coloured sprites as ECS entities and renders them
+//! through the high-level [`Renderer2D`].
 //!
 //! ```bash
 //! cargo run --example sprite_demo --features app --release
 //! ```
 
 use sky_engine::app::{App, AppConfig};
-use sky_engine::render::{Camera2D, Color, Sprite, SpriteBatch};
+use sky_engine::render::{
+    Camera2D, Color, PrimaryCamera2D, Renderer2D, Renderer2DConfig, Sprite2D, Transform2D,
+};
 
 const NUM_SPRITES: usize = 5000;
 
-struct SpriteData {
+#[derive(Clone, Copy)]
+struct Velocity {
     x: f32,
     y: f32,
-    size: f32,
-    angle: f32,
-    speed: f32,
-    drift_x: f32,
-    drift_y: f32,
-    hue: f32,
 }
 
+#[derive(Clone, Copy)]
+struct Spin(f32);
+
+#[derive(Clone, Copy)]
+struct Hue(f32);
+
 fn main() {
-    // Pre-generate sprite data
-    let mut sprites: Vec<SpriteData> = Vec::with_capacity(NUM_SPRITES);
     let mut rng = SimpleRng::new(42);
+    let mut renderer: Option<Renderer2D> = None;
 
-    for _ in 0..NUM_SPRITES {
-        sprites.push(SpriteData {
-            x: rng.range(-480.0, 480.0),
-            y: rng.range(-320.0, 320.0),
-            size: rng.range(4.0, 20.0),
-            angle: rng.range(0.0, std::f32::consts::TAU),
-            speed: rng.range(-3.0, 3.0),
-            drift_x: rng.range(-60.0, 60.0),
-            drift_y: rng.range(-60.0, 60.0),
-            hue: rng.range(0.0, 360.0),
-        });
-    }
-
-    let mut batch: Option<SpriteBatch> = None;
-    let mut camera = Camera2D::new(960.0, 640.0);
     App::run(
-        AppConfig::new("SkyEngine — Sprite Demo", 960, 640),
-        // Setup (GPU resources created lazily in frame)
-        |_world, _gpu| {
-            eprintln!("[sprite_demo] Rendering {NUM_SPRITES} sprites. Press Escape to exit.");
+        AppConfig::new("SkyEngine — ECS Sprite Demo", 960, 640),
+        move |world, _gpu| {
+            world.spawn((Camera2D::new(960.0, 640.0), PrimaryCamera2D));
+
+            for _ in 0..NUM_SPRITES {
+                let size = rng.range(4.0, 20.0);
+                let hue = rng.range(0.0, 360.0);
+                world.spawn((
+                    Transform2D::new(rng.range(-480.0, 480.0), rng.range(-320.0, 320.0)),
+                    Sprite2D::new(size, size).color(Color::hsl(hue, 0.8, 0.6)),
+                    Velocity {
+                        x: rng.range(-60.0, 60.0),
+                        y: rng.range(-60.0, 60.0),
+                    },
+                    Spin(rng.range(-3.0, 3.0)),
+                    Hue(hue),
+                ));
+            }
         },
-        // Frame
         move |ctx| {
-            let dt = ctx.dt;
-
-            // Lazily create SpriteBatch on first frame (needs GPU)
-            if batch.is_none() {
-                batch = Some(SpriteBatch::new(ctx.gpu));
+            if renderer.is_none() {
+                renderer = Some(Renderer2D::new(ctx.gpu, Renderer2DConfig::unlit()));
             }
-            let batch = batch.as_mut().unwrap();
+            let renderer = renderer.as_mut().expect("renderer should exist");
 
-            // Update camera viewport on resize
             let [w, h] = ctx.gpu.surface_size();
-            camera.set_viewport(w as f32, h as f32);
+            let mut query =
+                ctx.world
+                    .query::<(&mut Transform2D, &mut Sprite2D, &Velocity, &Spin, &mut Hue)>();
+            query.for_each(ctx.world, |(transform, sprite, velocity, spin, hue)| {
+                transform.x += velocity.x * ctx.dt;
+                transform.y += velocity.y * ctx.dt;
+                transform.rotation += spin.0 * ctx.dt;
+                hue.0 = (hue.0 + 20.0 * ctx.dt) % 360.0;
+                sprite.color = Color::hsl(hue.0, 0.8, 0.6);
 
-            // Update sprites
-            for s in sprites.iter_mut() {
-                s.angle += s.speed * dt;
-                s.x += s.drift_x * dt;
-                s.y += s.drift_y * dt;
-
-                // Wrap around screen edges
-                let hw = w as f32 * 0.5 + s.size;
-                let hh = h as f32 * 0.5 + s.size;
-                if s.x > hw {
-                    s.x = -hw;
+                let hw = w as f32 * 0.5 + sprite.width;
+                let hh = h as f32 * 0.5 + sprite.height;
+                if transform.x > hw {
+                    transform.x = -hw;
                 }
-                if s.x < -hw {
-                    s.x = hw;
+                if transform.x < -hw {
+                    transform.x = hw;
                 }
-                if s.y > hh {
-                    s.y = -hh;
+                if transform.y > hh {
+                    transform.y = -hh;
                 }
-                if s.y < -hh {
-                    s.y = hh;
+                if transform.y < -hh {
+                    transform.y = hh;
                 }
+            });
 
-                // Slowly shift hue over time
-                s.hue = (s.hue + 20.0 * dt) % 360.0;
-            }
-
-            // Build batch
-            for s in sprites.iter() {
-                let color = Color::hsl(s.hue, 0.8, 0.6);
-                batch.draw(
-                    Sprite::new(s.x, s.y, s.size, s.size)
-                        .rotation(s.angle)
-                        .color(color),
-                );
-            }
-
-            // Draw (clear + render)
-            batch.flush_to_surface(ctx.gpu, &camera, Some(Color::rgb(0.02, 0.02, 0.06)));
+            renderer.render_world(ctx.gpu, ctx.world);
         },
     );
 }
-
-// ── Minimal deterministic RNG (no rand dependency needed for this example) ──
 
 struct SimpleRng {
     state: u64,

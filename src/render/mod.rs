@@ -1,42 +1,56 @@
-//! SkyEngine 2D rendering framework.
+//! SkyEngine modern 2D rendering facade.
 
-pub mod core;
-pub mod graph;
-pub mod light;
-pub mod passes;
-pub mod postfx;
-pub mod resources;
+pub(crate) mod core;
+mod ecs;
+pub mod expert;
+pub(crate) mod graph;
+pub(crate) mod light;
+pub(crate) mod passes;
+pub(crate) mod postfx;
+mod renderer2d;
+pub(crate) mod resources;
+mod scene2d;
 
 #[cfg(feature = "live2d")]
-pub mod live2d;
+pub(crate) mod live2d;
 
-pub use core::{
-    camera::{Camera2D, CameraUniform, RenderView, ViewUniform},
-    color::Color,
-    fullscreen::{compose_fullscreen_shader, FullscreenPass, FullscreenPipeline},
-    target::{RenderTarget, RenderTargetDescriptor},
-    texture::{Texture, TextureCreateDesc, TextureError, TextureFileDesc, TextureUploadDesc},
+pub use core::{camera::Camera2D, color::Color, texture::Texture};
+pub use ecs::{
+    BloomSettings, PointLight2D, PrimaryCamera2D, RenderSettings2D, Sprite2D, ToneMapSettings,
+    Transform2D, VignetteSettings,
 };
-pub use graph::{
-    AliasingStats, BufferBuilder, BufferHandle, ColorOutput, CompiledPass, CopyOp, CopyPassSetup,
-    DebugProfiler, DepthStencilOutput, ImportedTexture, LoadOp, PassFlags, PassHandle, PassSetup,
-    PassType, PhysicalResources, PhysicalTextureRef, RenderGraph, RenderGraphError,
-    RenderGraphProfiler, ResourceRef, TargetSize, TextureBuilder, TextureHandle,
-};
-pub use light::{color_temperature, Light2D};
-pub use passes::{
-    batch::{Sprite, SpriteBatch},
-    composite_pass::CompositePass,
-    light_pass::LightPass,
-    mesh_pass::{MeshDraw, MeshPass, MeshPassError},
-};
-pub use postfx::{bloom::Bloom, tonemap::ToneMap, vignette::Vignette, PostFx};
-pub use resources::{
-    atlas::{AtlasError, AtlasPacker, TextureAtlas, UvRect},
-    blackboard::Blackboard,
-    material::{
-        MaterialBindingLayout, MaterialError, MaterialInstance, MaterialPipelineCache,
-        MaterialPipelineDesc, MaterialProperties, MaterialResourceBindings, PropertyType,
-    },
-    mesh::{Mesh, MeshError, MeshIndexData},
-};
+pub use passes::batch::Sprite;
+pub use renderer2d::{Renderer2D, Renderer2DConfig, RendererStats};
+pub use scene2d::Scene2D;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn curated_render_exports_are_available() {
+        let _camera = Camera2D::new(16.0, 9.0);
+        let _color = Color::WHITE;
+        let _settings = RenderSettings2D::default();
+        let _scene = Scene2D::new();
+        let _sprite = Sprite::new(0.0, 0.0, 1.0, 1.0);
+        let _renderer_config = Renderer2DConfig::unlit();
+        let _renderer_stats = RendererStats::default();
+        let _transform = Transform2D::default();
+        let _sprite2d = Sprite2D::new(8.0, 8.0);
+        let _light = PointLight2D::new(64.0);
+        let _primary_camera = PrimaryCamera2D;
+    }
+
+    #[test]
+    fn expert_namespace_exposes_low_level_render_api() {
+        let _graph = expert::RenderGraph::new();
+        let _target: Option<expert::RenderTarget> = None;
+        let _batch: Option<expert::SpriteBatch> = None;
+        let _light: Option<expert::LightPass> = None;
+        let _composite: Option<expert::CompositePass> = None;
+        let _bloom: Option<expert::Bloom> = None;
+        let _tonemap: Option<expert::ToneMap> = None;
+        let _vignette: Option<expert::Vignette> = None;
+    }
+}

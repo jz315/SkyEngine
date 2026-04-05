@@ -20,10 +20,10 @@ If you're new to the project, read and run examples in this order:
 The `examples/render/` directory now forms a complete path from first window to advanced rendering systems:
 
 1. **`clear_screen`** — learn the minimal app + GPU frame loop and surface pass.
-2. **`sprite_demo`** — add a camera and `SpriteBatch`, then render many sprites efficiently.
-3. **`textured_demo`** — move from solid-color sprites to textures and mixed draw usage.
-4. **`lighting_demo`** — introduce normals, light accumulation, composition, bloom, and tone mapping.
-5. **`render_graph_showcase`** — study the declarative `RenderGraph` API and resource scheduling model.
+2. **`sprite_demo`** — drive `Renderer2D` directly from ECS with `Transform2D + Sprite2D + Camera2D`.
+3. **`textured_demo`** — move to the manual `Scene2D` path for reusable scene descriptions.
+4. **`lighting_demo`** — add high-level 2D lighting plus bloom, tone mapping, and vignette.
+5. **`render_graph_showcase`** — study the low-level `render::expert::RenderGraph` API and resource scheduling model.
 6. **`perf_test`** — measure scaling behavior once you understand the core rendering path.
 7. **`live2d_demo`** — specialized integration example after you already know the base render stack.
 
@@ -75,10 +75,10 @@ cargo run --example perf_test --features app --release
 Suggested study order inside `render/`:
 
 - `clear_screen` — frame lifecycle and surface pass
-- `sprite_demo` — `Camera2D` + `SpriteBatch`
-- `textured_demo` — texture resources and mixed sprite usage
-- `lighting_demo` — `LightPass`, `CompositePass`, post-processing
-- `render_graph_showcase` — declarative graph compilation model
+- `sprite_demo` — ECS-first `Renderer2D`
+- `textured_demo` — reusable `Scene2D`
+- `lighting_demo` — high-level lighting + post-processing
+- `render_graph_showcase` — expert-only graph compilation model
 - `perf_test` — throughput / scaling observation
 
 `live2d_demo` is a specialized branch after the main path, and requires `live2d` instead of plain `app`:

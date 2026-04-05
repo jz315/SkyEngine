@@ -19,16 +19,18 @@
 
 ## 📖 简介
 
-**SkyEngine** 是一款用 Rust 从零构建的 2D 游戏引擎。
+**SkyEngine** 是一款 Rust 原生 2D 游戏引擎。核心特性包括：
 
-它提供了一套高性能、易用的 ECS 游戏开发框架和基于 wgpu 的现代 2D 渲染管线，让开发者能够开箱即用快速上手，开发出高性能的游戏。
+- **ECS 架构**：高性能、易用的实体组件系统
+- **现代渲染**：基于 wgpu 的 2D 渲染管线
+- **简单易用**：用户友好的API，详细的文档
 
-> 🚧 项目目前处于快速开发阶段，欢迎贡献！
+🚧 项目目前处于快速开发阶段，欢迎贡献！
 
 > **为什么选择 SkyEngine？**
-> - 在公平基准测试中，迭代性能 **2.7x–4.2x 优于 hecs**，完整帧模拟 **领先 hecs 14%、领先 Bevy 19%**
-> - 无 proc macro，无全局状态，API 简洁直观
-> - 内置渲染图、精灵批渲染、动态光照和后处理管线，开箱可用
+> - 在基准测试中，迭代性能 **2.7x–4.2x 优于 hecs**，完整帧模拟 **领先 hecs 14%、领先 Bevy 19%**
+> - 精心设计的接口，API 简洁直观
+> - 原生支持AI协作
 
 
 ---
@@ -37,22 +39,13 @@
 
 ### 🏗️ ECS 核心
 
-| 特性 | 说明 |
-|------|------|
-| **块列式存储** | 每个 Archetype 按固定大小 Chunk 组织，块内组件按列连续存储，迭代路径对齐硬件预取 |
-| **类型化查询** | `world.query::<(&mut Pos, &Vel)>()` 返回 `PreparedQuery`，自动缓存匹配 Archetype |
-| **可选组件** | 查询支持 `Option<&T>` / `Option<&mut T>` 访问可选组件 |
-| **编译期过滤** | `With<T>` / `Without<T>` 及其 tuple 组合，零运行时开销筛选 |
-| **批量插入** | `spawn_batch()` 跳过逐实体查找，万级插入性能领先 hecs 2x |
-| **延迟命令** | `Commands` 在 active query 内安排结构修改，按批次合并执行 |
-| **系统调度** | 分组（Group）+ 固定步长策略，`world.tick()` 一行驱动完整帧 |
-| **代际实体** | `EntityId` 带 generation 标记，槽位重用自动失效旧句柄 |
-| **Chunk 迭代** | `for_each_chunk()` 直接返回切片，便于手动 SIMD 向量化 |
 
-### 🎨 渲染框架 （feature = `"app"`）
+
+### 🎨 渲染框架 
 
 | 特性 | 说明 |
 |------|------|
+| **现代 2D 门面** | `Renderer2D` + `Scene2D`，默认面向 ECS 与场景描述 |
 | **声明式 RenderGraph** | 编译期拓扑排序 + 资源别名 + 瞬态分配 + 死 Pass 自动剔除 |
 | **SpriteBatch** | 高性能 2D 精灵批渲染，支持纹理图集、材质实例 |
 | **动态光照** | `LightPass` + `Light2D` 点光源，支持色温、半径、强度 |
@@ -230,13 +223,15 @@ cargo run --example tiny_defense    # ECS-only 完整小例子
 建议按下面的顺序学：
 
 1. `clear_screen`：先理解窗口、GPU 上下文和每帧 clear
-2. `sprite_demo`：再看 `Camera2D` + `SpriteBatch` 的基础精灵绘制
-3. `textured_demo`：从纯色 sprite 过渡到纹理与混合绘制
-4. `lighting_demo`：进入法线、光照合成、Bloom、ToneMap
-5. `render_graph_showcase`：再看声明式 `RenderGraph` 如何组织资源与 pass
+2. `sprite_demo`：先看 ECS 驱动的 `Renderer2D` 精灵路径
+3. `textured_demo`：再看手动 `Scene2D` 如何复用一帧场景描述
+4. `lighting_demo`：进入高层 2D 光照、Bloom、ToneMap、Vignette
+5. `render_graph_showcase`：最后再看 `render::expert` 下的 `RenderGraph` / pass API
 6. `perf_test`：最后观察渲染路径的吞吐与规模变化
 
 `live2d_demo` 属于渲染专项分支，建议在掌握上面主线后再看。
+
+默认入口是 `sky_engine::render::{Renderer2D, Scene2D, ...}`；需要低层控制时再显式切到 `sky_engine::render::expert::*`。
 
 ```bash
 cargo run --example clear_screen          --features app      # 最简窗口 / swapchain
@@ -420,7 +415,7 @@ cargo run --example boids --features app --release
 
 ## 🙏 致谢
 
-- [SakuraEngine](https://github.com/SakuraEngine/SakuraEngine)  — Live2D Cubism 集成的物理模拟、遮罩裁剪、姿态管理、呼吸/眨眼等运行时效果参考了 SakuraEngine 的实现，特此感谢。
+- [SakuraEngine](https://github.com/SakuraEngine/SakuraEngine)  — 引擎很多内容都参考了 SakuraEngine 的实现，特此感谢。
 
 ---
 

@@ -19,9 +19,10 @@ use std::f32::consts::TAU;
 use sky_engine::app::{App, AppConfig, AppLifecycle, FrameContext, KeyCode};
 use sky_engine::ecs::{EntityId, PreparedQuery, System, World};
 use sky_engine::gpu::GpuContext;
-use sky_engine::render::{
-    Bloom, Camera2D, Color, CompositePass, Light2D, LightPass, PassHandle, RenderGraph, Sprite,
-    SpriteBatch, TargetSize, Texture, TextureHandle, ToneMap,
+use sky_engine::render::{Camera2D, Color, Sprite, Texture};
+use sky_engine::render::expert::{
+    Bloom, CompositePass, Light2D, LightPass, PassHandle, RenderGraph, SpriteBatch, TargetSize,
+    TextureHandle, ToneMap,
 };
 
 // ─── Configuration ──────────────────────────────────────────────────────────

@@ -1,357 +1,149 @@
-//! Modern 2D lighting demo.
+//! Modern ECS-first 2D lighting demo.
 //!
 //! ```bash
 //! cargo run --example lighting_demo --features app --release
 //! ```
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use sky_engine::app::{App, AppConfig};
-use sky_engine::gpu::GpuContext;
+use sky_engine::ecs::With;
 use sky_engine::render::{
-    Bloom, Camera2D, Color, CompositePass, Light2D, LightPass, RenderGraph, Sprite, SpriteBatch,
-    TargetSize, Texture, ToneMap, Vignette,
+    Camera2D, Color, PointLight2D, PrimaryCamera2D, RenderSettings2D, Renderer2D,
+    Renderer2DConfig, Sprite2D, Texture, Transform2D,
 };
 
-const NUM_ORBS: usize = 720;
+const NUM_ORBS: usize = 240;
 
-#[derive(Clone)]
-struct Orb {
+#[derive(Clone, Copy)]
+struct Velocity {
     x: f32,
     y: f32,
-    vx: f32,
-    vy: f32,
-    size: f32,
-    hue: f32,
-    hue_shift: f32,
-    pulse: f32,
 }
 
-struct RenderState {
-    camera: Camera2D,
-    scene_batch: SpriteBatch,
-    normal_batch: SpriteBatch,
-    circle_tex: Texture,
-    normal_tex: Texture,
-    light_pass: LightPass,
-    composite_pass: CompositePass,
-    vignette: Vignette,
-    bloom: Bloom,
-    tonemap: ToneMap,
+#[derive(Clone, Copy)]
+struct Hue {
+    base: f32,
+    shift: f32,
 }
 
-impl RenderState {
-    fn new(gpu: &GpuContext) -> Self {
-        let [sw, sh] = gpu.surface_size();
-        let hdr = wgpu::TextureFormat::Rgba16Float;
+#[derive(Clone, Copy)]
+struct Pulse(f32);
 
-        let mut vignette = Vignette::new(gpu, hdr);
-        vignette.intensity = 0.35;
-        vignette.smoothness = 0.28;
-
-        let mut bloom = Bloom::new(gpu, sw, sh, hdr);
-        bloom.threshold = 0.55;
-        bloom.intensity = 0.45;
-        bloom.radius = 1.15;
-
-        let mut tonemap = ToneMap::new(gpu, gpu.surface_format());
-        tonemap.exposure = 1.35;
-        tonemap.gamma = 2.2;
-
-        Self {
-            camera: Camera2D::new(1280.0, 720.0),
-            scene_batch: SpriteBatch::new(gpu),
-            normal_batch: SpriteBatch::new(gpu),
-            circle_tex: Texture::circle(gpu, 96),
-            normal_tex: Texture::circle_normal(gpu, 96),
-            light_pass: LightPass::new(gpu, hdr),
-            composite_pass: CompositePass::new(gpu, hdr),
-            vignette,
-            bloom,
-            tonemap,
-        }
-    }
-
-    fn resize(&mut self, gpu: &GpuContext, width: u32, height: u32) {
-        self.bloom
-            .resize(gpu, width, height, wgpu::TextureFormat::Rgba16Float);
-    }
-}
+#[derive(Clone, Copy)]
+struct MouseLight;
 
 fn main() {
     let mut rng = SimpleRng::new(1337);
-    let sprites: Vec<Orb> = (0..NUM_ORBS)
-        .map(|_| Orb {
-            x: rng.range(-480.0, 480.0),
-            y: rng.range(-320.0, 320.0),
-            vx: rng.range(-32.0, 32.0),
-            vy: rng.range(-32.0, 32.0),
-            size: rng.range(14.0, 42.0),
-            hue: rng.range(0.0, 360.0),
-            hue_shift: rng.range(10.0, 80.0),
-            pulse: rng.range(0.0, std::f32::consts::TAU),
-        })
-        .collect();
+    let mut renderer: Option<Renderer2D> = None;
 
-    let mut graph = RenderGraph::new();
-    let render_state = Rc::new(RefCell::new(None::<RenderState>));
-    let sim_time = Rc::new(RefCell::new(0.0f32));
-    let orbs = Rc::new(RefCell::new(sprites));
+    App::run(
+        AppConfig::new("SkyEngine — ECS Lighting Demo", 1280, 720),
+        move |world, gpu| {
+            world.insert_resource(RenderSettings2D::default());
+            world.spawn((Camera2D::new(1280.0, 720.0), PrimaryCamera2D));
 
-    let scene_rt = graph.create_texture(|b| {
-        b.name("scene_rt")
-            .size(TargetSize::Surface)
-            .format(wgpu::TextureFormat::Rgba16Float);
-    });
-    let normal_rt = graph.create_texture(|b| {
-        b.name("normal_rt")
-            .size(TargetSize::Surface)
-            .format(wgpu::TextureFormat::Rgba8Unorm);
-    });
-    let light_rt = graph.create_texture(|b| {
-        b.name("light_rt")
-            .size(TargetSize::Surface)
-            .format(wgpu::TextureFormat::Rgba16Float);
-    });
-    let hdr_rt = graph.create_texture(|b| {
-        b.name("hdr_rt")
-            .size(TargetSize::Surface)
-            .format(wgpu::TextureFormat::Rgba16Float);
-    });
-    let graded_rt = graph.create_texture(|b| {
-        b.name("graded_rt")
-            .size(TargetSize::Surface)
-            .format(wgpu::TextureFormat::Rgba16Float);
-    });
-    let bloom_rt = graph.create_texture(|b| {
-        b.name("bloom_rt")
-            .size(TargetSize::Surface)
-            .format(wgpu::TextureFormat::Rgba16Float);
-    });
+            let orb_tex = Texture::circle(gpu, 96);
+            for _ in 0..NUM_ORBS {
+                let size = rng.range(14.0, 42.0);
+                let hue = rng.range(0.0, 360.0);
+                let tint = Color::hsl(hue, 0.72, 0.55);
+                world.spawn((
+                    Transform2D::new(rng.range(-480.0, 480.0), rng.range(-320.0, 320.0)),
+                    Sprite2D::new(size, size)
+                        .texture(orb_tex.clone())
+                        .color(Color::new(tint.r, tint.g, tint.b, 0.95)),
+                    PointLight2D::new(size * 7.0)
+                        .intensity(rng.range(0.8, 1.8))
+                        .temperature(rng.range(2600.0, 9200.0))
+                        .color(tint)
+                        .falloff(rng.range(1.3, 2.1)),
+                    Velocity {
+                        x: rng.range(-32.0, 32.0),
+                        y: rng.range(-32.0, 32.0),
+                    },
+                    Hue {
+                        base: hue,
+                        shift: rng.range(10.0, 80.0),
+                    },
+                    Pulse(rng.range(0.0, std::f32::consts::TAU)),
+                ));
+            }
 
-    let scene_pass = graph.add_render_pass("scene_batch", |s| {
-        s.write_color_cleared(0, scene_rt, [0.015, 0.016, 0.02, 1.0]);
-    });
-    let normal_pass = graph.add_render_pass("normal_batch", |s| {
-        s.write_color_cleared(0, normal_rt, [0.5, 0.5, 1.0, 1.0]);
-    });
-    let lighting_pass = graph.add_render_pass("lighting", |s| {
-        s.read(normal_rt);
-        s.write(light_rt);
-    });
-    let composite_pass = graph.add_render_pass("composite", |s| {
-        s.read(scene_rt);
-        s.read(light_rt);
-        s.write(hdr_rt);
-    });
-    let vignette_pass = graph.add_render_pass("vignette", |s| {
-        s.read(hdr_rt);
-        s.write(graded_rt);
-    });
-    let bloom_pass = graph.add_render_pass("bloom", |s| {
-        s.read(graded_rt);
-        s.write(bloom_rt);
-    });
-    let tonemap_pass = graph.add_render_pass("tonemap", |s| {
-        s.read(bloom_rt);
-        s.write_surface();
-    });
-
-    let graph = Rc::new(RefCell::new(graph));
-    let frame_graph = Rc::clone(&graph);
-    let resize_graph = Rc::clone(&graph);
-    let shutdown_graph = Rc::clone(&graph);
-    let frame_state = Rc::clone(&render_state);
-    let resize_state = Rc::clone(&render_state);
-    let frame_time = Rc::clone(&sim_time);
-    let frame_orbs = Rc::clone(&orbs);
-
-    App::run_with_lifecycle(
-        AppConfig::new("SkyEngine — Lighting Demo", 1280, 720),
-        |_world, _gpu| {
-            eprintln!(
-                "[lighting_demo] Move the mouse to drag the key light. Press Escape to exit."
-            );
+            world.spawn((
+                Transform2D::new(0.0, 0.0),
+                PointLight2D::new(150.0)
+                    .intensity(1.8)
+                    .temperature(5000.0)
+                    .color(Color::rgb(1.0, 0.95, 0.85))
+                    .falloff(1.4),
+                MouseLight,
+            ));
         },
         move |ctx| {
-            *frame_time.borrow_mut() += ctx.dt;
-
-            let mut state_ref = frame_state.borrow_mut();
-            if state_ref.is_none() {
-                *state_ref = Some(RenderState::new(ctx.gpu));
+            if renderer.is_none() {
+                renderer = Some(Renderer2D::new(ctx.gpu, Renderer2DConfig::lit_hdr()));
             }
+            let renderer = renderer.as_mut().expect("renderer should exist");
 
             let [w, h] = ctx.gpu.surface_size();
+            let mut camera_query = ctx.world.query_filtered::<&Camera2D, With<PrimaryCamera2D>>();
+            let mut camera = None;
+            camera_query.for_each(ctx.world, |cam| {
+                if camera.is_none() {
+                    camera = Some(*cam);
+                }
+            });
+            let mut camera = camera.unwrap_or_else(|| Camera2D::new(w as f32, h as f32));
+            camera.set_viewport(w as f32, h as f32);
             let mouse = ctx.input.mouse_position();
-            let mouse_world = {
-                let rs = state_ref.as_mut().expect("render state should exist");
-                rs.camera.set_viewport(w as f32, h as f32);
-                rs.camera.screen_to_world(mouse[0], mouse[1])
-            };
+            let mouse_world = camera.screen_to_world(mouse[0], mouse[1]);
 
-            let mut orbs_ref = frame_orbs.borrow_mut();
-            let time = *frame_time.borrow();
-            for orb in &mut *orbs_ref {
-                orb.x += orb.vx * ctx.dt;
-                orb.y += orb.vy * ctx.dt;
-                orb.hue = (orb.hue + orb.hue_shift * ctx.dt) % 360.0;
-                orb.pulse += ctx.dt * 0.8;
+            let mut orbs = ctx.world.query::<(
+                &mut Transform2D,
+                &mut Sprite2D,
+                &mut PointLight2D,
+                &Velocity,
+                &Hue,
+                &mut Pulse,
+            )>();
+            orbs.for_each(ctx.world, |(transform, sprite, light, velocity, hue, pulse)| {
+                transform.x += velocity.x * ctx.dt;
+                transform.y += velocity.y * ctx.dt;
+                pulse.0 += ctx.dt * 0.8;
 
-                let half_w = w as f32 * 0.5 + orb.size;
-                let half_h = h as f32 * 0.5 + orb.size;
-                if orb.x > half_w {
-                    orb.x = -half_w;
+                let half_w = w as f32 * 0.5 + sprite.width;
+                let half_h = h as f32 * 0.5 + sprite.height;
+                if transform.x > half_w {
+                    transform.x = -half_w;
                 }
-                if orb.x < -half_w {
-                    orb.x = half_w;
+                if transform.x < -half_w {
+                    transform.x = half_w;
                 }
-                if orb.y > half_h {
-                    orb.y = -half_h;
+                if transform.y > half_h {
+                    transform.y = -half_h;
                 }
-                if orb.y < -half_h {
-                    orb.y = half_h;
-                }
-            }
-
-            let lights = vec![
-                Light2D::new(-260.0, -50.0, 240.0)
-                    .temperature(2600.0)
-                    .intensity(2.1)
-                    .falloff(1.7)
-                    .color(Color::rgb(1.0, 0.78, 0.45)),
-                Light2D::new(260.0, 180.0, 320.0)
-                    .temperature(9200.0)
-                    .intensity(1.2)
-                    .falloff(2.0)
-                    .color(Color::rgb(0.65, 0.8, 1.0)),
-                Light2D::new(220.0, -170.0, 200.0)
-                    .temperature(3400.0)
-                    .intensity(1.55)
-                    .falloff(1.9)
-                    .color(Color::rgb(1.0, 0.92, 0.75)),
-                Light2D::new(-70.0, 180.0, 160.0)
-                    .temperature(5600.0)
-                    .intensity(0.9)
-                    .falloff(1.4)
-                    .color(Color::rgb(0.9, 0.3, 0.8)),
-                Light2D::new(mouse_world[0], mouse_world[1], 150.0)
-                    .temperature(5000.0)
-                    .intensity(1.8)
-                    .falloff(1.4)
-                    .color(Color::rgb(1.0, 0.95, 0.85)),
-            ];
-
-            let camera = {
-                let rs = state_ref.as_mut().expect("render state should exist");                rs.scene_batch.set_texture(&rs.circle_tex);
-                for orb in &*orbs_ref {
-                    let pulse = 1.0 + 0.18 * (time * 1.8 + orb.pulse).sin();
-                    let lightness = 0.46 + 0.14 * (time * 0.7 + orb.pulse).cos();
-                    let tint = Color::hsl(orb.hue, 0.72, lightness);
-                    rs.scene_batch.draw(
-                        Sprite::new(orb.x, orb.y, orb.size * pulse, orb.size * pulse)
-                            .color(Color::new(tint.r, tint.g, tint.b, 0.95)),
-                    );
-                }                rs.normal_batch.set_texture(&rs.normal_tex);
-                for orb in &*orbs_ref {
-                    let pulse = 1.0 + 0.18 * (time * 1.8 + orb.pulse).sin();
-                    rs.normal_batch.draw(
-                        Sprite::new(orb.x, orb.y, orb.size * pulse, orb.size * pulse)
-                            .color(Color::WHITE),
-                    );
+                if transform.y < -half_h {
+                    transform.y = half_h;
                 }
 
-                rs.camera
-            };
+                let pulse_scale = 1.0 + 0.18 * pulse.0.sin();
+                transform.scale_x = pulse_scale;
+                transform.scale_y = pulse_scale;
 
-            let mut graph = frame_graph.borrow_mut();
-            let execute_result = graph.try_execute(ctx.gpu, |pass, gpu, textures| {
-                let rs = state_ref.as_mut().expect("render state should exist");
-
-                if pass.handle == scene_pass {
-                    let target = textures
-                        .render_target(scene_rt)
-                        .expect("scene_rt should resolve to a render target");
-                    rs.scene_batch.flush_to_target(
-                        gpu,
-                        &camera,
-                        target,
-                        Some(Color::new(0.015, 0.016, 0.02, 1.0)),
-                    );
-                } else if pass.handle == normal_pass {
-                    let target = textures
-                        .render_target(normal_rt)
-                        .expect("normal_rt should resolve to a render target");
-                    rs.normal_batch.flush_to_target(
-                        gpu,
-                        &camera,
-                        target,
-                        Some(Color::new(0.5, 0.5, 1.0, 1.0)),
-                    );
-                } else if pass.handle == lighting_pass {
-                    let normal_target = textures
-                        .render_target(normal_rt)
-                        .expect("normal_rt should resolve to a render target");
-                    let output = textures
-                        .render_target(light_rt)
-                        .expect("light_rt should resolve to a render target");
-                    rs.light_pass.render(
-                        gpu,
-                        &lights,
-                        Some(normal_target),
-                        output,
-                        &camera,
-                        [0.07, 0.075, 0.09, 1.0],
-                    );
-                } else if pass.handle == composite_pass {
-                    let scene = textures
-                        .render_target(scene_rt)
-                        .expect("scene_rt should resolve to a render target");
-                    let lightmap = textures
-                        .render_target(light_rt)
-                        .expect("light_rt should resolve to a render target");
-                    let output = textures
-                        .render_target(hdr_rt)
-                        .expect("hdr_rt should resolve to a render target");
-                    rs.composite_pass
-                        .render_to_target(gpu, scene, lightmap, output);
-                } else if pass.handle == vignette_pass {
-                    let input = textures
-                        .render_target(hdr_rt)
-                        .expect("hdr_rt should resolve to a render target");
-                    let output = textures
-                        .render_target(graded_rt)
-                        .expect("graded_rt should resolve to a render target");
-                    rs.vignette.apply_to_target(gpu, input, output);
-                } else if pass.handle == bloom_pass {
-                    let input = textures
-                        .render_target(graded_rt)
-                        .expect("graded_rt should resolve to a render target");
-                    let output = textures
-                        .render_target(bloom_rt)
-                        .expect("bloom_rt should resolve to a render target");
-                    rs.bloom.apply(gpu, input, output);
-                } else if pass.handle == tonemap_pass {
-                    let input = textures
-                        .render_target(bloom_rt)
-                        .expect("bloom_rt should resolve to a render target");
-                    rs.tonemap.apply_to_surface(gpu, input);
-                }
-                Ok(())
+                let shifted_hue = (hue.base + hue.shift * ctx.dt + pulse.0 * 4.0) % 360.0;
+                let lightness = 0.46 + 0.14 * (pulse.0 * 0.7).cos();
+                let tint = Color::hsl(shifted_hue, 0.72, lightness);
+                sprite.color = Color::new(tint.r, tint.g, tint.b, 0.95);
+                light.color = tint;
             });
 
-            if let Err(err) = execute_result {
-                eprintln!("[lighting_demo] render graph error: {err}");
-            }
-        },
-        move |_world, gpu, _old_size, new_size| {
-            resize_graph.borrow_mut().destroy_physical_resources();
-            if let Some(state) = resize_state.borrow_mut().as_mut() {
-                state.resize(gpu, new_size[0], new_size[1]);
-            }
-        },
-        move |_world, _gpu| {
-            shutdown_graph.borrow_mut().destroy_physical_resources();
+            let mut mouse_light = ctx.world.query::<(&mut Transform2D, &mut PointLight2D, &MouseLight)>();
+            mouse_light.for_each(ctx.world, |(transform, light, _)| {
+                transform.x = mouse_world[0];
+                transform.y = mouse_world[1];
+                light.intensity = 1.8 + 0.25 * (ctx.dt * 60.0).sin().abs();
+            });
+
+            renderer.render_world(ctx.gpu, ctx.world);
         },
     );
 }

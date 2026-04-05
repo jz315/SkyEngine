@@ -11,8 +11,8 @@
 use sky_engine::app::{App, AppConfig, FrameContext, KeyCode};
 use sky_engine::ecs::World;
 use sky_engine::gpu::GpuContext;
-use sky_engine::render::live2d::clipping::ClippingManager;
-use sky_engine::render::live2d::{Live2DModelResource, Live2DRenderer};
+use sky_engine::render::expert::live2d::clipping::ClippingManager;
+use sky_engine::render::expert::live2d::{Live2DModelResource, Live2DRenderer};
 
 fn main() {
     let model_path = std::env::args().nth(1).unwrap_or_else(|| {

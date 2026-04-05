@@ -1,17 +1,19 @@
-//! Textured sprite demo.
+//! Manual `Scene2D` textured sprite demo.
 //!
 //! Demonstrates:
-//! - Procedurally generated textures (circles + checkerboard)
-//! - Texture switching within a single frame
+//! - Reusable `Scene2D`
+//! - Procedural textures
 //! - Mixed textured and untextured sprites
-//! - 10,000+ sprites in a few instanced draw calls
+//! - High-level unlit rendering without ECS extraction
 //!
 //! ```bash
 //! cargo run --example textured_demo --features app --release
 //! ```
 
 use sky_engine::app::{App, AppConfig};
-use sky_engine::render::{Camera2D, Color, Sprite, SpriteBatch, Texture};
+use sky_engine::render::{
+    Camera2D, Color, Renderer2D, Renderer2DConfig, Scene2D, Sprite2D, Texture, Transform2D,
+};
 
 const NUM_PARTICLES: usize = 3000;
 const NUM_BLOCKS: usize = 200;
@@ -76,24 +78,22 @@ fn main() {
         })
         .collect();
 
-    let mut batch: Option<SpriteBatch> = None;
+    let mut renderer: Option<Renderer2D> = None;
     let mut circle_tex: Option<Texture> = None;
     let mut checker_tex: Option<Texture> = None;
+    let mut scene = Scene2D::new();
     let mut camera = Camera2D::new(960.0, 640.0);
     let mut time = 0.0f32;
 
     App::run(
-        AppConfig::new("SkyEngine — Textured Sprites", 960, 640),
-        |_world, _gpu| {
-            eprintln!("[textured_demo] Press Escape to exit.");
-        },
+        AppConfig::new("SkyEngine — Scene2D Textured Demo", 960, 640),
+        |_world, _gpu| {},
         move |ctx| {
             let dt = ctx.dt;
             time += dt;
 
-            // Lazy init GPU resources
-            if batch.is_none() {
-                let b = SpriteBatch::new(ctx.gpu);
+            if renderer.is_none() {
+                renderer = Some(Renderer2D::new(ctx.gpu, Renderer2DConfig::unlit()));
                 circle_tex = Some(Texture::circle(ctx.gpu, 64));
                 checker_tex = Some(Texture::checkerboard(
                     ctx.gpu,
@@ -102,81 +102,80 @@ fn main() {
                     [200, 180, 255, 255],
                     [80, 60, 140, 255],
                 ));
-                batch = Some(b);
             }
-            let batch = batch.as_mut().unwrap();
-            let circle = circle_tex.as_ref().unwrap();
-            let checker = checker_tex.as_ref().unwrap();
 
-            // Resize camera
+            let renderer = renderer.as_mut().expect("renderer should exist");
+            let circle = circle_tex.as_ref().expect("circle texture should exist");
+            let checker = checker_tex.as_ref().expect("checker texture should exist");
+
             let [w, h] = ctx.gpu.surface_size();
             camera.set_viewport(w as f32, h as f32);
 
-            // ── Update ──────────────────────────────────────────────────
-            for p in particles.iter_mut() {
-                p.x += p.vx * dt;
-                p.y += p.vy * dt;
-                p.hue = (p.hue + 40.0 * dt) % 360.0;
-                p.life = (p.life + dt * 0.3) % 1.0;
+            for particle in &mut particles {
+                particle.x += particle.vx * dt;
+                particle.y += particle.vy * dt;
+                particle.hue = (particle.hue + 40.0 * dt) % 360.0;
+                particle.life = (particle.life + dt * 0.3) % 1.0;
 
-                let hw = w as f32 * 0.5 + p.size;
-                let hh = h as f32 * 0.5 + p.size;
-                if p.x > hw {
-                    p.x = -hw;
+                let hw = w as f32 * 0.5 + particle.size;
+                let hh = h as f32 * 0.5 + particle.size;
+                if particle.x > hw {
+                    particle.x = -hw;
                 }
-                if p.x < -hw {
-                    p.x = hw;
+                if particle.x < -hw {
+                    particle.x = hw;
                 }
-                if p.y > hh {
-                    p.y = -hh;
+                if particle.y > hh {
+                    particle.y = -hh;
                 }
-                if p.y < -hh {
-                    p.y = hh;
+                if particle.y < -hh {
+                    particle.y = hh;
                 }
             }
 
-            for b in blocks.iter_mut() {
-                b.angle += b.spin * dt;
+            for block in &mut blocks {
+                block.angle += block.spin * dt;
             }
 
-            // ── Draw ────────────────────────────────────────────────────
-            // Layer 1: background stars (untextured tiny squares)
-            for s in &stars {
-                let t = (time * s.twinkle_speed).sin() * 0.5 + 0.5;
-                let a = s.brightness * (0.3 + 0.7 * t);
-                batch.draw(Sprite::new(s.x, s.y, 2.0, 2.0).color(Color::new(0.8, 0.85, 1.0, a)));
+            scene.reset();
+            scene.set_camera(camera);
+            scene.settings_mut().clear_color = Color::new(0.01, 0.01, 0.03, 1.0);
+
+            for star in &stars {
+                let twinkle = (time * star.twinkle_speed).sin() * 0.5 + 0.5;
+                let alpha = star.brightness * (0.3 + 0.7 * twinkle);
+                scene.add_sprite(
+                    Transform2D::from_xyz(star.x, star.y, 0.0),
+                    Sprite2D::new(2.0, 2.0).color(Color::new(0.8, 0.85, 1.0, alpha)),
+                );
             }
 
-            // Layer 2: checkerboard blocks (textured)
-            batch.set_texture(checker);
-            for b in &blocks {
-                let pulse = 1.0 + 0.15 * (time * 2.0 + b.angle).sin();
-                let sz = b.size * pulse;
-                batch.draw(
-                    Sprite::new(b.x, b.y, sz, sz)
-                        .rotation(b.angle)
+            for block in &blocks {
+                let pulse = 1.0 + 0.15 * (time * 2.0 + block.angle).sin();
+                let size = block.size * pulse;
+                scene.add_sprite(
+                    Transform2D::from_xyz(block.x, block.y, 1.0).with_rotation(block.angle),
+                    Sprite2D::new(size, size)
+                        .texture(checker.clone())
                         .color(Color::new(1.0, 1.0, 1.0, 0.7)),
                 );
             }
 
-            // Layer 3: circle particles (textured)
-            batch.set_texture(circle);
-            for p in &particles {
-                let color = Color::hsl(p.hue, 0.9, 0.65);
-                let alpha = 0.4 + 0.6 * (1.0 - p.life);
-                batch.draw(
-                    Sprite::new(p.x, p.y, p.size, p.size)
+            for particle in &particles {
+                let color = Color::hsl(particle.hue, 0.9, 0.65);
+                let alpha = 0.4 + 0.6 * (1.0 - particle.life);
+                scene.add_sprite(
+                    Transform2D::from_xyz(particle.x, particle.y, 2.0),
+                    Sprite2D::new(particle.size, particle.size)
+                        .texture(circle.clone())
                         .color(Color::new(color.r, color.g, color.b, alpha)),
                 );
             }
 
-            // Draw all
-            batch.flush_to_surface(ctx.gpu, &camera, Some(Color::new(0.01, 0.01, 0.03, 1.0)));
+            renderer.render_scene(ctx.gpu, &scene);
         },
     );
 }
-
-// ── Minimal deterministic RNG ───────────────────────────────────────────────
 
 struct SimpleRng {
     state: u64,

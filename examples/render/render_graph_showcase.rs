@@ -25,7 +25,7 @@
 //! cargo run --example render_graph_showcase --features app
 //! ```
 
-use sky_engine::render::{
+use sky_engine::render::expert::{
     LoadOp, PassFlags, PassType, RenderGraph, RenderGraphError, ResourceRef, TargetSize,
 };
 
