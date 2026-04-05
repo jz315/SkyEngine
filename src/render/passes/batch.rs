@@ -35,11 +35,11 @@ use rustc_hash::FxHashMap;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct SpriteInstance {
-    transform: [f32; 4], // x, y, w, h
-    rotation: [f32; 4],  // sin, cos, 0, 0
-    color: [f32; 4],     // r, g, b, a
-    uv_rect: [f32; 4],   // u_min, v_min, u_max, v_max
+pub(crate) struct SpriteInstance {
+    pub(crate) transform: [f32; 4], // x, y, w, h
+    pub(crate) rotation: [f32; 4],  // sin, cos, 0, 0
+    pub(crate) color: [f32; 4],     // r, g, b, a
+    pub(crate) uv_rect: [f32; 4],   // u_min, v_min, u_max, v_max
 }
 
 #[repr(C)]
@@ -340,7 +340,7 @@ impl SpriteBatch {
         self.upload(ctx, view);
 
         let cmds = self.finalize_draw_cmds();
-        let bind_groups = self.create_texture_bind_groups(ctx);
+        let bind_groups = self.create_texture_bind_groups(ctx, &self.frame_textures);
         let pip_color = self.pipelines_color.get(&format).cloned();
         let pip_tex = self.pipelines_textured.get(&format).cloned();
 
@@ -386,7 +386,7 @@ impl SpriteBatch {
         };
 
         let cmds = self.finalize_draw_cmds();
-        let bind_groups = self.create_texture_bind_groups(ctx);
+        let bind_groups = self.create_texture_bind_groups(ctx, &self.frame_textures);
         let pip_color = self.pipelines_color.get(&format).cloned();
         let pip_tex = self.pipelines_textured.get(&format).cloned();
 
@@ -453,8 +453,12 @@ impl SpriteBatch {
         self.draw_cmds.clone()
     }
 
-    fn create_texture_bind_groups(&self, ctx: &GpuContext) -> Vec<wgpu::BindGroup> {
-        self.frame_textures
+    fn create_texture_bind_groups(
+        &self,
+        ctx: &GpuContext,
+        textures: &[Texture],
+    ) -> Vec<wgpu::BindGroup> {
+        textures
             .iter()
             .map(|tex| {
                 ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
@@ -494,8 +498,11 @@ impl SpriteBatch {
         for cmd in cmds {
             if cmd.textured {
                 let Some(pip) = pip_textured else { continue };
+                let Some(bg) = texture_bind_groups.get(cmd.texture_idx) else {
+                    continue;
+                };
                 pass.set_pipeline(pip);
-                pass.set_bind_group(1, &texture_bind_groups[cmd.texture_idx], &[]);
+                pass.set_bind_group(1, bg, &[]);
             } else {
                 let Some(pip) = pip_color else { continue };
                 pass.set_pipeline(pip);

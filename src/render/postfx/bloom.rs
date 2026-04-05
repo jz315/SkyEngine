@@ -14,6 +14,7 @@ struct BloomUniform {
 
 const BLOOM_SHADER: &str = include_str!("../shaders/bloom.wgsl");
 const BLOOM_LEVELS: usize = 4;
+pub(crate) const DRAW_CALLS_PER_APPLY: usize = 4 * BLOOM_LEVELS;
 
 pub struct Bloom {
     bright_pipeline: FullscreenPipeline,

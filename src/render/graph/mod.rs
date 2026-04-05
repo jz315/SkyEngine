@@ -138,6 +138,8 @@ pub struct RenderGraph {
     // Physical resource management
     physical_textures: Vec<Option<RenderTarget>>,
     physical_buffers: Vec<Option<wgpu::Buffer>>,
+    persistent_texture_cache: FxHashMap<String, Vec<RenderTarget>>,
+    persistent_buffer_cache: FxHashMap<String, Vec<wgpu::Buffer>>,
     transient_pool: TransientPool,
     transient_buffer_pool: TransientBufferPool,
 
@@ -247,10 +249,58 @@ impl RenderGraph {
             alias_redirects: FxHashMap::default(),
             physical_textures: Vec::new(),
             physical_buffers: Vec::new(),
+            persistent_texture_cache: FxHashMap::default(),
+            persistent_buffer_cache: FxHashMap::default(),
             transient_pool: TransientPool::new(),
             transient_buffer_pool: TransientBufferPool::new(),
             blackboard: Blackboard::new(),
         }
+    }
+
+    fn stash_persistent_texture(&mut self, name: &str, target: RenderTarget) {
+        self.persistent_texture_cache
+            .entry(name.to_string())
+            .or_default()
+            .push(target);
+    }
+
+    fn take_persistent_texture(&mut self, name: &str) -> Option<RenderTarget> {
+        let mut remove_entry = false;
+        let target = self
+            .persistent_texture_cache
+            .get_mut(name)
+            .and_then(|targets| {
+                let target = targets.pop();
+                remove_entry = targets.is_empty();
+                target
+            });
+        if remove_entry {
+            self.persistent_texture_cache.remove(name);
+        }
+        target
+    }
+
+    fn stash_persistent_buffer(&mut self, name: &str, buffer: wgpu::Buffer) {
+        self.persistent_buffer_cache
+            .entry(name.to_string())
+            .or_default()
+            .push(buffer);
+    }
+
+    fn take_persistent_buffer(&mut self, name: &str) -> Option<wgpu::Buffer> {
+        let mut remove_entry = false;
+        let buffer = self
+            .persistent_buffer_cache
+            .get_mut(name)
+            .and_then(|buffers| {
+                let buffer = buffers.pop();
+                remove_entry = buffers.is_empty();
+                buffer
+            });
+        if remove_entry {
+            self.persistent_buffer_cache.remove(name);
+        }
+        buffer
     }
 
     // ── Resource creation ───────────────────────────────────────────────
@@ -438,6 +488,144 @@ impl RenderGraph {
             .count()
     }
 
+    /// Return pass handles for all passes declared at or after `start`.
+    pub(crate) fn pass_handles_from(&self, start: usize) -> Vec<PassHandle> {
+        (start..self.passes.len())
+            .map(|index| PassHandle(index, self.handle_token))
+            .collect()
+    }
+
+    /// Clear per-frame declaration state while keeping reusable pools alive.
+    ///
+    /// Unlike [`reset`], this does not destroy the transient pools themselves.
+    /// Any currently allocated transient resources are first returned to those
+    /// pools so the next frame can reuse them.
+    pub(crate) fn clear_frame(&mut self) {
+        for tex_idx in 0..self.textures.len() {
+            let (is_transient, is_imported, name) = {
+                let desc = &self.textures[tex_idx];
+                (
+                    desc.transient,
+                    desc.imported.is_some(),
+                    desc.name.to_string(),
+                )
+            };
+            if is_transient {
+                if self.alias_redirects.contains_key(&tex_idx) {
+                    if let Some(slot) = self.physical_textures.get_mut(tex_idx) {
+                        slot.take();
+                    }
+                    continue;
+                }
+                if let Some(target) = self
+                    .physical_textures
+                    .get_mut(tex_idx)
+                    .and_then(Option::take)
+                {
+                    self.transient_pool.release(
+                        PoolKey {
+                            format: target.format(),
+                            width: target.width(),
+                            height: target.height(),
+                            sample_count: target.sample_count(),
+                            mip_level_count: target.mip_level_count(),
+                        },
+                        target,
+                    );
+                }
+            } else if !is_imported {
+                if let Some(target) = self
+                    .physical_textures
+                    .get_mut(tex_idx)
+                    .and_then(Option::take)
+                {
+                    self.stash_persistent_texture(&name, target);
+                }
+            } else if let Some(slot) = self.physical_textures.get_mut(tex_idx) {
+                slot.take();
+            }
+        }
+
+        for buf_idx in 0..self.buffers.len() {
+            let (is_transient, is_imported, name) = {
+                let desc = &self.buffers[buf_idx];
+                (
+                    desc.transient,
+                    desc.imported.is_some(),
+                    desc.name.to_string(),
+                )
+            };
+            if is_transient {
+                if let Some(buffer) = self
+                    .physical_buffers
+                    .get_mut(buf_idx)
+                    .and_then(Option::take)
+                {
+                    self.transient_buffer_pool.release(
+                        BufferPoolKey {
+                            size_bytes: buffer.size(),
+                            usage: buffer.usage(),
+                        },
+                        buffer,
+                    );
+                }
+            } else if !is_imported {
+                if let Some(buffer) = self
+                    .physical_buffers
+                    .get_mut(buf_idx)
+                    .and_then(Option::take)
+                {
+                    self.stash_persistent_buffer(&name, buffer);
+                }
+            } else if let Some(slot) = self.physical_buffers.get_mut(buf_idx) {
+                slot.take();
+            }
+        }
+
+        self.textures.clear();
+        self.buffers.clear();
+        self.texture_names.clear();
+        self.buffer_names.clear();
+        self.passes.clear();
+        self.order.clear();
+        self.cached_compiled.clear();
+        self.dep_edges.clear();
+        self.dep_reverse_edges.clear();
+        self.lifetimes.clear();
+        self.alias_groups.clear();
+        self.alias_stats = None;
+        self.alias_redirects.clear();
+        self.physical_textures.clear();
+        self.physical_buffers.clear();
+        self.handle_token = next_handle_token();
+        self.blackboard.clear();
+        self.max_dep_level = 0;
+        self.culled_count = 0;
+        self.compiled = false;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn debug_declared_pass_names(&self) -> Vec<String> {
+        self.passes
+            .iter()
+            .map(|pass| pass.name.to_string())
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn debug_declared_surface_loads(&self, pass_name: &str) -> Vec<LoadOp> {
+        self.passes
+            .iter()
+            .filter(|pass| pass.name == pass_name)
+            .flat_map(|pass| {
+                pass.color_outputs
+                    .iter()
+                    .filter(|output| matches!(output.target, ResourceRef::Surface))
+                    .map(|output| output.load)
+            })
+            .collect()
+    }
+
     /// Destroy all currently owned physical resources.
     pub fn destroy_physical_resources(&mut self) {
         for target in &mut self.physical_textures {
@@ -446,6 +634,8 @@ impl RenderGraph {
         for buffer in &mut self.physical_buffers {
             buffer.take();
         }
+        self.persistent_texture_cache.clear();
+        self.persistent_buffer_cache.clear();
         self.transient_pool.destroy_all();
         self.transient_buffer_pool.destroy_all();
     }
@@ -460,6 +650,20 @@ impl RenderGraph {
         debug_assert!(
             self.physical_buffers.iter().all(|b| b.is_none()),
             "RenderGraph::reset() called with live physical buffers — \
+             call destroy_physical_resources() first"
+        );
+        debug_assert!(
+            self.persistent_texture_cache
+                .values()
+                .all(|targets| targets.is_empty()),
+            "RenderGraph::reset() called with cached persistent textures — \
+             call destroy_physical_resources() first"
+        );
+        debug_assert!(
+            self.persistent_buffer_cache
+                .values()
+                .all(|buffers| buffers.is_empty()),
+            "RenderGraph::reset() called with cached persistent buffers — \
              call destroy_physical_resources() first"
         );
         self.textures.clear();
@@ -477,6 +681,8 @@ impl RenderGraph {
         self.alias_redirects.clear();
         self.physical_textures.clear();
         self.physical_buffers.clear();
+        self.persistent_texture_cache.clear();
+        self.persistent_buffer_cache.clear();
         self.transient_pool = TransientPool::new();
         self.transient_buffer_pool = TransientBufferPool::new();
         self.handle_token = next_handle_token();

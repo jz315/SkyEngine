@@ -1,19 +1,20 @@
-//! Manual `Scene2D` textured sprite demo.
+//! ECS-driven textured sprite demo.
 //!
 //! Demonstrates:
-//! - Reusable `Scene2D`
+//! - Textured sprites driven entirely from ECS
 //! - Procedural textures
-//! - Mixed textured and untextured sprites
-//! - High-level unlit rendering without ECS extraction
+//! - Mixed textured and untextured sprite rendering
+//! - High-level unlit rendering through `ctx.render()`
 //!
 //! ```bash
 //! cargo run --example textured_demo --features app --release
 //! ```
 
-use sky_engine::app::{App, AppConfig};
-use sky_engine::ecs::World;
+use sky_engine::app::{App, AppConfig, AppState, FrameContext};
+use sky_engine::ecs::{EntityId, World};
+use sky_engine::gpu::GpuContext;
 use sky_engine::render::{
-    Camera2D, Color, Renderer2DConfig, Scene2D, Sprite2D, Texture, Transform2D,
+    Camera2D, Color, PrimaryCamera2D, Renderer2DConfig, Sprite2D, Texture, Transform2D,
 };
 
 const NUM_PARTICLES: usize = 3000;
@@ -21,159 +22,202 @@ const NUM_BLOCKS: usize = 200;
 const NUM_STARS: usize = 500;
 
 struct Particle {
-    x: f32,
-    y: f32,
+    entity: EntityId,
     vx: f32,
     vy: f32,
-    size: f32,
     hue: f32,
     life: f32,
 }
 
 struct Block {
-    x: f32,
-    y: f32,
+    entity: EntityId,
     size: f32,
     angle: f32,
     spin: f32,
 }
 
 struct Star {
-    x: f32,
-    y: f32,
+    entity: EntityId,
     brightness: f32,
     twinkle_speed: f32,
 }
 
+struct TexturedDemo {
+    particles: Vec<Particle>,
+    blocks: Vec<Block>,
+    stars: Vec<Star>,
+    camera: Option<EntityId>,
+    time: f32,
+}
+
+impl TexturedDemo {
+    fn new() -> Self {
+        Self {
+            particles: Vec::with_capacity(NUM_PARTICLES),
+            blocks: Vec::with_capacity(NUM_BLOCKS),
+            stars: Vec::with_capacity(NUM_STARS),
+            camera: None,
+            time: 0.0,
+        }
+    }
+}
+
+impl AppState for TexturedDemo {
+    fn setup(&mut self, world: &mut World, gpu: &mut GpuContext) {
+        let mut rng = SimpleRng::new(123);
+        let circle = Texture::circle(gpu, 64);
+        let checker = Texture::checkerboard(gpu, 64, 8, [200, 180, 255, 255], [80, 60, 140, 255]);
+
+        self.camera = Some(world.spawn((Camera2D::new(960.0, 640.0), PrimaryCamera2D)));
+
+        for _ in 0..NUM_STARS {
+            let x = rng.range(-480.0, 480.0);
+            let y = rng.range(-320.0, 320.0);
+            let brightness = rng.range(0.3, 1.0);
+            let twinkle_speed = rng.range(1.0, 5.0);
+            let entity = world.spawn((Transform2D::from_xyz(x, y, 0.0), Sprite2D::new(2.0, 2.0)));
+            self.stars.push(Star {
+                entity,
+                brightness,
+                twinkle_speed,
+            });
+        }
+
+        for _ in 0..NUM_BLOCKS {
+            let x = rng.range(-450.0, 450.0);
+            let y = rng.range(-300.0, 300.0);
+            let size = rng.range(16.0, 48.0);
+            let angle = rng.range(0.0, std::f32::consts::TAU);
+            let spin = rng.range(-1.5, 1.5);
+            let entity = world.spawn((
+                Transform2D::from_xyz(x, y, 1.0).with_rotation(angle),
+                Sprite2D::new(size, size)
+                    .texture(checker.clone())
+                    .color(Color::new(1.0, 1.0, 1.0, 0.7)),
+            ));
+            self.blocks.push(Block {
+                entity,
+                size,
+                angle,
+                spin,
+            });
+        }
+
+        for _ in 0..NUM_PARTICLES {
+            let x = rng.range(-480.0, 480.0);
+            let y = rng.range(-320.0, 320.0);
+            let vx = rng.range(-80.0, 80.0);
+            let vy = rng.range(-80.0, 80.0);
+            let size = rng.range(6.0, 24.0);
+            let hue = rng.range(0.0, 360.0);
+            let life = rng.range(0.0, 1.0);
+            let color = Color::hsl(hue, 0.9, 0.65);
+            let alpha = 0.4 + 0.6 * (1.0 - life);
+            let entity = world.spawn((
+                Transform2D::from_xyz(x, y, 2.0),
+                Sprite2D::new(size, size)
+                    .texture(circle.clone())
+                    .color(Color::new(color.r, color.g, color.b, alpha)),
+            ));
+            self.particles.push(Particle {
+                entity,
+                vx,
+                vy,
+                hue,
+                life,
+            });
+        }
+    }
+
+    fn update(&mut self, ctx: &mut FrameContext) {
+        let dt = ctx.dt;
+        self.time += dt;
+
+        let [w, h] = ctx.surface_size();
+        if let Some(camera) = self.camera {
+            if let Some(camera_component) = ctx.world.get_mut::<Camera2D>(camera) {
+                camera_component.set_viewport(w as f32, h as f32);
+            }
+        }
+
+        for star in &self.stars {
+            let twinkle = (self.time * star.twinkle_speed).sin() * 0.5 + 0.5;
+            let alpha = star.brightness * (0.3 + 0.7 * twinkle);
+            if let Some(sprite) = ctx.world.get_mut::<Sprite2D>(star.entity) {
+                sprite.color = Color::new(0.8, 0.85, 1.0, alpha);
+            }
+        }
+
+        for block in &mut self.blocks {
+            block.angle += block.spin * dt;
+            let pulse = 1.0 + 0.15 * (self.time * 2.0 + block.angle).sin();
+            if let Some(transform) = ctx.world.get_mut::<Transform2D>(block.entity) {
+                transform.rotation = block.angle;
+            }
+            if let Some(sprite) = ctx.world.get_mut::<Sprite2D>(block.entity) {
+                sprite.width = block.size * pulse;
+                sprite.height = block.size * pulse;
+            }
+        }
+
+        for particle in &mut self.particles {
+            let Some(transform) = ctx.world.get_mut::<Transform2D>(particle.entity) else {
+                continue;
+            };
+
+            transform.x += particle.vx * dt;
+            transform.y += particle.vy * dt;
+            particle.hue = (particle.hue + 40.0 * dt) % 360.0;
+            particle.life = (particle.life + dt * 0.3) % 1.0;
+
+            let hw = w as f32 * 0.5 + 24.0;
+            let hh = h as f32 * 0.5 + 24.0;
+            if transform.x > hw {
+                transform.x = -hw;
+            }
+            if transform.x < -hw {
+                transform.x = hw;
+            }
+            if transform.y > hh {
+                transform.y = -hh;
+            }
+            if transform.y < -hh {
+                transform.y = hh;
+            }
+
+            if let Some(sprite) = ctx.world.get_mut::<Sprite2D>(particle.entity) {
+                let color = Color::hsl(particle.hue, 0.9, 0.65);
+                let alpha = 0.4 + 0.6 * (1.0 - particle.life);
+                sprite.color = Color::new(color.r, color.g, color.b, alpha);
+            }
+        }
+
+        if let Some(settings) = ctx
+            .world
+            .get_resource_mut::<sky_engine::render::RenderSettings2D>()
+        {
+            settings.clear_color = Color::new(0.01, 0.01, 0.03, 1.0);
+        } else {
+            ctx.world
+                .insert_resource(sky_engine::render::RenderSettings2D {
+                    clear_color: Color::new(0.01, 0.01, 0.03, 1.0),
+                    ..Default::default()
+                });
+        }
+
+        ctx.render();
+    }
+}
+
 fn main() {
-    let mut rng = SimpleRng::new(123);
-
-    let mut particles: Vec<Particle> = (0..NUM_PARTICLES)
-        .map(|_| Particle {
-            x: rng.range(-480.0, 480.0),
-            y: rng.range(-320.0, 320.0),
-            vx: rng.range(-80.0, 80.0),
-            vy: rng.range(-80.0, 80.0),
-            size: rng.range(6.0, 24.0),
-            hue: rng.range(0.0, 360.0),
-            life: rng.range(0.0, 1.0),
-        })
-        .collect();
-
-    let mut blocks: Vec<Block> = (0..NUM_BLOCKS)
-        .map(|_| Block {
-            x: rng.range(-450.0, 450.0),
-            y: rng.range(-300.0, 300.0),
-            size: rng.range(16.0, 48.0),
-            angle: rng.range(0.0, std::f32::consts::TAU),
-            spin: rng.range(-1.5, 1.5),
-        })
-        .collect();
-
-    let stars: Vec<Star> = (0..NUM_STARS)
-        .map(|_| Star {
-            x: rng.range(-480.0, 480.0),
-            y: rng.range(-320.0, 320.0),
-            brightness: rng.range(0.3, 1.0),
-            twinkle_speed: rng.range(1.0, 5.0),
-        })
-        .collect();
-
-    let mut circle_tex: Option<Texture> = None;
-    let mut checker_tex: Option<Texture> = None;
-    let mut scene = Scene2D::new();
-    let mut camera = Camera2D::new(960.0, 640.0);
-    let mut time = 0.0f32;
-
     let mut world = World::new();
     world.insert_resource(Renderer2DConfig::unlit());
 
-    App::new(AppConfig::new("SkyEngine — Scene2D Textured Demo", 960, 640), world)
-        .run(move |ctx| {
-            ctx.world.tick();
-            let dt = ctx.dt;
-            time += dt;
-
-            if circle_tex.is_none() {
-                circle_tex = Some(Texture::circle(ctx.gpu(), 64));
-                checker_tex = Some(Texture::checkerboard(
-                    ctx.gpu(),
-                    64,
-                    8,
-                    [200, 180, 255, 255],
-                    [80, 60, 140, 255],
-                ));
-            }
-
-            let circle = circle_tex.as_ref().expect("circle texture should exist");
-            let checker = checker_tex.as_ref().expect("checker texture should exist");
-
-            let [w, h] = ctx.surface_size();
-            camera.set_viewport(w as f32, h as f32);
-
-            for particle in &mut particles {
-                particle.x += particle.vx * dt;
-                particle.y += particle.vy * dt;
-                particle.hue = (particle.hue + 40.0 * dt) % 360.0;
-                particle.life = (particle.life + dt * 0.3) % 1.0;
-
-                let hw = w as f32 * 0.5 + particle.size;
-                let hh = h as f32 * 0.5 + particle.size;
-                if particle.x > hw {
-                    particle.x = -hw;
-                }
-                if particle.x < -hw {
-                    particle.x = hw;
-                }
-                if particle.y > hh {
-                    particle.y = -hh;
-                }
-                if particle.y < -hh {
-                    particle.y = hh;
-                }
-            }
-
-            for block in &mut blocks {
-                block.angle += block.spin * dt;
-            }
-
-            scene.reset();
-            scene.set_camera(camera);
-            scene.settings_mut().clear_color = Color::new(0.01, 0.01, 0.03, 1.0);
-
-            for star in &stars {
-                let twinkle = (time * star.twinkle_speed).sin() * 0.5 + 0.5;
-                let alpha = star.brightness * (0.3 + 0.7 * twinkle);
-                scene.add_sprite(
-                    Transform2D::from_xyz(star.x, star.y, 0.0),
-                    Sprite2D::new(2.0, 2.0).color(Color::new(0.8, 0.85, 1.0, alpha)),
-                );
-            }
-
-            for block in &blocks {
-                let pulse = 1.0 + 0.15 * (time * 2.0 + block.angle).sin();
-                let size = block.size * pulse;
-                scene.add_sprite(
-                    Transform2D::from_xyz(block.x, block.y, 1.0).with_rotation(block.angle),
-                    Sprite2D::new(size, size)
-                        .texture(checker.clone())
-                        .color(Color::new(1.0, 1.0, 1.0, 0.7)),
-                );
-            }
-
-            for particle in &particles {
-                let color = Color::hsl(particle.hue, 0.9, 0.65);
-                let alpha = 0.4 + 0.6 * (1.0 - particle.life);
-                scene.add_sprite(
-                    Transform2D::from_xyz(particle.x, particle.y, 2.0),
-                    Sprite2D::new(particle.size, particle.size)
-                        .texture(circle.clone())
-                        .color(Color::new(color.r, color.g, color.b, alpha)),
-                );
-            }
-
-            ctx.render_scene(&scene);
-        });
+    App::new(
+        AppConfig::new("SkyEngine — ECS Textured Demo", 960, 640),
+        world,
+    )
+    .run(TexturedDemo::new());
 }
 
 struct SimpleRng {
@@ -186,6 +230,7 @@ impl SimpleRng {
             state: seed.wrapping_add(0x9E3779B97F4A7C15),
         }
     }
+
     fn next_u64(&mut self) -> u64 {
         self.state = self
             .state
@@ -193,9 +238,11 @@ impl SimpleRng {
             .wrapping_add(1442695040888963407);
         self.state
     }
+
     fn next_f32(&mut self) -> f32 {
         (self.next_u64() >> 40) as f32 / (1u64 << 24) as f32
     }
+
     fn range(&mut self, min: f32, max: f32) -> f32 {
         min + self.next_f32() * (max - min)
     }

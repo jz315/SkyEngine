@@ -10,6 +10,7 @@ pub use super::core::{
     target::{RenderTarget, RenderTargetDescriptor},
     texture::{Texture, TextureCreateDesc, TextureError, TextureFileDesc, TextureUploadDesc},
 };
+pub use super::gpu_scene2d::GpuScene2D;
 pub use super::graph::{
     AliasingStats, BufferBuilder, BufferHandle, ColorOutput, CompiledPass, CopyOp, CopyPassSetup,
     DebugProfiler, DepthStencilOutput, ImportedTexture, LoadOp, PassFlags, PassHandle, PassSetup,
@@ -22,6 +23,10 @@ pub use super::passes::{
     composite_pass::CompositePass,
     light_pass::LightPass,
     mesh_pass::{MeshDraw, MeshPass, MeshPassError},
+};
+pub use super::pipeline::{
+    BloomNode, CompositeNode, LightNode, PipelineState2D, RenderFeature2D, RenderPipeline,
+    SpritePass, ToneMapNode, ViewportBlitNode, VignetteNode,
 };
 pub use super::postfx::{bloom::Bloom, tonemap::ToneMap, vignette::Vignette, PostFx};
 pub use super::resources::{

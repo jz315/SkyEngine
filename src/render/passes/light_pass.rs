@@ -14,10 +14,10 @@ const MAX_LIGHTS: usize = 4096;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct LightInstance {
-    pos_radius: [f32; 4],
-    color: [f32; 4],
-    falloff: [f32; 4],
+pub(crate) struct LightInstance {
+    pub(crate) pos_radius: [f32; 4],
+    pub(crate) color: [f32; 4],
+    pub(crate) falloff: [f32; 4],
 }
 
 #[repr(C)]

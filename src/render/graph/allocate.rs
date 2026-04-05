@@ -193,7 +193,27 @@ impl RenderGraph {
         }
 
         // ── Allocate non-aliased textures ───────────────────────────────
-        for (tex_idx, desc) in self.textures.iter().enumerate() {
+        for tex_idx in 0..self.textures.len() {
+            let (
+                desc_format,
+                desc_size,
+                desc_sample_count,
+                desc_mip_level_count,
+                desc_transient,
+                desc_imported,
+                desc_name,
+            ) = {
+                let desc = &self.textures[tex_idx];
+                (
+                    desc.format,
+                    desc.size,
+                    desc.sample_count,
+                    desc.mip_level_count,
+                    desc.transient,
+                    desc.imported.is_some(),
+                    desc.name.clone(),
+                )
+            };
             // Skip aliased textures (already handled above).
             if aliased_tex_indices.contains(&tex_idx) {
                 continue;
@@ -202,7 +222,7 @@ impl RenderGraph {
             let handle = TextureHandle(tex_idx, self.handle_token);
             if !self.resource_is_live(ResourceRef::Texture(handle)) {
                 if let Some(target) = self.physical_textures[tex_idx].take() {
-                    if desc.transient {
+                    if desc_transient {
                         self.transient_pool.release(
                             PoolKey {
                                 format: target.format(),
@@ -218,52 +238,61 @@ impl RenderGraph {
                 continue;
             }
 
-            if desc.imported.is_some() {
+            if desc_imported {
                 continue;
             }
 
-            let [w, h] = resolve_target_size(surface_size, desc.size);
+            let [w, h] = resolve_target_size(surface_size, desc_size);
             let key = PoolKey {
-                format: desc.format,
+                format: desc_format,
                 width: w,
                 height: h,
-                sample_count: desc.sample_count,
-                mip_level_count: desc.mip_level_count,
+                sample_count: desc_sample_count,
+                mip_level_count: desc_mip_level_count,
             };
 
-            if desc.transient {
+            if desc_transient {
                 if self.physical_textures[tex_idx].is_none() {
-                    let target = self.transient_pool.acquire(ctx, key, desc.name.clone());
+                    let target = self.transient_pool.acquire(ctx, key, desc_name.clone());
                     self.physical_textures[tex_idx] = Some(target);
                 }
             } else {
+                let descriptor = RenderTargetDescriptor::new(w, h, desc_format)
+                    .sample_count(desc_sample_count)
+                    .mip_level_count(desc_mip_level_count)
+                    .label(desc_name.clone());
+
+                if self.physical_textures[tex_idx].is_none() {
+                    if let Some(cached) = self.take_persistent_texture(desc_name.as_ref()) {
+                        self.physical_textures[tex_idx] = Some(cached);
+                    }
+                }
+
                 match self.physical_textures[tex_idx].as_mut() {
-                    Some(existing) => existing.resize_with(
-                        ctx,
-                        RenderTargetDescriptor::new(w, h, desc.format)
-                            .sample_count(desc.sample_count)
-                            .mip_level_count(desc.mip_level_count)
-                            .label(desc.name.clone()),
-                    ),
+                    Some(existing) => existing.resize_with(ctx, descriptor),
                     None => {
-                        self.physical_textures[tex_idx] = Some(RenderTarget::from_descriptor(
-                            ctx,
-                            RenderTargetDescriptor::new(w, h, desc.format)
-                                .sample_count(desc.sample_count)
-                                .mip_level_count(desc.mip_level_count)
-                                .label(desc.name.clone()),
-                        ));
+                        self.physical_textures[tex_idx] =
+                            Some(RenderTarget::from_descriptor(ctx, descriptor));
                     }
                 }
             }
         }
 
         // ── Allocate buffers ────────────────────────────────────────────
-        for (buf_idx, desc) in self.buffers.iter().enumerate() {
+        for buf_idx in 0..self.buffers.len() {
+            let (desc_size_bytes, desc_transient, desc_imported, desc_name) = {
+                let desc = &self.buffers[buf_idx];
+                (
+                    desc.size_bytes,
+                    desc.transient,
+                    desc.imported.is_some(),
+                    desc.name.clone(),
+                )
+            };
             let handle = BufferHandle(buf_idx, self.handle_token);
             if !self.resource_is_live(ResourceRef::Buffer(handle)) {
                 if let Some(buffer) = self.physical_buffers[buf_idx].take() {
-                    if desc.transient {
+                    if desc_transient {
                         self.transient_buffer_pool.release(
                             BufferPoolKey {
                                 size_bytes: buffer.size(),
@@ -276,32 +305,40 @@ impl RenderGraph {
                 continue;
             }
 
-            if desc.imported.is_some() {
+            if desc_imported {
                 continue;
             }
 
             let key = BufferPoolKey {
-                size_bytes: desc.size_bytes,
+                size_bytes: desc_size_bytes,
                 usage: self.buffer_usage_for(handle),
             };
 
-            if desc.transient {
+            if desc_transient {
                 if self.physical_buffers[buf_idx].is_none() {
                     let buffer = self
                         .transient_buffer_pool
-                        .acquire(ctx, key, desc.name.clone());
+                        .acquire(ctx, key, desc_name.clone());
                     self.physical_buffers[buf_idx] = Some(buffer);
                 }
             } else {
+                if self.physical_buffers[buf_idx].is_none() {
+                    if let Some(cached) = self.take_persistent_buffer(desc_name.as_ref()) {
+                        self.physical_buffers[buf_idx] = Some(cached);
+                    }
+                }
+
                 let needs_recreate = match self.physical_buffers[buf_idx].as_ref() {
                     None => true,
-                    Some(existing) => !existing.usage().contains(key.usage),
+                    Some(existing) => {
+                        existing.size() < desc_size_bytes || !existing.usage().contains(key.usage)
+                    }
                 };
                 if needs_recreate {
                     self.physical_buffers[buf_idx] =
                         Some(ctx.device().create_buffer(&wgpu::BufferDescriptor {
-                            label: Some(&desc.name),
-                            size: desc.size_bytes,
+                            label: Some(desc_name.as_ref()),
+                            size: desc_size_bytes,
                             usage: key.usage,
                             mapped_at_creation: false,
                         }));

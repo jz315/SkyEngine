@@ -37,6 +37,7 @@ impl std::error::Error for GpuInitError {}
 #[derive(Debug)]
 pub enum GpuError {
     SurfaceLost,
+    Timeout,
     OutOfMemory,
     Other(String),
 }
@@ -45,6 +46,7 @@ impl std::fmt::Display for GpuError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::SurfaceLost => write!(f, "Surface lost"),
+            Self::Timeout => write!(f, "Surface acquisition timed out"),
             Self::OutOfMemory => write!(f, "Out of GPU memory"),
             Self::Other(msg) => write!(f, "{msg}"),
         }
@@ -782,6 +784,7 @@ impl GpuContext {
                     surface.configure(&self.device, &self.surface_config);
                     return Err(GpuError::SurfaceLost);
                 }
+                Err(wgpu::SurfaceError::Timeout) => return Err(GpuError::Timeout),
                 Err(wgpu::SurfaceError::OutOfMemory) => return Err(GpuError::OutOfMemory),
                 Err(e) => return Err(GpuError::Other(e.to_string())),
             };
@@ -950,9 +953,11 @@ impl GpuContext {
     }
 }
 
-#[cfg(test)]
 impl GpuContext {
-    /// Create a headless GpuContext for unit tests (no window/surface).
+    /// Create a headless GpuContext with no window or presentation surface.
+    ///
+    /// This is useful for render tests, offline tools, and performance probes
+    /// that want to drive the full renderer without vsync or OS windowing.
     pub fn new_headless(
         device: wgpu::Device,
         queue: wgpu::Queue,

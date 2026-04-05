@@ -1736,6 +1736,95 @@ fn destroy_physical_resources_clears_all_slots() {
 }
 
 #[test]
+fn clear_frame_reuses_persistent_texture_allocation() {
+    let (device, queue) = create_test_device();
+    let ctx = crate::gpu::GpuContext::new_headless(
+        device,
+        queue,
+        wgpu::TextureFormat::Bgra8Unorm,
+        [64, 64],
+    );
+
+    let mut graph = RenderGraph::new();
+    let first = graph.create_texture(|b| {
+        b.name("history")
+            .persistent()
+            .size(TargetSize::Exact(32, 32))
+            .format(TextureFormat::Rgba8Unorm);
+    });
+    graph.add_render_pass("write_history", |s| {
+        s.write(first);
+    });
+    graph.compile().unwrap();
+    graph.allocate_physical_resources(&ctx);
+
+    let first_ptr = graph.physical_texture(first).texture() as *const wgpu::Texture;
+
+    graph.clear_frame();
+
+    let second = graph.create_texture(|b| {
+        b.name("history")
+            .persistent()
+            .size(TargetSize::Exact(32, 32))
+            .format(TextureFormat::Rgba8Unorm);
+    });
+    graph.add_render_pass("write_history_again", |s| {
+        s.write(second);
+    });
+    graph.compile().unwrap();
+    graph.allocate_physical_resources(&ctx);
+
+    let second_ptr = graph.physical_texture(second).texture() as *const wgpu::Texture;
+    assert_eq!(
+        first_ptr, second_ptr,
+        "clear_frame should preserve persistent texture allocations across frames"
+    );
+
+    graph.destroy_physical_resources();
+}
+
+#[test]
+fn persistent_buffer_recreated_when_size_grows() {
+    let (device, queue) = create_test_device();
+    let ctx = crate::gpu::GpuContext::new_headless(
+        device,
+        queue,
+        wgpu::TextureFormat::Bgra8Unorm,
+        [64, 64],
+    );
+
+    let mut graph = RenderGraph::new();
+    let first = graph.create_buffer(|b| {
+        b.name("persistent_buf").persistent().size(64);
+    });
+    graph.add_compute_pass("write_buf", |s| {
+        s.write_buffer(first);
+    });
+    graph.compile().unwrap();
+    graph.allocate_physical_resources(&ctx);
+    assert_eq!(graph.physical_buffer(first).size(), 64);
+
+    graph.clear_frame();
+
+    let second = graph.create_buffer(|b| {
+        b.name("persistent_buf").persistent().size(256);
+    });
+    graph.add_compute_pass("write_buf_again", |s| {
+        s.write_buffer(second);
+    });
+    graph.compile().unwrap();
+    graph.allocate_physical_resources(&ctx);
+
+    assert_eq!(
+        graph.physical_buffer(second).size(),
+        256,
+        "persistent buffers should be recreated when the requested size grows"
+    );
+
+    graph.destroy_physical_resources();
+}
+
+#[test]
 fn try_physical_texture_invalid_handle() {
     let graph = RenderGraph::new();
     let fake_handle = TextureHandle(999, 0);

@@ -7,7 +7,7 @@
 //! cargo run --example sprite_demo --features app --release
 //! ```
 
-use sky_engine::app::{App, AppConfig};
+use sky_engine::app::{App, AppConfig, AppState, FrameContext};
 use sky_engine::ecs::World;
 use sky_engine::render::{
     Camera2D, Color, PrimaryCamera2D, Renderer2DConfig, Sprite2D, Transform2D,
@@ -26,6 +26,61 @@ struct Spin(f32);
 
 #[derive(Clone, Copy)]
 struct Hue(f32);
+
+struct SpriteDemo {
+    fps_smooth: f32,
+    frame_count: u32,
+}
+
+impl AppState for SpriteDemo {
+    fn update(&mut self, ctx: &mut FrameContext) {
+        let dt = ctx.dt;
+        let [w, h] = ctx.surface_size();
+
+        let mut query = ctx
+            .world
+            .query::<(&mut Transform2D, &mut Sprite2D, &Velocity, &Spin, &mut Hue)>();
+        query.for_each(ctx.world, |(transform, sprite, velocity, spin, hue)| {
+            transform.x += velocity.x * dt;
+            transform.y += velocity.y * dt;
+            transform.rotation += spin.0 * dt;
+            hue.0 = (hue.0 + 20.0 * dt) % 360.0;
+            sprite.color = Color::hsl(hue.0, 0.8, 0.6);
+
+            let hw = w as f32 * 0.5 + sprite.width;
+            let hh = h as f32 * 0.5 + sprite.height;
+            if transform.x > hw {
+                transform.x = -hw;
+            }
+            if transform.x < -hw {
+                transform.x = hw;
+            }
+            if transform.y > hh {
+                transform.y = -hh;
+            }
+            if transform.y < -hh {
+                transform.y = hh;
+            }
+        });
+
+        ctx.render();
+
+        let fps_instant = if dt > 0.0 { 1.0 / dt } else { 0.0 };
+        self.fps_smooth = if self.fps_smooth == 0.0 {
+            fps_instant
+        } else {
+            self.fps_smooth * 0.95 + fps_instant * 0.05
+        };
+        self.frame_count += 1;
+        if self.frame_count % 30 == 0 {
+            let stats = ctx.render_stats();
+            ctx.set_title(&format!(
+                "SkyEngine — ECS Sprite Demo | {:.0} FPS | {} sprites",
+                self.fps_smooth, stats.sprite_count
+            ));
+        }
+    }
+}
 
 fn main() {
     let mut rng = SimpleRng::new(42);
@@ -49,41 +104,14 @@ fn main() {
         ));
     }
 
-    App::new(AppConfig::new("SkyEngine — ECS Sprite Demo", 960, 640), world)
-        .run(|ctx| {
-            ctx.world.tick();
-            let dt = ctx.dt;
-
-            let size = ctx.surface_size();
-            let [w, h] = size;
-            let mut query =
-                ctx.world
-                    .query::<(&mut Transform2D, &mut Sprite2D, &Velocity, &Spin, &mut Hue)>();
-            query.for_each(ctx.world, |(transform, sprite, velocity, spin, hue)| {
-                transform.x += velocity.x * dt;
-                transform.y += velocity.y * dt;
-                transform.rotation += spin.0 * dt;
-                hue.0 = (hue.0 + 20.0 * dt) % 360.0;
-                sprite.color = Color::hsl(hue.0, 0.8, 0.6);
-
-                let hw = w as f32 * 0.5 + sprite.width;
-                let hh = h as f32 * 0.5 + sprite.height;
-                if transform.x > hw {
-                    transform.x = -hw;
-                }
-                if transform.x < -hw {
-                    transform.x = hw;
-                }
-                if transform.y > hh {
-                    transform.y = -hh;
-                }
-                if transform.y < -hh {
-                    transform.y = hh;
-                }
-            });
-
-            ctx.render();
-        });
+    App::new(
+        AppConfig::new("SkyEngine — ECS Sprite Demo", 960, 640),
+        world,
+    )
+    .run(SpriteDemo {
+        fps_smooth: 0.0,
+        frame_count: 0,
+    });
 }
 
 struct SimpleRng {

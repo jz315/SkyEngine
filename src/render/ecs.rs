@@ -64,6 +64,101 @@ impl Default for Transform2D {
     }
 }
 
+/// Pixel-space viewport rectangle on the presentation surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViewportRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl ViewportRect {
+    #[inline]
+    pub const fn new(x: u32, y: u32, width: u32, height: u32) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[inline]
+    pub const fn full_surface(width: u32, height: u32) -> Self {
+        Self::new(0, 0, width, height)
+    }
+
+    #[inline]
+    pub fn from_surface_size(surface_size: [u32; 2]) -> Self {
+        Self::full_surface(surface_size[0], surface_size[1])
+    }
+
+    #[inline]
+    pub fn clamp_to_surface(self, surface_size: [u32; 2]) -> Self {
+        let surface_width = surface_size[0];
+        let surface_height = surface_size[1];
+        let x = self.x.min(surface_width);
+        let y = self.y.min(surface_height);
+        let width = self.width.min(surface_width.saturating_sub(x)).max(1);
+        let height = self.height.min(surface_height.saturating_sub(y)).max(1);
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[inline]
+    pub fn size(self) -> [u32; 2] {
+        [self.width.max(1), self.height.max(1)]
+    }
+}
+
+impl Default for ViewportRect {
+    fn default() -> Self {
+        Self::new(0, 0, 1, 1)
+    }
+}
+
+/// ECS/manual render-view descriptor for multi-camera rendering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RenderView2D {
+    pub order: i32,
+    pub viewport: ViewportRect,
+    pub layer_mask: u32,
+}
+
+impl RenderView2D {
+    #[inline]
+    pub const fn new(viewport: ViewportRect) -> Self {
+        Self {
+            order: 0,
+            viewport,
+            layer_mask: u32::MAX,
+        }
+    }
+
+    #[inline]
+    pub const fn order(mut self, order: i32) -> Self {
+        self.order = order;
+        self
+    }
+
+    #[inline]
+    pub const fn layer_mask(mut self, layer_mask: u32) -> Self {
+        self.layer_mask = layer_mask;
+        self
+    }
+}
+
+impl Default for RenderView2D {
+    fn default() -> Self {
+        Self::new(ViewportRect::default())
+    }
+}
+
 /// High-level sprite component consumed by [`crate::render::Renderer2D`].
 #[derive(Clone)]
 pub struct Sprite2D {
@@ -73,6 +168,7 @@ pub struct Sprite2D {
     pub uv: [f32; 4],
     pub texture: Option<Texture>,
     pub visible: bool,
+    pub layer_mask: u32,
 }
 
 impl Sprite2D {
@@ -85,6 +181,7 @@ impl Sprite2D {
             uv: [0.0, 0.0, 1.0, 1.0],
             texture: None,
             visible: true,
+            layer_mask: u32::MAX,
         }
     }
 
@@ -117,6 +214,12 @@ impl Sprite2D {
         self.visible = visible;
         self
     }
+
+    #[inline]
+    pub fn layer_mask(mut self, layer_mask: u32) -> Self {
+        self.layer_mask = layer_mask;
+        self
+    }
 }
 
 impl Default for Sprite2D {
@@ -134,6 +237,7 @@ impl std::fmt::Debug for Sprite2D {
             .field("uv", &self.uv)
             .field("textured", &self.texture.is_some())
             .field("visible", &self.visible)
+            .field("layer_mask", &self.layer_mask)
             .finish()
     }
 }
@@ -147,6 +251,7 @@ pub struct PointLight2D {
     pub temperature: f32,
     pub falloff: f32,
     pub visible: bool,
+    pub layer_mask: u32,
 }
 
 impl PointLight2D {
@@ -159,6 +264,7 @@ impl PointLight2D {
             temperature: 6500.0,
             falloff: 2.0,
             visible: true,
+            layer_mask: u32::MAX,
         }
     }
 
@@ -189,6 +295,12 @@ impl PointLight2D {
     #[inline]
     pub const fn visible(mut self, visible: bool) -> Self {
         self.visible = visible;
+        self
+    }
+
+    #[inline]
+    pub const fn layer_mask(mut self, layer_mask: u32) -> Self {
+        self.layer_mask = layer_mask;
         self
     }
 }
