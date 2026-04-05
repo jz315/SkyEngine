@@ -237,7 +237,7 @@ impl BlitToSurfacePass {
 }
 
 /// High-level ECS-first 2D renderer.
-pub struct Renderer2D {
+pub(crate) struct Renderer2D {
     config: Renderer2DConfig,
     sprite_batch: SpriteBatch,
     lit: Option<LitPipeline>,
@@ -251,7 +251,7 @@ pub struct Renderer2D {
 }
 
 impl Renderer2D {
-    pub fn new(gpu: &GpuContext, config: Renderer2DConfig) -> Self {
+    pub(crate) fn new(gpu: &GpuContext, config: Renderer2DConfig) -> Self {
         let lit = config.uses_hdr().then(|| LitPipeline::new(gpu));
         Self {
             config,
@@ -267,7 +267,7 @@ impl Renderer2D {
         }
     }
 
-    pub fn resize(&mut self, gpu: &GpuContext, width: u32, height: u32) {
+    pub(crate) fn resize(&mut self, gpu: &GpuContext, width: u32, height: u32) {
         if let Some(lit) = self.lit.as_mut() {
             lit.resize(gpu, width, height);
         }
@@ -276,23 +276,23 @@ impl Renderer2D {
         }
     }
 
-    pub fn surface_lost(&mut self) {
+    pub(crate) fn surface_lost(&mut self) {
         self.headless_output = None;
     }
 
-    pub fn render_world(&mut self, gpu: &mut GpuContext, world: &World) {
+    pub(crate) fn render_world(&mut self, gpu: &mut GpuContext, world: &World) {
         let mut scene = std::mem::take(&mut self.scratch_scene);
         self.extract_world_to_scene(&mut scene, world, gpu.surface_size());
         self.render_scene_internal(gpu, &scene);
         self.scratch_scene = scene;
     }
 
-    pub fn render_scene(&mut self, gpu: &mut GpuContext, scene: &Scene2D) {
+    pub(crate) fn render_scene(&mut self, gpu: &mut GpuContext, scene: &Scene2D) {
         self.render_scene_internal(gpu, scene);
     }
 
     #[inline]
-    pub fn stats(&self) -> RendererStats {
+    pub(crate) fn stats(&self) -> RendererStats {
         self.last_stats
     }
 

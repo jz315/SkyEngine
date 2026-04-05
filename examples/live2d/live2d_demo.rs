@@ -8,9 +8,8 @@
 //! cargo run --example live2d_demo --features live2d --release -- assets/Haru/Haru.model3.json
 //! ```
 
-use sky_engine::app::{App, AppConfig, FrameContext, KeyCode};
+use sky_engine::app::{App, AppConfig, KeyCode};
 use sky_engine::ecs::World;
-use sky_engine::gpu::GpuContext;
 use sky_engine::render::expert::live2d::clipping::ClippingManager;
 use sky_engine::render::expert::live2d::{Live2DModelResource, Live2DRenderer};
 
@@ -41,33 +40,30 @@ fn main() {
     let mut fps_display = 0.0_f32;
     let base_title = config.title.clone();
 
-    App::run(
-        config,
-        // Setup
-        move |_world: &mut World, _gpu: &mut GpuContext| {
-            eprintln!("[Live2D] GPU ready, model will load on first frame");
-        },
-        // Frame
-        move |ctx: FrameContext<'_>| {
-            ctx.world.tick();
-            let dt = ctx.world.time.delta;
-            let gpu = ctx.gpu;
+    let world = World::new();
 
-            // FPS counter — update title every 0.5s
+    App::new(config, world)
+        .run(move |ctx| {
+            ctx.world.tick();
+            let dt = ctx.dt;
+
+            // FPS counter
             fps_accum += dt;
             fps_frames += 1;
             if fps_accum >= 0.5 {
                 fps_display = fps_frames as f32 / fps_accum;
                 fps_accum = 0.0;
                 fps_frames = 0;
-                ctx.window
-                    .set_title(&format!("{} | {:.0} FPS", base_title, fps_display));
+                ctx.set_title(&format!("{} | {:.0} FPS", base_title, fps_display));
             }
+
+            // Read input before gpu borrow
+            let expression_index = pressed_expression_index(ctx.input);
 
             // Lazy init (need GpuContext for texture uploads)
             if !initialized {
                 eprintln!("[Live2D] Loading model: {}", model_path);
-                match Live2DModelResource::load(gpu, &model_path) {
+                match Live2DModelResource::load(ctx.gpu(), &model_path) {
                     Ok(res) => {
                         eprintln!(
                             "[Live2D] Loaded: {} drawables, {} textures, motion {}, blink {}, expression {}, breath {}, physics {}, pose {}, canvas {:?}",
@@ -106,7 +102,7 @@ fn main() {
                         }
 
                         resource = Some(res);
-                        renderer = Some(Live2DRenderer::new(gpu));
+                        renderer = Some(Live2DRenderer::new(ctx.gpu()));
                     }
                     Err(e) => {
                         eprintln!("[Live2D] Load failed: {e}");
@@ -117,8 +113,8 @@ fn main() {
             }
 
             if let (Some(ref mut res), Some(ref mut rend)) = (&mut resource, &mut renderer) {
-                if let Some(expression_index) = pressed_expression_index(ctx.input) {
-                    if let Some(name) = expression_names.get(expression_index) {
+                if let Some(idx) = expression_index {
+                    if let Some(name) = expression_names.get(idx) {
                         if res.set_expression(name) {
                             eprintln!("[Live2D] Expression -> {name}");
                         }
@@ -127,6 +123,8 @@ fn main() {
 
                 // Update runtime state (pose -> model)
                 res.update(dt);
+
+                let gpu = ctx.gpu();
 
                 // Clear surface
                 gpu.with_surface_pass(
@@ -140,11 +138,10 @@ fn main() {
                     |_| {},
                 );
 
-                // Draw model (projection is computed internally by the renderer)
+                // Draw model
                 rend.draw_to_surface(gpu, &res.model, &res.textures, &mut clipping);
             }
-        },
-    );
+        });
 }
 
 fn pressed_expression_index(input: &sky_engine::app::Input) -> Option<usize> {

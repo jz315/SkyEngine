@@ -8,8 +8,9 @@
 //! ```
 
 use sky_engine::app::{App, AppConfig};
+use sky_engine::ecs::World;
 use sky_engine::render::{
-    Camera2D, Color, PrimaryCamera2D, Renderer2D, Renderer2DConfig, Sprite2D, Transform2D,
+    Camera2D, Color, PrimaryCamera2D, Renderer2DConfig, Sprite2D, Transform2D,
 };
 
 const NUM_SPRITES: usize = 5000;
@@ -28,37 +29,33 @@ struct Hue(f32);
 
 fn main() {
     let mut rng = SimpleRng::new(42);
-    let mut renderer: Option<Renderer2D> = None;
 
-    App::run(
-        AppConfig::new("SkyEngine — ECS Sprite Demo", 960, 640),
-        move |world, _gpu| {
-            world.spawn((Camera2D::new(960.0, 640.0), PrimaryCamera2D));
+    let mut world = World::new();
+    world.insert_resource(Renderer2DConfig::unlit());
+    world.spawn((Camera2D::new(960.0, 640.0), PrimaryCamera2D));
 
-            for _ in 0..NUM_SPRITES {
-                let size = rng.range(4.0, 20.0);
-                let hue = rng.range(0.0, 360.0);
-                world.spawn((
-                    Transform2D::new(rng.range(-480.0, 480.0), rng.range(-320.0, 320.0)),
-                    Sprite2D::new(size, size).color(Color::hsl(hue, 0.8, 0.6)),
-                    Velocity {
-                        x: rng.range(-60.0, 60.0),
-                        y: rng.range(-60.0, 60.0),
-                    },
-                    Spin(rng.range(-3.0, 3.0)),
-                    Hue(hue),
-                ));
-            }
-        },
-        move |ctx| {
-            if renderer.is_none() {
-                renderer = Some(Renderer2D::new(ctx.gpu, Renderer2DConfig::unlit()));
-            }
-            let renderer = renderer.as_mut().expect("renderer should exist");
+    for _ in 0..NUM_SPRITES {
+        let size = rng.range(4.0, 20.0);
+        let hue = rng.range(0.0, 360.0);
+        world.spawn((
+            Transform2D::new(rng.range(-480.0, 480.0), rng.range(-320.0, 320.0)),
+            Sprite2D::new(size, size).color(Color::hsl(hue, 0.8, 0.6)),
+            Velocity {
+                x: rng.range(-60.0, 60.0),
+                y: rng.range(-60.0, 60.0),
+            },
+            Spin(rng.range(-3.0, 3.0)),
+            Hue(hue),
+        ));
+    }
+
+    App::new(AppConfig::new("SkyEngine — ECS Sprite Demo", 960, 640), world)
+        .run(|ctx| {
             ctx.world.tick();
-            let dt = ctx.world.time.delta;
+            let dt = ctx.dt;
 
-            let [w, h] = ctx.gpu.surface_size();
+            let size = ctx.surface_size();
+            let [w, h] = size;
             let mut query =
                 ctx.world
                     .query::<(&mut Transform2D, &mut Sprite2D, &Velocity, &Spin, &mut Hue)>();
@@ -85,9 +82,8 @@ fn main() {
                 }
             });
 
-            renderer.render_world(ctx.gpu, ctx.world);
-        },
-    );
+            ctx.render();
+        });
 }
 
 struct SimpleRng {

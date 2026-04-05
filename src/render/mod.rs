@@ -7,9 +7,9 @@ pub(crate) mod graph;
 pub(crate) mod light;
 pub(crate) mod passes;
 pub(crate) mod postfx;
-mod renderer2d;
+pub(crate) mod renderer2d;
 pub(crate) mod resources;
-mod scene2d;
+pub(crate) mod scene2d;
 
 #[cfg(feature = "live2d")]
 pub(crate) mod live2d;
@@ -20,7 +20,7 @@ pub use ecs::{
     Transform2D, VignetteSettings,
 };
 pub use passes::batch::Sprite;
-pub use renderer2d::{Renderer2D, Renderer2DConfig, RendererStats};
+pub use renderer2d::{Renderer2DConfig, RendererStats};
 pub use scene2d::Scene2D;
 
 #[cfg(test)]

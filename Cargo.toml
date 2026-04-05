@@ -30,6 +30,11 @@ image = { version = "0.25", default-features = false, features = ["png"], option
 serde_json = { version = "1", optional = true }
 cubism-sys = { package = "live2d-cubism-core-sys", version = "0.1", optional = true }
 
+# egui immediate-mode UI (feature-gated)
+egui = { version = "0.31", optional = true }
+egui-wgpu = { version = "0.31", optional = true }
+egui-winit = { version = "0.31", optional = true }
+
 # Existing optionals
 minifb = { version = "0.28.0", optional = true }
 rand = { version = "0.8", optional = true }
@@ -117,8 +122,13 @@ required-features = ["app"]
 
 [[example]]
 name = "live2d_demo"
-path = "examples/render/live2d_demo.rs"
+path = "examples/live2d/live2d_demo.rs"
 required-features = ["live2d"]
+
+[[example]]
+name = "egui_demo"
+path = "examples/render/egui_demo.rs"
+required-features = ["egui"]
 
 # ── Legacy CPU-rendered (minifb, --features demo-legacy) ─────────────────────
 
@@ -163,6 +173,8 @@ asset = ["dep:image"]
 demo = ["app", "asset", "dep:rand"]
 # Live2D Cubism SDK integration
 live2d = ["app", "asset", "dep:cubism-sys", "dep:serde_json"]
+# egui immediate-mode UI overlay
+egui = ["app", "dep:egui", "dep:egui-wgpu", "dep:egui-winit"]
 # Legacy CPU-rendered demos (existing minifb demos)
 demo-legacy = ["dep:minifb", "dep:rand"]
 # Comparison benchmarks

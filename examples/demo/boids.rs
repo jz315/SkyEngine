@@ -16,7 +16,7 @@
 
 use std::f32::consts::TAU;
 
-use sky_engine::app::{App, AppConfig, AppLifecycle, FrameContext, KeyCode};
+use sky_engine::app::{App, AppConfig, KeyCode};
 use sky_engine::ecs::{EntityId, PreparedQuery, System, World};
 use sky_engine::gpu::GpuContext;
 use sky_engine::render::{Camera2D, Color, Sprite, Texture};
@@ -691,19 +691,12 @@ struct GraphHandles {
 // ─── The application lifecycle ──────────────────────────────────────────────
 
 struct SpiritWispsApp {
-    // Rendering (None until GPU is ready)
     render: Option<RenderState>,
     graph: Option<RenderGraph>,
     handles: Option<GraphHandles>,
-
-    // Visual effects (not ECS, owned directly)
     trails: TrailHistory,
     dust: Vec<DustMote>,
-
-    // Scratch buffers (reused per frame)
     lights: Vec<Light2D>,
-
-    // FPS tracking
     fps_smooth: f32,
     frame_count: u32,
 }
@@ -736,34 +729,23 @@ impl SpiritWispsApp {
     }
 }
 
-impl AppLifecycle for SpiritWispsApp {
-    fn setup(&mut self, _world: &mut World, gpu: &mut GpuContext) {
-        // Build render graph
+impl SpiritWispsApp {
+    fn setup(&mut self, gpu: &GpuContext) {
         let mut graph = RenderGraph::new();
         let scene_rt = graph.create_texture(|b| {
-            b.name("scene_rt")
-                .size(TargetSize::Surface)
-                .format(wgpu::TextureFormat::Rgba16Float);
+            b.name("scene_rt").size(TargetSize::Surface).format(wgpu::TextureFormat::Rgba16Float);
         });
         let normal_rt = graph.create_texture(|b| {
-            b.name("normal_rt")
-                .size(TargetSize::Surface)
-                .format(wgpu::TextureFormat::Rgba8Unorm);
+            b.name("normal_rt").size(TargetSize::Surface).format(wgpu::TextureFormat::Rgba8Unorm);
         });
         let light_rt = graph.create_texture(|b| {
-            b.name("light_rt")
-                .size(TargetSize::Surface)
-                .format(wgpu::TextureFormat::Rgba16Float);
+            b.name("light_rt").size(TargetSize::Surface).format(wgpu::TextureFormat::Rgba16Float);
         });
         let hdr_rt = graph.create_texture(|b| {
-            b.name("hdr_rt")
-                .size(TargetSize::Surface)
-                .format(wgpu::TextureFormat::Rgba16Float);
+            b.name("hdr_rt").size(TargetSize::Surface).format(wgpu::TextureFormat::Rgba16Float);
         });
         let bloom_rt = graph.create_texture(|b| {
-            b.name("bloom_rt")
-                .size(TargetSize::Surface)
-                .format(wgpu::TextureFormat::Rgba16Float);
+            b.name("bloom_rt").size(TargetSize::Surface).format(wgpu::TextureFormat::Rgba16Float);
         });
         let scene_pass = graph.add_render_pass("scene_batch", |s| {
             s.write_color_cleared(0, scene_rt, BG_COLOR.to_array());
@@ -772,326 +754,32 @@ impl AppLifecycle for SpiritWispsApp {
             s.write_color_cleared(0, normal_rt, [0.5, 0.5, 1.0, 1.0]);
         });
         let lighting_pass = graph.add_render_pass("lighting", |s| {
-            s.read(normal_rt);
-            s.write(light_rt);
+            s.read(normal_rt); s.write(light_rt);
         });
         let composite_pass = graph.add_render_pass("composite", |s| {
-            s.read(scene_rt);
-            s.read(light_rt);
-            s.write(hdr_rt);
+            s.read(scene_rt); s.read(light_rt); s.write(hdr_rt);
         });
         let bloom_pass = graph.add_render_pass("bloom", |s| {
-            s.read(hdr_rt);
-            s.write(bloom_rt);
+            s.read(hdr_rt); s.write(bloom_rt);
         });
         let tonemap_pass = graph.add_render_pass("tonemap", |s| {
-            s.read(bloom_rt);
-            s.write_surface();
+            s.read(bloom_rt); s.write_surface();
         });
 
         self.handles = Some(GraphHandles {
-            scene_rt,
-            normal_rt,
-            light_rt,
-            hdr_rt,
-            bloom_rt,
-            scene_pass,
-            normal_pass,
-            lighting_pass,
-            composite_pass,
-            bloom_pass,
-            tonemap_pass,
+            scene_rt, normal_rt, light_rt, hdr_rt, bloom_rt,
+            scene_pass, normal_pass, lighting_pass, composite_pass, bloom_pass, tonemap_pass,
         });
         self.graph = Some(graph);
         self.render = Some(RenderState::new(gpu));
-
-        eprintln!(
-            "[spirit_wisps] {} wisps | Mouse=predator  Click=attractor  Space=scatter  Escape=quit",
-            NUM_BOIDS
-        );
     }
 
-    fn frame(&mut self, ctx: FrameContext<'_>) {
-        let [win_w, win_h] = ctx.gpu.surface_size();
-        let mouse = ctx.input.mouse_position();
-        let mouse_sim_x = (mouse[0] / win_w as f32) * W;
-        let mouse_sim_y = (mouse[1] / win_h as f32) * H;
-        let mouse_valid = mouse[0] >= 0.0 && mouse[0] < win_w as f32;
-        let mouse_render_y = H - mouse_sim_y;
-
-        // ── ECS tick (using the runner's world directly — no Rc<RefCell<>>) ──
-        {
-            let input = ctx.world.get_resource_mut::<InputState>().unwrap();
-            input.mouse_x = mouse_sim_x;
-            input.mouse_y = mouse_sim_y;
-            input.mouse_valid = mouse_valid;
-            input.click = ctx.input.mouse_left();
-            input.panic = ctx.input.key_held(KeyCode::Space);
-        }
-        ctx.world.tick();
-        let dt = ctx.world.time.delta.min(0.05);
-
-        // ── Read ECS data ───────────────────────────────────────────────
-        let snapshot = ctx.world.get_resource::<BoidSnapshot>().unwrap();
-        let attractors = ctx.world.get_resource::<AttractorCache>().unwrap();
-
-        self.trails.sample(&snapshot.positions, dt);
-
-        // ── Update dust ─────────────────────────────────────────────────
-        for mote in &mut self.dust {
-            mote.x += mote.vx * dt;
-            mote.y += mote.vy * dt;
-            mote.twinkle_phase += mote.twinkle_speed * dt;
-            if mote.x < 0.0 {
-                mote.x += W;
-            }
-            if mote.x > W {
-                mote.x -= W;
-            }
-            if mote.y < 0.0 {
-                mote.y += H;
-            }
-            if mote.y > H {
-                mote.y -= H;
-            }
-        }
-
-        // ── Build sprites & lights ──────────────────────────────────────
-        let rs = self.render.as_mut().unwrap();
-        let h = &self.handles.as_ref().unwrap();
-        rs.camera.position = [W * 0.5, H * 0.5];        self.lights.clear();
-
-        // Dust
-        rs.scene_batch.set_texture(&rs.dot_tex);
-        for mote in &self.dust {
-            let tw = 0.4 + 0.6 * (mote.twinkle_phase.sin() * 0.5 + 0.5);
-            let b = mote.brightness * tw;
-            rs.scene_batch.draw(
-                Sprite::new(mote.x, H - mote.y, mote.size, mote.size).color(Color::new(
-                    b * 0.9,
-                    b * 0.85,
-                    b * 0.7,
-                    b * 0.6,
-                )),
-            );
-        }
-
-        // Trails
-        rs.scene_batch.set_texture(&rs.soft_glow_tex);
-        for i in 0..snapshot.positions.len() {
-            let speed = length(snapshot.velocities[i].x, snapshot.velocities[i].y);
-            let glow = (speed / MAX_SPEED).clamp(0.2, 1.0);
-            for (tpos, age) in self.trails.iter_trail(i) {
-                let fade_sq = age * age;
-                let sz = BOID_SIZE * (0.5 + age * 1.5) * glow;
-                let alpha = fade_sq * 0.35 * glow;
-                if alpha < 0.01 {
-                    continue;
-                }
-                let c = lerp_color(TRAIL_COLD, TRAIL_WARM, age);
-                let m = 0.8 + glow;
-                rs.scene_batch
-                    .draw(Sprite::new(tpos[0], H - tpos[1], sz, sz).color(Color::new(
-                        c.r * m,
-                        c.g * m,
-                        c.b * m,
-                        alpha,
-                    )));
-            }
-        }
-
-        // Boids — triple layer
-        for (pos, vel) in snapshot.positions.iter().zip(snapshot.velocities.iter()) {
-            let speed = length(vel.x, vel.y);
-            let glow = (speed / MAX_SPEED).clamp(0.3, 1.0);
-            let ry = H - pos.y;
-
-            // Outer glow
-            rs.scene_batch.set_texture(&rs.soft_glow_tex);
-            let gs = BOID_SIZE * 5.0 * (0.7 + glow * 0.3);
-            rs.scene_batch
-                .draw(Sprite::new(pos.x, ry, gs, gs).color(Color::new(
-                    SPIRIT_GLOW.r * 0.8,
-                    SPIRIT_GLOW.g * 0.8,
-                    SPIRIT_GLOW.b * 0.8,
-                    0.06 + glow * 0.04,
-                )));
-
-            // Core
-            let cs = BOID_SIZE * 1.4;
-            rs.scene_batch.set_texture(&rs.circle_tex);
-            rs.scene_batch
-                .draw(Sprite::new(pos.x, ry, cs, cs).color(Color::new(
-                    SPIRIT_CORE.r * (1.2 + glow * 0.5),
-                    SPIRIT_CORE.g * (1.2 + glow * 0.5),
-                    SPIRIT_CORE.b * (1.0 + glow * 0.3),
-                    0.92,
-                )));
-            rs.normal_batch.set_texture(&rs.normal_tex);
-            rs.normal_batch
-                .draw(Sprite::new(pos.x, ry, cs, cs).color(Color::WHITE));
-
-            // Hot centre
-            let hs = BOID_SIZE * 0.45;
-            rs.scene_batch.set_texture(&rs.dot_tex);
-            rs.scene_batch
-                .draw(Sprite::new(pos.x, ry, hs, hs).color(Color::new(
-                    3.0 * glow,
-                    2.8 * glow,
-                    2.2 * glow,
-                    0.9,
-                )));
-
-            // Light
-            self.lights.push(
-                Light2D::new(pos.x, ry, 50.0 + speed * 0.15)
-                    .intensity(0.3 + glow * 0.5)
-                    .falloff(2.2)
-                    .color(Color::new(
-                        SPIRIT_GLOW.r,
-                        SPIRIT_GLOW.g,
-                        SPIRIT_GLOW.b * 0.7,
-                        1.0,
-                    )),
-            );
-        }
-
-        // Attractors
-        rs.scene_batch.set_texture(&rs.soft_glow_tex);
-        for att in &attractors.items {
-            let alpha = (att.life / ATTRACTOR_LIFETIME).clamp(0.0, 1.0);
-            let pulse = (att.life * 4.0).sin() * 0.3 + 0.7;
-            let sz = ATTRACTOR_RANGE * 0.4 * alpha;
-            let ay = H - att.y;
-            rs.scene_batch
-                .draw(Sprite::new(att.x, ay, sz, sz).color(Color::new(
-                    0.3 * pulse,
-                    0.9 * pulse,
-                    0.7 * pulse,
-                    alpha * 0.4,
-                )));
-            self.lights.push(
-                Light2D::new(att.x, ay, ATTRACTOR_RANGE * 0.7 * alpha)
-                    .intensity(1.5 * alpha * pulse)
-                    .falloff(1.8)
-                    .color(Color::rgb(0.3, 0.9, 0.6)),
-            );
-        }
-
-        // Mouse predator
-        if mouse_valid {
-            let ring = PREDATOR_RANGE * 0.7;
-            rs.scene_batch.draw(
-                Sprite::new(mouse_sim_x, mouse_render_y, ring, ring)
-                    .color(Color::new(1.0, 0.4, 0.15, 0.08)),
-            );
-            self.lights.push(
-                Light2D::new(mouse_sim_x, mouse_render_y, PREDATOR_RANGE * 1.2)
-                    .intensity(1.8)
-                    .falloff(1.5)
-                    .color(Color::rgb(1.0, 0.4, 0.15)),
-            );
-        }
-
-        // Ambient
-        self.lights.push(
-            Light2D::new(W * 0.5, H * 0.5, 1400.0)
-                .intensity(0.30)
-                .falloff(3.5)
-                .color(AMBIENT_COLOR),
-        );
-        for &(cx, cy) in &[(0.0, 0.0), (W, 0.0), (0.0, H), (W, H)] {
-            self.lights.push(
-                Light2D::new(cx, cy, 700.0)
-                    .intensity(0.18)
-                    .falloff(2.8)
-                    .color(Color::rgb(0.08, 0.06, 0.15)),
-            );
-        }
-
-        let camera = rs.camera;
-        let lights = &self.lights;
-
-        // ── Execute render graph ────────────────────────────────────────
-        let graph = self.graph.as_mut().unwrap();
-        let result = graph.try_execute(ctx.gpu, |pass, gpu, textures| {
-            let rs = self.render.as_mut().unwrap();
-            if pass.handle == h.scene_pass {
-                let target = textures.render_target(h.scene_rt).expect("scene_rt");
-                rs.scene_batch
-                    .flush_to_target(gpu, &camera, target, Some(BG_COLOR));
-            } else if pass.handle == h.normal_pass {
-                let target = textures.render_target(h.normal_rt).expect("normal_rt");
-                rs.normal_batch
-                    .flush_to_target(gpu, &camera, target, Some(Color::new(0.5, 0.5, 1.0, 1.0)));
-            } else if pass.handle == h.lighting_pass {
-                let normal = textures.render_target(h.normal_rt).expect("normal_rt");
-                let output = textures.render_target(h.light_rt).expect("light_rt");
-                rs.light_pass.render(
-                    gpu,
-                    lights,
-                    Some(normal),
-                    output,
-                    &camera,
-                    [0.04, 0.03, 0.08, 1.0],
-                );
-            } else if pass.handle == h.composite_pass {
-                let scene = textures.render_target(h.scene_rt).expect("scene_rt");
-                let lightmap = textures.render_target(h.light_rt).expect("light_rt");
-                let output = textures.render_target(h.hdr_rt).expect("hdr_rt");
-                rs.composite_pass
-                    .render_to_target(gpu, scene, lightmap, output);
-            } else if pass.handle == h.bloom_pass {
-                let input = textures.render_target(h.hdr_rt).expect("hdr_rt");
-                let output = textures.render_target(h.bloom_rt).expect("bloom_rt");
-                rs.bloom.apply(gpu, input, output);
-            } else if pass.handle == h.tonemap_pass {
-                let input = textures.render_target(h.bloom_rt).expect("bloom_rt");
-                rs.tonemap.apply_to_surface(gpu, input);
-            }
-            Ok(())
-        });
-        if let Err(err) = result {
-            eprintln!("[spirit_wisps] render error: {err}");
-        }
-
-        // ── FPS display ─────────────────────────────────────────────
-        let fps_instant = if dt > 0.0 { 1.0 / dt } else { 0.0 };
-        self.fps_smooth = if self.fps_smooth == 0.0 {
-            fps_instant
-        } else {
-            self.fps_smooth * 0.95 + fps_instant * 0.05
-        };
-        self.frame_count += 1;
-        if self.frame_count % 30 == 0 {
-            ctx.window.set_title(&format!(
-                "SkyEngine — Spirit Wisps | {:.0} FPS | {} sprites | {} lights",
-                self.fps_smooth,
-                snapshot.positions.len() * 3
-                    + self
-                        .trails
-                        .counts
-                        .iter()
-                        .map(|c| *c as usize)
-                        .sum::<usize>()
-                    + self.dust.len(),
-                self.lights.len(),
-            ));
-        }
-    }
-
-    fn resize(&mut self, _world: &mut World, gpu: &mut GpuContext, _old: [u32; 2], new: [u32; 2]) {
+    fn resize(&mut self, gpu: &GpuContext, new: [u32; 2]) {
         if let Some(g) = &mut self.graph {
             g.destroy_physical_resources();
         }
         if let Some(r) = &mut self.render {
             r.resize(gpu, new[0], new[1]);
-        }
-    }
-
-    fn shutdown(&mut self, _world: &mut World, _gpu: &mut GpuContext) {
-        if let Some(g) = &mut self.graph {
-            g.destroy_physical_resources();
         }
     }
 }
@@ -1101,7 +789,6 @@ impl AppLifecycle for SpiritWispsApp {
 fn main() {
     let mut rng = SimpleRng::new(42);
 
-    // ── ECS setup (before the event loop starts) ────────────────────────
     let mut world = World::new();
     world.insert_resource(InputState::default());
     world.insert_resource(BoidSnapshot::default());
@@ -1111,14 +798,8 @@ fn main() {
         let angle = rng.range(0.0, TAU);
         let speed = rng.range(MIN_SPEED, MAX_SPEED);
         world.spawn((
-            Pos {
-                x: rng.range(0.0, W),
-                y: rng.range(0.0, H),
-            },
-            Vel {
-                x: angle.cos() * speed,
-                y: angle.sin() * speed,
-            },
+            Pos { x: rng.range(0.0, W), y: rng.range(0.0, H) },
+            Vel { x: angle.cos() * speed, y: angle.sin() * speed },
             Boid,
         ));
     }
@@ -1129,13 +810,268 @@ fn main() {
         .add(SnapshotSystem::new())
         .add(BoidStepSystem::new());
 
-    // ── Launch (world is injected, no Rc<RefCell<>>) ────────────────────
-    App::run_lifecycle_with_world(
-        AppConfig::new("SkyEngine — Spirit Wisps", 1280, 720),
-        world,
-        SpiritWispsApp::new(&mut rng),
+    let mut app_state = SpiritWispsApp::new(&mut rng);
+    let mut last_size = [0u32; 2];
+
+    eprintln!(
+        "[spirit_wisps] {} wisps | Mouse=predator  Click=attractor  Space=scatter",
+        NUM_BOIDS
     );
+
+    App::new(AppConfig::new("SkyEngine — Spirit Wisps", 1280, 720), world)
+        .run(move |ctx| {
+            // Lazy-init GPU resources on first frame
+            if app_state.render.is_none() {
+                app_state.setup(ctx.gpu());
+            }
+
+            // Handle resize
+            let size = ctx.surface_size();
+            if size != last_size && last_size != [0, 0] {
+                app_state.resize(ctx.gpu(), size);
+            }
+            last_size = size;
+
+            let [win_w, win_h] = size;
+            let mouse = ctx.input.mouse_position();
+            let mouse_sim_x = (mouse[0] / win_w as f32) * W;
+            let mouse_sim_y = (mouse[1] / win_h as f32) * H;
+            let mouse_valid = mouse[0] >= 0.0 && mouse[0] < win_w as f32;
+            let mouse_render_y = H - mouse_sim_y;
+
+            // ── ECS tick ────────────────────────────────────────────────
+            {
+                let input = ctx.world.get_resource_mut::<InputState>().unwrap();
+                input.mouse_x = mouse_sim_x;
+                input.mouse_y = mouse_sim_y;
+                input.mouse_valid = mouse_valid;
+                input.click = ctx.input.mouse_left();
+                input.panic = ctx.input.key_held(KeyCode::Space);
+            }
+            ctx.world.tick();
+            let dt = ctx.dt.min(0.05);
+
+            // ── Read ECS data ───────────────────────────────────────────
+            let snapshot = ctx.world.get_resource::<BoidSnapshot>().unwrap();
+            let attractors = ctx.world.get_resource::<AttractorCache>().unwrap();
+
+            app_state.trails.sample(&snapshot.positions, dt);
+
+            // ── Update dust ─────────────────────────────────────────────
+            for mote in &mut app_state.dust {
+                mote.x += mote.vx * dt;
+                mote.y += mote.vy * dt;
+                mote.twinkle_phase += mote.twinkle_speed * dt;
+                if mote.x < 0.0 { mote.x += W; }
+                if mote.x > W { mote.x -= W; }
+                if mote.y < 0.0 { mote.y += H; }
+                if mote.y > H { mote.y -= H; }
+            }
+
+            // ── Build sprites & lights ──────────────────────────────────
+            let rs = app_state.render.as_mut().unwrap();
+            let h = app_state.handles.as_ref().unwrap();
+            rs.camera.position = [W * 0.5, H * 0.5];
+
+            app_state.lights.clear();
+
+            // Dust background
+            rs.scene_batch.set_texture(&rs.dot_tex);
+            for mote in &app_state.dust {
+                let twinkle = mote.brightness * (0.5 + 0.5 * mote.twinkle_phase.sin());
+                let ry = H - mote.y;
+                rs.scene_batch.draw(
+                    Sprite::new(mote.x, ry, mote.size, mote.size).color(Color::new(
+                        twinkle * 0.7,
+                        twinkle * 0.75,
+                        twinkle,
+                        0.8,
+                    )),
+                );
+            }
+
+            // Trail segments
+            rs.scene_batch.set_texture(&rs.soft_glow_tex);
+            for i in 0..snapshot.positions.len() {
+                let speed = length(snapshot.velocities[i].x, snapshot.velocities[i].y);
+                let glow = (speed / MAX_SPEED).clamp(0.2, 1.0);
+                for (tpos, age) in app_state.trails.iter_trail(i) {
+                    let fade_sq = age * age;
+                    let sz = BOID_SIZE * (0.5 + age * 1.5) * glow;
+                    let alpha = fade_sq * 0.35 * glow;
+                    if alpha < 0.01 {
+                        continue;
+                    }
+                    let c = lerp_color(TRAIL_COLD, TRAIL_WARM, age);
+                    let m = 0.8 + glow;
+                    rs.scene_batch.draw(
+                        Sprite::new(tpos[0], H - tpos[1], sz, sz)
+                            .color(Color::new(c.r * m, c.g * m, c.b * m, alpha)),
+                    );
+                }
+            }
+
+            // Boid bodies
+            rs.scene_batch.set_texture(&rs.circle_tex);
+            rs.normal_batch.set_texture(&rs.normal_tex);
+            for (pos, vel) in snapshot.positions.iter().zip(snapshot.velocities.iter()) {
+                let speed = (vel.x * vel.x + vel.y * vel.y).sqrt();
+                let ry = H - pos.y;
+                let angle = (-vel.y).atan2(vel.x);
+                let body_w = BOID_SIZE * 2.0;
+                let body_h = BOID_SIZE * 1.2;
+                let glow_factor = (speed / MAX_SPEED).clamp(0.2, 1.0);
+
+                // Core
+                rs.scene_batch.draw(
+                    Sprite::new(pos.x, ry, body_w, body_h)
+                        .rotation(angle)
+                        .color(Color::new(
+                            SPIRIT_CORE.r * (1.0 + glow_factor),
+                            SPIRIT_CORE.g * (1.0 + glow_factor * 0.8),
+                            SPIRIT_CORE.b * (0.8 + glow_factor * 0.5),
+                            0.95,
+                        )),
+                );
+                rs.normal_batch.draw(
+                    Sprite::new(pos.x, ry, body_w, body_h)
+                        .rotation(angle)
+                        .color(Color::WHITE),
+                );
+
+                // Glow halo
+                let halo_size = BOID_SIZE * 3.5 * (0.8 + glow_factor * 0.4);
+                rs.scene_batch.draw(
+                    Sprite::new(pos.x, ry, halo_size, halo_size).color(Color::new(
+                        SPIRIT_GLOW.r * glow_factor,
+                        SPIRIT_GLOW.g * glow_factor * 0.7,
+                        SPIRIT_GLOW.b * glow_factor * 0.3,
+                        0.12 * glow_factor,
+                    )),
+                );
+
+                // Light
+                app_state.lights.push(
+                    Light2D::new(pos.x, ry, 35.0 + speed * 0.15)
+                        .intensity(0.2 + glow_factor * 0.35)
+                        .falloff(2.0)
+                        .color(Color::rgb(
+                            SPIRIT_GLOW.r * 0.8,
+                            SPIRIT_GLOW.g * 0.6,
+                            SPIRIT_GLOW.b * 0.3,
+                        )),
+                );
+            }
+
+            // Attractor visuals
+            rs.scene_batch.set_texture(&rs.dot_tex);
+            for attractor in &attractors.items {
+                let alpha = (attractor.life / ATTRACTOR_LIFETIME).clamp(0.0, 1.0);
+                let pulse = (attractor.life * 5.0).sin() * 0.25 + 0.75;
+                let size = ATTRACTOR_RANGE * 0.25 * alpha;
+                let ay = H - attractor.y;
+                rs.scene_batch.draw(
+                    Sprite::new(attractor.x, ay, size, size).color(Color::new(
+                        0.4 * pulse, 1.0 * pulse, 0.6 * pulse, alpha * 0.5,
+                    )),
+                );
+                app_state.lights.push(
+                    Light2D::new(attractor.x, ay, ATTRACTOR_RANGE * 0.5 * alpha)
+                        .intensity(1.0 * alpha * pulse)
+                        .falloff(1.8)
+                        .color(Color::rgb(0.3, 1.0, 0.5)),
+                );
+            }
+
+            // Predator ring
+            if mouse_valid {
+                let ring_size = PREDATOR_RANGE * 0.5;
+                rs.scene_batch.draw(
+                    Sprite::new(mouse_sim_x, mouse_render_y, ring_size, ring_size)
+                        .color(Color::new(1.0, 0.3, 0.2, 0.10)),
+                );
+                app_state.lights.push(
+                    Light2D::new(mouse_sim_x, mouse_render_y, PREDATOR_RANGE)
+                        .intensity(1.2)
+                        .falloff(1.6)
+                        .color(Color::rgb(1.0, 0.35, 0.2)),
+                );
+            }
+
+            // Ambient lights
+            app_state.lights.push(
+                Light2D::new(W * 0.5, H * 0.5, 1500.0)
+                    .intensity(0.30)
+                    .falloff(3.5)
+                    .color(AMBIENT_COLOR),
+            );
+            for &(cx, cy) in &[(0.0, 0.0), (W, 0.0), (0.0, H), (W, H)] {
+                app_state.lights.push(
+                    Light2D::new(cx, cy, 700.0)
+                        .intensity(0.18)
+                        .falloff(2.8)
+                        .color(Color::rgb(0.08, 0.06, 0.15)),
+                );
+            }
+
+            let camera = rs.camera;
+            let lights = &app_state.lights;
+            let num_boid_sprites = snapshot.positions.len() * 3
+                + app_state.trails.counts.iter().map(|c| *c as usize).sum::<usize>()
+                + app_state.dust.len();
+            let num_lights = app_state.lights.len();
+
+            // ── Execute render graph ────────────────────────────────────
+            let graph = app_state.graph.as_mut().unwrap();
+            let result = graph.try_execute(ctx.gpu(), |pass, gpu, textures| {
+                let rs = app_state.render.as_mut().unwrap();
+                if pass.handle == h.scene_pass {
+                    let target = textures.render_target(h.scene_rt).expect("scene_rt");
+                    rs.scene_batch.flush_to_target(gpu, &camera, target, Some(BG_COLOR));
+                } else if pass.handle == h.normal_pass {
+                    let target = textures.render_target(h.normal_rt).expect("normal_rt");
+                    rs.normal_batch.flush_to_target(gpu, &camera, target, Some(Color::new(0.5, 0.5, 1.0, 1.0)));
+                } else if pass.handle == h.lighting_pass {
+                    let normal = textures.render_target(h.normal_rt).expect("normal_rt");
+                    let output = textures.render_target(h.light_rt).expect("light_rt");
+                    rs.light_pass.render(gpu, lights, Some(normal), output, &camera, [0.04, 0.03, 0.08, 1.0]);
+                } else if pass.handle == h.composite_pass {
+                    let scene = textures.render_target(h.scene_rt).expect("scene_rt");
+                    let lightmap = textures.render_target(h.light_rt).expect("light_rt");
+                    let output = textures.render_target(h.hdr_rt).expect("hdr_rt");
+                    rs.composite_pass.render_to_target(gpu, scene, lightmap, output);
+                } else if pass.handle == h.bloom_pass {
+                    let input = textures.render_target(h.hdr_rt).expect("hdr_rt");
+                    let output = textures.render_target(h.bloom_rt).expect("bloom_rt");
+                    rs.bloom.apply(gpu, input, output);
+                } else if pass.handle == h.tonemap_pass {
+                    let input = textures.render_target(h.bloom_rt).expect("bloom_rt");
+                    rs.tonemap.apply_to_surface(gpu, input);
+                }
+                Ok(())
+            });
+            if let Err(err) = result {
+                eprintln!("[spirit_wisps] render error: {err}");
+            }
+
+            // ── FPS display ─────────────────────────────────────────
+            let fps_instant = if dt > 0.0 { 1.0 / dt } else { 0.0 };
+
+            app_state.fps_smooth = if app_state.fps_smooth == 0.0 {
+                fps_instant
+            } else {
+                app_state.fps_smooth * 0.95 + fps_instant * 0.05
+            };
+            app_state.frame_count += 1;
+            if app_state.frame_count % 30 == 0 {
+                ctx.set_title(&format!(
+                    "SkyEngine — Spirit Wisps | {:.0} FPS | {} sprites | {} lights",
+                    app_state.fps_smooth, num_boid_sprites, num_lights,
+                ));
+            }
+        });
 }
+
 
 // ─── PRNG ───────────────────────────────────────────────────────────────────
 

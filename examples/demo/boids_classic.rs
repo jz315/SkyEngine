@@ -16,9 +16,7 @@
 //! cargo run --example boids_classic --features app --release
 //! ```
 
-use std::cell::RefCell;
 use std::f32::consts::TAU;
-use std::rc::Rc;
 
 use sky_engine::app::{App, AppConfig, KeyCode};
 use sky_engine::ecs::{EntityId, PreparedQuery, System, World};
@@ -707,295 +705,250 @@ fn main() {
         s.write_surface();
     });
 
-    // ── Shared state via Rc<RefCell<>> ──────────────────────────────────
-
-    let graph = Rc::new(RefCell::new(graph));
-    let render_state = Rc::new(RefCell::new(None::<RenderState>));
-    let world = Rc::new(RefCell::new(world));
-
-    let frame_graph = Rc::clone(&graph);
-    let resize_graph = Rc::clone(&graph);
-    let shutdown_graph = Rc::clone(&graph);
-    let frame_state = Rc::clone(&render_state);
-    let resize_state = Rc::clone(&render_state);
-    let frame_world = Rc::clone(&world);
-
-    let fps_state = Rc::new(RefCell::new((0.0f32, 0u32))); // (fps_smooth, frame_count)
-    let frame_fps = Rc::clone(&fps_state);
+    let mut render_state: Option<RenderState> = None;
+    let mut fps_smooth = 0.0f32;
+    let mut frame_count = 0u32;
+    let mut last_size = [0u32; 2];
 
     let mut config = AppConfig::new("SkyEngine — Boids Classic", 1280, 720);
     config.vsync = false;
-    App::run_with_lifecycle(
-        config,
-        // ── setup ───────────────────────────────────────────────────────
-        |_world, _gpu| {
-            eprintln!(
-                "[boids] {} boids | Mouse=predator  Click=attractor  Space=scatter  Escape=quit",
-                NUM_BOIDS
-            );
-        },
-        // ── frame ───────────────────────────────────────────────────────
-        move |ctx| {
-            // Lazy-init render state on first frame
-            let mut state_ref = frame_state.borrow_mut();
-            if state_ref.is_none() {
-                *state_ref = Some(RenderState::new(ctx.gpu));
-            }
 
-            let [win_w, win_h] = ctx.gpu.surface_size();
-            let mouse = ctx.input.mouse_position();
-
-            // Map mouse screen coords → simulation coords (0..W, 0..H top-left origin).
-            // Screen Y is top-down (winit), sim Y is also top-down — direct mapping.
-            let mouse_sim_x = (mouse[0] / win_w as f32) * W;
-            let mouse_sim_y = (mouse[1] / win_h as f32) * H;
-            let mouse_valid = mouse[0] >= 0.0 && mouse[0] < win_w as f32;
-
-            // For rendering we flip Y because Camera2D uses +Y up.
-            // render_y = H - sim_y
-            let mouse_render_y = H - mouse_sim_y;
-
-            // ── ECS: update input resource & tick simulation ─────────
-            {
-                let mut world = frame_world.borrow_mut();
-                {
-                    let input = world.get_resource_mut::<InputState>().unwrap();
-                    input.mouse_x = mouse_sim_x;
-                    input.mouse_y = mouse_sim_y;
-                    input.mouse_valid = mouse_valid;
-                    input.click = ctx.input.mouse_left();
-                    input.panic = ctx.input.key_held(KeyCode::Space);
-                }
-                world.tick();
-            }
-            let dt = frame_world.borrow().time.delta.min(0.05);
-
-            // ── Collect snapshot for rendering ──────────────────────
-            let world = frame_world.borrow();
-
-            let snapshot = world.get_resource::<BoidSnapshot>().unwrap();
-            let attractors = world.get_resource::<AttractorCache>().unwrap();
-
-            let rs = state_ref.as_mut().unwrap();
-
-            // Camera centred so that world coords [0,W]×[0,H] fill the viewport.
-            // +Y up, so sprites use render_y = H - sim_y.
-            rs.camera.position = [W * 0.5, H * 0.5];
-
-            // ── Build sprites ───────────────────────────────────────
-            // Boid bodies (textured circles)
-            rs.scene_batch.set_texture(&rs.circle_tex);
-            rs.normal_batch.set_texture(&rs.normal_tex);
-
-            let mut lights = Vec::with_capacity(snapshot.positions.len() + 8);
-
-            for (pos, vel) in snapshot.positions.iter().zip(snapshot.velocities.iter()) {
-                let speed = length(vel.x, vel.y);
-                let color = speed_color(speed);
-
-                // Flip Y for rendering (+Y up camera vs +Y down sim)
-                let ry = H - pos.y;
-                // Also flip vel.y so the rotation angle points correctly
-                let angle = (-vel.y).atan2(vel.x);
-                let body_w = BOID_SIZE * 2.2;
-                let body_h = BOID_SIZE * 1.4;
-
-                // Main body sprite (elongated in direction of travel)
-                rs.scene_batch.draw(
-                    Sprite::new(pos.x, ry, body_w, body_h)
-                        .rotation(angle)
-                        .color(Color::new(
-                            color.r * 1.5,
-                            color.g * 1.5,
-                            color.b * 1.5,
-                            0.95,
-                        )),
-                );
-                rs.normal_batch.draw(
-                    Sprite::new(pos.x, ry, body_w, body_h)
-                        .rotation(angle)
-                        .color(Color::WHITE),
-                );
-
-                // Bright tip (leading edge glow)
-                let tip_x = pos.x + angle.cos() * BOID_SIZE * 0.8;
-                let tip_y = ry + angle.sin() * BOID_SIZE * 0.8;
-                let tip_size = BOID_SIZE * 0.6;
-                let glow_factor = (speed / MAX_SPEED).clamp(0.3, 1.0);
-                rs.scene_batch
-                    .draw(
-                        Sprite::new(tip_x, tip_y, tip_size, tip_size).color(Color::new(
-                            color.r * 3.0 * glow_factor,
-                            color.g * 3.0 * glow_factor,
-                            color.b * 3.0 * glow_factor,
-                            0.8,
-                        )),
-                    );
-
-                // Per-boid point light
-                lights.push(
-                    Light2D::new(pos.x, ry, 40.0 + speed * 0.12)
-                        .intensity(0.15 + glow_factor * 0.25)
-                        .falloff(2.0)
-                        .color(color),
-                );
-            }
-
-            // Attractor visuals
-            rs.scene_batch.set_texture(&rs.dot_tex);
-            for attractor in &attractors.items {
-                let alpha = (attractor.life / ATTRACTOR_LIFETIME).clamp(0.0, 1.0);
-                let pulse = (attractor.life * 5.0).sin() * 0.25 + 0.75;
-                let size = ATTRACTOR_RANGE * 0.3 * alpha;
-                let ay = H - attractor.y;
-                rs.scene_batch
-                    .draw(Sprite::new(attractor.x, ay, size, size).color(Color::new(
-                        0.4 * pulse,
-                        1.0 * pulse,
-                        0.6 * pulse,
-                        alpha * 0.6,
-                    )));
-                // Attractor light
-                lights.push(
-                    Light2D::new(attractor.x, ay, ATTRACTOR_RANGE * 0.6 * alpha)
-                        .intensity(1.2 * alpha * pulse)
-                        .falloff(1.8)
-                        .color(Color::rgb(0.3, 1.0, 0.5)),
-                );
-            }
-
-            // Predator (mouse) ring
-            if mouse_valid {
-                let ring_size = PREDATOR_RANGE * 0.6;
-                rs.scene_batch.draw(
-                    Sprite::new(mouse_sim_x, mouse_render_y, ring_size, ring_size)
-                        .color(Color::new(1.0, 0.3, 0.2, 0.15)),
-                );
-                lights.push(
-                    Light2D::new(mouse_sim_x, mouse_render_y, PREDATOR_RANGE)
-                        .intensity(1.5)
-                        .falloff(1.6)
-                        .color(Color::rgb(1.0, 0.35, 0.2)),
-                );
-            }
-
-            // Ambient fill lights (4 corners + center) so the scene is never pitch black
-            lights.push(
-                Light2D::new(W * 0.5, H * 0.5, 1200.0)
-                    .intensity(0.35)
-                    .falloff(3.0)
-                    .color(Color::rgb(0.15, 0.12, 0.25)),
-            );
-            lights.push(
-                Light2D::new(0.0, 0.0, 600.0)
-                    .intensity(0.25)
-                    .falloff(2.5)
-                    .color(Color::rgb(0.1, 0.15, 0.3)),
-            );
-            lights.push(
-                Light2D::new(W, 0.0, 600.0)
-                    .intensity(0.25)
-                    .falloff(2.5)
-                    .color(Color::rgb(0.1, 0.15, 0.3)),
-            );
-            lights.push(
-                Light2D::new(0.0, H, 600.0)
-                    .intensity(0.25)
-                    .falloff(2.5)
-                    .color(Color::rgb(0.1, 0.15, 0.3)),
-            );
-            lights.push(
-                Light2D::new(W, H, 600.0)
-                    .intensity(0.25)
-                    .falloff(2.5)
-                    .color(Color::rgb(0.1, 0.15, 0.3)),
-            );
-
-            let camera = rs.camera;
-
-            // ── Execute render graph ────────────────────────────────
-            let mut graph = frame_graph.borrow_mut();
-            let result = graph.try_execute(ctx.gpu, |pass, gpu, textures| {
-                let rs = state_ref.as_mut().unwrap();
-
-                if pass.handle == scene_pass {
-                    let target = textures.render_target(scene_rt).expect("scene_rt");
-                    rs.scene_batch.flush_to_target(
-                        gpu,
-                        &camera,
-                        target,
-                        Some(Color::new(0.02, 0.03, 0.06, 1.0)),
-                    );
-                } else if pass.handle == normal_pass {
-                    let target = textures.render_target(normal_rt).expect("normal_rt");
-                    rs.normal_batch.flush_to_target(
-                        gpu,
-                        &camera,
-                        target,
-                        Some(Color::new(0.5, 0.5, 1.0, 1.0)),
-                    );
-                } else if pass.handle == lighting_pass {
-                    let normal_target = textures.render_target(normal_rt).expect("normal_rt");
-                    let output = textures.render_target(light_rt).expect("light_rt");
-                    rs.light_pass.render(
-                        gpu,
-                        &lights,
-                        Some(normal_target),
-                        output,
-                        &camera,
-                        [0.12, 0.10, 0.18, 1.0],
-                    );
-                } else if pass.handle == composite_pass_h {
-                    let scene = textures.render_target(scene_rt).expect("scene_rt");
-                    let lightmap = textures.render_target(light_rt).expect("light_rt");
-                    let output = textures.render_target(hdr_rt).expect("hdr_rt");
-                    rs.composite_pass
-                        .render_to_target(gpu, scene, lightmap, output);
-                } else if pass.handle == bloom_pass {
-                    let input = textures.render_target(hdr_rt).expect("hdr_rt");
-                    let output = textures.render_target(bloom_rt).expect("bloom_rt");
-                    rs.bloom.apply(gpu, input, output);
-                } else if pass.handle == tonemap_pass {
-                    let input = textures.render_target(bloom_rt).expect("bloom_rt");
-                    rs.tonemap.apply_to_surface(gpu, input);
-                }
-                Ok(())
-            });
-
-            if let Err(err) = result {
-                eprintln!("[boids] render graph error: {err}");
-            }
-
-            // ── FPS display ─────────────────────────────────────────
-            let mut fps = frame_fps.borrow_mut();
-            let fps_instant = if dt > 0.0 { 1.0 / dt } else { 0.0 };
-            fps.0 = if fps.0 == 0.0 {
-                fps_instant
-            } else {
-                fps.0 * 0.95 + fps_instant * 0.05
-            };
-            fps.1 += 1;
-            if fps.1 % 30 == 0 {
-                ctx.window.set_title(&format!(
-                    "SkyEngine — Boids Classic | {:.0} FPS | {} boids | {} lights",
-                    fps.0,
-                    snapshot.positions.len(),
-                    lights.len(),
-                ));
-            }
-        },
-        // ── resize ──────────────────────────────────────────────────────
-        move |_world, gpu, _old_size, new_size| {
-            resize_graph.borrow_mut().destroy_physical_resources();
-            if let Some(state) = resize_state.borrow_mut().as_mut() {
-                state.resize(gpu, new_size[0], new_size[1]);
-            }
-        },
-        // ── shutdown ────────────────────────────────────────────────────
-        move |_world, _gpu| {
-            shutdown_graph.borrow_mut().destroy_physical_resources();
-        },
+    eprintln!(
+        "[boids] {} boids | Mouse=predator  Click=attractor  Space=scatter",
+        NUM_BOIDS
     );
+
+    App::new(config, world).run(move |ctx| {
+        // Lazy-init render state on first frame
+        if render_state.is_none() {
+            render_state = Some(RenderState::new(ctx.gpu()));
+        }
+
+        // Handle resize
+        let size = ctx.surface_size();
+        if size != last_size && last_size != [0, 0] {
+            graph.destroy_physical_resources();
+            if let Some(rs) = render_state.as_mut() {
+                rs.resize(ctx.gpu(), size[0], size[1]);
+            }
+        }
+        last_size = size;
+
+        let [win_w, win_h] = size;
+        let mouse = ctx.input.mouse_position();
+
+        // Map mouse screen coords → simulation coords (0..W, 0..H top-left origin).
+        let mouse_sim_x = (mouse[0] / win_w as f32) * W;
+        let mouse_sim_y = (mouse[1] / win_h as f32) * H;
+        let mouse_valid = mouse[0] >= 0.0 && mouse[0] < win_w as f32;
+
+        // For rendering we flip Y because Camera2D uses +Y up.
+        let mouse_render_y = H - mouse_sim_y;
+
+        // ── ECS: update input resource & tick simulation ─────────
+        {
+            let input = ctx.world.get_resource_mut::<InputState>().unwrap();
+            input.mouse_x = mouse_sim_x;
+            input.mouse_y = mouse_sim_y;
+            input.mouse_valid = mouse_valid;
+            input.click = ctx.input.mouse_left();
+            input.panic = ctx.input.key_held(KeyCode::Space);
+        }
+        ctx.world.tick();
+        let dt = ctx.dt.min(0.05);
+
+        // ── Collect snapshot for rendering ──────────────────────
+        let snapshot = ctx.world.get_resource::<BoidSnapshot>().unwrap();
+        let positions: Vec<Pos> = snapshot.positions.clone();
+        let velocities: Vec<Vel> = snapshot.velocities.clone();
+        let attractors: Vec<AttractorPoint> = ctx
+            .world
+            .get_resource::<AttractorCache>()
+            .unwrap()
+            .items
+            .clone();
+
+        let rs = render_state.as_mut().unwrap();
+
+        // Camera centred so that world coords [0,W]×[0,H] fill the viewport.
+        rs.camera.position = [W * 0.5, H * 0.5];
+
+        // ── Build sprites ───────────────────────────────────────
+        rs.scene_batch.set_texture(&rs.circle_tex);
+        rs.normal_batch.set_texture(&rs.normal_tex);
+
+        let mut lights = Vec::with_capacity(positions.len() + 8);
+
+        for (pos, vel) in positions.iter().zip(velocities.iter()) {
+            let speed = length(vel.x, vel.y);
+            let color = speed_color(speed);
+
+            let ry = H - pos.y;
+            let angle = (-vel.y).atan2(vel.x);
+            let body_w = BOID_SIZE * 2.2;
+            let body_h = BOID_SIZE * 1.4;
+
+            rs.scene_batch.draw(
+                Sprite::new(pos.x, ry, body_w, body_h)
+                    .rotation(angle)
+                    .color(Color::new(
+                        color.r * 1.5,
+                        color.g * 1.5,
+                        color.b * 1.5,
+                        0.95,
+                    )),
+            );
+            rs.normal_batch.draw(
+                Sprite::new(pos.x, ry, body_w, body_h)
+                    .rotation(angle)
+                    .color(Color::WHITE),
+            );
+
+            let tip_x = pos.x + angle.cos() * BOID_SIZE * 0.8;
+            let tip_y = ry + angle.sin() * BOID_SIZE * 0.8;
+            let tip_size = BOID_SIZE * 0.6;
+            let glow_factor = (speed / MAX_SPEED).clamp(0.3, 1.0);
+            rs.scene_batch.draw(
+                Sprite::new(tip_x, tip_y, tip_size, tip_size).color(Color::new(
+                    color.r * 3.0 * glow_factor,
+                    color.g * 3.0 * glow_factor,
+                    color.b * 3.0 * glow_factor,
+                    0.8,
+                )),
+            );
+
+            lights.push(
+                Light2D::new(pos.x, ry, 40.0 + speed * 0.12)
+                    .intensity(0.15 + glow_factor * 0.25)
+                    .falloff(2.0)
+                    .color(color),
+            );
+        }
+
+        // Attractor visuals
+        rs.scene_batch.set_texture(&rs.dot_tex);
+        for attractor in &attractors {
+            let alpha = (attractor.life / ATTRACTOR_LIFETIME).clamp(0.0, 1.0);
+            let pulse = (attractor.life * 5.0).sin() * 0.25 + 0.75;
+            let size = ATTRACTOR_RANGE * 0.3 * alpha;
+            let ay = H - attractor.y;
+            rs.scene_batch
+                .draw(Sprite::new(attractor.x, ay, size, size).color(Color::new(
+                    0.4 * pulse,
+                    1.0 * pulse,
+                    0.6 * pulse,
+                    alpha * 0.6,
+                )));
+            lights.push(
+                Light2D::new(attractor.x, ay, ATTRACTOR_RANGE * 0.6 * alpha)
+                    .intensity(1.2 * alpha * pulse)
+                    .falloff(1.8)
+                    .color(Color::rgb(0.3, 1.0, 0.5)),
+            );
+        }
+
+        // Predator (mouse) ring
+        if mouse_valid {
+            let ring_size = PREDATOR_RANGE * 0.6;
+            rs.scene_batch.draw(
+                Sprite::new(mouse_sim_x, mouse_render_y, ring_size, ring_size)
+                    .color(Color::new(1.0, 0.3, 0.2, 0.15)),
+            );
+            lights.push(
+                Light2D::new(mouse_sim_x, mouse_render_y, PREDATOR_RANGE)
+                    .intensity(1.5)
+                    .falloff(1.6)
+                    .color(Color::rgb(1.0, 0.35, 0.2)),
+            );
+        }
+
+        // Ambient fill lights
+        lights.push(
+            Light2D::new(W * 0.5, H * 0.5, 1200.0)
+                .intensity(0.35)
+                .falloff(3.0)
+                .color(Color::rgb(0.15, 0.12, 0.25)),
+        );
+        for &(lx, ly) in &[(0.0, 0.0), (W, 0.0), (0.0, H), (W, H)] {
+            lights.push(
+                Light2D::new(lx, ly, 600.0)
+                    .intensity(0.25)
+                    .falloff(2.5)
+                    .color(Color::rgb(0.1, 0.15, 0.3)),
+            );
+        }
+
+        let camera = rs.camera;
+
+        // ── Execute render graph ────────────────────────────────
+        let result = graph.try_execute(ctx.gpu(), |pass, gpu, textures| {
+            let rs = render_state.as_mut().unwrap();
+
+            if pass.handle == scene_pass {
+                let target = textures.render_target(scene_rt).expect("scene_rt");
+                rs.scene_batch.flush_to_target(
+                    gpu,
+                    &camera,
+                    target,
+                    Some(Color::new(0.02, 0.03, 0.06, 1.0)),
+                );
+            } else if pass.handle == normal_pass {
+                let target = textures.render_target(normal_rt).expect("normal_rt");
+                rs.normal_batch.flush_to_target(
+                    gpu,
+                    &camera,
+                    target,
+                    Some(Color::new(0.5, 0.5, 1.0, 1.0)),
+                );
+            } else if pass.handle == lighting_pass {
+                let normal_target = textures.render_target(normal_rt).expect("normal_rt");
+                let output = textures.render_target(light_rt).expect("light_rt");
+                rs.light_pass.render(
+                    gpu,
+                    &lights,
+                    Some(normal_target),
+                    output,
+                    &camera,
+                    [0.12, 0.10, 0.18, 1.0],
+                );
+            } else if pass.handle == composite_pass_h {
+                let scene = textures.render_target(scene_rt).expect("scene_rt");
+                let lightmap = textures.render_target(light_rt).expect("light_rt");
+                let output = textures.render_target(hdr_rt).expect("hdr_rt");
+                rs.composite_pass
+                    .render_to_target(gpu, scene, lightmap, output);
+            } else if pass.handle == bloom_pass {
+                let input = textures.render_target(hdr_rt).expect("hdr_rt");
+                let output = textures.render_target(bloom_rt).expect("bloom_rt");
+                rs.bloom.apply(gpu, input, output);
+            } else if pass.handle == tonemap_pass {
+                let input = textures.render_target(bloom_rt).expect("bloom_rt");
+                rs.tonemap.apply_to_surface(gpu, input);
+            }
+            Ok(())
+        });
+
+        if let Err(err) = result {
+            eprintln!("[boids] render graph error: {err}");
+        }
+
+        // ── FPS display ─────────────────────────────────────────
+        let fps_instant = if dt > 0.0 { 1.0 / dt } else { 0.0 };
+        fps_smooth = if fps_smooth == 0.0 {
+            fps_instant
+        } else {
+            fps_smooth * 0.95 + fps_instant * 0.05
+        };
+        frame_count += 1;
+        if frame_count % 30 == 0 {
+            ctx.set_title(&format!(
+                "SkyEngine — Boids Classic | {:.0} FPS | {} boids | {} lights",
+                fps_smooth,
+                positions.len(),
+                lights.len(),
+            ));
+        }
+    });
 }
 
 // ─── Deterministic PRNG ─────────────────────────────────────────────────────

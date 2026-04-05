@@ -9,9 +9,6 @@
 //! cargo run --example cosmic_jellyfish --features app --release
 //! ```
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use sky_engine::app::{App, AppConfig};
 use sky_engine::ecs::World;
 use sky_engine::gpu::GpuContext;
@@ -154,7 +151,7 @@ fn main() {
     }
 
     // Stars
-    let stars: Vec<Star> = (0..NUM_STARS)
+    let mut stars: Vec<Star> = (0..NUM_STARS)
         .map(|_| Star {
             x: rng.range(-2000.0, 2000.0),
             y: rng.range(-1200.0, 1200.0),
@@ -228,70 +225,53 @@ fn main() {
         s.write_surface();
     });
 
-    // ── Shared state via Rc<RefCell<>> ──────────────────────────────────
+    let mut render_state: Option<RenderState> = None;
+    let mut sim_time = 0.0f32;
+    let mut last_size = [0u32; 2];
 
-    let graph = Rc::new(RefCell::new(graph));
-    let render_state = Rc::new(RefCell::new(None::<RenderState>));
-    let sim_time = Rc::new(RefCell::new(0.0f32));
-    let world = Rc::new(RefCell::new(world));
-    let stars = Rc::new(RefCell::new(stars));
+    eprintln!("[cosmic_jellyfish] Move mouse to steer the spotlight.");
 
-    let frame_graph = Rc::clone(&graph);
-    let resize_graph = Rc::clone(&graph);
-    let shutdown_graph = Rc::clone(&graph);
-    let frame_state = Rc::clone(&render_state);
-    let resize_state = Rc::clone(&render_state);
-    let frame_time = Rc::clone(&sim_time);
-    let frame_world = Rc::clone(&world);
-    let frame_stars = Rc::clone(&stars);
-
-    App::run_with_lifecycle(
-        AppConfig::new("SkyEngine 🪼 Cosmic Jellyfish", 1280, 720),
-        // ── setup ───────────────────────────────────────────────────────
-        |_world, _gpu| {
-            eprintln!(
-                "[cosmic_jellyfish] Move mouse to steer the spotlight. Press Escape to exit."
-            );
-        },
-        // ── frame ───────────────────────────────────────────────────────
-        move |ctx| {
+    App::new(AppConfig::new("SkyEngine 🪼 Cosmic Jellyfish", 1280, 720), world)
+        .run(move |ctx| {
             ctx.world.tick();
-            let dt = ctx.world.time.delta.min(0.05);
-            *frame_time.borrow_mut() += dt;
-            let time = *frame_time.borrow();
+            let dt = ctx.dt.min(0.05);
+            sim_time += dt;
+            let time = sim_time;
 
-            let mut state_ref = frame_state.borrow_mut();
-            if state_ref.is_none() {
-                *state_ref = Some(RenderState::new(ctx.gpu));
+            if render_state.is_none() {
+                render_state = Some(RenderState::new(ctx.gpu()));
             }
 
-            let [w, h] = ctx.gpu.surface_size();
+            // Handle resize
+            let size = ctx.surface_size();
+            if size != last_size && last_size != [0, 0] {
+                graph.destroy_physical_resources();
+                if let Some(rs) = render_state.as_mut() {
+                    rs.resize(ctx.gpu(), size[0], size[1]);
+                }
+            }
+            last_size = size;
+
+            let [w, h] = size;
             let mouse = ctx.input.mouse_position();
             let aspect = w as f32 / h as f32;
             let camera_h = 1080.0;
             let camera_w = camera_h * aspect;
 
             let mouse_world = {
-                let rs = state_ref.as_mut().unwrap();
+                let rs = render_state.as_mut().unwrap();
                 rs.camera.set_viewport(camera_w, camera_h);
-                // We need to pass raw screen coordinates and true window size to screen_to_world
-                // Wait, screen_to_world uses the camera's viewport which is now logical!
-                // So we must scale the mouse input or pass the physical window size.
-                // Camera2D assumes screen_x and screen_y are in [0, viewport_width].
-                // We must map physical mouse to [0, camera_w].
                 let scaled_mouse_x = (mouse[0] / w as f32) * camera_w;
                 let scaled_mouse_y = (mouse[1] / h as f32) * camera_h;
                 rs.camera.screen_to_world(scaled_mouse_x, scaled_mouse_y)
             };
 
             // ── ECS: simulate jellyfish ─────────────────────────────────
-            // Wrap around a bounds slightly larger than the camera view
             let half_w = camera_w * 0.55;
             let half_h = camera_h * 0.55;
             {
-                let world = frame_world.borrow_mut();
-                let mut q = world.query::<(&mut Position, &mut Drift, &mut JellyfishData)>();
-                q.for_each(&world, |(pos, drift, jelly)| {
+                let mut q = ctx.world.query::<(&mut Position, &mut Drift, &mut JellyfishData)>();
+                q.for_each(ctx.world, |(pos, drift, jelly)| {
                     drift.wobble_phase += drift.wobble_freq * dt;
                     jelly.pulse_phase += jelly.pulse_speed * dt;
                     jelly.hue = (jelly.hue + jelly.hue_drift * dt) % 360.0;
@@ -299,56 +279,35 @@ fn main() {
                     pos.x += drift.vx * dt + drift.wobble_amp * (drift.wobble_phase).sin() * dt;
                     pos.y += drift.vy * dt;
 
-                    // Wrap around
                     if pos.y < -half_h {
                         pos.y = half_h;
                         pos.x = (pos.x + 200.0) % (half_w * 2.0) - half_w;
                     }
-                    if pos.y > half_h {
-                        pos.y = -half_h;
-                    }
-                    if pos.x < -half_w {
-                        pos.x = half_w;
-                    }
-                    if pos.x > half_w {
-                        pos.x = -half_w;
-                    }
+                    if pos.y > half_h { pos.y = -half_h; }
+                    if pos.x < -half_w { pos.x = half_w; }
+                    if pos.x > half_w { pos.x = -half_w; }
                 });
             }
 
             // Twinkle stars
-            {
-                let mut stars = frame_stars.borrow_mut();
-                for star in stars.iter_mut() {
-                    star.twinkle_phase += star.twinkle_speed * dt;
-                }
+            for star in stars.iter_mut() {
+                star.twinkle_phase += star.twinkle_speed * dt;
             }
 
             // ── Collect scene data ──────────────────────────────────────
             struct JellyVisual {
-                x: f32,
-                y: f32,
-                size: f32,
-                pulse: f32,
-                hue: f32,
-                light_radius: f32,
-                light_intensity: f32,
-                wobble_phase: f32,
+                x: f32, y: f32, size: f32, pulse: f32, hue: f32,
+                light_radius: f32, light_intensity: f32, wobble_phase: f32,
             }
 
             let mut visuals = Vec::with_capacity(NUM_JELLYFISH);
             {
-                let world = frame_world.borrow();
-                let mut q = world.query::<(&Position, &Drift, &JellyfishData)>();
-                q.for_each(&world, |(pos, drift, jelly)| {
+                let mut q = ctx.world.query::<(&Position, &Drift, &JellyfishData)>();
+                q.for_each(ctx.world, |(pos, drift, jelly)| {
                     let pulse = 0.85 + 0.2 * jelly.pulse_phase.sin();
                     visuals.push(JellyVisual {
-                        x: pos.x,
-                        y: pos.y,
-                        size: jelly.size,
-                        pulse,
-                        hue: jelly.hue,
-                        light_radius: jelly.light_radius,
+                        x: pos.x, y: pos.y, size: jelly.size, pulse,
+                        hue: jelly.hue, light_radius: jelly.light_radius,
                         light_intensity: jelly.light_intensity
                             * (0.7 + 0.3 * jelly.pulse_phase.sin()),
                         wobble_phase: drift.wobble_phase,
@@ -357,22 +316,17 @@ fn main() {
             }
 
             // ── Build sprites & lights ──────────────────────────────────
-            let rs = state_ref.as_mut().unwrap();
+            let rs = render_state.as_mut().unwrap();
+
             // Stars background
-            {
-                let stars = frame_stars.borrow();
-                rs.scene_batch.set_texture(&rs.dot_tex);
-                for star in stars.iter() {
-                    let twinkle = star.brightness * (0.5 + 0.5 * star.twinkle_phase.sin());
-                    rs.scene_batch.draw(
-                        Sprite::new(star.x, star.y, star.size, star.size).color(Color::new(
-                            twinkle,
-                            twinkle * 0.95,
-                            twinkle * 1.05,
-                            0.9,
-                        )),
-                    );
-                }
+            rs.scene_batch.set_texture(&rs.dot_tex);
+            for star in stars.iter() {
+                let twinkle = star.brightness * (0.5 + 0.5 * star.twinkle_phase.sin());
+                rs.scene_batch.draw(
+                    Sprite::new(star.x, star.y, star.size, star.size).color(Color::new(
+                        twinkle, twinkle * 0.95, twinkle * 1.05, 0.9,
+                    )),
+                );
             }
 
             // Jellyfish bodies
@@ -387,33 +341,24 @@ fn main() {
                 let lightness = 0.55 + 0.1 * jv.pulse;
                 let body_color = Color::hsl(jv.hue, saturation, lightness);
 
-                // Bell (body)
-                rs.scene_batch
-                    .draw(
-                        Sprite::new(jv.x, jv.y, body_size, body_size * 0.7).color(Color::new(
-                            body_color.r * 1.3,
-                            body_color.g * 1.3,
-                            body_color.b * 1.3,
-                            0.85,
-                        )),
-                    );
-                rs.normal_batch
-                    .draw(Sprite::new(jv.x, jv.y, body_size, body_size * 0.7).color(Color::WHITE));
+                rs.scene_batch.draw(
+                    Sprite::new(jv.x, jv.y, body_size, body_size * 0.7).color(Color::new(
+                        body_color.r * 1.3, body_color.g * 1.3, body_color.b * 1.3, 0.85,
+                    )),
+                );
+                rs.normal_batch.draw(
+                    Sprite::new(jv.x, jv.y, body_size, body_size * 0.7).color(Color::WHITE),
+                );
 
-                // Inner glow (brighter core)
                 let glow_size = body_size * 0.55;
                 rs.scene_batch.draw(
                     Sprite::new(jv.x, jv.y - body_size * 0.05, glow_size, glow_size * 0.5).color(
                         Color::new(
-                            body_color.r * 2.0,
-                            body_color.g * 2.0,
-                            body_color.b * 2.0,
-                            0.6,
+                            body_color.r * 2.0, body_color.g * 2.0, body_color.b * 2.0, 0.6,
                         ),
                     ),
                 );
 
-                // Tentacles (procedural chain of circles going downward)
                 let tentacle_hue = (jv.hue + 30.0) % 360.0;
                 let tentacle_color = Color::hsl(tentacle_hue, 0.6, 0.45);
                 for seg in 0..TENTACLE_SEGMENTS {
@@ -423,17 +368,13 @@ fn main() {
                     let ty = jv.y - body_size * 0.35 - seg as f32 * body_size * 0.18;
                     let tx = jv.x + sway;
                     let alpha = 0.6 * (1.0 - t * 0.5);
-
-                    rs.scene_batch
-                        .draw(Sprite::new(tx, ty, seg_size, seg_size).color(Color::new(
-                            tentacle_color.r,
-                            tentacle_color.g,
-                            tentacle_color.b,
-                            alpha,
-                        )));
+                    rs.scene_batch.draw(
+                        Sprite::new(tx, ty, seg_size, seg_size).color(Color::new(
+                            tentacle_color.r, tentacle_color.g, tentacle_color.b, alpha,
+                        )),
+                    );
                 }
 
-                // Light
                 lights.push(
                     Light2D::new(jv.x, jv.y, jv.light_radius)
                         .intensity(jv.light_intensity)
@@ -442,90 +383,58 @@ fn main() {
                 );
             }
 
-            // Mouse spotlight — cool white
             let mouse_pulse = 1.0 + 0.15 * (time * 3.0).sin();
             lights.push(
                 Light2D::new(mouse_world[0], mouse_world[1], 200.0 * mouse_pulse)
-                    .intensity(2.2)
-                    .temperature(7500.0)
-                    .falloff(1.4)
+                    .intensity(2.2).temperature(7500.0).falloff(1.4)
                     .color(Color::rgb(0.9, 0.92, 1.0)),
             );
-
-            // Global fill light — covers the entire viewport so no edge is ever black
             lights.push(
-                Light2D::new(0.0, 0.0, 2000.0)
-                    .intensity(0.5)
-                    .falloff(3.5)
+                Light2D::new(0.0, 0.0, 2000.0).intensity(0.5).falloff(3.5)
                     .color(Color::rgb(0.2, 0.15, 0.3)),
             );
-
-            // Four corner ambient lights cycling hue — full coverage
-            lights.push(
-                Light2D::new(-500.0, 300.0, 1000.0)
-                    .intensity(0.45)
-                    .falloff(2.0)
-                    .color(Color::hsl((time * 8.0) % 360.0, 0.5, 0.5)),
-            );
-            lights.push(
-                Light2D::new(500.0, -300.0, 1000.0)
-                    .intensity(0.45)
-                    .falloff(2.0)
-                    .color(Color::hsl((time * 8.0 + 180.0) % 360.0, 0.5, 0.5)),
-            );
-            lights.push(
-                Light2D::new(500.0, 300.0, 1000.0)
-                    .intensity(0.35)
-                    .falloff(2.2)
-                    .color(Color::hsl((time * 8.0 + 90.0) % 360.0, 0.4, 0.45)),
-            );
-            lights.push(
-                Light2D::new(-500.0, -300.0, 1000.0)
-                    .intensity(0.35)
-                    .falloff(2.2)
-                    .color(Color::hsl((time * 8.0 + 270.0) % 360.0, 0.4, 0.45)),
-            );
+            for &(lx, ly, phase) in &[
+                (-500.0f32, 300.0f32, 0.0f32), (500.0, -300.0, 180.0),
+                (500.0, 300.0, 90.0), (-500.0, -300.0, 270.0),
+            ] {
+                lights.push(
+                    Light2D::new(lx, ly, 1000.0)
+                        .intensity(if phase < 180.0 { 0.45 } else { 0.35 })
+                        .falloff(if phase < 180.0 { 2.0 } else { 2.2 })
+                        .color(Color::hsl((time * 8.0 + phase) % 360.0, 0.5, 0.5)),
+                );
+            }
 
             let camera = rs.camera;
 
             // ── Execute render graph ────────────────────────────────────
-            let mut graph = frame_graph.borrow_mut();
-            let result = graph.try_execute(ctx.gpu, |pass, gpu, textures| {
-                let rs = state_ref.as_mut().unwrap();
+            let result = graph.try_execute(ctx.gpu(), |pass, gpu, textures| {
+                let rs = render_state.as_mut().unwrap();
 
                 if pass.handle == scene_pass {
                     let target = textures.render_target(scene_rt).expect("scene_rt");
                     rs.scene_batch.flush_to_target(
-                        gpu,
-                        &camera,
-                        target,
+                        gpu, &camera, target,
                         Some(Color::new(0.005, 0.003, 0.012, 1.0)),
                     );
                 } else if pass.handle == normal_pass {
                     let target = textures.render_target(normal_rt).expect("normal_rt");
                     rs.normal_batch.flush_to_target(
-                        gpu,
-                        &camera,
-                        target,
+                        gpu, &camera, target,
                         Some(Color::new(0.5, 0.5, 1.0, 1.0)),
                     );
                 } else if pass.handle == lighting_pass {
                     let normal_target = textures.render_target(normal_rt).expect("normal_rt");
                     let output = textures.render_target(light_rt).expect("light_rt");
                     rs.light_pass.render(
-                        gpu,
-                        &lights,
-                        Some(normal_target),
-                        output,
-                        &camera,
-                        [0.12, 0.09, 0.16, 1.0],
+                        gpu, &lights, Some(normal_target), output,
+                        &camera, [0.12, 0.09, 0.16, 1.0],
                     );
                 } else if pass.handle == composite_pass_h {
                     let scene = textures.render_target(scene_rt).expect("scene_rt");
                     let lightmap = textures.render_target(light_rt).expect("light_rt");
                     let output = textures.render_target(hdr_rt).expect("hdr_rt");
-                    rs.composite_pass
-                        .render_to_target(gpu, scene, lightmap, output);
+                    rs.composite_pass.render_to_target(gpu, scene, lightmap, output);
                 } else if pass.handle == vignette_pass {
                     let input = textures.render_target(hdr_rt).expect("hdr_rt");
                     let output = textures.render_target(graded_rt).expect("graded_rt");
@@ -544,19 +453,7 @@ fn main() {
             if let Err(err) = result {
                 eprintln!("[cosmic_jellyfish] render graph error: {err}");
             }
-        },
-        // ── resize ──────────────────────────────────────────────────────
-        move |_world, gpu, _old_size, new_size| {
-            resize_graph.borrow_mut().destroy_physical_resources();
-            if let Some(state) = resize_state.borrow_mut().as_mut() {
-                state.resize(gpu, new_size[0], new_size[1]);
-            }
-        },
-        // ── shutdown ────────────────────────────────────────────────────
-        move |_world, _gpu| {
-            shutdown_graph.borrow_mut().destroy_physical_resources();
-        },
-    );
+        });
 }
 
 // ── Deterministic PRNG ──────────────────────────────────────────────────────

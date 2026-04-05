@@ -10,10 +10,8 @@
 //! cargo run --example neon_galaxy --features app --release
 //! ```
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use sky_engine::app::{App, AppConfig};
+use sky_engine::ecs::World;
 use sky_engine::gpu::GpuContext;
 use sky_engine::render::{Camera2D, Color, Sprite, Texture};
 use sky_engine::render::expert::{
@@ -238,13 +236,10 @@ fn main() {
         })
         .collect();
 
-    // ── Build render graph ──────────────────────────────────────────────
     let mut graph = RenderGraph::new();
-    let render_state = Rc::new(RefCell::new(None::<RenderState>));
-    let sim_time = Rc::new(RefCell::new(0.0f32));
-    let stars = Rc::new(RefCell::new(stars));
-    let dust = Rc::new(RefCell::new(dust));
-    let core_particles = Rc::new(RefCell::new(core_particles));
+    let mut render_state: Option<RenderState> = None;
+    let mut sim_time = 0.0f32;
+    let mut last_size = [0u32; 2];
 
     let hdr = wgpu::TextureFormat::Rgba16Float;
 
@@ -252,9 +247,7 @@ fn main() {
         b.name("scene_rt").size(TargetSize::Surface).format(hdr);
     });
     let normal_rt = graph.create_texture(|b| {
-        b.name("normal_rt")
-            .size(TargetSize::Surface)
-            .format(wgpu::TextureFormat::Rgba8Unorm);
+        b.name("normal_rt").size(TargetSize::Surface).format(wgpu::TextureFormat::Rgba8Unorm);
     });
     let light_rt = graph.create_texture(|b| {
         b.name("light_rt").size(TargetSize::Surface).format(hdr);
@@ -276,92 +269,69 @@ fn main() {
         s.write_color_cleared(0, normal_rt, [0.5, 0.5, 1.0, 1.0]);
     });
     let lighting_pass = graph.add_render_pass("lighting", |s| {
-        s.read(normal_rt);
-        s.write(light_rt);
+        s.read(normal_rt); s.write(light_rt);
     });
     let composite_pass = graph.add_render_pass("composite", |s| {
-        s.read(scene_rt);
-        s.read(light_rt);
-        s.write(hdr_rt);
+        s.read(scene_rt); s.read(light_rt); s.write(hdr_rt);
     });
     let vignette_pass = graph.add_render_pass("vignette", |s| {
-        s.read(hdr_rt);
-        s.write(graded_rt);
+        s.read(hdr_rt); s.write(graded_rt);
     });
     let bloom_pass = graph.add_render_pass("bloom", |s| {
-        s.read(graded_rt);
-        s.write(bloom_rt);
+        s.read(graded_rt); s.write(bloom_rt);
     });
     let tonemap_pass = graph.add_render_pass("tonemap", |s| {
-        s.read(bloom_rt);
-        s.write_surface();
+        s.read(bloom_rt); s.write_surface();
     });
 
-    let graph = Rc::new(RefCell::new(graph));
+    let world = World::new();
 
-    // Clone handles for closures
-    let frame_graph = Rc::clone(&graph);
-    let resize_graph = Rc::clone(&graph);
-    let shutdown_graph = Rc::clone(&graph);
-    let frame_state = Rc::clone(&render_state);
-    let resize_state = Rc::clone(&render_state);
-    let frame_time = Rc::clone(&sim_time);
-    let frame_stars = Rc::clone(&stars);
-    let frame_dust = Rc::clone(&dust);
-    let frame_core = Rc::clone(&core_particles);
+    eprintln!("[neon_galaxy] Move the mouse to control the torch light.");
 
-    App::run_with_lifecycle(
-        AppConfig::new("SkyEngine — ✦ Neon Galaxy ✦", 1280, 720),
-        // ── Setup ───────────────────────────────────────────────────────
-        |_world, _gpu| {
-            eprintln!(
-                "[neon_galaxy] Move the mouse to control the torch light. Press Escape to exit."
-            );
-        },
-        // ── Frame ───────────────────────────────────────────────────────
-        move |ctx| {
+    App::new(AppConfig::new("SkyEngine — \u{2726} Neon Galaxy \u{2726}", 1280, 720), world)
+        .run(move |ctx| {
             ctx.world.tick();
-            *frame_time.borrow_mut() += ctx.world.time.delta;
-            let time = *frame_time.borrow();
+            sim_time += ctx.dt;
+            let time = sim_time;
 
-            // Lazy-init render state
-            let mut state_ref = frame_state.borrow_mut();
-            if state_ref.is_none() {
-                *state_ref = Some(RenderState::new(ctx.gpu));
+            if render_state.is_none() {
+                render_state = Some(RenderState::new(ctx.gpu()));
             }
 
-            let [w, h] = ctx.gpu.surface_size();
+            // Handle resize
+            let size = ctx.surface_size();
+            if size != last_size && last_size != [0, 0] {
+                graph.destroy_physical_resources();
+                if let Some(rs) = render_state.as_mut() {
+                    rs.resize(ctx.gpu(), size[0], size[1]);
+                }
+            }
+            last_size = size;
+
+            let [w, h] = size;
             let mouse = ctx.input.mouse_position();
             let mouse_world = {
-                let rs = state_ref.as_mut().unwrap();
+                let rs = render_state.as_mut().unwrap();
                 rs.camera.set_viewport(w as f32, h as f32);
                 rs.camera.screen_to_world(mouse[0], mouse[1])
             };
 
             // ── Build lights ────────────────────────────────────────────
             let mut lights = Vec::with_capacity(10);
-
-            // Orbiting neon lights — large radius, soft wash for ambient color
             let orbit_configs: &[(f32, f32, f32, [f32; 3], f32)] = &[
-                // (orbit_r, speed, intensity, rgb_tint, temperature)
-                (300.0, 0.30, 1.1, [1.0, 0.4, 0.85], 3200.0), // magenta
-                (400.0, -0.22, 0.9, [0.3, 0.9, 0.6], 7500.0), // cyan-green
-                (240.0, 0.50, 1.0, [0.4, 0.5, 1.0], 12000.0), // electric blue
-                (480.0, 0.15, 0.7, [1.0, 0.85, 0.3], 2200.0), // warm amber
-                (360.0, -0.38, 0.85, [0.9, 0.25, 0.5], 4500.0), // hot pink
-                (200.0, 0.60, 0.8, [0.2, 0.85, 0.9], 9500.0), // teal
+                (300.0, 0.30, 1.1, [1.0, 0.4, 0.85], 3200.0),
+                (400.0, -0.22, 0.9, [0.3, 0.9, 0.6], 7500.0),
+                (240.0, 0.50, 1.0, [0.4, 0.5, 1.0], 12000.0),
+                (480.0, 0.15, 0.7, [1.0, 0.85, 0.3], 2200.0),
+                (360.0, -0.38, 0.85, [0.9, 0.25, 0.5], 4500.0),
+                (200.0, 0.60, 0.8, [0.2, 0.85, 0.9], 9500.0),
             ];
-
-            for (i, (orbit_r, speed, intensity, tint, temperature)) in
-                orbit_configs.iter().enumerate()
-            {
+            for (i, (orbit_r, speed, intensity, tint, temperature)) in orbit_configs.iter().enumerate() {
                 let angle = time * speed + (i as f32) * 1.047;
                 let r = orbit_r + 40.0 * (time * 0.25 + i as f32).sin();
                 let x = angle.cos() * r;
                 let y = angle.sin() * r;
                 let pulse = 1.0 + 0.15 * (time * 1.5 + i as f32 * 0.7).sin();
-
-                // Large radius + high falloff = soft wide glow, not a hard circle
                 lights.push(
                     Light2D::new(x, y, 450.0 + 60.0 * pulse)
                         .temperature(*temperature)
@@ -370,60 +340,39 @@ fn main() {
                         .color(Color::rgb(tint[0], tint[1], tint[2])),
                 );
             }
-
-            // Central galaxy core glow — gentle and wide
             let core_pulse = 1.0 + 0.08 * (time * 0.6).sin();
             lights.push(
-                Light2D::new(0.0, 0.0, 400.0)
-                    .temperature(4500.0)
-                    .intensity(1.5 * core_pulse)
-                    .falloff(2.0)
+                Light2D::new(0.0, 0.0, 400.0).temperature(4500.0)
+                    .intensity(1.5 * core_pulse).falloff(2.0)
                     .color(Color::rgb(1.0, 0.93, 0.78)),
             );
-
-            // Mouse torch — focused bright white-gold
             lights.push(
-                Light2D::new(mouse_world[0], mouse_world[1], 220.0)
-                    .temperature(5500.0)
-                    .intensity(2.0)
-                    .falloff(1.8)
+                Light2D::new(mouse_world[0], mouse_world[1], 220.0).temperature(5500.0)
+                    .intensity(2.0).falloff(1.8)
                     .color(Color::rgb(1.0, 0.97, 0.92)),
             );
 
             // ── Draw scene sprites ──────────────────────────────────────
-            let rs = state_ref.as_mut().unwrap();
+            let rs = render_state.as_mut().unwrap();
             let circle_tex = rs.circle_tex.clone();
             let soft_tex = rs.soft_circle_tex.clone();
             let normal_tex = rs.normal_tex.clone();
-            // --- Dust lanes (large, faint, soft glow behind stars) ---
+
+            // Dust lanes
             rs.scene_batch.set_texture(&soft_tex);
-            let dust_ref = frame_dust.borrow();
-            for mote in &*dust_ref {
-                let pos = spiral_position(
-                    mote.arm_dist,
-                    mote.arm_idx,
-                    mote.angle_offset,
-                    mote.scatter,
-                    time,
-                    mote.orbit_speed,
-                );
+            for mote in &dust {
+                let pos = spiral_position(mote.arm_dist, mote.arm_idx, mote.angle_offset, mote.scatter, time, mote.orbit_speed);
                 let drift = 1.0 + 0.3 * (time * 0.2 + mote.arm_dist * 10.0).sin();
                 let s = mote.size * drift;
-                // Tint dust with warm nebula colours
                 let hue = (mote.arm_idx as f32 * 75.0 + mote.arm_dist * 120.0 + time * 4.0) % 360.0;
                 let tint = Color::hsl(hue, 0.5, 0.35);
-                rs.scene_batch
-                    .draw(Sprite::new(pos[0], pos[1], s, s).color(Color::new(
-                        tint.r,
-                        tint.g,
-                        tint.b,
-                        mote.alpha * drift,
-                    )));
+                rs.scene_batch.draw(
+                    Sprite::new(pos[0], pos[1], s, s).color(Color::new(tint.r, tint.g, tint.b, mote.alpha * drift)),
+                );
             }
 
-            // --- Core particles (gentle glowing centre) ---
-            let core_ref = frame_core.borrow();
-            for cp in &*core_ref {
+            // Core particles
+            for cp in &core_particles {
                 let a = cp.angle + time * cp.speed;
                 let pulse = 1.0 + 0.25 * (time * 1.2 + cp.pulse_phase).sin();
                 let r = cp.dist * pulse;
@@ -431,130 +380,67 @@ fn main() {
                 let y = a.sin() * r;
                 let s = cp.size * pulse;
                 let tint = Color::hsl(cp.hue + time * 8.0, 0.65, 0.55);
-                rs.scene_batch
-                    .draw(Sprite::new(x, y, s, s).color(Color::new(tint.r, tint.g, tint.b, 0.4)));
+                rs.scene_batch.draw(
+                    Sprite::new(x, y, s, s).color(Color::new(tint.r, tint.g, tint.b, 0.4)),
+                );
             }
 
-            // --- Stars (main galaxy body, with normal maps) ---
+            // Stars
             rs.scene_batch.set_texture(&circle_tex);
-            let stars_ref = frame_stars.borrow();
-            for star in &*stars_ref {
-                let pos = spiral_position(
-                    star.arm_dist,
-                    star.arm_idx,
-                    star.angle_offset,
-                    star.scatter,
-                    time,
-                    star.orbit_speed,
-                );
+            for star in &stars {
+                let pos = spiral_position(star.arm_dist, star.arm_idx, star.angle_offset, star.scatter, time, star.orbit_speed);
                 let pulse = 1.0 + 0.22 * (time * 1.8 + star.pulse_phase).sin();
                 let s = star.size * pulse;
-
                 let hue = (star.hue + star.hue_shift * time) % 360.0;
                 let lightness = 0.4 + 0.2 * star.luminosity;
                 let saturation = 0.65 + 0.2 * (time * 0.5 + star.pulse_phase).cos();
                 let tint = Color::hsl(hue, saturation, lightness);
-
-                rs.scene_batch
-                    .draw(Sprite::new(pos[0], pos[1], s, s).color(Color::new(
-                        tint.r,
-                        tint.g,
-                        tint.b,
-                        0.92 * star.luminosity,
-                    )));
+                rs.scene_batch.draw(
+                    Sprite::new(pos[0], pos[1], s, s).color(Color::new(tint.r, tint.g, tint.b, 0.92 * star.luminosity)),
+                );
             }
 
-            // --- Normal map pass (same positions, white colour) ---
+            // Normal map pass
             rs.normal_batch.set_texture(&normal_tex);
-            for star in &*stars_ref {
-                let pos = spiral_position(
-                    star.arm_dist,
-                    star.arm_idx,
-                    star.angle_offset,
-                    star.scatter,
-                    time,
-                    star.orbit_speed,
-                );
+            for star in &stars {
+                let pos = spiral_position(star.arm_dist, star.arm_idx, star.angle_offset, star.scatter, time, star.orbit_speed);
                 let pulse = 1.0 + 0.22 * (time * 1.8 + star.pulse_phase).sin();
                 let s = star.size * pulse;
-                rs.normal_batch
-                    .draw(Sprite::new(pos[0], pos[1], s, s).color(Color::WHITE));
+                rs.normal_batch.draw(
+                    Sprite::new(pos[0], pos[1], s, s).color(Color::WHITE),
+                );
             }
 
             let camera = rs.camera;
 
             // ── Execute render graph ────────────────────────────────────
-            let mut graph = frame_graph.borrow_mut();
-            let execute_result = graph.try_execute(ctx.gpu, |pass, gpu, textures| {
-                let rs = state_ref.as_mut().unwrap();
-
+            let execute_result = graph.try_execute(ctx.gpu(), |pass, gpu, textures| {
+                let rs = render_state.as_mut().unwrap();
                 if pass.handle == scene_pass {
-                    let target = textures
-                        .render_target(scene_rt)
-                        .expect("scene_rt should resolve to a render target");
-                    rs.scene_batch.flush_to_target(
-                        gpu,
-                        &camera,
-                        target,
-                        Some(Color::new(0.005, 0.005, 0.012, 1.0)),
-                    );
+                    let target = textures.render_target(scene_rt).expect("scene_rt");
+                    rs.scene_batch.flush_to_target(gpu, &camera, target, Some(Color::new(0.005, 0.005, 0.012, 1.0)));
                 } else if pass.handle == normal_pass {
-                    let target = textures
-                        .render_target(normal_rt)
-                        .expect("normal_rt should resolve to a render target");
-                    rs.normal_batch.flush_to_target(
-                        gpu,
-                        &camera,
-                        target,
-                        Some(Color::new(0.5, 0.5, 1.0, 1.0)),
-                    );
+                    let target = textures.render_target(normal_rt).expect("normal_rt");
+                    rs.normal_batch.flush_to_target(gpu, &camera, target, Some(Color::new(0.5, 0.5, 1.0, 1.0)));
                 } else if pass.handle == lighting_pass {
-                    let normal_target = textures
-                        .render_target(normal_rt)
-                        .expect("normal_rt should resolve to a render target");
-                    let output = textures
-                        .render_target(light_rt)
-                        .expect("light_rt should resolve to a render target");
-                    rs.light_pass.render(
-                        gpu,
-                        &lights,
-                        Some(normal_target),
-                        output,
-                        &camera,
-                        [0.04, 0.035, 0.055, 1.0],
-                    );
+                    let normal_target = textures.render_target(normal_rt).expect("normal_rt");
+                    let output = textures.render_target(light_rt).expect("light_rt");
+                    rs.light_pass.render(gpu, &lights, Some(normal_target), output, &camera, [0.04, 0.035, 0.055, 1.0]);
                 } else if pass.handle == composite_pass {
-                    let scene = textures
-                        .render_target(scene_rt)
-                        .expect("scene_rt should resolve to a render target");
-                    let lightmap = textures
-                        .render_target(light_rt)
-                        .expect("light_rt should resolve to a render target");
-                    let output = textures
-                        .render_target(hdr_rt)
-                        .expect("hdr_rt should resolve to a render target");
-                    rs.composite_pass
-                        .render_to_target(gpu, scene, lightmap, output);
+                    let scene = textures.render_target(scene_rt).expect("scene_rt");
+                    let lightmap = textures.render_target(light_rt).expect("light_rt");
+                    let output = textures.render_target(hdr_rt).expect("hdr_rt");
+                    rs.composite_pass.render_to_target(gpu, scene, lightmap, output);
                 } else if pass.handle == vignette_pass {
-                    let input = textures
-                        .render_target(hdr_rt)
-                        .expect("hdr_rt should resolve to a render target");
-                    let output = textures
-                        .render_target(graded_rt)
-                        .expect("graded_rt should resolve to a render target");
+                    let input = textures.render_target(hdr_rt).expect("hdr_rt");
+                    let output = textures.render_target(graded_rt).expect("graded_rt");
                     rs.vignette.apply_to_target(gpu, input, output);
                 } else if pass.handle == bloom_pass {
-                    let input = textures
-                        .render_target(graded_rt)
-                        .expect("graded_rt should resolve to a render target");
-                    let output = textures
-                        .render_target(bloom_rt)
-                        .expect("bloom_rt should resolve to a render target");
+                    let input = textures.render_target(graded_rt).expect("graded_rt");
+                    let output = textures.render_target(bloom_rt).expect("bloom_rt");
                     rs.bloom.apply(gpu, input, output);
                 } else if pass.handle == tonemap_pass {
-                    let input = textures
-                        .render_target(bloom_rt)
-                        .expect("bloom_rt should resolve to a render target");
+                    let input = textures.render_target(bloom_rt).expect("bloom_rt");
                     rs.tonemap.apply_to_surface(gpu, input);
                 }
                 Ok(())
@@ -563,19 +449,7 @@ fn main() {
             if let Err(err) = execute_result {
                 eprintln!("[neon_galaxy] render graph error: {err}");
             }
-        },
-        // ── Resize ──────────────────────────────────────────────────────
-        move |_world, gpu, _old_size, new_size| {
-            resize_graph.borrow_mut().destroy_physical_resources();
-            if let Some(state) = resize_state.borrow_mut().as_mut() {
-                state.resize(gpu, new_size[0], new_size[1]);
-            }
-        },
-        // ── Shutdown ────────────────────────────────────────────────────
-        move |_world, _gpu| {
-            shutdown_graph.borrow_mut().destroy_physical_resources();
-        },
-    );
+        });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

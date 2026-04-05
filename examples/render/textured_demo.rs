@@ -11,8 +11,9 @@
 //! ```
 
 use sky_engine::app::{App, AppConfig};
+use sky_engine::ecs::World;
 use sky_engine::render::{
-    Camera2D, Color, Renderer2D, Renderer2DConfig, Scene2D, Sprite2D, Texture, Transform2D,
+    Camera2D, Color, Renderer2DConfig, Scene2D, Sprite2D, Texture, Transform2D,
 };
 
 const NUM_PARTICLES: usize = 3000;
@@ -78,26 +79,25 @@ fn main() {
         })
         .collect();
 
-    let mut renderer: Option<Renderer2D> = None;
     let mut circle_tex: Option<Texture> = None;
     let mut checker_tex: Option<Texture> = None;
     let mut scene = Scene2D::new();
     let mut camera = Camera2D::new(960.0, 640.0);
     let mut time = 0.0f32;
 
-    App::run(
-        AppConfig::new("SkyEngine — Scene2D Textured Demo", 960, 640),
-        |_world, _gpu| {},
-        move |ctx| {
+    let mut world = World::new();
+    world.insert_resource(Renderer2DConfig::unlit());
+
+    App::new(AppConfig::new("SkyEngine — Scene2D Textured Demo", 960, 640), world)
+        .run(move |ctx| {
             ctx.world.tick();
-            let dt = ctx.world.time.delta;
+            let dt = ctx.dt;
             time += dt;
 
-            if renderer.is_none() {
-                renderer = Some(Renderer2D::new(ctx.gpu, Renderer2DConfig::unlit()));
-                circle_tex = Some(Texture::circle(ctx.gpu, 64));
+            if circle_tex.is_none() {
+                circle_tex = Some(Texture::circle(ctx.gpu(), 64));
                 checker_tex = Some(Texture::checkerboard(
-                    ctx.gpu,
+                    ctx.gpu(),
                     64,
                     8,
                     [200, 180, 255, 255],
@@ -105,11 +105,10 @@ fn main() {
                 ));
             }
 
-            let renderer = renderer.as_mut().expect("renderer should exist");
             let circle = circle_tex.as_ref().expect("circle texture should exist");
             let checker = checker_tex.as_ref().expect("checker texture should exist");
 
-            let [w, h] = ctx.gpu.surface_size();
+            let [w, h] = ctx.surface_size();
             camera.set_viewport(w as f32, h as f32);
 
             for particle in &mut particles {
@@ -173,9 +172,8 @@ fn main() {
                 );
             }
 
-            renderer.render_scene(ctx.gpu, &scene);
-        },
-    );
+            ctx.render_scene(&scene);
+        });
 }
 
 struct SimpleRng {

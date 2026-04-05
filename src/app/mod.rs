@@ -7,6 +7,17 @@ pub mod config;
 pub mod input;
 pub mod runner;
 
+#[cfg(feature = "egui")]
+pub(crate) mod egui_integration;
+
 pub use config::AppConfig;
 pub use input::{Input, KeyCode};
-pub use runner::{App, AppLifecycle, FrameContext};
+pub use runner::{App, FrameContext};
+
+/// Re-export the egui crate for user convenience.
+///
+/// ```rust,ignore
+/// use sky_engine::app::egui;
+/// ```
+#[cfg(feature = "egui")]
+pub use ::egui;

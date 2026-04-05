@@ -8,7 +8,8 @@
 //! ```
 
 use sky_engine::app::{App, AppConfig};
-use sky_engine::render::{Camera2D, Color, Sprite, Texture};
+use sky_engine::ecs::World;
+use sky_engine::render::{Camera2D, Color, Renderer2DConfig, Sprite, Texture};
 use sky_engine::render::expert::SpriteBatch;
 
 fn main() {
@@ -46,69 +47,73 @@ fn main() {
     eprintln!("║  Sprites │  FPS   │ Frame (ms) │ Draw Calls      ║");
     eprintln!("╠══════════════════════════════════════════════════╣");
 
-    App::run(
+    let mut world = World::new();
+    world.insert_resource(Renderer2DConfig::unlit());
+
+    App::new(
         {
             let mut cfg = AppConfig::new("SkyEngine — Perf Test", 1280, 720);
             cfg.vsync = false;
             cfg
         },
-        |_world, _gpu| {},
-        move |ctx| {
-            ctx.world.tick();
-            let dt = ctx.world.time.delta;
-            time += dt;
-            frame_count += 1;
-            fps_timer += dt;
-            level_timer += dt;
+        world,
+    )
+    .run(move |ctx| {
+        ctx.world.tick();
+        let dt = ctx.dt;
+        time += dt;
+        frame_count += 1;
+        fps_timer += dt;
+        level_timer += dt;
 
-            // Lazy init
-            if batch.is_none() {
-                let b = SpriteBatch::new(ctx.gpu);
-                circle_tex = Some(Texture::circle(ctx.gpu, 32));
-                batch = Some(b);
-            }
-            let batch = batch.as_mut().unwrap();
-            let circle = circle_tex.as_ref().unwrap();
+        // Lazy init
+        if batch.is_none() {
+            let gpu = ctx.gpu();
+            let b = SpriteBatch::new(gpu);
+            circle_tex = Some(Texture::circle(gpu, 32));
+            batch = Some(b);
+        }
+        let batch = batch.as_mut().unwrap();
+        let circle = circle_tex.as_ref().unwrap();
 
-            // Resize camera
-            let [w, h] = ctx.gpu.surface_size();
-            camera.set_viewport(w as f32, h as f32);
+        // Resize camera
+        let [w, h] = ctx.surface_size();
+        camera.set_viewport(w as f32, h as f32);
 
-            // FPS reporting (every second)
-            if fps_timer >= 1.0 {
-                let fps = frame_count as f32 / fps_timer;
-                let frame_ms = fps_timer * 1000.0 / frame_count as f32;
-                eprintln!(
-                    "║  {:>6}  │ {:>5.0}  │   {:>6.2}   │      1          ║",
-                    current_count, fps, frame_ms
-                );
-                fps_timer = 0.0;
-                frame_count = 0;
-            }
+        // FPS reporting (every second)
+        if fps_timer >= 1.0 {
+            let fps = frame_count as f32 / fps_timer;
+            let frame_ms = fps_timer * 1000.0 / frame_count as f32;
+            eprintln!(
+                "║  {:>6}  │ {:>5.0}  │   {:>6.2}   │      1          ║",
+                current_count, fps, frame_ms
+            );
+            fps_timer = 0.0;
+            frame_count = 0;
+        }
 
-            // Level progression (every 5 seconds)
-            if level_timer >= 5.0 && level_idx + 1 < levels.len() {
-                level_idx += 1;
-                current_count = levels[level_idx];
-                level_timer = 0.0;
-                fps_timer = 0.0;
-                frame_count = 0;
-                eprintln!("╠──────────────────────────────────────────────────╣");
-            }
+        // Level progression (every 5 seconds)
+        if level_timer >= 5.0 && level_idx + 1 < levels.len() {
+            level_idx += 1;
+            current_count = levels[level_idx];
+            level_timer = 0.0;
+            fps_timer = 0.0;
+            frame_count = 0;
+            eprintln!("╠──────────────────────────────────────────────────╣");
+        }
 
-            // Draw
-            batch.set_texture(circle);
-            let n = current_count as usize;
-            for i in 0..n {
-                let (x, y, size, hue, spin) = positions[i];
-                let angle = time * spin;
-                let h = (hue + time * 30.0) % 360.0;
-                let color = Color::hsl(h, 0.8, 0.6);
-                batch.draw(Sprite::new(x, y, size, size).rotation(angle).color(color));
-            }
-            batch.flush_to_surface(ctx.gpu, &camera, Some(Color::new(0.02, 0.02, 0.05, 1.0)));
-        },
-    );
+        // Draw
+        batch.set_texture(circle);
+        let n = current_count as usize;
+        for i in 0..n {
+            let (x, y, size, hue, spin) = positions[i];
+            let angle = time * spin;
+            let h = (hue + time * 30.0) % 360.0;
+            let color = Color::hsl(h, 0.8, 0.6);
+            batch.draw(Sprite::new(x, y, size, size).rotation(angle).color(color));
+        }
+        batch.flush_to_surface(ctx.gpu(), &camera, Some(Color::new(0.02, 0.02, 0.05, 1.0)));
+    });
 }
 
 struct SimpleRng {

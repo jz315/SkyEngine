@@ -6,6 +6,7 @@ use std::collections::HashSet;
 ///
 /// Updated by the [`AppRunner`] from winit events. Available as a resource
 /// in the ECS world.
+#[derive(Clone)]
 pub struct Input {
     keys_held: HashSet<KeyCode>,
     keys_pressed: HashSet<KeyCode>,

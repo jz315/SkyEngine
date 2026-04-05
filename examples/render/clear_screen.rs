@@ -5,15 +5,16 @@
 //! ```
 
 use sky_engine::app::{App, AppConfig};
+use sky_engine::ecs::World;
+use sky_engine::render::Renderer2DConfig;
 
 fn main() {
-    App::run(
-        AppConfig::new("SkyEngine — Clear Screen", 960, 640),
-        |_world, _gpu| {
-            eprintln!("[clear_screen] Setup complete. Press Escape to exit.");
-        },
-        |ctx| {
-            ctx.gpu.with_surface_pass(
+    let mut world = World::new();
+    world.insert_resource(Renderer2DConfig::unlit());
+
+    App::new(AppConfig::new("SkyEngine — Clear Screen", 960, 640), world)
+        .run(|ctx| {
+            ctx.gpu().with_surface_pass(
                 "clear_screen",
                 Some(wgpu::Color {
                     r: 0.05,
@@ -23,6 +24,5 @@ fn main() {
                 }),
                 |_pass| {},
             );
-        },
-    );
+        });
 }

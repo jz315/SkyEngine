@@ -144,86 +144,6 @@ cargo bench --bench fair -- flecs
 
 完整示例索引见 [`examples/README.md`](examples/README.md)。如果你是第一次接触这个仓库，建议按“ECS 入门 → Render API → 完整 Demo”的顺序阅读。
 
-
-
----
-
-## 📁 项目结构
-
-```
-SkyEngine/
-├── src/
-│   ├── lib.rs                  # Crate 入口，全局分配器，模块导出
-│   ├── ecs/                    # 🏗️ ECS 核心
-│   │   ├── world.rs            #   World：实体、Archetype、资源、调度
-│   │   ├── archetype.rs        #   Archetype 定义与构建器
-│   │   ├── chunk.rs            #   Chunk 块分配与列式存储
-│   │   ├── query/              #   类型化查询、过滤器、动态查询
-│   │   ├── bundle.rs           #   Tuple Bundle trait
-│   │   ├── commands.rs         #   延迟命令缓冲
-│   │   ├── system.rs           #   System trait 与分组调度
-│   │   ├── entity.rs           #   代际 EntityId
-│   │   ├── resource.rs         #   类型化单例资源
-│   │   └── raw.rs              #   底层 / 兼容 API
-│   ├── gpu/                    # 🖥️ GPU 上下文 (feature: app)
-│   │   └── context.rs          #   GpuContext — wgpu Device/Queue/Surface
-│   ├── render/                 # 🎨 2D 渲染框架 (feature: app)
-│   │   ├── core/               #   Camera2D, Color, Texture, RenderTarget
-│   │   ├── graph/              #   声明式 RenderGraph
-│   │   ├── passes/             #   SpriteBatch, LightPass, CompositePass
-│   │   ├── postfx/             #   Bloom, ToneMap, Vignette
-│   │   ├── resources/          #   TextureAtlas, Blackboard, Material
-│   │   ├── shaders/            #   WGSL 着色器 (8 个)
-│   │   ├── light.rs            #   Light2D 点光源
-│   │   └── live2d/             #   Live2D Cubism 渲染 (feature: live2d)
-│   ├── app/                    # 🚀 应用框架 (feature: app)
-│   │   ├── runner.rs           #   AppRunner — winit 事件循环
-│   │   ├── config.rs           #   AppConfig — 窗口配置
-│   │   └── input.rs            #   Input — 键鼠状态
-│   └── reflect/                # 🔍 运行时类型注册
-├── examples/                   # 📚 可运行示例
-│   ├── README.md               #   示例索引与推荐学习路径
-│   ├── ecs/                    #   纯 ECS 教程 (5 个)
-│   ├── render/                 #   渲染 API 展示 + Live2D
-│   ├── demo/                   #   完整 GPU Showcase Demo
-│   ├── compare/                #   跨引擎对比示例
-│   └── legacy/                 #   历史保留的 SkyEngine CPU Demo
-├── benches/                    # 📊 Criterion 基准测试
-│   └── fair/                   #   公平横向对比 (Sky vs hecs vs Bevy)
-├── docs/                       # 📖 文档
-│   └── api.md                  #   ECS API 参考
-├── BENCHMARKS.md               # 基准测试历史记录
-├── Cargo.toml
-└── LICENSE                     # MIT
-```
-
----
-
-## ⚙️ Feature Flags
-
-SkyEngine 使用 Cargo Feature Flags 按需启用功能模块：
-
-| Feature | 描述 | 依赖 |
-|---------|------|------|
-| `app` | 完整应用框架（窗口 + GPU + 输入） | wgpu, winit, pollster, bytemuck |
-| `asset` | 资源加载（纹理等） | image |
-| `demo` | GPU 加速 Demo | app + asset + rand |
-| `live2d` | Live2D Cubism SDK 集成 | app + asset + cubism-sys + serde_json |
-| `demo-legacy` | 旧版 CPU 渲染 Demo | minifb + rand |
-| `compare` | 跨引擎对比示例 | demo-legacy + hecs + bevy_ecs |
-| `compare-bevy` | 完整 Bevy GPU 对比 | bevy |
-
-```bash
-# 仅 ECS — 零外部依赖
-cargo test
-
-# ECS + 渲染
-cargo test --features app
-
-# 完整 Demo
-cargo run --example boids --features app --release
-```
-
 ---
 
 ## 🗺️ Roadmap
@@ -246,8 +166,6 @@ cargo run --example boids --features app --release
 
 ---
 
-
-
 ## 📄 文档
 
 | 文档 | 说明 |
@@ -259,20 +177,12 @@ cargo run --example boids --features app --release
 
 ---
 
-## 🔗 相关项目
-
-| 项目 | 说明 |
-|------|------|
-| [hecs](https://github.com/Ralith/hecs) | 精简的 Archetype ECS |
-| [Bevy](https://github.com/bevyengine/bevy) | 完整游戏引擎，插件生态 |
-| [flecs](https://github.com/SanderMertens/flecs) | C99 实现，功能丰富的 ECS |
-| [wgpu](https://github.com/gfx-rs/wgpu) | 跨平台 GPU 抽象层 |
-
----
-
 ## 🙏 致谢
 
-- [SakuraEngine](https://github.com/SakuraEngine/SakuraEngine)  — 引擎很多内容都参考了 SakuraEngine 的实现，特此感谢。
+- [SakuraEngine](https://github.com/SakuraEngine/SakuraEngine)  — 图形学部分参考了 SakuraEngine 的实现，特此感谢。
+- [hecs](https://github.com/Ralith/hecs) 
+- [Bevy](https://github.com/bevyengine/bevy) 
+- [wgpu](https://github.com/gfx-rs/wgpu) 
 
 ---
 

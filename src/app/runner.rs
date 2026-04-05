@@ -1,16 +1,18 @@
 //! Application runner — winit event loop integration.
 //!
-//! # Lifecycle model
+//! # Usage
 //!
-//! The full lifecycle is driven by the [`AppLifecycle`] trait:
+//! ```rust,no_run
+//! use sky_engine::app::{App, AppConfig};
+//! use sky_engine::ecs::World;
 //!
-//! ```text
-//!   setup → resume → resize → frame* → suspend → … → resume → resize → frame* → shutdown
-//!                                       ↑ surface_lost → (reconfigure) → resume
+//! let world = World::new();
+//! App::new(AppConfig::new("Hello", 960, 640), world)
+//!     .run(|ctx| {
+//!         ctx.world.tick();
+//!         ctx.render();
+//!     });
 //! ```
-//!
-//! Simpler apps can use [`App::run`] or [`App::run_with_lifecycle`] which
-//! internally adapt plain closures into the trait.
 
 use std::sync::Arc;
 
@@ -23,305 +25,221 @@ use crate::app::config::AppConfig;
 use crate::app::input::{Input, KeyCode};
 use crate::ecs::World;
 use crate::gpu::GpuContext;
+use crate::render::renderer2d::{Renderer2D, Renderer2DConfig};
+use crate::render::scene2d::Scene2D;
+use crate::render::RendererStats;
 
-/// Frame context passed to the user's update callback each frame.
+// ── FrameContext ────────────────────────────────────────────────────────────
+
+/// Per-frame context passed to the user's frame callback.
+///
+/// Provides access to the ECS world, input state, and rendering facilities.
+///
+/// # Quick start
+///
+/// ```rust,no_run
+/// # use sky_engine::app::FrameContext;
+/// fn frame(ctx: &mut FrameContext) {
+///     ctx.world.tick();      // advance ECS systems
+///     ctx.render();          // draw Camera/Sprite/Light entities
+/// }
+/// ```
 pub struct FrameContext<'a> {
-    /// The ECS world.
+    /// The ECS world.  Spawn entities, run queries, tick systems — all here.
     pub world: &'a mut World,
-    /// The GPU backend.
-    pub gpu: &'a mut GpuContext,
-    /// Input state for this frame.
+
+    /// Input state for this frame (keyboard + mouse).
+    ///
+    /// Also available as a world resource via
+    /// `world.get_resource::<Input>()`.
     pub input: &'a Input,
-    /// The application window.  Use `window.set_title()` to update the title
-    /// bar (e.g. for FPS display).
-    pub window: &'a winit::window::Window,
-}
 
-// ── AppLifecycle trait ──────────────────────────────────────────────────────
-
-/// Complete lifecycle hooks for a SkyEngine application.
-///
-/// Implement this trait to get fine-grained control over the application's
-/// response to window, surface, and GPU events.
-///
-/// All methods except [`setup`] and [`frame`] have default no-op
-/// implementations, so simple apps only need to implement those two.
-pub trait AppLifecycle: 'static {
-    /// Called **once** after the GPU backend and ECS world are initialised.
-    fn setup(&mut self, world: &mut World, gpu: &mut GpuContext);
-
-    /// Called each time the GPU surface becomes available.
-    ///
-    /// On desktop this fires once right after `setup`.  On mobile platforms
-    /// it fires every time the app returns from a suspended state.
-    ///
-    /// Use this to (re)create render graphs, pipelines, or other resources
-    /// that depend on a valid surface.
-    fn resume(&mut self, _world: &mut World, _gpu: &mut GpuContext) {}
-
-    /// Called when the window/surface size changes.
-    fn resize(
-        &mut self,
-        _world: &mut World,
-        _gpu: &mut GpuContext,
-        _old_size: [u32; 2],
-        _new_size: [u32; 2],
-    ) {
-    }
-
-    /// Called when the window is about to lose its surface.
-    ///
-    /// Release GPU resources that are surface-dependent (render targets,
-    /// swapchain bind groups, etc.).
-    fn suspend(&mut self, _world: &mut World, _gpu: &mut GpuContext) {}
-
-    /// Called every frame with a [`FrameContext`].
-    fn frame(&mut self, ctx: FrameContext<'_>);
-
-    /// Called when the GPU surface is lost and has been reconfigured.
-    ///
-    /// The runner automatically reconfigures the surface; this callback is
-    /// an opportunity to invalidate bind-group caches and similar state
-    /// that captured the old surface's image handles.
-    fn surface_lost(&mut self, _world: &mut World, _gpu: &mut GpuContext) {}
-
-    /// Called exactly once before the process exits.
-    fn shutdown(&mut self, _world: &mut World, _gpu: &mut GpuContext) {}
-}
-
-// ── Public entry points ─────────────────────────────────────────────────────
-
-/// The main application entry point.
-///
-/// Provides three levels of API:
-///
-/// 1. [`run`] / [`run_with_world`] — simplest, setup + frame closure
-/// 2. [`run_with_lifecycle`] / [`run_with_lifecycle_and_world`] — adds resize
-///    and shutdown closures
-/// 3. [`run_lifecycle`] / [`run_lifecycle_with_world`] — full [`AppLifecycle`]
-///    trait
-///
-/// The `_with_world` variants accept a pre-populated [`World`] so that ECS
-/// entities, resources, and systems can be set up *before* the event loop
-/// starts.  This eliminates the need to wrap a separate `World` in
-/// `Rc<RefCell<>>` when using the closure-based APIs.
-pub struct App;
-
-impl App {
-    // ── Minimal closure API ─────────────────────────────────────────────
-
-    /// Create the window, initialise the GPU backend and a **fresh** ECS
-    /// world, call `setup`, then enter the main loop.
-    pub fn run<S, F>(config: AppConfig, setup: S, frame: F)
-    where
-        S: FnOnce(&mut World, &mut GpuContext) + 'static,
-        F: FnMut(FrameContext<'_>) + 'static,
-    {
-        Self::run_with_lifecycle(
-            config,
-            setup,
-            frame,
-            |_world, _gpu, _old_size, _new_size| {},
-            |_world, _gpu| {},
-        );
-    }
-
-    /// Like [`run`], but uses a **pre-populated** [`World`].
-    ///
-    /// The world is available in every lifecycle callback (`setup`, `frame`,
-    /// `resize`, `shutdown`) via the `&mut World` / [`FrameContext::world`]
-    /// parameter.
-    pub fn run_with_world<S, F>(config: AppConfig, world: World, setup: S, frame: F)
-    where
-        S: FnOnce(&mut World, &mut GpuContext) + 'static,
-        F: FnMut(FrameContext<'_>) + 'static,
-    {
-        Self::run_with_lifecycle_and_world(
-            config,
-            world,
-            setup,
-            frame,
-            |_world, _gpu, _old_size, _new_size| {},
-            |_world, _gpu| {},
-        );
-    }
-
-    // ── Full closure API ────────────────────────────────────────────────
-
-    /// Like [`run`], but also exposes resize and shutdown lifecycle hooks.
-    pub fn run_with_lifecycle<S, F, R, T>(
-        config: AppConfig,
-        setup: S,
-        frame: F,
-        resize: R,
-        shutdown: T,
-    ) where
-        S: FnOnce(&mut World, &mut GpuContext) + 'static,
-        F: FnMut(FrameContext<'_>) + 'static,
-        R: FnMut(&mut World, &mut GpuContext, [u32; 2], [u32; 2]) + 'static,
-        T: FnOnce(&mut World, &mut GpuContext) + 'static,
-    {
-        Self::run_lifecycle(
-            config,
-            Self::make_closure_lifecycle(setup, frame, resize, shutdown),
-        );
-    }
-
-    /// Like [`run_with_lifecycle`], but uses a **pre-populated** [`World`].
-    pub fn run_with_lifecycle_and_world<S, F, R, T>(
-        config: AppConfig,
-        world: World,
-        setup: S,
-        frame: F,
-        resize: R,
-        shutdown: T,
-    ) where
-        S: FnOnce(&mut World, &mut GpuContext) + 'static,
-        F: FnMut(FrameContext<'_>) + 'static,
-        R: FnMut(&mut World, &mut GpuContext, [u32; 2], [u32; 2]) + 'static,
-        T: FnOnce(&mut World, &mut GpuContext) + 'static,
-    {
-        Self::run_lifecycle_with_world(
-            config,
-            world,
-            Self::make_closure_lifecycle(setup, frame, resize, shutdown),
-        );
-    }
-
-    // ── Trait-based API ─────────────────────────────────────────────────
-
-    /// Run with a full [`AppLifecycle`] implementation and a **fresh** world.
-    ///
-    /// The internal world is created when the GPU surface becomes available
-    /// and passed to [`AppLifecycle::setup`].
-    pub fn run_lifecycle(config: AppConfig, lifecycle: impl AppLifecycle) {
-        Self::run_lifecycle_inner(config, None, lifecycle);
-    }
-
-    /// Run with a full [`AppLifecycle`] implementation and a
-    /// **pre-populated** [`World`].
-    ///
-    /// The provided world is passed to [`AppLifecycle::setup`] and reused
-    /// for all subsequent lifecycle callbacks.  This is the recommended
-    /// entry point for applications that need to register ECS systems,
-    /// resources, or entities before the event loop starts.
-    pub fn run_lifecycle_with_world(config: AppConfig, world: World, lifecycle: impl AppLifecycle) {
-        Self::run_lifecycle_inner(config, Some(world), lifecycle);
-    }
+    /// Frame delta time in seconds.
+    pub dt: f32,
 
     // ── Internal ────────────────────────────────────────────────────────
+    gpu: &'a mut GpuContext,
+    renderer: &'a mut Renderer2D,
+    window: &'a Window,
+    exit_requested: &'a mut bool,
+    #[cfg(feature = "egui")]
+    egui: &'a mut crate::app::egui_integration::EguiIntegration,
+}
 
-    fn run_lifecycle_inner(
-        config: AppConfig,
-        initial_world: Option<World>,
-        lifecycle: impl AppLifecycle,
-    ) {
+impl<'a> FrameContext<'a> {
+    /// Render the current frame from ECS components.
+    ///
+    /// Extracts camera, sprites, and lights from the [`World`] and draws
+    /// them using the internal [`Renderer2D`].
+    pub fn render(&mut self) {
+        self.renderer.render_world(self.gpu, self.world);
+    }
+
+    /// Render a manually constructed [`Scene2D`].
+    pub fn render_scene(&mut self, scene: &Scene2D) {
+        self.renderer.render_scene(self.gpu, scene);
+    }
+
+    /// Current surface size in physical pixels `[width, height]`.
+    #[inline]
+    pub fn surface_size(&self) -> [u32; 2] {
+        self.gpu.surface_size()
+    }
+
+    /// Rendering statistics from the most recent `render()` / `render_scene()`.
+    #[inline]
+    pub fn render_stats(&self) -> RendererStats {
+        self.renderer.stats()
+    }
+
+    /// Update the window title bar.
+    pub fn set_title(&self, title: &str) {
+        self.window.set_title(title);
+    }
+
+    /// Direct access to the GPU backend.
+    ///
+    /// Use this for custom render passes, manual texture creation, or
+    /// anything that requires the raw wgpu device and queue.
+    #[inline]
+    pub fn gpu(&mut self) -> &mut GpuContext {
+        self.gpu
+    }
+
+    /// Request the application to exit after this frame.
+    pub fn request_exit(&mut self) {
+        *self.exit_requested = true;
+    }
+
+    /// Run an egui UI overlay.
+    ///
+    /// The closure receives the raw [`egui::Context`] — write standard egui
+    /// code directly.  The UI is rendered on top of the current surface
+    /// content at the end of the frame.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// ctx.egui(|egui_ctx| {
+    ///     egui::Window::new("Debug").show(egui_ctx, |ui| {
+    ///         ui.label("hello");
+    ///     });
+    /// });
+    /// ```
+    ///
+    /// Requires `--features egui`.
+    #[cfg(feature = "egui")]
+    pub fn egui(&mut self, ui_fn: impl FnMut(&egui::Context)) {
+        self.egui.run(self.window, ui_fn);
+    }
+}
+
+// ── App builder ─────────────────────────────────────────────────────────────
+
+/// Application builder.
+///
+/// Create with [`App::new`], optionally chain [`.setup()`](App::setup),
+/// then call [`.run()`](App::run) to enter the main loop.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use sky_engine::app::{App, AppConfig};
+/// use sky_engine::ecs::World;
+///
+/// // Minimal — no setup needed
+/// App::new(AppConfig::new("Demo", 960, 640), World::new())
+///     .run(|ctx| { ctx.render(); });
+///
+/// // With GPU setup for texture creation
+/// let world = World::new();
+/// App::new(AppConfig::new("Demo", 960, 640), world)
+///     .setup(|world, gpu| {
+///         // create textures, spawn GPU-dependent entities
+///     })
+///     .run(|ctx| {
+///         ctx.world.tick();
+///         ctx.render();
+///     });
+/// ```
+pub struct App {
+    config: AppConfig,
+    world: World,
+    setup: Option<Box<dyn FnOnce(&mut World, &mut GpuContext)>>,
+}
+
+impl App {
+    /// Create a new application builder.
+    ///
+    /// The [`World`] is the centre of your application — spawn entities,
+    /// register systems, and insert resources before calling `.run()`.
+    pub fn new(config: AppConfig, world: World) -> Self {
+        Self {
+            config,
+            world,
+            setup: None,
+        }
+    }
+
+    /// Register a one-time setup callback that runs after the GPU is ready.
+    ///
+    /// Use this to create GPU-dependent resources like textures.
+    /// Called exactly once, before the first frame.
+    pub fn setup(mut self, f: impl FnOnce(&mut World, &mut GpuContext) + 'static) -> Self {
+        self.setup = Some(Box::new(f));
+        self
+    }
+
+    /// Enter the main loop.
+    ///
+    /// The `frame` closure is called once per frame with a [`FrameContext`]
+    /// that provides access to the ECS world, input, and rendering.
+    ///
+    /// This function does **not** return under normal operation.
+    pub fn run(self, frame: impl FnMut(&mut FrameContext) + 'static) {
         let event_loop = EventLoop::new().expect("Failed to create event loop");
         event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
 
-        let mut handler = LifecycleHandler {
-            config,
-            lifecycle: Box::new(lifecycle),
-            initial_world,
+        let mut handler = RunnerHandler {
+            config: self.config,
+            world: Some(self.world),
+            setup: self.setup,
+            frame: Box::new(frame),
             state: None,
-            setup_done: false,
-            shutdown_done: false,
         };
 
         event_loop.run_app(&mut handler).expect("Event loop error");
-    }
-
-    fn make_closure_lifecycle<S, F, R, T>(
-        setup: S,
-        frame: F,
-        resize: R,
-        shutdown: T,
-    ) -> impl AppLifecycle
-    where
-        S: FnOnce(&mut World, &mut GpuContext) + 'static,
-        F: FnMut(FrameContext<'_>) + 'static,
-        R: FnMut(&mut World, &mut GpuContext, [u32; 2], [u32; 2]) + 'static,
-        T: FnOnce(&mut World, &mut GpuContext) + 'static,
-    {
-        struct ClosureLifecycle<S, F, R, T> {
-            setup_fn: Option<S>,
-            frame_fn: F,
-            resize_fn: R,
-            shutdown_fn: Option<T>,
-        }
-
-        impl<S, F, R, T> AppLifecycle for ClosureLifecycle<S, F, R, T>
-        where
-            S: FnOnce(&mut World, &mut GpuContext) + 'static,
-            F: FnMut(FrameContext<'_>) + 'static,
-            R: FnMut(&mut World, &mut GpuContext, [u32; 2], [u32; 2]) + 'static,
-            T: FnOnce(&mut World, &mut GpuContext) + 'static,
-        {
-            fn setup(&mut self, world: &mut World, gpu: &mut GpuContext) {
-                if let Some(f) = self.setup_fn.take() {
-                    f(world, gpu);
-                }
-            }
-            fn frame(&mut self, ctx: FrameContext<'_>) {
-                (self.frame_fn)(ctx);
-            }
-            fn resize(
-                &mut self,
-                world: &mut World,
-                gpu: &mut GpuContext,
-                old_size: [u32; 2],
-                new_size: [u32; 2],
-            ) {
-                (self.resize_fn)(world, gpu, old_size, new_size);
-            }
-            fn shutdown(&mut self, world: &mut World, gpu: &mut GpuContext) {
-                if let Some(f) = self.shutdown_fn.take() {
-                    f(world, gpu);
-                }
-            }
-        }
-
-        ClosureLifecycle {
-            setup_fn: Some(setup),
-            frame_fn: frame,
-            resize_fn: resize,
-            shutdown_fn: Some(shutdown),
-        }
     }
 }
 
 // ── Internal state ──────────────────────────────────────────────────────────
 
-/// Internal state created once the window is available.
 struct AppState {
     window: Arc<Window>,
     gpu: GpuContext,
-    world: World,
     input: Input,
+    renderer: Renderer2D,
+    last_frame_time: Option<std::time::Instant>,
+    #[cfg(feature = "egui")]
+    egui: crate::app::egui_integration::EguiIntegration,
 }
 
-struct LifecycleHandler {
+struct RunnerHandler {
     config: AppConfig,
-    lifecycle: Box<dyn AppLifecycle>,
-    initial_world: Option<World>,
+    world: Option<World>,
+    setup: Option<Box<dyn FnOnce(&mut World, &mut GpuContext)>>,
+    frame: Box<dyn FnMut(&mut FrameContext)>,
     state: Option<AppState>,
-    setup_done: bool,
-    shutdown_done: bool,
 }
 
-impl ApplicationHandler for LifecycleHandler {
+impl ApplicationHandler for RunnerHandler {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.state.is_some() {
-            // Surface restored — fire resume + resize.
-            let state = self.state.as_mut().unwrap();
-            self.lifecycle.resume(&mut state.world, &mut state.gpu);
-            let size = state.gpu.surface_size();
-            self.lifecycle
-                .resize(&mut state.world, &mut state.gpu, size, size);
+            // Surface restored; the next RedrawRequested will handle it.
             return;
         }
 
-        // First resume — create window, backend, and world.
+        // First resume — create window, GPU backend, and renderer.
         let attrs = WindowAttributes::default()
             .with_title(&self.config.title)
             .with_inner_size(winit::dpi::LogicalSize::new(
@@ -335,6 +253,7 @@ impl ApplicationHandler for LifecycleHandler {
                 .create_window(attrs)
                 .expect("Failed to create window"),
         );
+
         let mut gpu = match GpuContext::try_new(window.clone(), self.config.vsync) {
             Ok(gpu) => gpu,
             Err(err) => {
@@ -352,30 +271,39 @@ impl ApplicationHandler for LifecycleHandler {
         );
         window.set_title(&title);
 
-        let mut world = self.initial_world.take().unwrap_or_else(World::new);
-        let input = Input::new();
+        // Determine render path from World resource (default: lit_hdr).
+        let world = self.world.as_mut().expect("world must be present");
+        let render_config = world
+            .get_resource::<Renderer2DConfig>()
+            .copied()
+            .unwrap_or(Renderer2DConfig::lit_hdr());
+        let renderer = Renderer2D::new(&gpu, render_config);
 
-        // One-time setup
-        if !self.setup_done {
-            self.lifecycle.setup(&mut world, &mut gpu);
-            self.setup_done = true;
+        // Run one-time setup.
+        if let Some(setup) = self.setup.take() {
+            setup(world, &mut gpu);
         }
 
-        // Initial resume
-        self.lifecycle.resume(&mut world, &mut gpu);
+        // Ensure Input resource exists in World for systems.
+        let input = Input::new();
+        world.insert_resource(input.clone());
+
+        #[cfg(feature = "egui")]
+        let egui = crate::app::egui_integration::EguiIntegration::new(
+            &window,
+            gpu.device(),
+            gpu.surface_format(),
+        );
 
         self.state = Some(AppState {
             window,
             gpu,
-            world,
             input,
+            renderer,
+            last_frame_time: None,
+            #[cfg(feature = "egui")]
+            egui,
         });
-    }
-
-    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(state) = self.state.as_mut() {
-            self.lifecycle.suspend(&mut state.world, &mut state.gpu);
-        }
     }
 
     fn window_event(
@@ -395,14 +323,65 @@ impl ApplicationHandler for LifecycleHandler {
             }
 
             WindowEvent::Resized(size) => {
-                let old_size = state.gpu.surface_size();
                 state.gpu.resize_surface(size.width, size.height);
-                let new_size = state.gpu.surface_size();
-                self.lifecycle
-                    .resize(&mut state.world, &mut state.gpu, old_size, new_size);
+                state.renderer.resize(&state.gpu, size.width, size.height);
                 state.window.request_redraw();
             }
 
+            // Let egui process events first; if consumed, skip engine Input.
+            ref ev
+                if cfg!(feature = "egui")
+                    && matches!(
+                        ev,
+                        WindowEvent::KeyboardInput { .. }
+                            | WindowEvent::CursorMoved { .. }
+                            | WindowEvent::MouseInput { .. }
+                            | WindowEvent::MouseWheel { .. }
+                    ) =>
+            {
+                #[cfg(feature = "egui")]
+                {
+                    if state.egui.on_window_event(&state.window, ev) {
+                        return; // egui consumed it
+                    }
+                }
+                // Not consumed — fall through to engine input handling.
+                match ev {
+                    WindowEvent::KeyboardInput { event, .. } => {
+                        if let winit::keyboard::PhysicalKey::Code(code) = event.physical_key {
+                            let key = KeyCode::from_winit(code);
+                            match event.state {
+                                ElementState::Pressed => state.input.key_down(key),
+                                ElementState::Released => state.input.key_up(key),
+                            }
+                        }
+                    }
+                    WindowEvent::CursorMoved { position, .. } => {
+                        state
+                            .input
+                            .set_mouse_position(position.x as f32, position.y as f32);
+                    }
+                    WindowEvent::MouseInput {
+                        state: btn_state,
+                        button,
+                        ..
+                    } => {
+                        let idx = match button {
+                            winit::event::MouseButton::Left => 0,
+                            winit::event::MouseButton::Right => 1,
+                            winit::event::MouseButton::Middle => 2,
+                            _ => return,
+                        };
+                        match btn_state {
+                            ElementState::Pressed => state.input.mouse_button_down(idx),
+                            ElementState::Released => state.input.mouse_button_up(idx),
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            #[cfg(not(feature = "egui"))]
             WindowEvent::KeyboardInput { event, .. } => {
                 if let winit::keyboard::PhysicalKey::Code(code) = event.physical_key {
                     let key = KeyCode::from_winit(code);
@@ -411,21 +390,16 @@ impl ApplicationHandler for LifecycleHandler {
                         ElementState::Released => state.input.key_up(key),
                     }
                 }
-                if event.state == ElementState::Pressed {
-                    if let winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::Escape) =
-                        event.physical_key
-                    {
-                        event_loop.exit();
-                    }
-                }
             }
 
+            #[cfg(not(feature = "egui"))]
             WindowEvent::CursorMoved { position, .. } => {
                 state
                     .input
                     .set_mouse_position(position.x as f32, position.y as f32);
             }
 
+            #[cfg(not(feature = "egui"))]
             WindowEvent::MouseInput {
                 state: btn_state,
                 button,
@@ -444,26 +418,60 @@ impl ApplicationHandler for LifecycleHandler {
             }
 
             WindowEvent::RedrawRequested => {
+                // Compute dt from wall clock.
+                let now = std::time::Instant::now();
+                let dt = state
+                    .last_frame_time
+                    .map(|t| now.duration_since(t).as_secs_f32())
+                    .unwrap_or(1.0 / 60.0);
+                state.last_frame_time = Some(now);
+
+                let world = self.world.as_mut().expect("world must exist");
+
+                // Sync Input snapshot to World resource for Systems.
+                world.insert_resource(state.input.clone());
+
                 match state.gpu.begin_frame() {
                     Ok(()) => {
-                        self.lifecycle.frame(FrameContext {
-                            world: &mut state.world,
-                            gpu: &mut state.gpu,
-                            input: &state.input,
-                            window: &state.window,
-                        });
+                        let mut exit_requested = false;
+                        {
+                            let ctx = &mut FrameContext {
+                                world,
+                                input: &state.input,
+                                dt,
+                                gpu: &mut state.gpu,
+                                renderer: &mut state.renderer,
+                                window: &state.window,
+                                exit_requested: &mut exit_requested,
+                                #[cfg(feature = "egui")]
+                                egui: &mut state.egui,
+                            };
+                            (self.frame)(ctx);
+                        }
+
+                        // Render egui overlay (after user frame, before present).
+                        #[cfg(feature = "egui")]
+                        {
+                            let surface_view = state.gpu.surface_view().clone();
+                            state.egui.end_frame(
+                                state.gpu.device(),
+                                state.gpu.queue(),
+                                state.gpu.encoder(),
+                                &surface_view,
+                                &state.window,
+                            );
+                        }
+
                         state.gpu.end_frame();
+
+                        if exit_requested {
+                            event_loop.exit();
+                        }
                     }
                     Err(crate::gpu::GpuError::SurfaceLost) => {
-                        // Surface was reconfigured by the backend.
-                        // Notify the lifecycle so it can invalidate caches.
-                        self.lifecycle
-                            .surface_lost(&mut state.world, &mut state.gpu);
-                        // Fire resume + resize so resources can be rebuilt.
-                        self.lifecycle.resume(&mut state.world, &mut state.gpu);
-                        let size = state.gpu.surface_size();
-                        self.lifecycle
-                            .resize(&mut state.world, &mut state.gpu, size, size);
+                        state.renderer.surface_lost();
+                        let [w, h] = state.gpu.surface_size();
+                        state.renderer.resize(&state.gpu, w, h);
                     }
                     Err(e) => {
                         eprintln!("[SkyEngine] GPU error: {e}");
@@ -479,12 +487,6 @@ impl ApplicationHandler for LifecycleHandler {
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-        if self.shutdown_done {
-            return;
-        }
-        self.shutdown_done = true;
-        if let Some(mut state) = self.state.take() {
-            self.lifecycle.shutdown(&mut state.world, &mut state.gpu);
-        }
+        // World, GPU, and renderer are dropped automatically.
     }
 }
