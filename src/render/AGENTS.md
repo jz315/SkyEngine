@@ -3,7 +3,7 @@
 ## Overview
 - This module is SkyEngine's `wgpu`-based 2D rendering framework.
 - Public API is intentionally split into two layers:
-  - `sky_engine::render::*` is the curated high-level 2D facade (`Renderer2D`, `Scene2D`, ECS render components/resources).
+  - `sky_engine::render::*` is the curated high-level 2D facade (`Renderer2D` plus ECS render components/resources).
   - `sky_engine::render::expert::*` is the explicit low-level entry point for `RenderGraph`, passes, post-fx, targets, and resource systems.
 - Internally it still uses a layered architecture: core GPU primitives → declarative render graph → passes & post-processing → resource management.
 - The GPU backend is `wgpu` (WebGPU/Vulkan/DX12/Metal).  All rendering goes through `GpuContext` (`src/gpu/context.rs`).
@@ -16,6 +16,8 @@
 render/
 ├── core/         — Foundational GPU types (camera, color, texture, render target, fullscreen pass)
 ├── graph/        — Declarative render graph system (has its own AGENTS.md)
+├── gpu_scene2d.rs— GPU-side prepared scene buffers and upload/cache helpers
+├── pipeline/     — Multi-view high-level 2D pipeline, extractor, prepared-frame data, and feature nodes
 ├── passes/       — High-level rendering passes (SpriteBatch, MeshPass, LightPass, CompositePass)
 ├── postfx/       — Post-processing effect chain (Bloom, ToneMap, Vignette)
 ├── resources/    — Shared resource systems (TextureAtlas, Blackboard, Material, Mesh)
@@ -40,6 +42,19 @@ render/
 - `Light2D` — 2D point light descriptor with position, color, radius, intensity, temperature (Kelvin), and falloff.
 - `color_temperature()` — approximate Planckian-locus RGB from Kelvin (1000–15000 K range, clamped and normalized).
 - Builder-style API: `Light2D::new(x, y, radius).temperature(3000.0).intensity(2.0)`.
+
+### `gpu_scene2d.rs`
+- `GpuScene2D` — GPU-side storage for the high-level renderer's prepared sprite/light instance buffers, per-view draw spans, and texture tables.
+- `sprite_buffer` / `light_buffer` receive the fully prepared per-frame data that the active render pipeline draws from.
+
+### `pipeline/`
+- Owns the high-level `Renderer2D` execution path: ECS extraction → prepared per-view render data → graph-backed feature execution.
+- Important files:
+  - `render_pipeline.rs` — `RenderPipeline`, feature registration, per-view graph setup, and dispatch.
+  - `extractor.rs` — incremental ECS-to-scene-cache synchronization (`SceneExtractor`).
+  - `prepared.rs` — sorted/cull-checked per-view sprite/light instances and draw spans.
+  - `state.rs` — feature setup/execution state (`PipelineState2D`, `FeatureExecutionContext2D`).
+  - `*_node.rs` / `sprite_pass.rs` — graph-backed render features used by the curated renderer path.
 
 ---
 
@@ -214,11 +229,13 @@ render/
 
 A typical lit 2D scene frame follows this order:
 
-1. **Scene pass**: `SpriteBatch::flush_to_target()` → renders sprites into an HDR `RenderTarget`.
-2. **Light pass**: `LightPass::render()` → renders lights into a lightmap `RenderTarget` (with ambient clear).
-3. **Composite pass**: `CompositePass::render_to_target()` → multiplies scene × lightmap → composited `RenderTarget`.
-4. **Post-FX chain**: `Bloom::apply()` → `ToneMap::apply_to_target()` → `Vignette::apply_to_surface()`.
-5. **Present**: `GpuContext::end_frame()` submits and presents.
+1. **Extraction**: `SceneExtractor::sync_incremental()` refreshes `SceneCache2D` from ECS/resources.
+2. **Preparation**: `PreparedRenderWorld2D::prepare_scene()` sorts visible sprites/lights per view and builds draw spans.
+3. **GPU upload**: `GpuScene2D::upload_prepared_frame()` uploads the prepared per-frame instance data consumed by the active pipeline.
+4. **Scene pass**: `SpritePass` / `SpriteBatch::flush_prepared_to_target()` renders sprites into an HDR `RenderTarget`.
+5. **Light pass**: `LightNode` / `LightPass::render_prepared()` renders lights into a lightmap `RenderTarget` (with ambient clear).
+6. **Composite + Post-FX**: `CompositeNode` / `BloomNode` / `VignetteNode` / `ToneMapNode` compose the final view output.
+7. **Present**: `ViewportBlitNode` writes the prepared view result to the surface, then `GpuContext::end_frame()` submits and presents.
 
 ## Pipeline Caching Pattern
 
@@ -238,6 +255,8 @@ All rendering passes use per-target-format pipeline caching via `FxHashMap<Textu
 - Keep the `PostFx` trait simple — `apply_to_target(ctx, input, output)`.  Surface-targeting variants are pass-specific convenience methods, not trait methods.
 - Uniform buffers must follow WGSL alignment rules (16-byte struct alignment, 4/8/16 per field).
 - When adding new shader files to `shaders/`, remember to update this file map.
+- If you touch `Renderer2D`, `pipeline/`, or `gpu_scene2d.rs`, verify the prepared per-frame buffer path remains coherent; it is the executed draw path.
+- If you change high-level render or app-facing APIs, also validate the demos/examples with `cargo check --examples --features app`. The render examples are part of the supported surface, not just optional samples.
 
 ## Test Commands
 - Run all render tests: `cargo test --features app`
@@ -247,6 +266,7 @@ All rendering passes use per-target-format pipeline caching via `FxHashMap<Textu
 - Run material tests: `cargo test --features app render::resources::material`
 - Run atlas tests: `cargo test --features app render::resources::atlas`
 - Run blackboard tests: `cargo test --features app render::resources::blackboard`
+- Run render/example compile check after public renderer or app changes: `cargo check --examples --features app`
 - GPU-dependent tests require a GPU-capable environment and use `GpuContext::new_headless()`.
 
 ## Relation to Other Modules

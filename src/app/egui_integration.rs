@@ -2,8 +2,6 @@
 //!
 //! This module is only compiled when the `egui` feature is enabled.
 
-use std::sync::Arc;
-
 /// Encapsulates all egui state: winit event translation, egui context,
 /// and wgpu renderer.
 pub(crate) struct EguiIntegration {
@@ -67,11 +65,13 @@ impl EguiIntegration {
     }
 
     /// Whether egui currently wants exclusive keyboard input (e.g. text box focused).
+    #[allow(dead_code)]
     pub fn wants_keyboard(&self) -> bool {
         self.winit_state.egui_ctx().wants_keyboard_input()
     }
 
     /// Whether egui currently wants exclusive pointer/mouse input.
+    #[allow(dead_code)]
     pub fn wants_pointer(&self) -> bool {
         self.winit_state.egui_ctx().wants_pointer_input()
     }
@@ -102,7 +102,7 @@ impl EguiIntegration {
         }
 
         // Tessellate
-        let pixels_per_point = self.winit_state.egui_ctx().pixels_per_point();
+        let pixels_per_point = output.pixels_per_point;
         let paint_jobs = self
             .winit_state
             .egui_ctx()
@@ -114,7 +114,9 @@ impl EguiIntegration {
             size_in_pixels: [size.width, size.height],
             pixels_per_point,
         };
-        self.renderer
+
+        let _ = self
+            .renderer
             .update_buffers(device, queue, encoder, &paint_jobs, &screen);
 
         // Render egui onto the surface (load existing content, don't clear)

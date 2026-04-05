@@ -13,11 +13,11 @@
 use sky_engine::app::{App, AppConfig};
 use sky_engine::ecs::World;
 use sky_engine::gpu::GpuContext;
-use sky_engine::render::{Camera2D, Color, Sprite, Texture};
 use sky_engine::render::expert::{
     Bloom, CompositePass, Light2D, LightPass, RenderGraph, SpriteBatch, TargetSize, ToneMap,
     Vignette,
 };
+use sky_engine::render::{Camera2D, Color, Sprite, Texture};
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Constants
@@ -247,7 +247,9 @@ fn main() {
         b.name("scene_rt").size(TargetSize::Surface).format(hdr);
     });
     let normal_rt = graph.create_texture(|b| {
-        b.name("normal_rt").size(TargetSize::Surface).format(wgpu::TextureFormat::Rgba8Unorm);
+        b.name("normal_rt")
+            .size(TargetSize::Surface)
+            .format(wgpu::TextureFormat::Rgba8Unorm);
     });
     let light_rt = graph.create_texture(|b| {
         b.name("light_rt").size(TargetSize::Surface).format(hdr);
@@ -269,187 +271,246 @@ fn main() {
         s.write_color_cleared(0, normal_rt, [0.5, 0.5, 1.0, 1.0]);
     });
     let lighting_pass = graph.add_render_pass("lighting", |s| {
-        s.read(normal_rt); s.write(light_rt);
+        s.read(normal_rt);
+        s.write(light_rt);
     });
     let composite_pass = graph.add_render_pass("composite", |s| {
-        s.read(scene_rt); s.read(light_rt); s.write(hdr_rt);
+        s.read(scene_rt);
+        s.read(light_rt);
+        s.write(hdr_rt);
     });
     let vignette_pass = graph.add_render_pass("vignette", |s| {
-        s.read(hdr_rt); s.write(graded_rt);
+        s.read(hdr_rt);
+        s.write(graded_rt);
     });
     let bloom_pass = graph.add_render_pass("bloom", |s| {
-        s.read(graded_rt); s.write(bloom_rt);
+        s.read(graded_rt);
+        s.write(bloom_rt);
     });
     let tonemap_pass = graph.add_render_pass("tonemap", |s| {
-        s.read(bloom_rt); s.write_surface();
+        s.read(bloom_rt);
+        s.write_surface();
     });
 
     let world = World::new();
 
     eprintln!("[neon_galaxy] Move the mouse to control the torch light.");
 
-    App::new(AppConfig::new("SkyEngine — \u{2726} Neon Galaxy \u{2726}", 1280, 720), world)
-        .run(move |ctx| {
-            ctx.world.tick();
-            sim_time += ctx.dt;
-            let time = sim_time;
+    App::new(
+        AppConfig::new("SkyEngine — \u{2726} Neon Galaxy \u{2726}", 1280, 720),
+        world,
+    )
+    .run(move |ctx: &mut sky_engine::app::FrameContext| {
+        ctx.world.tick();
+        sim_time += ctx.dt;
+        let time = sim_time;
 
-            if render_state.is_none() {
-                render_state = Some(RenderState::new(ctx.gpu()));
+        if render_state.is_none() {
+            render_state = Some(RenderState::new(ctx.gpu()));
+        }
+
+        // Handle resize
+        let size = ctx.surface_size();
+        if size != last_size && last_size != [0, 0] {
+            graph.destroy_physical_resources();
+            if let Some(rs) = render_state.as_mut() {
+                rs.resize(ctx.gpu(), size[0], size[1]);
             }
+        }
+        last_size = size;
 
-            // Handle resize
-            let size = ctx.surface_size();
-            if size != last_size && last_size != [0, 0] {
-                graph.destroy_physical_resources();
-                if let Some(rs) = render_state.as_mut() {
-                    rs.resize(ctx.gpu(), size[0], size[1]);
-                }
-            }
-            last_size = size;
-
-            let [w, h] = size;
-            let mouse = ctx.input.mouse_position();
-            let mouse_world = {
-                let rs = render_state.as_mut().unwrap();
-                rs.camera.set_viewport(w as f32, h as f32);
-                rs.camera.screen_to_world(mouse[0], mouse[1])
-            };
-
-            // ── Build lights ────────────────────────────────────────────
-            let mut lights = Vec::with_capacity(10);
-            let orbit_configs: &[(f32, f32, f32, [f32; 3], f32)] = &[
-                (300.0, 0.30, 1.1, [1.0, 0.4, 0.85], 3200.0),
-                (400.0, -0.22, 0.9, [0.3, 0.9, 0.6], 7500.0),
-                (240.0, 0.50, 1.0, [0.4, 0.5, 1.0], 12000.0),
-                (480.0, 0.15, 0.7, [1.0, 0.85, 0.3], 2200.0),
-                (360.0, -0.38, 0.85, [0.9, 0.25, 0.5], 4500.0),
-                (200.0, 0.60, 0.8, [0.2, 0.85, 0.9], 9500.0),
-            ];
-            for (i, (orbit_r, speed, intensity, tint, temperature)) in orbit_configs.iter().enumerate() {
-                let angle = time * speed + (i as f32) * 1.047;
-                let r = orbit_r + 40.0 * (time * 0.25 + i as f32).sin();
-                let x = angle.cos() * r;
-                let y = angle.sin() * r;
-                let pulse = 1.0 + 0.15 * (time * 1.5 + i as f32 * 0.7).sin();
-                lights.push(
-                    Light2D::new(x, y, 450.0 + 60.0 * pulse)
-                        .temperature(*temperature)
-                        .intensity(intensity * pulse)
-                        .falloff(2.5)
-                        .color(Color::rgb(tint[0], tint[1], tint[2])),
-                );
-            }
-            let core_pulse = 1.0 + 0.08 * (time * 0.6).sin();
-            lights.push(
-                Light2D::new(0.0, 0.0, 400.0).temperature(4500.0)
-                    .intensity(1.5 * core_pulse).falloff(2.0)
-                    .color(Color::rgb(1.0, 0.93, 0.78)),
-            );
-            lights.push(
-                Light2D::new(mouse_world[0], mouse_world[1], 220.0).temperature(5500.0)
-                    .intensity(2.0).falloff(1.8)
-                    .color(Color::rgb(1.0, 0.97, 0.92)),
-            );
-
-            // ── Draw scene sprites ──────────────────────────────────────
+        let [w, h] = size;
+        let mouse = ctx.input.mouse_position();
+        let mouse_world = {
             let rs = render_state.as_mut().unwrap();
-            let circle_tex = rs.circle_tex.clone();
-            let soft_tex = rs.soft_circle_tex.clone();
-            let normal_tex = rs.normal_tex.clone();
+            rs.camera.set_viewport(w as f32, h as f32);
+            rs.camera.screen_to_world(mouse[0], mouse[1])
+        };
 
-            // Dust lanes
-            rs.scene_batch.set_texture(&soft_tex);
-            for mote in &dust {
-                let pos = spiral_position(mote.arm_dist, mote.arm_idx, mote.angle_offset, mote.scatter, time, mote.orbit_speed);
-                let drift = 1.0 + 0.3 * (time * 0.2 + mote.arm_dist * 10.0).sin();
-                let s = mote.size * drift;
-                let hue = (mote.arm_idx as f32 * 75.0 + mote.arm_dist * 120.0 + time * 4.0) % 360.0;
-                let tint = Color::hsl(hue, 0.5, 0.35);
-                rs.scene_batch.draw(
-                    Sprite::new(pos[0], pos[1], s, s).color(Color::new(tint.r, tint.g, tint.b, mote.alpha * drift)),
+        // ── Build lights ────────────────────────────────────────────
+        let mut lights = Vec::with_capacity(10);
+        let orbit_configs: &[(f32, f32, f32, [f32; 3], f32)] = &[
+            (300.0, 0.30, 1.1, [1.0, 0.4, 0.85], 3200.0),
+            (400.0, -0.22, 0.9, [0.3, 0.9, 0.6], 7500.0),
+            (240.0, 0.50, 1.0, [0.4, 0.5, 1.0], 12000.0),
+            (480.0, 0.15, 0.7, [1.0, 0.85, 0.3], 2200.0),
+            (360.0, -0.38, 0.85, [0.9, 0.25, 0.5], 4500.0),
+            (200.0, 0.60, 0.8, [0.2, 0.85, 0.9], 9500.0),
+        ];
+        for (i, (orbit_r, speed, intensity, tint, temperature)) in orbit_configs.iter().enumerate()
+        {
+            let angle = time * speed + (i as f32) * 1.047;
+            let r = orbit_r + 40.0 * (time * 0.25 + i as f32).sin();
+            let x = angle.cos() * r;
+            let y = angle.sin() * r;
+            let pulse = 1.0 + 0.15 * (time * 1.5 + i as f32 * 0.7).sin();
+            lights.push(
+                Light2D::new(x, y, 450.0 + 60.0 * pulse)
+                    .temperature(*temperature)
+                    .intensity(intensity * pulse)
+                    .falloff(2.5)
+                    .color(Color::rgb(tint[0], tint[1], tint[2])),
+            );
+        }
+        let core_pulse = 1.0 + 0.08 * (time * 0.6).sin();
+        lights.push(
+            Light2D::new(0.0, 0.0, 400.0)
+                .temperature(4500.0)
+                .intensity(1.5 * core_pulse)
+                .falloff(2.0)
+                .color(Color::rgb(1.0, 0.93, 0.78)),
+        );
+        lights.push(
+            Light2D::new(mouse_world[0], mouse_world[1], 220.0)
+                .temperature(5500.0)
+                .intensity(2.0)
+                .falloff(1.8)
+                .color(Color::rgb(1.0, 0.97, 0.92)),
+        );
+
+        // ── Draw scene sprites ──────────────────────────────────────
+        let rs = render_state.as_mut().unwrap();
+        let circle_tex = rs.circle_tex.clone();
+        let soft_tex = rs.soft_circle_tex.clone();
+        let normal_tex = rs.normal_tex.clone();
+
+        // Dust lanes
+        rs.scene_batch.set_texture(&soft_tex);
+        for mote in &dust {
+            let pos = spiral_position(
+                mote.arm_dist,
+                mote.arm_idx,
+                mote.angle_offset,
+                mote.scatter,
+                time,
+                mote.orbit_speed,
+            );
+            let drift = 1.0 + 0.3 * (time * 0.2 + mote.arm_dist * 10.0).sin();
+            let s = mote.size * drift;
+            let hue = (mote.arm_idx as f32 * 75.0 + mote.arm_dist * 120.0 + time * 4.0) % 360.0;
+            let tint = Color::hsl(hue, 0.5, 0.35);
+            rs.scene_batch
+                .draw(Sprite::new(pos[0], pos[1], s, s).color(Color::new(
+                    tint.r,
+                    tint.g,
+                    tint.b,
+                    mote.alpha * drift,
+                )));
+        }
+
+        // Core particles
+        for cp in &core_particles {
+            let a = cp.angle + time * cp.speed;
+            let pulse = 1.0 + 0.25 * (time * 1.2 + cp.pulse_phase).sin();
+            let r = cp.dist * pulse;
+            let x = a.cos() * r;
+            let y = a.sin() * r;
+            let s = cp.size * pulse;
+            let tint = Color::hsl(cp.hue + time * 8.0, 0.65, 0.55);
+            rs.scene_batch
+                .draw(Sprite::new(x, y, s, s).color(Color::new(tint.r, tint.g, tint.b, 0.4)));
+        }
+
+        // Stars
+        rs.scene_batch.set_texture(&circle_tex);
+        for star in &stars {
+            let pos = spiral_position(
+                star.arm_dist,
+                star.arm_idx,
+                star.angle_offset,
+                star.scatter,
+                time,
+                star.orbit_speed,
+            );
+            let pulse = 1.0 + 0.22 * (time * 1.8 + star.pulse_phase).sin();
+            let s = star.size * pulse;
+            let hue = (star.hue + star.hue_shift * time) % 360.0;
+            let lightness = 0.4 + 0.2 * star.luminosity;
+            let saturation = 0.65 + 0.2 * (time * 0.5 + star.pulse_phase).cos();
+            let tint = Color::hsl(hue, saturation, lightness);
+            rs.scene_batch
+                .draw(Sprite::new(pos[0], pos[1], s, s).color(Color::new(
+                    tint.r,
+                    tint.g,
+                    tint.b,
+                    0.92 * star.luminosity,
+                )));
+        }
+
+        // Normal map pass
+        rs.normal_batch.set_texture(&normal_tex);
+        for star in &stars {
+            let pos = spiral_position(
+                star.arm_dist,
+                star.arm_idx,
+                star.angle_offset,
+                star.scatter,
+                time,
+                star.orbit_speed,
+            );
+            let pulse = 1.0 + 0.22 * (time * 1.8 + star.pulse_phase).sin();
+            let s = star.size * pulse;
+            rs.normal_batch
+                .draw(Sprite::new(pos[0], pos[1], s, s).color(Color::WHITE));
+        }
+
+        let camera = rs.camera;
+
+        // ── Execute render graph ────────────────────────────────────
+        let execute_result = graph.try_execute(ctx.gpu(), |pass, gpu, textures| {
+            let rs = render_state.as_mut().unwrap();
+            if pass.handle == scene_pass {
+                let target = textures.render_target(scene_rt).expect("scene_rt");
+                rs.scene_batch.flush_to_target(
+                    gpu,
+                    &camera,
+                    target,
+                    Some(Color::new(0.005, 0.005, 0.012, 1.0)),
                 );
-            }
-
-            // Core particles
-            for cp in &core_particles {
-                let a = cp.angle + time * cp.speed;
-                let pulse = 1.0 + 0.25 * (time * 1.2 + cp.pulse_phase).sin();
-                let r = cp.dist * pulse;
-                let x = a.cos() * r;
-                let y = a.sin() * r;
-                let s = cp.size * pulse;
-                let tint = Color::hsl(cp.hue + time * 8.0, 0.65, 0.55);
-                rs.scene_batch.draw(
-                    Sprite::new(x, y, s, s).color(Color::new(tint.r, tint.g, tint.b, 0.4)),
+            } else if pass.handle == normal_pass {
+                let target = textures.render_target(normal_rt).expect("normal_rt");
+                rs.normal_batch.flush_to_target(
+                    gpu,
+                    &camera,
+                    target,
+                    Some(Color::new(0.5, 0.5, 1.0, 1.0)),
                 );
-            }
-
-            // Stars
-            rs.scene_batch.set_texture(&circle_tex);
-            for star in &stars {
-                let pos = spiral_position(star.arm_dist, star.arm_idx, star.angle_offset, star.scatter, time, star.orbit_speed);
-                let pulse = 1.0 + 0.22 * (time * 1.8 + star.pulse_phase).sin();
-                let s = star.size * pulse;
-                let hue = (star.hue + star.hue_shift * time) % 360.0;
-                let lightness = 0.4 + 0.2 * star.luminosity;
-                let saturation = 0.65 + 0.2 * (time * 0.5 + star.pulse_phase).cos();
-                let tint = Color::hsl(hue, saturation, lightness);
-                rs.scene_batch.draw(
-                    Sprite::new(pos[0], pos[1], s, s).color(Color::new(tint.r, tint.g, tint.b, 0.92 * star.luminosity)),
+            } else if pass.handle == lighting_pass {
+                let normal_target = textures.render_target(normal_rt).expect("normal_rt");
+                let output = textures.render_target(light_rt).expect("light_rt");
+                rs.light_pass.render(
+                    gpu,
+                    &lights,
+                    Some(normal_target),
+                    output,
+                    &camera,
+                    [0.04, 0.035, 0.055, 1.0],
                 );
+            } else if pass.handle == composite_pass {
+                let scene = textures.render_target(scene_rt).expect("scene_rt");
+                let lightmap = textures.render_target(light_rt).expect("light_rt");
+                let output = textures.render_target(hdr_rt).expect("hdr_rt");
+                rs.composite_pass
+                    .render_to_target(gpu, scene, lightmap, output);
+            } else if pass.handle == vignette_pass {
+                let input = textures.render_target(hdr_rt).expect("hdr_rt");
+                let output = textures.render_target(graded_rt).expect("graded_rt");
+                rs.vignette.apply_to_target(gpu, input, output);
+            } else if pass.handle == bloom_pass {
+                let input = textures.render_target(graded_rt).expect("graded_rt");
+                let output = textures.render_target(bloom_rt).expect("bloom_rt");
+                rs.bloom.apply(gpu, input, output);
+            } else if pass.handle == tonemap_pass {
+                let input = textures.render_target(bloom_rt).expect("bloom_rt");
+                rs.tonemap.apply_to_surface(gpu, input);
             }
-
-            // Normal map pass
-            rs.normal_batch.set_texture(&normal_tex);
-            for star in &stars {
-                let pos = spiral_position(star.arm_dist, star.arm_idx, star.angle_offset, star.scatter, time, star.orbit_speed);
-                let pulse = 1.0 + 0.22 * (time * 1.8 + star.pulse_phase).sin();
-                let s = star.size * pulse;
-                rs.normal_batch.draw(
-                    Sprite::new(pos[0], pos[1], s, s).color(Color::WHITE),
-                );
-            }
-
-            let camera = rs.camera;
-
-            // ── Execute render graph ────────────────────────────────────
-            let execute_result = graph.try_execute(ctx.gpu(), |pass, gpu, textures| {
-                let rs = render_state.as_mut().unwrap();
-                if pass.handle == scene_pass {
-                    let target = textures.render_target(scene_rt).expect("scene_rt");
-                    rs.scene_batch.flush_to_target(gpu, &camera, target, Some(Color::new(0.005, 0.005, 0.012, 1.0)));
-                } else if pass.handle == normal_pass {
-                    let target = textures.render_target(normal_rt).expect("normal_rt");
-                    rs.normal_batch.flush_to_target(gpu, &camera, target, Some(Color::new(0.5, 0.5, 1.0, 1.0)));
-                } else if pass.handle == lighting_pass {
-                    let normal_target = textures.render_target(normal_rt).expect("normal_rt");
-                    let output = textures.render_target(light_rt).expect("light_rt");
-                    rs.light_pass.render(gpu, &lights, Some(normal_target), output, &camera, [0.04, 0.035, 0.055, 1.0]);
-                } else if pass.handle == composite_pass {
-                    let scene = textures.render_target(scene_rt).expect("scene_rt");
-                    let lightmap = textures.render_target(light_rt).expect("light_rt");
-                    let output = textures.render_target(hdr_rt).expect("hdr_rt");
-                    rs.composite_pass.render_to_target(gpu, scene, lightmap, output);
-                } else if pass.handle == vignette_pass {
-                    let input = textures.render_target(hdr_rt).expect("hdr_rt");
-                    let output = textures.render_target(graded_rt).expect("graded_rt");
-                    rs.vignette.apply_to_target(gpu, input, output);
-                } else if pass.handle == bloom_pass {
-                    let input = textures.render_target(graded_rt).expect("graded_rt");
-                    let output = textures.render_target(bloom_rt).expect("bloom_rt");
-                    rs.bloom.apply(gpu, input, output);
-                } else if pass.handle == tonemap_pass {
-                    let input = textures.render_target(bloom_rt).expect("bloom_rt");
-                    rs.tonemap.apply_to_surface(gpu, input);
-                }
-                Ok(())
-            });
-
-            if let Err(err) = execute_result {
-                eprintln!("[neon_galaxy] render graph error: {err}");
-            }
+            Ok(())
         });
+
+        if let Err(err) = execute_result {
+            eprintln!("[neon_galaxy] render graph error: {err}");
+        }
+    });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

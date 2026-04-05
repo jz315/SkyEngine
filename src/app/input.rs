@@ -1,49 +1,68 @@
 //! Keyboard and mouse input state tracking.
+//!
+//! Uses fixed-size bit arrays instead of `HashSet` for zero-allocation
+//! per-frame updates. The runner keeps a live input snapshot and copies it
+//! into the world resource with a plain struct assignment each frame.
 
-use std::collections::HashSet;
+/// Total number of key codes (must cover all `KeyCode` variants).
+const KEY_COUNT: usize = 49;
 
 /// Tracks keyboard and mouse state per frame.
 ///
-/// Updated by the [`AppRunner`] from winit events. Available as a resource
-/// in the ECS world.
-#[derive(Clone)]
+/// Stored as an ECS resource. The runner updates it from a live snapshot
+/// with a single struct copy per frame.
+#[derive(Clone, Copy)]
 pub struct Input {
-    keys_held: HashSet<KeyCode>,
-    keys_pressed: HashSet<KeyCode>,
-    keys_released: HashSet<KeyCode>,
+    keys_held: [bool; KEY_COUNT],
+    keys_pressed: [bool; KEY_COUNT],
+    keys_released: [bool; KEY_COUNT],
     mouse_position: [f32; 2],
+    mouse_position_prev: [f32; 2],
     mouse_buttons: [bool; 3], // left, right, middle
     mouse_buttons_pressed: [bool; 3],
+    mouse_buttons_released: [bool; 3],
+    scroll_delta: [f32; 2],
 }
 
 impl Input {
     pub(crate) fn new() -> Self {
         Self {
-            keys_held: HashSet::new(),
-            keys_pressed: HashSet::new(),
-            keys_released: HashSet::new(),
+            keys_held: [false; KEY_COUNT],
+            keys_pressed: [false; KEY_COUNT],
+            keys_released: [false; KEY_COUNT],
             mouse_position: [0.0; 2],
+            mouse_position_prev: [0.0; 2],
             mouse_buttons: [false; 3],
             mouse_buttons_pressed: [false; 3],
+            mouse_buttons_released: [false; 3],
+            scroll_delta: [0.0; 2],
         }
     }
 
     /// Call at the start of each frame to clear one-shot events.
     pub(crate) fn begin_frame(&mut self) {
-        self.keys_pressed.clear();
-        self.keys_released.clear();
+        self.keys_pressed = [false; KEY_COUNT];
+        self.keys_released = [false; KEY_COUNT];
         self.mouse_buttons_pressed = [false; 3];
+        self.mouse_buttons_released = [false; 3];
+        self.mouse_position_prev = self.mouse_position;
+        self.scroll_delta = [0.0; 2];
     }
 
     pub(crate) fn key_down(&mut self, key: KeyCode) {
-        if self.keys_held.insert(key) {
-            self.keys_pressed.insert(key);
+        let idx = key as usize;
+        if idx < KEY_COUNT && !self.keys_held[idx] {
+            self.keys_held[idx] = true;
+            self.keys_pressed[idx] = true;
         }
     }
 
     pub(crate) fn key_up(&mut self, key: KeyCode) {
-        self.keys_held.remove(&key);
-        self.keys_released.insert(key);
+        let idx = key as usize;
+        if idx < KEY_COUNT {
+            self.keys_held[idx] = false;
+            self.keys_released[idx] = true;
+        }
     }
 
     pub(crate) fn set_mouse_position(&mut self, x: f32, y: f32) {
@@ -60,7 +79,24 @@ impl Input {
     pub(crate) fn mouse_button_up(&mut self, button: usize) {
         if button < 3 {
             self.mouse_buttons[button] = false;
+            self.mouse_buttons_released[button] = true;
         }
+    }
+
+    pub(crate) fn add_scroll_delta(&mut self, dx: f32, dy: f32) {
+        self.scroll_delta[0] += dx;
+        self.scroll_delta[1] += dy;
+    }
+
+    pub(crate) fn reset(&mut self) {
+        self.keys_held = [false; KEY_COUNT];
+        self.keys_pressed = [false; KEY_COUNT];
+        self.keys_released = [false; KEY_COUNT];
+        self.mouse_buttons = [false; 3];
+        self.mouse_buttons_pressed = [false; 3];
+        self.mouse_buttons_released = [false; 3];
+        self.mouse_position_prev = self.mouse_position;
+        self.scroll_delta = [0.0; 2];
     }
 
     // ── Public queries ──────────────────────────────────────────────────
@@ -68,25 +104,43 @@ impl Input {
     /// Is the key currently held down?
     #[inline]
     pub fn key_held(&self, key: KeyCode) -> bool {
-        self.keys_held.contains(&key)
+        let idx = key as usize;
+        idx < KEY_COUNT && self.keys_held[idx]
     }
 
     /// Was the key pressed this frame (one-shot)?
     #[inline]
     pub fn key_pressed(&self, key: KeyCode) -> bool {
-        self.keys_pressed.contains(&key)
+        let idx = key as usize;
+        idx < KEY_COUNT && self.keys_pressed[idx]
     }
 
     /// Was the key released this frame (one-shot)?
     #[inline]
     pub fn key_released(&self, key: KeyCode) -> bool {
-        self.keys_released.contains(&key)
+        let idx = key as usize;
+        idx < KEY_COUNT && self.keys_released[idx]
     }
 
     /// Current mouse position in logical pixels.
     #[inline]
     pub fn mouse_position(&self) -> [f32; 2] {
         self.mouse_position
+    }
+
+    /// Mouse movement delta since last frame.
+    #[inline]
+    pub fn mouse_delta(&self) -> [f32; 2] {
+        [
+            self.mouse_position[0] - self.mouse_position_prev[0],
+            self.mouse_position[1] - self.mouse_position_prev[1],
+        ]
+    }
+
+    /// Scroll wheel delta this frame `[horizontal, vertical]`.
+    #[inline]
+    pub fn scroll_delta(&self) -> [f32; 2] {
+        self.scroll_delta
     }
 
     /// Is the left mouse button held?
@@ -107,16 +161,33 @@ impl Input {
         self.mouse_buttons_pressed[0]
     }
 
-    /// Return a copy of all currently held keys.
+    /// Was the left mouse button released this frame?
+    #[inline]
+    pub fn mouse_left_released(&self) -> bool {
+        self.mouse_buttons_released[0]
+    }
+
+    /// Was the right mouse button pressed this frame?
+    #[inline]
+    pub fn mouse_right_pressed(&self) -> bool {
+        self.mouse_buttons_pressed[1]
+    }
+
+    /// Return all currently held keys.
     pub fn held_keys(&self) -> Vec<KeyCode> {
-        self.keys_held.iter().copied().collect()
+        ALL_KEY_CODES
+            .iter()
+            .copied()
+            .filter(|k| self.key_held(*k))
+            .collect()
     }
 }
 
 /// Re-exported subset of winit key codes for convenience.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
 pub enum KeyCode {
-    ArrowUp,
+    ArrowUp = 0,
     ArrowDown,
     ArrowLeft,
     ArrowRight,
@@ -166,6 +237,58 @@ pub enum KeyCode {
     Tab,
     Unknown,
 }
+
+const ALL_KEY_CODES: [KeyCode; KEY_COUNT] = [
+    KeyCode::ArrowUp,
+    KeyCode::ArrowDown,
+    KeyCode::ArrowLeft,
+    KeyCode::ArrowRight,
+    KeyCode::Space,
+    KeyCode::Enter,
+    KeyCode::Escape,
+    KeyCode::KeyA,
+    KeyCode::KeyB,
+    KeyCode::KeyC,
+    KeyCode::KeyD,
+    KeyCode::KeyE,
+    KeyCode::KeyF,
+    KeyCode::KeyG,
+    KeyCode::KeyH,
+    KeyCode::KeyI,
+    KeyCode::KeyJ,
+    KeyCode::KeyK,
+    KeyCode::KeyL,
+    KeyCode::KeyM,
+    KeyCode::KeyN,
+    KeyCode::KeyO,
+    KeyCode::KeyP,
+    KeyCode::KeyQ,
+    KeyCode::KeyR,
+    KeyCode::KeyS,
+    KeyCode::KeyT,
+    KeyCode::KeyU,
+    KeyCode::KeyV,
+    KeyCode::KeyW,
+    KeyCode::KeyX,
+    KeyCode::KeyY,
+    KeyCode::KeyZ,
+    KeyCode::Digit0,
+    KeyCode::Digit1,
+    KeyCode::Digit2,
+    KeyCode::Digit3,
+    KeyCode::Digit4,
+    KeyCode::Digit5,
+    KeyCode::Digit6,
+    KeyCode::Digit7,
+    KeyCode::Digit8,
+    KeyCode::Digit9,
+    KeyCode::ShiftLeft,
+    KeyCode::ShiftRight,
+    KeyCode::ControlLeft,
+    KeyCode::ControlRight,
+    KeyCode::Tab,
+    KeyCode::Unknown,
+];
 
 impl KeyCode {
     /// Convert from winit's `KeyCode`.

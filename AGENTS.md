@@ -56,7 +56,9 @@
 - `src/render/`: 2D rendering framework (see `src/render/AGENTS.md` for full module docs).
 - `src/render/mod.rs`: render module re-exports.
 - `src/render/core/`: foundational GPU types — `Camera2D`, `Color`, `Texture`, `RenderTarget`, `FullscreenPass`.
+- `src/render/gpu_scene2d.rs`: persistent GPU-side scene/cache uploader used by the high-level renderer.
 - `src/render/graph/`: declarative render graph system (see `src/render/graph/AGENTS.md` for detailed docs).
+- `src/render/pipeline/`: high-level multi-view 2D render pipeline (`RenderPipeline`, extractor, prepared frame data, pipeline nodes).
 - `src/render/passes/`: high-level rendering passes — `SpriteBatch`, `LightPass`, `CompositePass`.
 - `src/render/postfx/`: post-processing effects — `Bloom`, `ToneMap`, `Vignette`.
 - `src/render/resources/`: shared resource systems — `TextureAtlas`, `Blackboard`, `Material*`.
@@ -112,6 +114,7 @@
 - Run a specific render test: `cargo test --features app render::graph::tests::linear_chain_orders_correctly`
 - Run reorder tests only: `cargo test --features app reorder::tests`
 - Run alias tests only: `cargo test --features app alias::tests`
+- Run render/example compile check after render/app API changes: `cargo check --examples --features app`
 - Run canonical fair comparison: `cargo bench --bench fair`
 - Run all benches: `cargo bench`
 - Run one engine slice: `cargo bench --bench fair -- sky`
@@ -143,6 +146,7 @@
 - If schedule code changes, preserve group creation order and fixed-step accumulator semantics.
 - Do not rely on `src/main.rs` for correctness, benchmarks, or API direction; it is not the source of truth.
 - Examples are useful usage references, but benchmark behavior and correctness expectations come from `src/` tests plus the bench suites.
+- Render and app-facing example builds are part of the compatibility surface. If you change high-level render APIs, `Renderer2D`, `App`, or demo/shared render helpers, run `cargo check --examples --features app` instead of relying only on unit tests.
 
 ## Render Graph Guidelines
 - The render graph has its own detailed `AGENTS.md` at `src/render/graph/AGENTS.md`; read it before modifying graph internals.

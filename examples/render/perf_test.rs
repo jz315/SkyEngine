@@ -7,113 +7,134 @@
 //! cargo run --example perf_test --features app --release
 //! ```
 
-use sky_engine::app::{App, AppConfig};
+use sky_engine::app::{App, AppConfig, AppState, FrameContext};
 use sky_engine::ecs::World;
-use sky_engine::render::{Camera2D, Color, Renderer2DConfig, Sprite, Texture};
+use sky_engine::gpu::GpuContext;
 use sky_engine::render::expert::SpriteBatch;
+use sky_engine::render::{Camera2D, Color, Renderer2DConfig, Sprite, Texture};
 
-fn main() {
-    let mut batch: Option<SpriteBatch> = None;
-    let mut circle_tex: Option<Texture> = None;
-    let mut camera = Camera2D::new(1280.0, 720.0);
+struct PerfTest {
+    batch: Option<SpriteBatch>,
+    circle_tex: Option<Texture>,
+    camera: Camera2D,
+    positions: Vec<(f32, f32, f32, f32, f32)>,
+    time: f32,
+    frame_count: u64,
+    fps_timer: f32,
+    level_idx: usize,
+    level_timer: f32,
+    current_count: u32,
+    levels: [u32; 5],
+}
 
-    let mut time = 0.0f32;
-    let mut frame_count = 0u64;
-    let mut fps_timer = 0.0f32;
-    // Sprite counts to test
-    let levels = [10_000u32, 20_000, 50_000, 100_000, 200_000];
-    let mut level_idx = 0usize;
-    let mut level_timer = 0.0f32;
-    let mut current_count = levels[0];
+impl PerfTest {
+    fn new() -> Self {
+        let levels = [10_000u32, 20_000, 50_000, 100_000, 200_000];
+        let max_count = *levels.last().unwrap() as usize;
+        let mut rng = SimpleRng::new(777);
+        let positions: Vec<(f32, f32, f32, f32, f32)> = (0..max_count)
+            .map(|_| {
+                (
+                    rng.range(-640.0, 640.0),
+                    rng.range(-360.0, 360.0),
+                    rng.range(3.0, 10.0),
+                    rng.range(0.0, 360.0),
+                    rng.range(-2.0, 2.0),
+                )
+            })
+            .collect();
 
-    // Pre-generate positions (reused across levels)
-    let max_count = *levels.last().unwrap() as usize;
-    let mut rng = SimpleRng::new(777);
-    let positions: Vec<(f32, f32, f32, f32, f32)> = (0..max_count)
-        .map(|_| {
-            (
-                rng.range(-640.0, 640.0), // x
-                rng.range(-360.0, 360.0), // y
-                rng.range(3.0, 10.0),     // size
-                rng.range(0.0, 360.0),    // hue
-                rng.range(-2.0, 2.0),     // rotation speed
-            )
-        })
-        .collect();
+        eprintln!("╔══════════════════════════════════════════════════╗");
+        eprintln!("║     SkyEngine Sprite Renderer — Perf Test        ║");
+        eprintln!("╠══════════════════════════════════════════════════╣");
+        eprintln!("║  Sprites │  FPS   │ Frame (ms) │ Draw Calls      ║");
+        eprintln!("╠══════════════════════════════════════════════════╣");
 
-    eprintln!("╔══════════════════════════════════════════════════╗");
-    eprintln!("║     SkyEngine Sprite Renderer — Perf Test        ║");
-    eprintln!("╠══════════════════════════════════════════════════╣");
-    eprintln!("║  Sprites │  FPS   │ Frame (ms) │ Draw Calls      ║");
-    eprintln!("╠══════════════════════════════════════════════════╣");
-
-    let mut world = World::new();
-    world.insert_resource(Renderer2DConfig::unlit());
-
-    App::new(
-        {
-            let mut cfg = AppConfig::new("SkyEngine — Perf Test", 1280, 720);
-            cfg.vsync = false;
-            cfg
-        },
-        world,
-    )
-    .run(move |ctx| {
-        ctx.world.tick();
-        let dt = ctx.dt;
-        time += dt;
-        frame_count += 1;
-        fps_timer += dt;
-        level_timer += dt;
-
-        // Lazy init
-        if batch.is_none() {
-            let gpu = ctx.gpu();
-            let b = SpriteBatch::new(gpu);
-            circle_tex = Some(Texture::circle(gpu, 32));
-            batch = Some(b);
+        Self {
+            batch: None,
+            circle_tex: None,
+            camera: Camera2D::new(1280.0, 720.0),
+            positions,
+            time: 0.0,
+            frame_count: 0,
+            fps_timer: 0.0,
+            level_idx: 0,
+            level_timer: 0.0,
+            current_count: levels[0],
+            levels,
         }
-        let batch = batch.as_mut().unwrap();
-        let circle = circle_tex.as_ref().unwrap();
+    }
+}
+
+impl AppState for PerfTest {
+    fn setup(&mut self, _world: &mut World, gpu: &mut GpuContext) {
+        self.batch = Some(SpriteBatch::new(gpu));
+        self.circle_tex = Some(Texture::circle(gpu, 32));
+    }
+
+    fn update(&mut self, ctx: &mut FrameContext) {
+        let dt = ctx.dt;
+        self.time += dt;
+        self.frame_count += 1;
+        self.fps_timer += dt;
+        self.level_timer += dt;
+
+        let batch = self.batch.as_mut().unwrap();
+        let circle = self.circle_tex.as_ref().unwrap();
 
         // Resize camera
         let [w, h] = ctx.surface_size();
-        camera.set_viewport(w as f32, h as f32);
+        self.camera.set_viewport(w as f32, h as f32);
 
         // FPS reporting (every second)
-        if fps_timer >= 1.0 {
-            let fps = frame_count as f32 / fps_timer;
-            let frame_ms = fps_timer * 1000.0 / frame_count as f32;
+        if self.fps_timer >= 1.0 {
+            let fps = self.frame_count as f32 / self.fps_timer;
+            let frame_ms = self.fps_timer * 1000.0 / self.frame_count as f32;
             eprintln!(
                 "║  {:>6}  │ {:>5.0}  │   {:>6.2}   │      1          ║",
-                current_count, fps, frame_ms
+                self.current_count, fps, frame_ms
             );
-            fps_timer = 0.0;
-            frame_count = 0;
+            self.fps_timer = 0.0;
+            self.frame_count = 0;
         }
 
         // Level progression (every 5 seconds)
-        if level_timer >= 5.0 && level_idx + 1 < levels.len() {
-            level_idx += 1;
-            current_count = levels[level_idx];
-            level_timer = 0.0;
-            fps_timer = 0.0;
-            frame_count = 0;
+        if self.level_timer >= 5.0 && self.level_idx + 1 < self.levels.len() {
+            self.level_idx += 1;
+            self.current_count = self.levels[self.level_idx];
+            self.level_timer = 0.0;
+            self.fps_timer = 0.0;
+            self.frame_count = 0;
             eprintln!("╠──────────────────────────────────────────────────╣");
         }
 
         // Draw
         batch.set_texture(circle);
-        let n = current_count as usize;
+        let n = self.current_count as usize;
         for i in 0..n {
-            let (x, y, size, hue, spin) = positions[i];
-            let angle = time * spin;
-            let h = (hue + time * 30.0) % 360.0;
+            let (x, y, size, hue, spin) = self.positions[i];
+            let angle = self.time * spin;
+            let h = (hue + self.time * 30.0) % 360.0;
             let color = Color::hsl(h, 0.8, 0.6);
             batch.draw(Sprite::new(x, y, size, size).rotation(angle).color(color));
         }
-        batch.flush_to_surface(ctx.gpu(), &camera, Some(Color::new(0.02, 0.02, 0.05, 1.0)));
-    });
+        batch.flush_to_surface(
+            ctx.gpu(),
+            &self.camera,
+            Some(Color::new(0.02, 0.02, 0.05, 1.0)),
+        );
+    }
+}
+
+fn main() {
+    let mut world = World::new();
+    world.insert_resource(Renderer2DConfig::unlit());
+
+    App::new(
+        AppConfig::new("SkyEngine — Perf Test", 1280, 720).with_vsync(false),
+        world,
+    )
+    .run(PerfTest::new());
 }
 
 struct SimpleRng {

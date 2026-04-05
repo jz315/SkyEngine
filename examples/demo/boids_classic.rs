@@ -21,10 +21,10 @@ use std::f32::consts::TAU;
 use sky_engine::app::{App, AppConfig, KeyCode};
 use sky_engine::ecs::{EntityId, PreparedQuery, System, World};
 use sky_engine::gpu::GpuContext;
-use sky_engine::render::{Camera2D, Color, Sprite, Texture};
 use sky_engine::render::expert::{
     Bloom, CompositePass, Light2D, LightPass, RenderGraph, SpriteBatch, TargetSize, ToneMap,
 };
+use sky_engine::render::{Camera2D, Color, Sprite, Texture};
 
 // ─── Configuration ──────────────────────────────────────────────────────────
 
@@ -718,7 +718,7 @@ fn main() {
         NUM_BOIDS
     );
 
-    App::new(config, world).run(move |ctx| {
+    App::new(config, world).run(move |ctx: &mut sky_engine::app::FrameContext| {
         // Lazy-init render state on first frame
         if render_state.is_none() {
             render_state = Some(RenderState::new(ctx.gpu()));

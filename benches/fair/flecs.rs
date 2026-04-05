@@ -2,9 +2,7 @@ use crate::common::*;
 use crate::shared::sample_entities;
 use cgmath::{SquareMatrix, Transform as _};
 use criterion::{measurement::WallTime, BenchmarkGroup};
-use flecs_ecs::core::{
-    Entity as FlecsEntity, EntityViewGet, IdOperations, QueryAPI, World,
-};
+use flecs_ecs::core::{Entity as FlecsEntity, EntityViewGet, IdOperations, QueryAPI, World};
 use std::hint::black_box;
 
 // ---------------------------------------------------------------------------

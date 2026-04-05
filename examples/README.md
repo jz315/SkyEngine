@@ -12,7 +12,7 @@ If you're new to the project, read and run examples in this order:
 4. `systems` — grouped scheduling and frame updates
 5. `tiny_defense` — a complete ECS-only game loop
 6. `clear_screen` → `sprite_demo` → `textured_demo` → `lighting_demo`
-7. `render_graph_showcase` → `perf_test`
+7. `render_graph_showcase` → `perf_test` → `renderer_probe`
 8. `boids` / `boids_classic` / `cosmic_jellyfish` / `neon_galaxy`
 
 ## Render Learning Path
@@ -21,11 +21,12 @@ The `examples/render/` directory now forms a complete path from first window to 
 
 1. **`clear_screen`** — learn the minimal app + GPU frame loop and surface pass.
 2. **`sprite_demo`** — drive `Renderer2D` directly from ECS with `Transform2D + Sprite2D + Camera2D`.
-3. **`textured_demo`** — move to the manual `Scene2D` path for reusable scene descriptions.
+3. **`textured_demo`** — keep building on the ECS-first textured sprite path.
 4. **`lighting_demo`** — add high-level 2D lighting plus bloom, tone mapping, and vignette.
 5. **`render_graph_showcase`** — study the low-level `render::expert::RenderGraph` API and resource scheduling model.
-6. **`perf_test`** — measure scaling behavior once you understand the core rendering path.
-7. **`live2d_demo`** — specialized integration example after you already know the base render stack.
+6. **`perf_test`** — low-level `SpriteBatch` throughput / scaling observation.
+7. **`renderer_probe`** — headless high-level `Renderer2D` timing probe across dirty workloads.
+8. **`live2d_demo`** — specialized integration example after you already know the base render stack.
 
 Recommended progression:
 
@@ -41,6 +42,8 @@ lighting_demo
 render_graph_showcase
   ↓
 perf_test
+  ↓
+renderer_probe
 
 specialized branch: live2d_demo
 ```
@@ -70,21 +73,24 @@ cargo run --example textured_demo --features app
 cargo run --example lighting_demo --features app
 cargo run --example render_graph_showcase --features app
 cargo run --example perf_test --features app --release
+cargo run --example renderer_probe --features app --release
 ```
 
 Suggested study order inside `render/`:
 
 - `clear_screen` — frame lifecycle and surface pass
 - `sprite_demo` — ECS-first `Renderer2D`
-- `textured_demo` — reusable `Scene2D`
+- `textured_demo` — ECS-driven textured sprites
 - `lighting_demo` — high-level lighting + post-processing
 - `render_graph_showcase` — expert-only graph compilation model
-- `perf_test` — throughput / scaling observation
+- `perf_test` — low-level throughput / scaling observation
+- `renderer_probe` — high-level `Renderer2D` timings and workload matrix
 
 `live2d_demo` is a specialized branch after the main path, and requires `live2d` instead of plain `app`:
 
 ```bash
-cargo run --example live2d_demo --features live2d --release -- <path-to-model3.json>
+cargo run --example live2d_demo --features "live2d egui" --release -- <path-to-model3.json>
+cargo run --example live2d_demo --features "live2d egui" --release -- --no-ui <path-to-model3.json>
 ```
 
 ### `examples/demo/`

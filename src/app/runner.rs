@@ -3,35 +3,139 @@
 //! # Usage
 //!
 //! ```rust,no_run
-//! use sky_engine::app::{App, AppConfig};
+//! use sky_engine::app::{App, AppConfig, FrameContext};
 //! use sky_engine::ecs::World;
 //!
-//! let world = World::new();
-//! App::new(AppConfig::new("Hello", 960, 640), world)
-//!     .run(|ctx| {
-//!         ctx.world.tick();
+//! struct Game;
+//!
+//! impl sky_engine::app::AppState for Game {
+//!     fn update(&mut self, ctx: &mut FrameContext) {
 //!         ctx.render();
-//!     });
+//!     }
+//! }
+//!
+//! App::new(AppConfig::new("Hello", 960, 640), World::new()).run(Game);
 //! ```
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
-use crate::app::config::AppConfig;
+use crate::app::config::{AppConfig, RedrawMode};
 use crate::app::input::{Input, KeyCode};
 use crate::ecs::World;
 use crate::gpu::GpuContext;
 use crate::render::renderer2d::{Renderer2D, Renderer2DConfig};
-use crate::render::scene2d::Scene2D;
 use crate::render::RendererStats;
+
+fn update_input_from_window_event(input: &mut Input, event: &WindowEvent) {
+    match event {
+        WindowEvent::KeyboardInput { event, .. } => {
+            if let winit::keyboard::PhysicalKey::Code(code) = event.physical_key {
+                let key = KeyCode::from_winit(code);
+                match event.state {
+                    ElementState::Pressed => input.key_down(key),
+                    ElementState::Released => input.key_up(key),
+                }
+            }
+        }
+        WindowEvent::CursorMoved { position, .. } => {
+            input.set_mouse_position(position.x as f32, position.y as f32);
+        }
+        WindowEvent::MouseInput {
+            state: button_state,
+            button,
+            ..
+        } => {
+            let index = match button {
+                winit::event::MouseButton::Left => 0,
+                winit::event::MouseButton::Right => 1,
+                winit::event::MouseButton::Middle => 2,
+                _ => return,
+            };
+            match button_state {
+                ElementState::Pressed => input.mouse_button_down(index),
+                ElementState::Released => input.mouse_button_up(index),
+            }
+        }
+        WindowEvent::MouseWheel { delta, .. } => {
+            let (dx, dy) = match delta {
+                winit::event::MouseScrollDelta::LineDelta(x, y) => (*x, *y),
+                winit::event::MouseScrollDelta::PixelDelta(pos) => (pos.x as f32, pos.y as f32),
+            };
+            input.add_scroll_delta(dx, dy);
+        }
+        _ => {}
+    }
+}
+
+// ── AppState trait ──────────────────────────────────────────────────────────
+
+/// Structured application lifecycle.
+///
+/// Implement this on your game/app struct for full lifecycle control.
+/// The runner calls these methods at the appropriate times; you never
+/// need to manage the event loop yourself.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use sky_engine::app::{App, AppConfig, AppState, FrameContext};
+/// use sky_engine::ecs::World;
+/// use sky_engine::gpu::GpuContext;
+///
+/// struct MyGame;
+///
+/// impl AppState for MyGame {
+///     fn setup(&mut self, _world: &mut World, _gpu: &mut GpuContext) {
+///         // Load textures, spawn initial entities, etc.
+///     }
+///
+///     fn update(&mut self, ctx: &mut FrameContext) {
+///         // Game logic goes here.  ECS systems have already ticked.
+///         ctx.render();
+///     }
+/// }
+///
+/// App::new(AppConfig::new("My Game", 1280, 720), World::new()).run(MyGame);
+/// ```
+pub trait AppState: 'static {
+    /// Called once after the GPU is ready and `Input` resource exists.
+    ///
+    /// Use this for texture creation, asset loading, and initial entity
+    /// spawns that depend on the GPU.
+    fn setup(&mut self, _world: &mut World, _gpu: &mut GpuContext) {}
+
+    /// Called every frame.
+    ///
+    /// When `AppConfig::auto_tick` is enabled (the default), the ECS
+    /// schedule has already been advanced via `world.tick_with_delta(dt)`
+    /// before this is called.
+    fn update(&mut self, ctx: &mut FrameContext);
+
+    /// Called when the window is resized.
+    fn on_resize(&mut self, _width: u32, _height: u32) {}
+
+    /// Called once before the application exits.
+    fn shutdown(&mut self, _world: &mut World) {}
+}
+
+impl<F> AppState for F
+where
+    F: for<'a> FnMut(&mut FrameContext<'a>) + 'static,
+{
+    fn update(&mut self, ctx: &mut FrameContext) {
+        self(ctx);
+    }
+}
 
 // ── FrameContext ────────────────────────────────────────────────────────────
 
-/// Per-frame context passed to the user's frame callback.
+/// Per-frame context passed to [`AppState::update`].
 ///
 /// Provides access to the ECS world, input state, and rendering facilities.
 ///
@@ -39,22 +143,19 @@ use crate::render::RendererStats;
 ///
 /// ```rust,no_run
 /// # use sky_engine::app::FrameContext;
-/// fn frame(ctx: &mut FrameContext) {
-///     ctx.world.tick();      // advance ECS systems
-///     ctx.render();          // draw Camera/Sprite/Light entities
+/// fn update(ctx: &mut FrameContext) {
+///     // ECS systems already ticked (if auto_tick enabled)
+///     ctx.render();  // draw Camera/Sprite/Light entities
 /// }
 /// ```
 pub struct FrameContext<'a> {
-    /// The ECS world.  Spawn entities, run queries, tick systems — all here.
+    /// The ECS world.  Spawn entities, run queries — all here.
     pub world: &'a mut World,
 
     /// Input state for this frame (keyboard + mouse).
-    ///
-    /// Also available as a world resource via
-    /// `world.get_resource::<Input>()`.
     pub input: &'a Input,
 
-    /// Frame delta time in seconds.
+    /// Frame delta time in seconds (clamped by `AppConfig::max_delta`).
     pub dt: f32,
 
     // ── Internal ────────────────────────────────────────────────────────
@@ -62,6 +163,7 @@ pub struct FrameContext<'a> {
     renderer: &'a mut Renderer2D,
     window: &'a Window,
     exit_requested: &'a mut bool,
+    redraw_requested: &'a mut bool,
     #[cfg(feature = "egui")]
     egui: &'a mut crate::app::egui_integration::EguiIntegration,
 }
@@ -75,18 +177,13 @@ impl<'a> FrameContext<'a> {
         self.renderer.render_world(self.gpu, self.world);
     }
 
-    /// Render a manually constructed [`Scene2D`].
-    pub fn render_scene(&mut self, scene: &Scene2D) {
-        self.renderer.render_scene(self.gpu, scene);
-    }
-
     /// Current surface size in physical pixels `[width, height]`.
     #[inline]
     pub fn surface_size(&self) -> [u32; 2] {
         self.gpu.surface_size()
     }
 
-    /// Rendering statistics from the most recent `render()` / `render_scene()`.
+    /// Rendering statistics from the most recent `render()`.
     #[inline]
     pub fn render_stats(&self) -> RendererStats {
         self.renderer.stats()
@@ -109,6 +206,15 @@ impl<'a> FrameContext<'a> {
     /// Request the application to exit after this frame.
     pub fn request_exit(&mut self) {
         *self.exit_requested = true;
+    }
+
+    /// Request another redraw after this frame completes.
+    ///
+    /// This is primarily useful in [`RedrawMode::Reactive`] applications
+    /// when a UI animation or custom pacing logic needs to keep driving
+    /// future frames.
+    pub fn request_redraw(&mut self) {
+        *self.redraw_requested = true;
     }
 
     /// Run an egui UI overlay.
@@ -138,34 +244,28 @@ impl<'a> FrameContext<'a> {
 
 /// Application builder.
 ///
-/// Create with [`App::new`], optionally chain [`.setup()`](App::setup),
-/// then call [`.run()`](App::run) to enter the main loop.
+/// Create with [`App::new`], then call [`.run()`](App::run) with your
+/// [`AppState`] implementation to enter the main loop.
 ///
 /// # Examples
 ///
 /// ```rust,no_run
-/// use sky_engine::app::{App, AppConfig};
+/// use sky_engine::app::{App, AppConfig, AppState, FrameContext};
 /// use sky_engine::ecs::World;
 ///
-/// // Minimal — no setup needed
-/// App::new(AppConfig::new("Demo", 960, 640), World::new())
-///     .run(|ctx| { ctx.render(); });
+/// struct MyApp;
 ///
-/// // With GPU setup for texture creation
-/// let world = World::new();
-/// App::new(AppConfig::new("Demo", 960, 640), world)
-///     .setup(|world, gpu| {
-///         // create textures, spawn GPU-dependent entities
-///     })
-///     .run(|ctx| {
-///         ctx.world.tick();
+/// impl AppState for MyApp {
+///     fn update(&mut self, ctx: &mut FrameContext) {
 ///         ctx.render();
-///     });
+///     }
+/// }
+///
+/// App::new(AppConfig::new("Demo", 960, 640), World::new()).run(MyApp);
 /// ```
 pub struct App {
     config: AppConfig,
     world: World,
-    setup: Option<Box<dyn FnOnce(&mut World, &mut GpuContext)>>,
 }
 
 impl App {
@@ -174,38 +274,24 @@ impl App {
     /// The [`World`] is the centre of your application — spawn entities,
     /// register systems, and insert resources before calling `.run()`.
     pub fn new(config: AppConfig, world: World) -> Self {
-        Self {
-            config,
-            world,
-            setup: None,
-        }
-    }
-
-    /// Register a one-time setup callback that runs after the GPU is ready.
-    ///
-    /// Use this to create GPU-dependent resources like textures.
-    /// Called exactly once, before the first frame.
-    pub fn setup(mut self, f: impl FnOnce(&mut World, &mut GpuContext) + 'static) -> Self {
-        self.setup = Some(Box::new(f));
-        self
+        Self { config, world }
     }
 
     /// Enter the main loop.
     ///
-    /// The `frame` closure is called once per frame with a [`FrameContext`]
-    /// that provides access to the ECS world, input, and rendering.
+    /// The `state` receives structured lifecycle callbacks via [`AppState`].
     ///
     /// This function does **not** return under normal operation.
-    pub fn run(self, frame: impl FnMut(&mut FrameContext) + 'static) {
+    pub fn run<S: AppState>(self, state: S) {
         let event_loop = EventLoop::new().expect("Failed to create event loop");
-        event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
 
         let mut handler = RunnerHandler {
             config: self.config,
             world: Some(self.world),
-            setup: self.setup,
-            frame: Box::new(frame),
-            state: None,
+            app_state: Box::new(state),
+            runtime: None,
+            pending_redraw: false,
+            did_shutdown: false,
         };
 
         event_loop.run_app(&mut handler).expect("Event loop error");
@@ -214,12 +300,13 @@ impl App {
 
 // ── Internal state ──────────────────────────────────────────────────────────
 
-struct AppState {
+struct RuntimeState {
     window: Arc<Window>,
     gpu: GpuContext,
-    input: Input,
     renderer: Renderer2D,
-    last_frame_time: Option<std::time::Instant>,
+    input: Input,
+    last_frame_time: Option<Instant>,
+    occluded: bool,
     #[cfg(feature = "egui")]
     egui: crate::app::egui_integration::EguiIntegration,
 }
@@ -227,15 +314,191 @@ struct AppState {
 struct RunnerHandler {
     config: AppConfig,
     world: Option<World>,
-    setup: Option<Box<dyn FnOnce(&mut World, &mut GpuContext)>>,
-    frame: Box<dyn FnMut(&mut FrameContext)>,
-    state: Option<AppState>,
+    app_state: Box<dyn AppState>,
+    runtime: Option<RuntimeState>,
+    pending_redraw: bool,
+    did_shutdown: bool,
+}
+
+impl RunnerHandler {
+    fn request_redraw(&mut self) {
+        self.pending_redraw = true;
+    }
+
+    fn can_draw(&self) -> bool {
+        let Some(rt) = self.runtime.as_ref() else {
+            return false;
+        };
+        if rt.occluded {
+            return false;
+        }
+        let size = rt.window.inner_size();
+        size.width > 0 && size.height > 0
+    }
+
+    fn shutdown_world(&mut self) {
+        if self.did_shutdown {
+            return;
+        }
+
+        if let Some(world) = self.world.as_mut() {
+            self.app_state.shutdown(world);
+            world.shutdown();
+        }
+        self.did_shutdown = true;
+    }
+
+    fn shutdown_and_exit(&mut self, event_loop: &ActiveEventLoop) {
+        self.shutdown_world();
+        event_loop.exit();
+    }
+
+    fn sync_input_resource(world: &mut World, input: Input) {
+        if let Some(resource) = world.get_resource_mut::<Input>() {
+            *resource = input;
+        } else {
+            world.insert_resource(input);
+        }
+    }
+
+    fn run_frame(&mut self, event_loop: &ActiveEventLoop) {
+        if !self.can_draw() {
+            return;
+        }
+
+        let now = Instant::now();
+        let raw_dt = self
+            .runtime
+            .as_ref()
+            .and_then(|rt| rt.last_frame_time)
+            .map(|t| now.duration_since(t).as_secs_f32())
+            .unwrap_or(1.0 / 60.0);
+        let dt = raw_dt.min(self.config.max_delta);
+
+        let input_snapshot = self.runtime.as_ref().expect("runtime must exist").input;
+        let auto_tick = self.config.auto_tick;
+        let exit_on_escape = self.config.exit_on_escape;
+        let mut request_redraw = false;
+        let mut should_exit = false;
+
+        {
+            let (world_slot, runtime_slot, app_state) =
+                (&mut self.world, &mut self.runtime, &mut self.app_state);
+            let world = world_slot.as_mut().expect("world must exist");
+            let rt = runtime_slot.as_mut().expect("runtime must exist");
+            rt.last_frame_time = Some(now);
+
+            Self::sync_input_resource(world, input_snapshot);
+
+            #[cfg(feature = "asset")]
+            if let Some(asset_server) = world.get_resource::<crate::asset::AssetServer>().cloned() {
+                if let Err(error) = asset_server.update() {
+                    eprintln!("[SkyEngine] Asset update failed: {error}");
+                }
+            }
+
+            if auto_tick {
+                world.tick_with_delta(dt);
+            }
+
+            if exit_on_escape && input_snapshot.key_pressed(KeyCode::Escape) {
+                rt.input.begin_frame();
+                should_exit = true;
+            } else {
+                match rt.gpu.begin_frame() {
+                    Ok(()) => {
+                        let mut exit_requested = false;
+                        let mut redraw_requested = false;
+
+                        {
+                            let ctx = &mut FrameContext {
+                                world,
+                                input: &input_snapshot,
+                                dt,
+                                gpu: &mut rt.gpu,
+                                renderer: &mut rt.renderer,
+                                window: &rt.window,
+                                exit_requested: &mut exit_requested,
+                                redraw_requested: &mut redraw_requested,
+                                #[cfg(feature = "egui")]
+                                egui: &mut rt.egui,
+                            };
+                            app_state.update(ctx);
+                        }
+
+                        #[cfg(feature = "audio")]
+                        if let Some(audio_server) =
+                            world.get_resource::<crate::audio::AudioServer>().cloned()
+                        {
+                            if let Err(error) = audio_server.apply_commands() {
+                                eprintln!("[SkyEngine] Audio command application failed: {error}");
+                            }
+
+                            if let Err(error) = audio_server.sync_world(world) {
+                                eprintln!("[SkyEngine] Audio world sync failed: {error}");
+                            }
+                            audio_server.update();
+                        }
+
+                        #[cfg(feature = "egui")]
+                        {
+                            let surface_view = rt.gpu.surface_view().clone();
+                            let device = rt.gpu.device().clone();
+                            let queue = rt.gpu.queue().clone();
+                            rt.egui.end_frame(
+                                &device,
+                                &queue,
+                                rt.gpu.encoder(),
+                                &surface_view,
+                                &rt.window,
+                            );
+                        }
+
+                        rt.window.pre_present_notify();
+                        rt.gpu.end_frame();
+                        rt.input.begin_frame();
+
+                        request_redraw = redraw_requested;
+                        should_exit = exit_requested;
+                    }
+                    Err(crate::gpu::GpuError::SurfaceLost) => {
+                        rt.renderer.surface_lost();
+                        let size = rt.window.inner_size();
+                        rt.gpu.resize_surface(size.width, size.height);
+                        rt.renderer.resize(&rt.gpu, size.width, size.height);
+                        rt.last_frame_time = None;
+                        request_redraw = true;
+                    }
+                    Err(crate::gpu::GpuError::Timeout) => {
+                        rt.last_frame_time = None;
+                        request_redraw = true;
+                    }
+                    Err(crate::gpu::GpuError::OutOfMemory) => {
+                        should_exit = true;
+                    }
+                    Err(e) => {
+                        eprintln!("[SkyEngine] GPU error: {e}");
+                        rt.last_frame_time = None;
+                    }
+                }
+            }
+        }
+
+        if request_redraw {
+            self.request_redraw();
+        }
+        if should_exit {
+            self.shutdown_and_exit(event_loop);
+        }
+    }
 }
 
 impl ApplicationHandler for RunnerHandler {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.state.is_some() {
-            // Surface restored; the next RedrawRequested will handle it.
+        if let Some(rt) = self.runtime.as_mut() {
+            rt.occluded = false;
+            rt.last_frame_time = None;
+            self.request_redraw();
             return;
         }
 
@@ -279,14 +542,62 @@ impl ApplicationHandler for RunnerHandler {
             .unwrap_or(Renderer2DConfig::lit_hdr());
         let renderer = Renderer2D::new(&gpu, render_config);
 
-        // Run one-time setup.
-        if let Some(setup) = self.setup.take() {
-            setup(world, &mut gpu);
+        // Insert Input resource into the World (updated in-place each frame).
+        let input = Input::new();
+        world.insert_resource(input);
+
+        #[cfg(feature = "asset")]
+        if !world.contains_resource::<crate::asset::AssetServer>() {
+            let config = crate::asset::AssetConfig::default();
+            let asset_server = match crate::asset::AssetServer::new(config.clone()) {
+                Ok(server) => server,
+                Err(error) => {
+                    eprintln!("[SkyEngine] Asset server initialization failed: {error}");
+                    crate::asset::AssetServer::with_empty_manifest(config)
+                }
+            };
+            world.insert_resource(asset_server);
         }
 
-        // Ensure Input resource exists in World for systems.
-        let input = Input::new();
-        world.insert_resource(input.clone());
+        #[cfg(feature = "audio")]
+        {
+            let asset_server =
+                if let Some(server) = world.get_resource::<crate::asset::AssetServer>().cloned() {
+                    server
+                } else {
+                    let config = crate::asset::AssetConfig::default();
+                    let server = match crate::asset::AssetServer::new(config.clone()) {
+                        Ok(server) => server,
+                        Err(error) => {
+                            eprintln!("[SkyEngine] Asset server initialization failed: {error}");
+                            crate::asset::AssetServer::with_empty_manifest(config)
+                        }
+                    };
+                    world.insert_resource(server.clone());
+                    server
+                };
+
+            if !world.contains_resource::<crate::audio::AudioServer>() {
+                let audio_server = crate::audio::AudioServer::new(
+                    crate::audio::AudioConfig::default(),
+                    asset_server,
+                );
+                let audio_commands = audio_server.commands();
+                world.insert_resource(audio_server);
+                if !world.contains_resource::<crate::audio::AudioCommands>() {
+                    world.insert_resource(audio_commands);
+                }
+            } else if !world.contains_resource::<crate::audio::AudioCommands>() {
+                if let Some(audio_server) =
+                    world.get_resource::<crate::audio::AudioServer>().cloned()
+                {
+                    world.insert_resource(audio_server.commands());
+                }
+            }
+        }
+
+        // Run one-time setup.
+        self.app_state.setup(world, &mut gpu);
 
         #[cfg(feature = "egui")]
         let egui = crate::app::egui_integration::EguiIntegration::new(
@@ -295,15 +606,45 @@ impl ApplicationHandler for RunnerHandler {
             gpu.surface_format(),
         );
 
-        self.state = Some(AppState {
+        self.runtime = Some(RuntimeState {
             window,
             gpu,
-            input,
             renderer,
+            input,
             last_frame_time: None,
+            occluded: false,
             #[cfg(feature = "egui")]
             egui,
         });
+        self.request_redraw();
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.did_shutdown {
+            event_loop.exit();
+            return;
+        }
+
+        let should_request = match self.config.redraw_mode {
+            RedrawMode::Continuous => self.can_draw(),
+            RedrawMode::Reactive => self.pending_redraw && self.can_draw(),
+        };
+
+        if should_request {
+            if let Some(rt) = self.runtime.as_ref() {
+                rt.window.request_redraw();
+            }
+            self.pending_redraw = false;
+        }
+
+        event_loop.set_control_flow(ControlFlow::Wait);
+    }
+
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(rt) = self.runtime.as_mut() {
+            rt.occluded = true;
+            rt.last_frame_time = None;
+        }
     }
 
     fn window_event(
@@ -312,174 +653,62 @@ impl ApplicationHandler for RunnerHandler {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
-        let state = match self.state.as_mut() {
-            Some(s) => s,
-            None => return,
+        let Some(rt) = self.runtime.as_mut() else {
+            return;
         };
+
+        #[cfg(feature = "egui")]
+        let egui_consumed = rt.egui.on_window_event(&rt.window, &event);
 
         match event {
             WindowEvent::CloseRequested => {
-                event_loop.exit();
+                self.shutdown_and_exit(event_loop);
             }
 
             WindowEvent::Resized(size) => {
-                state.gpu.resize_surface(size.width, size.height);
-                state.renderer.resize(&state.gpu, size.width, size.height);
-                state.window.request_redraw();
+                rt.gpu.resize_surface(size.width, size.height);
+                rt.renderer.resize(&rt.gpu, size.width, size.height);
+                if size.width == 0 || size.height == 0 {
+                    rt.last_frame_time = None;
+                }
+                self.app_state.on_resize(size.width, size.height);
+                if size.width > 0 && size.height > 0 {
+                    self.request_redraw();
+                }
             }
 
-            // Let egui process events first; if consumed, skip engine Input.
-            ref ev
-                if cfg!(feature = "egui")
-                    && matches!(
-                        ev,
-                        WindowEvent::KeyboardInput { .. }
-                            | WindowEvent::CursorMoved { .. }
-                            | WindowEvent::MouseInput { .. }
-                            | WindowEvent::MouseWheel { .. }
-                    ) =>
-            {
+            WindowEvent::Occluded(occluded) => {
+                rt.occluded = occluded;
+                if occluded {
+                    rt.last_frame_time = None;
+                } else {
+                    self.request_redraw();
+                }
+            }
+
+            WindowEvent::Focused(false) => {
+                rt.input.reset();
+            }
+
+            WindowEvent::ScaleFactorChanged { .. } => {
+                self.request_redraw();
+            }
+
+            WindowEvent::KeyboardInput { .. }
+            | WindowEvent::CursorMoved { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::MouseWheel { .. } => {
                 #[cfg(feature = "egui")]
-                {
-                    if state.egui.on_window_event(&state.window, ev) {
-                        return; // egui consumed it
-                    }
+                if egui_consumed {
+                    return;
                 }
-                // Not consumed — fall through to engine input handling.
-                match ev {
-                    WindowEvent::KeyboardInput { event, .. } => {
-                        if let winit::keyboard::PhysicalKey::Code(code) = event.physical_key {
-                            let key = KeyCode::from_winit(code);
-                            match event.state {
-                                ElementState::Pressed => state.input.key_down(key),
-                                ElementState::Released => state.input.key_up(key),
-                            }
-                        }
-                    }
-                    WindowEvent::CursorMoved { position, .. } => {
-                        state
-                            .input
-                            .set_mouse_position(position.x as f32, position.y as f32);
-                    }
-                    WindowEvent::MouseInput {
-                        state: btn_state,
-                        button,
-                        ..
-                    } => {
-                        let idx = match button {
-                            winit::event::MouseButton::Left => 0,
-                            winit::event::MouseButton::Right => 1,
-                            winit::event::MouseButton::Middle => 2,
-                            _ => return,
-                        };
-                        match btn_state {
-                            ElementState::Pressed => state.input.mouse_button_down(idx),
-                            ElementState::Released => state.input.mouse_button_up(idx),
-                        }
-                    }
-                    _ => {}
-                }
-            }
 
-            #[cfg(not(feature = "egui"))]
-            WindowEvent::KeyboardInput { event, .. } => {
-                if let winit::keyboard::PhysicalKey::Code(code) = event.physical_key {
-                    let key = KeyCode::from_winit(code);
-                    match event.state {
-                        ElementState::Pressed => state.input.key_down(key),
-                        ElementState::Released => state.input.key_up(key),
-                    }
-                }
-            }
-
-            #[cfg(not(feature = "egui"))]
-            WindowEvent::CursorMoved { position, .. } => {
-                state
-                    .input
-                    .set_mouse_position(position.x as f32, position.y as f32);
-            }
-
-            #[cfg(not(feature = "egui"))]
-            WindowEvent::MouseInput {
-                state: btn_state,
-                button,
-                ..
-            } => {
-                let idx = match button {
-                    winit::event::MouseButton::Left => 0,
-                    winit::event::MouseButton::Right => 1,
-                    winit::event::MouseButton::Middle => 2,
-                    _ => return,
-                };
-                match btn_state {
-                    ElementState::Pressed => state.input.mouse_button_down(idx),
-                    ElementState::Released => state.input.mouse_button_up(idx),
-                }
+                update_input_from_window_event(&mut rt.input, &event);
+                self.request_redraw();
             }
 
             WindowEvent::RedrawRequested => {
-                // Compute dt from wall clock.
-                let now = std::time::Instant::now();
-                let dt = state
-                    .last_frame_time
-                    .map(|t| now.duration_since(t).as_secs_f32())
-                    .unwrap_or(1.0 / 60.0);
-                state.last_frame_time = Some(now);
-
-                let world = self.world.as_mut().expect("world must exist");
-
-                // Sync Input snapshot to World resource for Systems.
-                world.insert_resource(state.input.clone());
-
-                match state.gpu.begin_frame() {
-                    Ok(()) => {
-                        let mut exit_requested = false;
-                        {
-                            let ctx = &mut FrameContext {
-                                world,
-                                input: &state.input,
-                                dt,
-                                gpu: &mut state.gpu,
-                                renderer: &mut state.renderer,
-                                window: &state.window,
-                                exit_requested: &mut exit_requested,
-                                #[cfg(feature = "egui")]
-                                egui: &mut state.egui,
-                            };
-                            (self.frame)(ctx);
-                        }
-
-                        // Render egui overlay (after user frame, before present).
-                        #[cfg(feature = "egui")]
-                        {
-                            let surface_view = state.gpu.surface_view().clone();
-                            state.egui.end_frame(
-                                state.gpu.device(),
-                                state.gpu.queue(),
-                                state.gpu.encoder(),
-                                &surface_view,
-                                &state.window,
-                            );
-                        }
-
-                        state.gpu.end_frame();
-
-                        if exit_requested {
-                            event_loop.exit();
-                        }
-                    }
-                    Err(crate::gpu::GpuError::SurfaceLost) => {
-                        state.renderer.surface_lost();
-                        let [w, h] = state.gpu.surface_size();
-                        state.renderer.resize(&state.gpu, w, h);
-                    }
-                    Err(e) => {
-                        eprintln!("[SkyEngine] GPU error: {e}");
-                    }
-                }
-
-                state.input.begin_frame();
-                state.window.request_redraw();
+                self.run_frame(event_loop);
             }
 
             _ => {}
@@ -487,6 +716,6 @@ impl ApplicationHandler for RunnerHandler {
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-        // World, GPU, and renderer are dropped automatically.
+        self.shutdown_world();
     }
 }

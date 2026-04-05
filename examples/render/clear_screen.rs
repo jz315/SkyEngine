@@ -1,28 +1,33 @@
-//! Minimal example: open a window and clear to a colour via the GPU backend.
+//! Clear screen — the simplest possible SkyEngine example.
 //!
 //! ```bash
-//! cargo run --example clear_screen --features app --release
+//! cargo run --example clear_screen --features app
 //! ```
 
-use sky_engine::app::{App, AppConfig};
+use sky_engine::app::{App, AppConfig, AppState, FrameContext};
 use sky_engine::ecs::World;
-use sky_engine::render::Renderer2DConfig;
+
+struct ClearScreen;
+
+impl AppState for ClearScreen {
+    fn update(&mut self, ctx: &mut FrameContext) {
+        ctx.gpu().with_surface_pass(
+            "clear",
+            Some(wgpu::Color {
+                r: 0.1,
+                g: 0.15,
+                b: 0.3,
+                a: 1.0,
+            }),
+            |_| {},
+        );
+    }
+}
 
 fn main() {
-    let mut world = World::new();
-    world.insert_resource(Renderer2DConfig::unlit());
-
-    App::new(AppConfig::new("SkyEngine — Clear Screen", 960, 640), world)
-        .run(|ctx| {
-            ctx.gpu().with_surface_pass(
-                "clear_screen",
-                Some(wgpu::Color {
-                    r: 0.05,
-                    g: 0.05,
-                    b: 0.12,
-                    a: 1.0,
-                }),
-                |_pass| {},
-            );
-        });
+    App::new(
+        AppConfig::new("SkyEngine — Clear Screen", 960, 640),
+        World::new(),
+    )
+    .run(ClearScreen);
 }
