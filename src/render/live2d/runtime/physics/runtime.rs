@@ -2,7 +2,20 @@ use super::*;
 use crate::render::live2d::model::Live2DModel;
 
 impl Live2DPhysics {
+    pub fn options(&self) -> Live2DPhysicsOptions {
+        Live2DPhysicsOptions {
+            gravity: [self.gravity.x, self.gravity.y],
+            wind: [self.wind.x, self.wind.y],
+        }
+    }
+
+    pub fn set_options(&mut self, options: Live2DPhysicsOptions) {
+        self.gravity = Vec2::new(options.gravity[0], options.gravity[1]);
+        self.wind = Vec2::new(options.wind[0], options.wind[1]);
+    }
+
     pub fn reset(&mut self) {
+        self.set_options(Live2DPhysicsOptions::default());
         self.current_remain_time = 0.0;
         for outputs in &mut self.current_rig_outputs {
             outputs.fill(0.0);
@@ -116,8 +129,8 @@ impl Live2DPhysics {
             .get("EffectiveForces")
             .ok_or_else(|| "physics JSON missing Meta.EffectiveForces".to_string())?;
 
-        let gravity = parse_vec2(forces.get("Gravity"), "Meta.EffectiveForces.Gravity")?;
-        let wind = parse_vec2(forces.get("Wind"), "Meta.EffectiveForces.Wind")?;
+        let _gravity = parse_vec2(forces.get("Gravity"), "Meta.EffectiveForces.Gravity")?;
+        let _wind = parse_vec2(forces.get("Wind"), "Meta.EffectiveForces.Wind")?;
         let fps = meta
             .get("Fps")
             .and_then(|v| v.as_f64())
@@ -182,8 +195,8 @@ impl Live2DPhysics {
         }
 
         let mut this = Self {
-            gravity,
-            wind,
+            gravity: Vec2::new(DEFAULT_GRAVITY[0], DEFAULT_GRAVITY[1]),
+            wind: Vec2::new(DEFAULT_WIND[0], DEFAULT_WIND[1]),
             fps,
             current_remain_time: 0.0,
             sub_rigs,

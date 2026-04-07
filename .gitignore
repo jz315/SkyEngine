@@ -14,3 +14,17 @@ Thumbs.db
 
 # Temp benchmark output
 bench_*.txt
+
+# Vendor / third-party SDKs
+CubismSdkForNative/
+tools/
+
+# Subcrate build artifacts
+cubism-sys/target/
+cubism-sys/Cargo.lock
+
+# Test / automation tooling
+.playwright-cli/
+
+# AI agent data
+.gemini/

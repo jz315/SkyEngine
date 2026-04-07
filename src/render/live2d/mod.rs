@@ -18,7 +18,7 @@ pub use model::Live2DModel;
 pub use render::{Live2DOverlayNode, Live2DRenderer, PreparedLive2DFrame, PreparedLive2DFrameSet};
 #[allow(unused_imports)]
 pub use runtime::{
-    Live2DBreath, Live2DExpressionPlayer, Live2DEyeBlink, Live2DLipSync, Live2DLook,
-    Live2DPhysics, Live2DPhysicsOptions, Live2DPose, Live2DUserModel, MotionFinishedEvent,
-    MotionFiredEvent, MotionHandle, MotionPriority, MotionStartedEvent, INVALID_MOTION_HANDLE,
+    Live2DBreath, Live2DExpressionPlayer, Live2DEyeBlink, Live2DLipSync, Live2DLook, Live2DPhysics,
+    Live2DPhysicsOptions, Live2DPose, Live2DUserModel, MotionFinishedEvent, MotionFiredEvent,
+    MotionHandle, MotionPriority, MotionStartedEvent, INVALID_MOTION_HANDLE,
 };

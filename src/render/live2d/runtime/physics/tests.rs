@@ -112,4 +112,55 @@ mod tests {
         assert!((model.parameter_value(parameter_index) - 1.0).abs() < 0.0001);
         assert!((physics.sub_rigs[0].particles[1].position.y - 1.0).abs() < 0.0001);
     }
+
+    #[test]
+    fn physics_uses_framework_default_options_until_overridden() {
+        let model = sample_model();
+        let physics = Live2DPhysics::from_json_str(
+            r#"{
+                "Meta": {
+                    "EffectiveForces": {
+                        "Gravity": { "X": 3.0, "Y": 2.0 },
+                        "Wind": { "X": 4.0, "Y": 5.0 }
+                    }
+                },
+                "PhysicsSettings": []
+            }"#,
+            &model,
+        )
+        .expect("physics should parse");
+
+        assert_eq!(physics.options(), Live2DPhysicsOptions::default());
+    }
+
+    #[test]
+    fn set_options_overrides_runtime_force_values() {
+        let mut physics = Live2DPhysics {
+            gravity: Vec2::new(DEFAULT_GRAVITY[0], DEFAULT_GRAVITY[1]),
+            wind: Vec2::new(DEFAULT_WIND[0], DEFAULT_WIND[1]),
+            fps: 0.0,
+            current_remain_time: 0.0,
+            sub_rigs: Vec::new(),
+            current_rig_outputs: Vec::new(),
+            previous_rig_outputs: Vec::new(),
+            parameter_caches: Vec::new(),
+            parameter_input_caches: Vec::new(),
+        };
+
+        physics.set_options(Live2DPhysicsOptions {
+            gravity: [1.0, 2.0],
+            wind: [3.0, 4.0],
+        });
+
+        assert_eq!(
+            physics.options(),
+            Live2DPhysicsOptions {
+                gravity: [1.0, 2.0],
+                wind: [3.0, 4.0],
+            }
+        );
+
+        physics.reset();
+        assert_eq!(physics.options(), Live2DPhysicsOptions::default());
+    }
 }
