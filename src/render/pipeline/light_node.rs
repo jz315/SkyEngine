@@ -265,18 +265,18 @@ impl LightNodeResources {
         light_table_buffer: &wgpu::Buffer,
         light_table_version: u64,
     ) -> &wgpu::BindGroup {
-        if self.cached_scene_bind_group.is_none() || self.cached_scene_buffer_version != light_table_version
+        if self.cached_scene_bind_group.is_none()
+            || self.cached_scene_buffer_version != light_table_version
         {
-            self.cached_scene_bind_group = Some(ctx.device().create_bind_group(
-                &wgpu::BindGroupDescriptor {
+            self.cached_scene_bind_group =
+                Some(ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("light_scene_storage_bg"),
                     layout: &self.scene_bgl,
                     entries: &[wgpu::BindGroupEntry {
                         binding: 0,
                         resource: light_table_buffer.as_entire_binding(),
                     }],
-                },
-            ));
+                }));
             self.cached_scene_buffer_version = light_table_version;
         }
 
@@ -341,7 +341,7 @@ impl RenderFeature2D for LightNode {
         graph.add_render_pass("lights", |s| {
             s.write_color(0, light_tex);
         });
-        state.set_lightmap(light_tex);
+        state.set_lightmap(light_tex, HDR_FORMAT);
     }
 
     fn execute(

@@ -15,14 +15,23 @@ use crate::render::live2d::model::Live2DModel;
 /// Mask texture resolution (same as SakuraEngine/Cubism default).
 pub const MASK_RESOLUTION: u32 = 256;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClippingObjectKind {
+    Drawable,
+    Offscreen,
+}
+
 /// A single clipping context — represents a group of drawables
 /// that share the same set of mask drawables.
 #[derive(Debug)]
 pub struct ClippingContext {
     /// Indices of drawables used as masks.
     pub mask_drawable_indices: Vec<usize>,
-    /// Indices of drawables that are clipped by these masks.
-    pub clipped_drawable_indices: Vec<usize>,
+    /// Indices of clipped objects.
+    ///
+    /// For a drawable clipping manager these are drawable indices; for an
+    /// offscreen clipping manager these are offscreen indices.
+    pub clipped_object_indices: Vec<usize>,
     /// Which RGBA channel this context uses (0=R, 1=G, 2=B, 3=A).
     pub channel_index: usize,
     /// Layout sub-region within the mask texture: `[x, y, w, h]` in 0..1 range.
@@ -43,7 +52,7 @@ impl ClippingContext {
     fn new(mask_indices: Vec<usize>) -> Self {
         Self {
             mask_drawable_indices: mask_indices,
-            clipped_drawable_indices: Vec::new(),
+            clipped_object_indices: Vec::new(),
             channel_index: 0,
             layout_bounds: [0.0, 0.0, 1.0, 1.0],
             mask_matrix: identity_matrix(),
@@ -54,10 +63,13 @@ impl ClippingContext {
 
 /// Manages all clipping contexts for a Live2D model.
 pub struct ClippingManager {
+    kind: ClippingObjectKind,
     /// All distinct clipping contexts.
     pub contexts: Vec<ClippingContext>,
     /// Mapping: drawable index → clipping context index (None if no mask).
     pub drawable_to_context: Vec<Option<usize>>,
+    /// Mapping: offscreen index → clipping context index (None if no mask).
+    pub offscreen_to_context: Vec<Option<usize>>,
     /// Channel flags for each of the 4 RGBA channels.
     pub channel_flags: [[f32; 4]; 4],
 }
@@ -68,32 +80,57 @@ impl ClippingManager {
     /// Follows the same deduplication logic as SakuraEngine:
     /// drawables that share the exact same mask set are grouped together.
     pub fn new(model: &Live2DModel) -> Self {
+        Self::new_with_kind(model, ClippingObjectKind::Drawable)
+    }
+
+    pub fn new_for_offscreens(model: &Live2DModel) -> Self {
+        Self::new_with_kind(model, ClippingObjectKind::Offscreen)
+    }
+
+    fn new_with_kind(model: &Live2DModel, kind: ClippingObjectKind) -> Self {
         let drawable_count = model.drawable_count();
+        let offscreen_count = model.offscreen_count();
         let mut contexts: Vec<ClippingContext> = Vec::new();
         let mut drawable_to_context = vec![None; drawable_count];
+        let mut offscreen_to_context = vec![None; offscreen_count];
 
-        for d in 0..drawable_count {
-            let info = model.drawable_info(d);
-            if info.mask_indices.is_empty() {
+        let object_count = match kind {
+            ClippingObjectKind::Drawable => drawable_count,
+            ClippingObjectKind::Offscreen => offscreen_count,
+        };
+
+        for object_index in 0..object_count {
+            let mask_indices = match kind {
+                ClippingObjectKind::Drawable => model.drawable_mask_indices(object_index),
+                ClippingObjectKind::Offscreen => model.offscreen_mask_indices(object_index),
+            };
+            if mask_indices.is_empty() {
                 continue;
             }
 
             // Check if an existing context has the same mask set
             let existing = contexts
                 .iter()
-                .position(|ctx| ctx.mask_drawable_indices == info.mask_indices);
+                .position(|ctx| same_mask_set(&ctx.mask_drawable_indices, &mask_indices));
 
             let ctx_index = match existing {
                 Some(idx) => idx,
                 None => {
                     let idx = contexts.len();
-                    contexts.push(ClippingContext::new(info.mask_indices.clone()));
+                    contexts.push(ClippingContext::new(mask_indices.clone()));
                     idx
                 }
             };
 
-            contexts[ctx_index].clipped_drawable_indices.push(d);
-            drawable_to_context[d] = Some(ctx_index);
+            contexts[ctx_index]
+                .clipped_object_indices
+                .push(object_index);
+            match kind {
+                ClippingObjectKind::Drawable => drawable_to_context[object_index] = Some(ctx_index),
+                ClippingObjectKind::Offscreen => {
+                    offscreen_to_context[object_index] = Some(ctx_index)
+                }
+            }
         }
 
         let channel_flags = [
@@ -104,8 +141,10 @@ impl ClippingManager {
         ];
 
         let mut mgr = Self {
+            kind,
             contexts,
             drawable_to_context,
+            offscreen_to_context,
             channel_flags,
         };
 
@@ -116,6 +155,11 @@ impl ClippingManager {
     /// Returns true if there are any clipping contexts (i.e., the model uses masks).
     pub fn has_masks(&self) -> bool {
         !self.contexts.is_empty()
+    }
+
+    #[inline]
+    pub fn kind(&self) -> ClippingObjectKind {
+        self.kind
     }
 
     /// Set up the channel and layout bounds for all contexts.
@@ -180,13 +224,28 @@ impl ClippingManager {
             let mut max_x = f32::MIN;
             let mut max_y = f32::MIN;
 
-            for &clipped_idx in &ctx.clipped_drawable_indices {
-                let positions = model.drawable_vertex_positions(clipped_idx);
-                for pos in positions {
-                    min_x = min_x.min(pos[0]);
-                    min_y = min_y.min(pos[1]);
-                    max_x = max_x.max(pos[0]);
-                    max_y = max_y.max(pos[1]);
+            for &clipped_idx in &ctx.clipped_object_indices {
+                match self.kind {
+                    ClippingObjectKind::Drawable => {
+                        let positions = model.drawable_vertex_positions(clipped_idx);
+                        for pos in positions {
+                            min_x = min_x.min(pos[0]);
+                            min_y = min_y.min(pos[1]);
+                            max_x = max_x.max(pos[0]);
+                            max_y = max_y.max(pos[1]);
+                        }
+                    }
+                    ClippingObjectKind::Offscreen => {
+                        for &drawable_idx in model.offscreen_child_drawables(clipped_idx) {
+                            let positions = model.drawable_vertex_positions(drawable_idx);
+                            for pos in positions {
+                                min_x = min_x.min(pos[0]);
+                                min_y = min_y.min(pos[1]);
+                                max_x = max_x.max(pos[0]);
+                                max_y = max_y.max(pos[1]);
+                            }
+                        }
+                    }
                 }
             }
 
@@ -268,4 +327,11 @@ fn identity_matrix() -> [f32; 16] {
     [
         1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
     ]
+}
+
+fn same_mask_set(lhs: &[usize], rhs: &[usize]) -> bool {
+    if lhs.len() != rhs.len() {
+        return false;
+    }
+    lhs.iter().all(|mask| rhs.contains(mask))
 }

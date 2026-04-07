@@ -43,7 +43,7 @@ impl RenderFeature2D for CompositeNode {
             s.read(light_tex);
             s.write_color(0, composite_out);
         });
-        state.set_current(composite_out);
+        state.set_current(composite_out, HDR_FORMAT);
     }
 
     fn execute(

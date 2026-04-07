@@ -29,6 +29,14 @@ $env:LIVE2D_CUBISM_SDK_NATIVE_DIR = "C:\CubismSdkForNative-5-r.5"
 cargo build
 ```
 
+The build script also accepts a stable parent folder that contains exactly one
+versioned SDK child, for example:
+
+```powershell
+$env:LIVE2D_CUBISM_SDK_NATIVE_DIR = "C:\Coding\SkyEngine\CubismSdkForNative"
+cargo build
+```
+
 **Option B** — Point directly to the Core library and include directories (useful for CI, Nix, vcpkg, or custom layouts):
 
 ```powershell

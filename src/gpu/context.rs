@@ -265,6 +265,7 @@ pub struct DynamicUniformBuffer<T: bytemuck::Pod> {
     stride: u64,
     capacity: u64,
     values: Vec<T>,
+    upload_scratch: Vec<u8>,
 }
 
 impl<T: bytemuck::Pod> DynamicUniformBuffer<T> {
@@ -313,6 +314,7 @@ impl<T: bytemuck::Pod> DynamicUniformBuffer<T> {
             stride,
             capacity,
             values: Vec::with_capacity(capacity as usize),
+            upload_scratch: Vec::new(),
         }
     }
 
@@ -366,6 +368,21 @@ impl<T: bytemuck::Pod> DynamicUniformBuffer<T> {
         u32::try_from(offset).expect("dynamic uniform offset exceeds u32::MAX")
     }
 
+    pub fn push_staged(&mut self, ctx: &GpuContext, value: T) -> u32 {
+        let index = self.values.len() as u64;
+        self.values.push(value);
+        let _ = self.ensure_capacity(ctx, self.values.len() as u64);
+        let offset = index * self.stride;
+        u32::try_from(offset).expect("dynamic uniform offset exceeds u32::MAX")
+    }
+
+    pub fn upload_all(&mut self, ctx: &GpuContext) {
+        if self.values.is_empty() {
+            return;
+        }
+        self.reupload_all(ctx);
+    }
+
     fn ensure_capacity(&mut self, ctx: &GpuContext, required: u64) -> bool {
         if required <= self.capacity {
             return false;
@@ -389,12 +406,20 @@ impl<T: bytemuck::Pod> DynamicUniformBuffer<T> {
         true
     }
 
-    fn reupload_all(&self, ctx: &GpuContext) {
+    fn reupload_all(&mut self, ctx: &GpuContext) {
+        let value_size = std::mem::size_of::<T>();
+        let total_size = (self.values.len() as u64 * self.stride) as usize;
+        self.upload_scratch.clear();
+        self.upload_scratch.resize(total_size, 0);
+
         for (index, value) in self.values.iter().enumerate() {
-            let offset = index as u64 * self.stride;
-            ctx.queue()
-                .write_buffer(&self.buffer, offset, bytemuck::bytes_of(value));
+            let offset = index * self.stride as usize;
+            let bytes = bytemuck::bytes_of(value);
+            self.upload_scratch[offset..offset + value_size].copy_from_slice(bytes);
         }
+
+        ctx.queue()
+            .write_buffer(&self.buffer, 0, &self.upload_scratch);
     }
 
     #[inline]

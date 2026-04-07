@@ -43,7 +43,7 @@ impl RenderFeature2D for ToneMapNode {
             s.read(input);
             s.write_color(0, output);
         });
-        state.set_current(output);
+        state.set_current(output, state.surface_format());
     }
 
     fn execute(

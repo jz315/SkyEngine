@@ -25,8 +25,8 @@ pub use super::passes::{
     mesh_pass::{MeshDraw, MeshPass, MeshPassError},
 };
 pub use super::pipeline::{
-    BloomNode, CompositeNode, LightNode, PipelineState2D, RenderFeature2D, RenderPipeline,
-    SpritePass, ToneMapNode, ViewportBlitNode, VignetteNode,
+    BloomNode, CompositeNode, FramePayloads2D, LightNode, PipelineState2D, RenderFeature2D,
+    RenderPipeline, SpritePass, ToneMapNode, ViewportBlitNode, VignetteNode,
 };
 pub use super::postfx::{bloom::Bloom, tonemap::ToneMap, vignette::Vignette, PostFx};
 pub use super::resources::{
@@ -42,27 +42,24 @@ pub use super::resources::{
 #[cfg(feature = "live2d")]
 pub mod live2d {
     pub use super::super::live2d::{
-        Live2DExpressionPlayer, Live2DModel, Live2DModelResource, Live2DPhysics, Live2DPose,
-        Live2DRenderer,
+        Live2DExpressionPlayer, Live2DLoadError, Live2DModel, Live2DModelResource,
+        Live2DOverlayNode, Live2DPhysics, Live2DPhysicsOptions, Live2DPose, Live2DRenderer,
+        Live2DUserModel, PreparedLive2DFrame, PreparedLive2DFrameSet,
     };
 
-    pub mod clipping {
-        pub use super::super::super::live2d::clipping::*;
-    }
-
-    pub mod loader {
-        pub use super::super::super::live2d::loader::*;
+    pub mod asset {
+        pub use super::super::super::live2d::asset::*;
     }
 
     pub mod model {
         pub use super::super::super::live2d::model::*;
     }
 
-    pub mod pose {
-        pub use super::super::super::live2d::pose::*;
+    pub mod render {
+        pub use super::super::super::live2d::render::*;
     }
 
-    pub mod renderer {
-        pub use super::super::super::live2d::renderer::*;
+    pub mod runtime {
+        pub use super::super::super::live2d::runtime::*;
     }
 }

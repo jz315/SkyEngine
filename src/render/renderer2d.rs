@@ -3,7 +3,7 @@ use crate::gpu::GpuContext;
 use crate::render::ecs::RenderSettings2D;
 use crate::render::gpu_scene2d::GpuScene2D;
 use crate::render::pipeline::{
-    PreparedRenderWorld2D, RenderPipeline, SceneCache2D, SceneExtractor,
+    FramePayloads2D, PreparedRenderWorld2D, RenderPipeline, SceneCache2D, SceneExtractor,
 };
 use crate::render::Color;
 use std::time::Instant;
@@ -194,7 +194,8 @@ impl Renderer2D {
         for (index, view) in self.gpu_scene.views().iter().copied().enumerate() {
             self.pipeline.enqueue_view(view, index == 0);
         }
-        let execution = self.pipeline.execute_frame(gpu, &self.gpu_scene);
+        let frame_payloads = FramePayloads2D::new().with_gpu_scene(&self.gpu_scene);
+        let execution = self.pipeline.execute_frame(gpu, &frame_payloads);
         let execute_ms = elapsed_ms(execute_start);
 
         self.last_stats = RendererStats {
@@ -292,20 +293,21 @@ mod tests {
             let input = state
                 .current()
                 .expect("KeepAliveNode requires current input");
+            let format = state.current_format().unwrap_or(state.surface_format());
             let sink = graph.create_texture(|b| {
                 b.name("keep_alive_sink")
                     .size(TargetSize::Exact(
                         state.view_size()[0],
                         state.view_size()[1],
                     ))
-                    .format(state.surface_format())
+                    .format(format)
                     .persistent();
             });
             graph.add_render_pass("keep_alive", |s| {
                 s.read(input);
                 s.write_color(0, sink);
             });
-            state.set_current(sink);
+            state.set_current(sink, format);
         }
 
         fn execute(
@@ -333,19 +335,20 @@ mod tests {
         }
 
         fn setup(&mut self, graph: &mut RenderGraph, state: &mut PipelineState2D) {
+            let format = state.current_format().unwrap_or(state.surface_format());
             let sink = graph.create_texture(|b| {
                 b.name("resize_counter_sink")
                     .size(TargetSize::Exact(
                         state.view_size()[0],
                         state.view_size()[1],
                     ))
-                    .format(state.surface_format())
+                    .format(format)
                     .persistent();
             });
             graph.add_render_pass("resize_counter", |s| {
                 s.write_color(0, sink);
             });
-            state.set_current(sink);
+            state.set_current(sink, format);
         }
 
         fn execute(

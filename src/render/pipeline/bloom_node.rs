@@ -44,7 +44,7 @@ impl RenderFeature2D for BloomNode {
             s.read(input);
             s.write_color(0, bloom_out);
         });
-        state.set_current(bloom_out);
+        state.set_current(bloom_out, HDR_FORMAT);
     }
 
     fn execute(

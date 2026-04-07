@@ -6,6 +6,7 @@
   - `sky_engine::render::*` is the curated high-level 2D facade (`Renderer2D` plus ECS render components/resources).
   - `sky_engine::render::expert::*` is the explicit low-level entry point for `RenderGraph`, passes, post-fx, targets, and resource systems.
 - Internally it still uses a layered architecture: core GPU primitives → declarative render graph → passes & post-processing → resource management.
+- The composition boundary for mixing renderer domains is the pipeline/graph layer (`RenderPipeline`, `RenderFeature2D`, `FramePayloads2D`). Do not treat `SceneCache2D` or `GpuScene2D` as the universal representation for every renderer type.
 - The GPU backend is `wgpu` (WebGPU/Vulkan/DX12/Metal).  All rendering goes through `GpuContext` (`src/gpu/context.rs`).
 - Shader language is WGSL.  All shaders live under `shaders/`.
 - The module is gated behind `features = ["app"]` for window/surface-dependent code.  The optional `live2d` sub-module requires `features = ["live2d"]`.
@@ -22,7 +23,7 @@ render/
 ├── postfx/       — Post-processing effect chain (Bloom, ToneMap, Vignette)
 ├── resources/    — Shared resource systems (TextureAtlas, Blackboard, Material, Mesh)
 ├── shaders/      — All WGSL shader sources
-├── live2d/       — Live2D Cubism model renderer (has its own AGENTS.md, feature-gated)
+├── live2d/       — Live2D Cubism model renderer split into asset/model/runtime/render domains (has its own AGENTS.md, feature-gated)
 ├── light.rs      — Light2D descriptor and color temperature utility
 └── mod.rs        — Module wiring and public re-exports
 ```
@@ -53,8 +54,18 @@ render/
   - `render_pipeline.rs` — `RenderPipeline`, feature registration, per-view graph setup, and dispatch.
   - `extractor.rs` — incremental ECS-to-scene-cache synchronization (`SceneExtractor`).
   - `prepared.rs` — sorted/cull-checked per-view sprite/light instances and draw spans.
-  - `state.rs` — feature setup/execution state (`PipelineState2D`, `FeatureExecutionContext2D`).
+  - `state.rs` — feature setup/execution state (`PipelineState2D`, `FeatureExecutionContext2D`, `FramePayloads2D`).
   - `*_node.rs` / `sprite_pass.rs` — graph-backed render features used by the curated renderer path.
+
+### Composition Boundary
+- `RenderPipeline` is the composition layer for mixing render domains under a shared frame, graph, target, post-fx chain, and stats model.
+- `FramePayloads2D` is the frame-scoped typed payload registry passed to `RenderFeature2D::execute()`. New renderer domains should plug in prepared data here instead of extending the central execution context with ad-hoc fields.
+- `GpuScene2D` is the prepared payload for the current sprite/light renderer. It is not the canonical prepared-frame model for Live2D or other future renderers.
+- New renderer domains should normally follow this shape:
+  - domain-specific prepare/cache/upload path
+  - one or more `RenderFeature2D` nodes
+  - typed frame payload access through `FramePayloads2D`
+- Only promote abstractions into shared pipeline state when they represent true cross-domain concepts, such as camera/view/viewport/order/layer behavior. Keep renderer-specific geometry, masking, batching, and runtime semantics local to that renderer.
 
 ---
 
@@ -237,6 +248,8 @@ A typical lit 2D scene frame follows this order:
 6. **Composite + Post-FX**: `CompositeNode` / `BloomNode` / `VignetteNode` / `ToneMapNode` compose the final view output.
 7. **Present**: `ViewportBlitNode` writes the prepared view result to the surface, then `GpuContext::end_frame()` submits and presents.
 
+Other renderer domains may replace steps 1–5 with their own prepare/upload/execute phases, but they should still converge at the same composition layer: feature nodes scheduled by `RenderPipeline`, with frame data passed through `FramePayloads2D`.
+
 ## Pipeline Caching Pattern
 
 All rendering passes use per-target-format pipeline caching via `FxHashMap<TextureFormat, Arc<RenderPipeline>>`.  This avoids redundant pipeline creation when rendering to different format targets across frames.  The pattern is used consistently in:
@@ -257,6 +270,9 @@ All rendering passes use per-target-format pipeline caching via `FxHashMap<Textu
 - When adding new shader files to `shaders/`, remember to update this file map.
 - If you touch `Renderer2D`, `pipeline/`, or `gpu_scene2d.rs`, verify the prepared per-frame buffer path remains coherent; it is the executed draw path.
 - If you change high-level render or app-facing APIs, also validate the demos/examples with `cargo check --examples --features app`. The render examples are part of the supported surface, not just optional samples.
+- Do not force Live2D or future renderer domains into `SceneCache2D` / `PreparedRenderWorld2D` unless the semantics genuinely match sprite/light rendering.
+- Prefer graph-backed composition over direct surface-only integration when adding a new renderer domain. Direct `draw_to_surface()`-style paths are acceptable as compatibility layers, but they should not become the only integration surface.
+- Avoid turning `FeatureExecutionContext2D` into a grab-bag of renderer-specific fields. Use `FramePayloads2D` for feature-specific prepared data.
 
 ## Test Commands
 - Run all render tests: `cargo test --features app`

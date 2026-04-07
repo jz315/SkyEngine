@@ -45,7 +45,7 @@ impl RenderFeature2D for VignetteNode {
             s.read(input);
             s.write_color(0, vignette_out);
         });
-        state.set_current(vignette_out);
+        state.set_current(vignette_out, HDR_FORMAT);
     }
 
     fn execute(

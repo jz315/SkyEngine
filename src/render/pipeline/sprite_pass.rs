@@ -297,16 +297,15 @@ impl SpritePassResources {
         if self.cached_scene_bind_group.is_none()
             || self.cached_scene_buffer_version != sprite_table_version
         {
-            self.cached_scene_bind_group = Some(ctx.device().create_bind_group(
-                &wgpu::BindGroupDescriptor {
+            self.cached_scene_bind_group =
+                Some(ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("sprite_scene_storage_bg"),
                     layout: &self.scene_bgl,
                     entries: &[wgpu::BindGroupEntry {
                         binding: 0,
                         resource: sprite_table_buffer.as_entire_binding(),
                     }],
-                },
-            ));
+                }));
             self.cached_scene_buffer_version = sprite_table_version;
         }
 
@@ -425,7 +424,7 @@ impl RenderFeature2D for SpritePass {
         graph.add_render_pass("sprites", |s| {
             s.write_color(0, scene_tex);
         });
-        state.set_scene_color(scene_tex);
+        state.set_scene_color(scene_tex, target_format);
     }
 
     fn execute(

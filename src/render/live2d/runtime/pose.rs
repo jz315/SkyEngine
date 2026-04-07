@@ -121,6 +121,11 @@ impl Live2DPose {
         self.copy_part_opacities(model);
     }
 
+    pub(crate) fn reset_state(&mut self, model: &mut Live2DModel) {
+        self.reset(model);
+        self.last_model_ptr = Some(model.raw_model_ptr() as usize);
+    }
+
     fn reset(&mut self, model: &mut Live2DModel) {
         let mut begin_index = 0usize;
 
@@ -277,5 +282,25 @@ mod tests {
         .expect("pose should parse");
 
         assert_eq!(pose.fade_time_seconds, DEFAULT_FADE_IN_SECONDS);
+    }
+
+    #[test]
+    fn reset_state_updates_cached_model_pointer() {
+        let mut pose = Live2DPose::from_json_str(
+            r#"{
+                "Groups": [[{ "Id": "PartA" }]]
+            }"#,
+        )
+        .expect("pose should parse");
+
+        let moc_bytes = std::fs::read(
+            "CubismSdkForNative/CubismSdkForNative-5-r.5/Samples/Resources/Haru/Haru.moc3",
+        )
+        .expect("sample moc3 should exist");
+        let mut model = Live2DModel::from_moc3_bytes(&moc_bytes).expect("sample moc3 should load");
+
+        pose.reset_state(&mut model);
+
+        assert_eq!(pose.last_model_ptr, Some(model.raw_model_ptr() as usize));
     }
 }

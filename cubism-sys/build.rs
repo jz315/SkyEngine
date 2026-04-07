@@ -68,7 +68,7 @@ fn main() {
         );
     });
 
-    let sdk_path = std::path::PathBuf::from(&sdk_dir);
+    let sdk_path = resolve_sdk_root(std::path::Path::new(&sdk_dir));
 
     // Derive platform-specific library path from SDK layout
     let lib_dir = resolve_sdk_lib_dir(&sdk_path);
@@ -77,6 +77,31 @@ fn main() {
     // Export include path for downstream crates
     let include_dir = sdk_path.join("Core").join("include");
     println!("cargo:include={}", include_dir.display());
+}
+
+/// Resolve the effective SDK root.
+///
+/// Some workspaces vendor the official archive under a stable parent directory
+/// such as `CubismSdkForNative/CubismSdkForNative-5-r.5`. Accept both shapes:
+/// - `<path>/Core/...`
+/// - `<path>/<version>/Core/...`
+fn resolve_sdk_root(path: &std::path::Path) -> std::path::PathBuf {
+    if path.join("Core").is_dir() {
+        return path.to_path_buf();
+    }
+
+    let mut nested_candidates = std::fs::read_dir(path)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|child| child.is_dir() && child.join("Core").is_dir());
+
+    match (nested_candidates.next(), nested_candidates.next()) {
+        (Some(candidate), None) => candidate,
+        _ => path.to_path_buf(),
+    }
 }
 
 /// Emit linker directives given a directory containing the Core static library.

@@ -2,12 +2,11 @@
 
 use crate::gpu::GpuContext;
 use crate::render::ecs::RenderSettings2D;
-use crate::render::gpu_scene2d::GpuScene2D;
 use crate::render::graph::RenderGraph;
 use crate::render::pipeline::{
-    BloomNode, ColorResolveNode, CompositeNode, FeatureExecutionContext2D, FramePipelineState2D,
-    LightNode, PreparedView2D, RenderFeature2D, SpritePass, ToneMapNode, ViewportBlitNode,
-    VignetteNode,
+    BloomNode, ColorResolveNode, CompositeNode, FeatureExecutionContext2D, FramePayloads2D,
+    FramePipelineState2D, LightNode, PreparedView2D, RenderFeature2D, SpritePass, ToneMapNode,
+    ViewportBlitNode, VignetteNode,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -135,7 +134,7 @@ impl RenderPipeline {
     pub(crate) fn execute_frame(
         &mut self,
         ctx: &mut GpuContext,
-        gpu_scene: &GpuScene2D,
+        frame_payloads: &FramePayloads2D<'_>,
     ) -> PipelineExecutionStats2D {
         let frame_state = self
             .frame_state
@@ -159,7 +158,7 @@ impl RenderPipeline {
             }
 
             let execution: FeatureExecutionContext2D<'_> =
-                frame_state.execution_context(dispatch.view_index, gpu_scene);
+                frame_state.execution_context(dispatch.view_index, frame_payloads);
             stats.draw_calls += features[dispatch.feature_index].draw_calls(&execution);
             features[dispatch.feature_index].execute(compiled_pass, ctx, resources, &execution)?;
             Ok(())
@@ -201,13 +200,19 @@ impl Default for RenderPipeline {
 mod tests {
     use super::*;
     use crate::render::ecs::{RenderSettings2D, ToneMapSettings, ViewportRect};
+    use crate::render::gpu_scene2d::GpuScene2D;
     use crate::render::graph::{
         CompiledPass, LoadOp, PhysicalResources, RenderGraph, RenderGraphError, TargetSize,
     };
     use crate::render::pipeline::{
-        PipelineState2D, PreparedRenderWorld2D, RenderFeature2D, SceneCache2D, SceneView2D,
+        FramePayloads2D, PipelineState2D, PreparedRenderWorld2D, RenderFeature2D, SceneCache2D,
+        SceneView2D,
     };
     use crate::render::{Camera2D, Color, RenderView2D};
+    use std::sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc, Mutex,
+    };
 
     fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
@@ -257,20 +262,21 @@ mod tests {
             let input = state
                 .current()
                 .expect("KeepAliveNode requires current input");
+            let format = state.current_format().unwrap_or(state.surface_format());
             let sink = graph.create_texture(|b| {
                 b.name("keep_alive_sink")
                     .size(TargetSize::Exact(
                         state.view_size()[0],
                         state.view_size()[1],
                     ))
-                    .format(state.surface_format())
+                    .format(format)
                     .persistent();
             });
             graph.add_render_pass("keep_alive", |s| {
                 s.read(input);
                 s.write_color(0, sink);
             });
-            state.set_current(sink);
+            state.set_current(sink, format);
         }
 
         fn execute(
@@ -380,10 +386,256 @@ mod tests {
             .expect("headless begin_frame should succeed");
         pipeline.begin_frame(&scene.settings, ctx.surface_format(), false);
         pipeline.enqueue_view(gpu_scene.views()[0], true);
-        let _ = pipeline.execute_frame(&mut ctx, &gpu_scene);
+        let frame_payloads = FramePayloads2D::new().with_gpu_scene(&gpu_scene);
+        let _ = pipeline.execute_frame(&mut ctx, &frame_payloads);
         ctx.end_frame();
 
         assert_eq!(pipeline.last_light_ambient(), Some(Color::GREEN.to_array()));
         assert_ne!(pipeline.last_light_ambient(), Some(Color::RED.to_array()));
+    }
+
+    struct PayloadProbeNode {
+        seen_value: Arc<AtomicU32>,
+    }
+
+    impl RenderFeature2D for PayloadProbeNode {
+        fn name(&self) -> &'static str {
+            "payload_probe"
+        }
+
+        fn setup(&mut self, graph: &mut RenderGraph, state: &mut PipelineState2D) {
+            let format = state.current_format().unwrap_or(state.surface_format());
+            let sink = graph.create_texture(|b| {
+                b.name("payload_probe_sink")
+                    .size(TargetSize::Exact(
+                        state.view_size()[0],
+                        state.view_size()[1],
+                    ))
+                    .format(format)
+                    .persistent();
+            });
+            graph.add_render_pass("payload_probe", |s| {
+                s.write_color(0, sink);
+            });
+            state.set_current(sink, format);
+        }
+
+        fn execute(
+            &mut self,
+            _pass: &CompiledPass,
+            _ctx: &mut GpuContext,
+            _resources: &PhysicalResources<'_>,
+            execution: &FeatureExecutionContext2D<'_>,
+        ) -> Result<(), RenderGraphError> {
+            let value = execution
+                .payload::<u32>()
+                .copied()
+                .expect("payload probe should receive typed frame payload");
+            self.seen_value.store(value, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn execute_frame_exposes_custom_typed_payloads_to_features() {
+        let (device, queue) = create_test_device();
+        let mut ctx =
+            GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [32, 32]);
+        let seen_value = Arc::new(AtomicU32::new(0));
+        let mut pipeline = RenderPipeline::new();
+        pipeline.add(Box::new(PayloadProbeNode {
+            seen_value: seen_value.clone(),
+        }));
+
+        ctx.begin_frame()
+            .expect("headless begin_frame should succeed");
+        pipeline.begin_frame(&RenderSettings2D::default(), ctx.surface_format(), false);
+        pipeline.enqueue_view(test_view(0, 0, 32, 32, 0), true);
+
+        let payload_value = 37u32;
+        let mut frame_payloads = FramePayloads2D::new();
+        frame_payloads.insert(&payload_value);
+        let _ = pipeline.execute_frame(&mut ctx, &frame_payloads);
+        ctx.end_frame();
+
+        assert_eq!(seen_value.load(Ordering::Relaxed), payload_value);
+    }
+
+    struct FormatSeedNode {
+        format: wgpu::TextureFormat,
+    }
+
+    impl RenderFeature2D for FormatSeedNode {
+        fn name(&self) -> &'static str {
+            "format_seed"
+        }
+
+        fn setup(&mut self, graph: &mut RenderGraph, state: &mut PipelineState2D) {
+            let sink = graph.create_texture(|b| {
+                b.name("format_seed_sink")
+                    .size(TargetSize::Exact(
+                        state.view_size()[0],
+                        state.view_size()[1],
+                    ))
+                    .format(self.format)
+                    .persistent();
+            });
+            graph.add_render_pass("format_seed", |s| {
+                s.write_color(0, sink);
+            });
+            state.set_current(sink, self.format);
+        }
+
+        fn execute(
+            &mut self,
+            _pass: &CompiledPass,
+            _ctx: &mut GpuContext,
+            _resources: &PhysicalResources<'_>,
+            _execution: &FeatureExecutionContext2D<'_>,
+        ) -> Result<(), RenderGraphError> {
+            Ok(())
+        }
+    }
+
+    struct CurrentFormatProbeNode {
+        seen_format: Arc<Mutex<Option<wgpu::TextureFormat>>>,
+    }
+
+    impl RenderFeature2D for CurrentFormatProbeNode {
+        fn name(&self) -> &'static str {
+            "current_format_probe"
+        }
+
+        fn setup(&mut self, graph: &mut RenderGraph, state: &mut PipelineState2D) {
+            let format = state
+                .current_format()
+                .expect("CurrentFormatProbeNode requires current format");
+            *self
+                .seen_format
+                .lock()
+                .expect("current format probe mutex should not be poisoned") = Some(format);
+
+            let input = state
+                .current()
+                .expect("CurrentFormatProbeNode requires current input");
+            let sink = graph.create_texture(|b| {
+                b.name("current_format_probe_sink")
+                    .size(TargetSize::Exact(
+                        state.view_size()[0],
+                        state.view_size()[1],
+                    ))
+                    .format(format)
+                    .persistent();
+            });
+            graph.add_render_pass("current_format_probe", |s| {
+                s.read(input);
+                s.write_color(0, sink);
+            });
+            state.set_current(sink, format);
+        }
+
+        fn execute(
+            &mut self,
+            _pass: &CompiledPass,
+            _ctx: &mut GpuContext,
+            _resources: &PhysicalResources<'_>,
+            _execution: &FeatureExecutionContext2D<'_>,
+        ) -> Result<(), RenderGraphError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn current_format_tracks_feature_output_formats_during_setup() {
+        let (device, queue) = create_test_device();
+        let ctx =
+            GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [32, 32]);
+        let seen_format = Arc::new(Mutex::new(None));
+        let mut pipeline = RenderPipeline::new();
+        pipeline.add(Box::new(FormatSeedNode {
+            format: wgpu::TextureFormat::Rgba16Float,
+        }));
+        pipeline.add(Box::new(CurrentFormatProbeNode {
+            seen_format: seen_format.clone(),
+        }));
+
+        pipeline.begin_frame(&RenderSettings2D::default(), ctx.surface_format(), false);
+        pipeline.enqueue_view(test_view(0, 0, 32, 32, 0), true);
+
+        assert_eq!(
+            *seen_format
+                .lock()
+                .expect("current format probe mutex should not be poisoned"),
+            Some(wgpu::TextureFormat::Rgba16Float)
+        );
+    }
+
+    struct ViewIndexProbeNode {
+        seen_indices: Arc<Mutex<Vec<usize>>>,
+    }
+
+    impl RenderFeature2D for ViewIndexProbeNode {
+        fn name(&self) -> &'static str {
+            "view_index_probe"
+        }
+
+        fn setup(&mut self, graph: &mut RenderGraph, state: &mut PipelineState2D) {
+            let format = state.current_format().unwrap_or(state.surface_format());
+            let sink = graph.create_texture(|b| {
+                b.name("view_index_probe_sink")
+                    .size(TargetSize::Exact(
+                        state.view_size()[0],
+                        state.view_size()[1],
+                    ))
+                    .format(format)
+                    .persistent();
+            });
+            graph.add_render_pass("view_index_probe", |s| {
+                s.write_color(0, sink);
+            });
+            state.set_current(sink, format);
+        }
+
+        fn execute(
+            &mut self,
+            _pass: &CompiledPass,
+            _ctx: &mut GpuContext,
+            _resources: &PhysicalResources<'_>,
+            execution: &FeatureExecutionContext2D<'_>,
+        ) -> Result<(), RenderGraphError> {
+            self.seen_indices
+                .lock()
+                .expect("view index probe mutex should not be poisoned")
+                .push(execution.view_index());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn execute_frame_reports_view_indices_to_features() {
+        let (device, queue) = create_test_device();
+        let mut ctx =
+            GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [64, 64]);
+        let seen_indices = Arc::new(Mutex::new(Vec::new()));
+        let mut pipeline = RenderPipeline::new();
+        pipeline.add(Box::new(ViewIndexProbeNode {
+            seen_indices: seen_indices.clone(),
+        }));
+
+        ctx.begin_frame()
+            .expect("headless begin_frame should succeed");
+        pipeline.begin_frame(&RenderSettings2D::default(), ctx.surface_format(), false);
+        pipeline.enqueue_view(test_view(0, 0, 32, 64, 0), true);
+        pipeline.enqueue_view(test_view(32, 0, 32, 64, 1), false);
+        let frame_payloads = FramePayloads2D::new();
+        let _ = pipeline.execute_frame(&mut ctx, &frame_payloads);
+        ctx.end_frame();
+
+        assert_eq!(
+            *seen_indices
+                .lock()
+                .expect("view index probe mutex should not be poisoned"),
+            vec![0, 1]
+        );
     }
 }

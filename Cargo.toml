@@ -30,7 +30,7 @@ pollster = { version = "0.4", optional = true }
 
 # Asset loading (feature-gated)
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
-serde_json = { version = "1", optional = true }
+serde_json = { version = "1", optional = true, features = ["preserve_order"] }
 cubism-sys = { package = "live2d-cubism-core-sys", version = "0.1", optional = true }
 kira = { version = "0.12", optional = true }
 
@@ -133,6 +133,11 @@ required-features = ["app"]
 name = "live2d_demo"
 path = "examples/live2d/live2d_demo.rs"
 required-features = ["live2d", "egui"]
+
+[[example]]
+name = "live2d_probe"
+path = "examples/live2d/live2d_probe.rs"
+required-features = ["live2d"]
 
 [[example]]
 name = "egui_demo"

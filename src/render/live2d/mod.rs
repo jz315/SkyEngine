@@ -3,19 +3,22 @@
 //! Provides loading and GPU rendering of Live2D models (`.model3.json`)
 //! using the Cubism SDK Core via FFI and wgpu for GPU operations.
 
-pub mod clipping;
-mod expression;
-pub mod loader;
+pub mod asset;
 pub mod model;
-mod motion;
-mod physics;
-pub mod pose;
-pub mod renderer;
-mod runtime;
+pub mod render;
+pub mod runtime;
 
-pub use expression::Live2DExpressionPlayer;
-pub use loader::Live2DModelResource;
+#[allow(unused_imports)]
+pub use asset::{
+    Live2DDisplayInfo, Live2DDisplayNamedEntry, Live2DHitArea, Live2DLoadError,
+    Live2DModelResource, Live2DUserDataEntry,
+};
 pub use model::Live2DModel;
-pub use physics::Live2DPhysics;
-pub use pose::Live2DPose;
-pub use renderer::Live2DRenderer;
+#[allow(unused_imports)]
+pub use render::{Live2DOverlayNode, Live2DRenderer, PreparedLive2DFrame, PreparedLive2DFrameSet};
+#[allow(unused_imports)]
+pub use runtime::{
+    Live2DBreath, Live2DExpressionPlayer, Live2DEyeBlink, Live2DLipSync, Live2DLook,
+    Live2DPhysics, Live2DPhysicsOptions, Live2DPose, Live2DUserModel, MotionFinishedEvent,
+    MotionFiredEvent, MotionHandle, MotionPriority, MotionStartedEvent, INVALID_MOTION_HANDLE,
+};

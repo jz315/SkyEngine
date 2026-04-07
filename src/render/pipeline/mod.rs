@@ -15,7 +15,7 @@ pub(crate) mod viewport_blit_node;
 pub(crate) mod vignette_node;
 
 pub use render_pipeline::RenderPipeline;
-pub use state::{FeatureExecutionContext2D, PipelineState2D};
+pub use state::{FeatureExecutionContext2D, FramePayloads2D, PipelineState2D};
 
 pub(crate) use extractor::SceneExtractor;
 pub(crate) use prepared::{PreparedRenderWorld2D, PreparedView2D};
