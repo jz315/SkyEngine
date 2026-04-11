@@ -463,16 +463,78 @@ impl PipelineCache {
 
 ```rust
 /// Phase Item — 排序后等待执行的渲染项。
-/// 每个 sub-mesh 展开为一个独立的 PhaseItem，不同 entity 的相同 material
-/// sub-mesh 可以在排序后自然合批。
+/// 通用字段用于排序和分发，私有 payload 由 DrawFunction 解释。
+/// draw_function_id 是隐式 type tag — 每种 DrawFunction 对应一种 payload 类型。
 pub struct PhaseItem {
+    // === 通用字段 (Phase 使用) ===
     pub sort_key: u64,
     pub draw_function_id: DrawFunctionId,
-    pub entity: EntityId,           // for ECS lookup
+    pub entity: EntityId,
+    pub batch_key: u64,
+    // === 私有 payload (DrawFunction 使用, 24 bytes inline) ===
+    // 类型由 draw_function_id 隐含决定，类似 C++ tagged union。
+    // DrawMesh 写 MeshDrawData, DrawTilemap 写 TilemapDrawData, ...
+    data: [u64; 3],
+}
+
+impl PhaseItem {
+    /// 设置 DrawFunction 私有数据。T 必须是 Copy 类型，大小 ≤ 24 bytes。
+    /// 编译期检查 size 和 alignment。
+    pub fn set_data<T: Copy>(&mut self, val: T) {
+        const { assert!(size_of::<T>() <= 24) };
+        const { assert!(align_of::<T>() <= align_of::<u64>()) };
+        unsafe { ptr::write(self.data.as_mut_ptr() as *mut T, val) }
+    }
+
+    /// 读取 DrawFunction 私有数据。调用者必须保证 T 与写入时一致。
+    pub fn data<T: Copy>(&self) -> &T {
+        const { assert!(size_of::<T>() <= 24) };
+        unsafe { &*(self.data.as_ptr() as *const T) }
+    }
+
+    /// 便利构造函数
+    pub fn new<T: Copy>(sort_key: u64, draw_fn: DrawFunctionId, entity: EntityId, batch_key: u64, payload: T) -> Self {
+        let mut item = Self {
+            sort_key, draw_function_id: draw_fn, entity, batch_key,
+            data: [0u64; 3],
+        };
+        item.set_data(payload);
+        item
+    }
+}
+
+// === DrawFunction 私有 payload 类型 ===
+
+/// Mesh/Sprite 渲染项的 payload (16 bytes)
+#[derive(Copy, Clone)]
+pub struct MeshDrawData {
     pub mesh_handle: MeshHandle,
-    pub sub_mesh_index: u32,        // Mesh 内的 sub-mesh 索引
-    pub material_handle: MaterialHandle,  // type-erased，DrawFunction 内部还原
-    pub batch_key: u64,             // for auto-batching
+    pub material_handle: MaterialHandle,
+    pub sub_mesh_index: u32,
+}
+
+/// Tilemap 渲染项的 payload (16 bytes)
+#[derive(Copy, Clone)]
+pub struct TilemapDrawData {
+    pub chunk_x: u16,
+    pub chunk_y: u16,
+    pub tileset: TextureHandle,
+    pub tile_count: u32,
+    pub instance_offset: u32,
+}
+
+/// Live2D 渲染项的 payload (4 bytes)
+#[derive(Copy, Clone)]
+pub struct Live2DDrawData {
+    pub model_index: u32,
+}
+
+/// 粒子渲染项的 payload (12 bytes)
+#[derive(Copy, Clone)]
+pub struct ParticleDrawData {
+    pub buffer_offset: u32,
+    pub particle_count: u32,
+    pub texture: TextureHandle,
 }
 
 /// Opaque Phase: front-to-back, depth write
@@ -820,14 +882,17 @@ fn extract_sprites(
 
             let sort_key = encode_sort_key(layer, order, sprite.texture_key(), transform.z());
 
-            phase.add_item(PhaseItem {
+            phase.add_item(PhaseItem::new(
                 sort_key,
-                draw_function_id: draw_fn_id,
+                draw_fn_id,
                 entity,
-                mesh_handle: MeshHandle::BUILTIN_QUAD,
-                material_handle: mat_handle,
-                batch_key: sprite.batch_key(), // pipeline + texture
-            });
+                sprite.batch_key(),
+                MeshDrawData {
+                    mesh_handle: MeshHandle::BUILTIN_QUAD,
+                    material_handle: mat_handle,
+                    sub_mesh_index: 0,
+                },
+            ));
         });
 }
 ```
@@ -897,15 +962,17 @@ impl<M: Material> Extractor for ExtractMeshes<M> {
 
                     // sort_key 里的 depth 是 view-space depth
                     let view_depth = view.view_depth(world_pos);
-                    phase.add_item(PhaseItem {
-                        sort_key: compute_sort_key(view_depth, material),
-                        draw_function_id: self.draw_fn_id,
+                    phase.add_item(PhaseItem::new(
+                        compute_sort_key(view_depth, material),
+                        self.draw_fn_id,
                         entity,
-                        mesh_handle: mesh_renderer.mesh,
-                        sub_mesh_index: sub_idx as u32,
-                        material_handle: mat_handle,
-                        batch_key: material.pipeline_key(),
-                    });
+                        material.pipeline_key(),
+                        MeshDrawData {
+                            mesh_handle: mesh_renderer.mesh,
+                            material_handle: mat_handle,
+                            sub_mesh_index: sub_idx as u32,
+                        },
+                    ));
                 }
             });
     }
@@ -1533,6 +1600,7 @@ depth = float_to_u16(view_depth)  // front-to-back (最小化 overdraw)
 | 排序策略 | Sort-key (u64), depth = view-space depth | 内联排序，无 allocation |
 | Batch 策略 | 排序后扫描连续相同 batch_key | 自然 batch，不需要显式管理 |
 | Sub-mesh 策略 | 展开为独立 PhaseItem (方案 B) | 跨 entity 合批；100 个角色的相同 material sub-mesh 可合并 |
+| PhaseItem payload | 手动多态: 24 bytes inline + draw_function_id 为 type tag | 混排 + 零浪费 + 零间接 + 用户可扩展 |
 | Live2D | standalone DrawFunction | Phase 自动 break/resume pass；内部多 pass 自管；与 sprite 混排 |
 | Builder/Pipeline 关系 | Builder（声明）→ Asset（数据）→ FramePipeline（执行） | 三层职责清晰 |
 | RenderFeature | Feature 委托 Builder，不是独立系统 | 便利层打包，基础层逐项注册，用户选择粒度 |
