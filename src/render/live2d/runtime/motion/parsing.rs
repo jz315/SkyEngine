@@ -200,6 +200,7 @@ pub(super) fn linear_evaluate(points: [MotionPoint; 2], time: f32) -> f32 {
 }
 
 pub(super) fn bezier_evaluate(points: [MotionPoint; 4], time: f32) -> f32 {
+    // Cubism 5-r.5 uses Cardano root solving for unrestricted beziers.
     let t = solve_bezier_parameter(points, time);
     cubic_bezier_scalar(
         points[0].value,
@@ -228,33 +229,13 @@ pub(super) fn bezier_evaluate_restricted(points: [MotionPoint; 4], time: f32) ->
 }
 
 pub(super) fn solve_bezier_parameter(points: [MotionPoint; 4], time: f32) -> f32 {
-    let start_time = points[0].time;
-    let end_time = points[3].time;
-    if (end_time - start_time).abs() <= f32::EPSILON {
-        return 0.0;
-    }
+    let x = time.clamp(points[0].time, points[3].time);
+    let a = points[3].time - 3.0 * points[2].time + 3.0 * points[1].time - points[0].time;
+    let b = 3.0 * points[2].time - 6.0 * points[1].time + 3.0 * points[0].time;
+    let c = 3.0 * points[1].time - 3.0 * points[0].time;
+    let d = points[0].time - x;
 
-    let target_time = time.clamp(start_time, end_time);
-    let mut low = 0.0f32;
-    let mut high = 1.0f32;
-
-    for _ in 0..20 {
-        let mid = (low + high) * 0.5;
-        let mid_time = cubic_bezier_scalar(
-            points[0].time,
-            points[1].time,
-            points[2].time,
-            points[3].time,
-            mid,
-        );
-        if mid_time < target_time {
-            low = mid;
-        } else {
-            high = mid;
-        }
-    }
-
-    (low + high) * 0.5
+    cardano_algorithm_for_bezier(a, b, c, d)
 }
 
 fn cubic_bezier_scalar(p0: f32, p1: f32, p2: f32, p3: f32, t: f32) -> f32 {
@@ -263,4 +244,76 @@ fn cubic_bezier_scalar(p0: f32, p1: f32, p2: f32, p3: f32, t: f32) -> f32 {
         + 3.0 * one_minus_t * one_minus_t * t * p1
         + 3.0 * one_minus_t * t * t * p2
         + t * t * t * p3
+}
+
+fn quadratic_equation(a: f32, b: f32, c: f32) -> f32 {
+    const CARDANO_EPSILON: f32 = 0.00001;
+
+    if a.abs() < CARDANO_EPSILON {
+        if b.abs() < CARDANO_EPSILON {
+            return -c;
+        }
+        return -c / b;
+    }
+
+    -(b + (b * b - 4.0 * a * c).sqrt()) / (2.0 * a)
+}
+
+fn cardano_algorithm_for_bezier(a: f32, b: f32, c: f32, d: f32) -> f32 {
+    const CARDANO_EPSILON: f32 = 0.00001;
+    const CENTER: f32 = 0.5;
+    const THRESHOLD: f32 = CENTER + 0.01;
+
+    if a.abs() < CARDANO_EPSILON {
+        return quadratic_equation(b, c, d).clamp(0.0, 1.0);
+    }
+
+    let ba = b / a;
+    let ca = c / a;
+    let da = d / a;
+
+    let p = (3.0 * ca - ba * ba) / 3.0;
+    let p3 = p / 3.0;
+    let q = (2.0 * ba * ba * ba - 9.0 * ba * ca + 27.0 * da) / 27.0;
+    let q2 = q / 2.0;
+    let discriminant = q2 * q2 + p3 * p3 * p3;
+
+    if discriminant < 0.0 {
+        let mp3 = -p / 3.0;
+        let r = (mp3 * mp3 * mp3).sqrt();
+        let cosphi = (-q / (2.0 * r)).clamp(-1.0, 1.0);
+        let phi = cosphi.acos();
+        let t1 = 2.0 * r.cbrt();
+
+        let root1 = t1 * (phi / 3.0).cos() - ba / 3.0;
+        if (root1 - CENTER).abs() < THRESHOLD {
+            return root1.clamp(0.0, 1.0);
+        }
+
+        let root2 = t1 * ((phi + 2.0 * std::f32::consts::PI) / 3.0).cos() - ba / 3.0;
+        if (root2 - CENTER).abs() < THRESHOLD {
+            return root2.clamp(0.0, 1.0);
+        }
+
+        let root3 = t1 * ((phi + 4.0 * std::f32::consts::PI) / 3.0).cos() - ba / 3.0;
+        return root3.clamp(0.0, 1.0);
+    }
+
+    if discriminant == 0.0 {
+        let u1 = if q2 < 0.0 { (-q2).cbrt() } else { -q2.cbrt() };
+
+        let root1 = 2.0 * u1 - ba / 3.0;
+        if (root1 - CENTER).abs() < THRESHOLD {
+            return root1.clamp(0.0, 1.0);
+        }
+
+        let root2 = -u1 - ba / 3.0;
+        return root2.clamp(0.0, 1.0);
+    }
+
+    let sd = discriminant.sqrt();
+    let u1 = (sd - q2).cbrt();
+    let v1 = (sd + q2).cbrt();
+    let root1 = u1 - v1 - ba / 3.0;
+    root1.clamp(0.0, 1.0)
 }

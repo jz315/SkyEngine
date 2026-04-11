@@ -20,13 +20,22 @@ If you're new to the project, read and run examples in this order:
 The `examples/render/` directory now forms a complete path from first window to advanced rendering systems:
 
 1. **`clear_screen`** — learn the minimal app + GPU frame loop and surface pass.
-2. **`sprite_demo`** — drive `Renderer2D` directly from ECS with `Transform2D + Sprite2D + Camera2D`.
+2. **`sprite_demo`** — drive the default unified scene pipeline from ECS through `App::with_render_pipeline(...)`.
 3. **`textured_demo`** — keep building on the ECS-first textured sprite path.
 4. **`lighting_demo`** — add high-level 2D lighting plus bloom, tone mapping, and vignette.
 5. **`render_graph_showcase`** — study the low-level `render::expert::RenderGraph` API and resource scheduling model.
-6. **`perf_test`** — low-level `SpriteBatch` throughput / scaling observation.
-7. **`renderer_probe`** — headless high-level `Renderer2D` timing probe across dirty workloads.
-8. **`live2d_demo`** — specialized integration example after you already know the base render stack.
+6. **`frame_pipeline_showcase`** — inspect the expert-only setup/view/finalize execution backbone directly.
+7. **`perf_test`** — low-level `SpriteBatch` throughput / scaling observation.
+8. **`renderer_probe`** — headless `RenderComposer` probe for the default universal scene pipeline.
+9. **`live2d_demo`** — programmable multi-domain example (`SpriteDomain + Live2DDomain`) after you already know the base render stack.
+
+Render mental model for the example set:
+
+- `clear_screen` teaches the expert/no-pipeline `ctx.gpu()` path.
+- `sprite_demo`, `textured_demo`, and `lighting_demo` teach the default high-level path: `App -> RenderPipelineAsset -> RenderComposer -> SpriteDomain`.
+- If you need to tweak the high-level flow, change `stage / queue / domain / feature / output chain`.
+- If you need another renderer family, add another `RenderDomain`.
+- `render_graph_showcase` and `frame_pipeline_showcase` are expert-facing backend examples, not the default extension path.
 
 Recommended progression:
 
@@ -40,6 +49,8 @@ textured_demo
 lighting_demo
   ↓
 render_graph_showcase
+  ↓
+frame_pipeline_showcase
   ↓
 perf_test
   ↓
@@ -72,6 +83,7 @@ cargo run --example sprite_demo --features app
 cargo run --example textured_demo --features app
 cargo run --example lighting_demo --features app
 cargo run --example render_graph_showcase --features app
+cargo run --example frame_pipeline_showcase --features app
 cargo run --example perf_test --features app --release
 cargo run --example renderer_probe --features app --release
 ```
@@ -79,14 +91,15 @@ cargo run --example renderer_probe --features app --release
 Suggested study order inside `render/`:
 
 - `clear_screen` — frame lifecycle and surface pass
-- `sprite_demo` — ECS-first `Renderer2D`
+- `sprite_demo` — ECS-first `RenderPipelineAsset` + `RenderComposer`
 - `textured_demo` — ECS-driven textured sprites
 - `lighting_demo` — high-level lighting + post-processing
 - `render_graph_showcase` — expert-only graph compilation model
+- `frame_pipeline_showcase` — expert-only setup/view/finalize backbone
 - `perf_test` — low-level throughput / scaling observation
-- `renderer_probe` — high-level `Renderer2D` timings and workload matrix
+- `renderer_probe` — scene-pipeline workload matrix for the default universal path
 
-`live2d_demo` is a specialized branch after the main path, and requires `live2d` instead of plain `app`:
+`live2d_demo` is the first multi-domain branch after the main path. It routes sprites and Live2D through the same programmable scene pipeline:
 
 ```bash
 cargo run --example live2d_demo --features "live2d egui" --release -- <path-to-model3.json>

@@ -38,6 +38,28 @@ impl Live2DRenderer {
         )
     }
 
+    /// Prepare all Live2D draw data using a caller-provided projection matrix.
+    pub fn prepare_frame_with_projection(
+        &mut self,
+        ctx: &mut GpuContext,
+        target_format: wgpu::TextureFormat,
+        target_size: [u32; 2],
+        projection: &[f32; 16],
+        model: &Live2DModel,
+        textures: &[Texture],
+        clipping: &mut Option<ClippingManager>,
+    ) -> PreparedLive2DFrame {
+        self.prepare_frame(
+            ctx,
+            target_format,
+            target_size,
+            projection,
+            model,
+            textures,
+            clipping,
+        )
+    }
+
     /// Prepare all Live2D draw data needed to render into `target`.
     pub fn prepare_frame_for_target(
         &mut self,
@@ -192,7 +214,7 @@ impl Live2DRenderer {
                     root_height,
                 );
             }
-            self.blit_root_target_to_surface(ctx, prepared.final_root_opacity());
+            self.blit_root_target_to_surface(ctx, prepared.final_root_color());
         } else {
             for pass in prepared.passes() {
                 self.render_root_pass_to_surface(ctx, pass);
@@ -234,7 +256,7 @@ impl Live2DRenderer {
                     root_height,
                 );
             }
-            self.blit_root_target_to_target(ctx, target, prepared.final_root_opacity());
+            self.blit_root_target_to_target(ctx, target, prepared.final_root_color());
         } else {
             let root_texture = target.texture().clone();
             let root_view = target.view().clone();

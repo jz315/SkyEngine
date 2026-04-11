@@ -142,6 +142,8 @@ pub struct Live2DModel {
     saved_parameter_values: Vec<f32>,
     /// Motion-driven model opacity from `Model/Opacity` curves.
     model_opacity: f32,
+    /// Renderer-style model tint color.
+    model_color: [f32; 4],
     /// Number of virtual parameter slots reserved for part IDs.
     part_virtual_parameter_count: usize,
     /// Synthetic parameter slots used for part-ID driven pose / opacity logic.
@@ -243,6 +245,7 @@ impl Live2DModel {
                 part_descendant_drawables,
                 saved_parameter_values: Vec::new(),
                 model_opacity: 1.0,
+                model_color: [1.0, 1.0, 1.0, 1.0],
                 part_virtual_parameter_count: 0,
                 virtual_parameter_indices: FxHashMap::default(),
                 virtual_parameter_ids: Vec::new(),

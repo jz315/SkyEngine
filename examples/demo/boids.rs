@@ -62,6 +62,15 @@ const TRAIL_SAMPLE_INTERVAL: f32 = 0.018;
 
 const NUM_DUST: usize = 400;
 
+// ─── Color palette ──────────────────────────────────────────────────────────
+
+const BG_COLOR: Color = Color::new(0.01, 0.02, 0.05, 1.0);
+const TRAIL_COLD: Color = Color::new(0.10, 0.35, 0.95, 1.0);
+const TRAIL_WARM: Color = Color::new(0.55, 1.00, 0.85, 1.0);
+const SPIRIT_CORE: Color = Color::new(0.78, 0.96, 1.00, 1.0);
+const SPIRIT_GLOW: Color = Color::new(0.24, 0.92, 0.82, 1.0);
+const AMBIENT_COLOR: Color = Color::new(0.07, 0.08, 0.15, 1.0);
+
 // ─── ECS Components ─────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Default)]
@@ -262,6 +271,23 @@ struct DustMote {
     brightness: f32,
     twinkle_phase: f32,
     twinkle_speed: f32,
+}
+
+// ─── Render graph handles ───────────────────────────────────────────────────
+
+#[derive(Clone, Copy)]
+struct GraphHandles {
+    scene_rt: TextureHandle,
+    normal_rt: TextureHandle,
+    light_rt: TextureHandle,
+    hdr_rt: TextureHandle,
+    bloom_rt: TextureHandle,
+    scene_pass: PassHandle,
+    normal_pass: PassHandle,
+    lighting_pass: PassHandle,
+    composite_pass: PassHandle,
+    bloom_pass: PassHandle,
+    tonemap_pass: PassHandle,
 }
 
 // ─── Math helpers ───────────────────────────────────────────────────────────
@@ -660,7 +686,7 @@ fn make_soft_glow(gpu: &GpuContext, size: u32) -> Texture {
             data[idx + 3] = v;
         }
     }
-    Texture::from_rgba(gpu, size, size, &data).expect("soft glow texture")
+    Texture::from_rgba8(gpu, size, size, &data)
 }
 
 // ── The application lifecycle ──────────────────────────────────────────────
@@ -772,15 +798,6 @@ impl SpiritWispsApp {
         self.graph = Some(graph);
         self.render = Some(RenderState::new(gpu));
     }
-
-    fn resize(&mut self, gpu: &GpuContext, new: [u32; 2]) {
-        if let Some(g) = &mut self.graph {
-            g.destroy_physical_resources();
-        }
-        if let Some(r) = &mut self.render {
-            r.resize(gpu, new[0], new[1]);
-        }
-    }
 }
 
 impl AppState for SpiritWispsApp {
@@ -827,10 +844,10 @@ impl AppState for SpiritWispsApp {
         let snapshot = ctx.world.get_resource::<BoidSnapshot>().unwrap();
         let attractors = ctx.world.get_resource::<AttractorCache>().unwrap();
 
-        app_state.trails.sample(&snapshot.positions, dt);
+        self.trails.sample(&snapshot.positions, dt);
 
         // ── Update dust ─────────────────────────────────────────────
-        for mote in &mut app_state.dust {
+        for mote in &mut self.dust {
             mote.x += mote.vx * dt;
             mote.y += mote.vy * dt;
             mote.twinkle_phase += mote.twinkle_speed * dt;
@@ -849,15 +866,15 @@ impl AppState for SpiritWispsApp {
         }
 
         // ── Build sprites & lights ──────────────────────────────────
-        let rs = app_state.render.as_mut().unwrap();
-        let h = app_state.handles.as_ref().unwrap();
+        let rs = self.render.as_mut().unwrap();
+        let h = *self.handles.as_ref().unwrap();
         rs.camera.position = [W * 0.5, H * 0.5];
 
-        app_state.lights.clear();
+        self.lights.clear();
 
         // Dust background
         rs.scene_batch.set_texture(&rs.dot_tex);
-        for mote in &app_state.dust {
+        for mote in &self.dust {
             let twinkle = mote.brightness * (0.5 + 0.5 * mote.twinkle_phase.sin());
             let ry = H - mote.y;
             rs.scene_batch.draw(
@@ -875,7 +892,7 @@ impl AppState for SpiritWispsApp {
         for i in 0..snapshot.positions.len() {
             let speed = length(snapshot.velocities[i].x, snapshot.velocities[i].y);
             let glow = (speed / MAX_SPEED).clamp(0.2, 1.0);
-            for (tpos, age) in app_state.trails.iter_trail(i) {
+            for (tpos, age) in self.trails.iter_trail(i) {
                 let fade_sq = age * age;
                 let sz = BOID_SIZE * (0.5 + age * 1.5) * glow;
                 let alpha = fade_sq * 0.35 * glow;
@@ -934,7 +951,7 @@ impl AppState for SpiritWispsApp {
             );
 
             // Light
-            app_state.lights.push(
+            self.lights.push(
                 Light2D::new(pos.x, ry, 35.0 + speed * 0.15)
                     .intensity(0.2 + glow_factor * 0.35)
                     .falloff(2.0)
@@ -960,7 +977,7 @@ impl AppState for SpiritWispsApp {
                     0.6 * pulse,
                     alpha * 0.5,
                 )));
-            app_state.lights.push(
+            self.lights.push(
                 Light2D::new(attractor.x, ay, ATTRACTOR_RANGE * 0.5 * alpha)
                     .intensity(1.0 * alpha * pulse)
                     .falloff(1.8)
@@ -975,7 +992,7 @@ impl AppState for SpiritWispsApp {
                 Sprite::new(mouse_sim_x, mouse_render_y, ring_size, ring_size)
                     .color(Color::new(1.0, 0.3, 0.2, 0.10)),
             );
-            app_state.lights.push(
+            self.lights.push(
                 Light2D::new(mouse_sim_x, mouse_render_y, PREDATOR_RANGE)
                     .intensity(1.2)
                     .falloff(1.6)
@@ -984,14 +1001,14 @@ impl AppState for SpiritWispsApp {
         }
 
         // Ambient lights
-        app_state.lights.push(
+        self.lights.push(
             Light2D::new(W * 0.5, H * 0.5, 1500.0)
                 .intensity(0.30)
                 .falloff(3.5)
                 .color(AMBIENT_COLOR),
         );
         for &(cx, cy) in &[(0.0, 0.0), (W, 0.0), (0.0, H), (W, H)] {
-            app_state.lights.push(
+            self.lights.push(
                 Light2D::new(cx, cy, 700.0)
                     .intensity(0.18)
                     .falloff(2.8)
@@ -1000,21 +1017,21 @@ impl AppState for SpiritWispsApp {
         }
 
         let camera = rs.camera;
-        let lights = &app_state.lights;
+        let lights = &self.lights;
         let num_boid_sprites = snapshot.positions.len() * 3
-            + app_state
+            + self
                 .trails
                 .counts
                 .iter()
                 .map(|c| *c as usize)
                 .sum::<usize>()
-            + app_state.dust.len();
-        let num_lights = app_state.lights.len();
+            + self.dust.len();
+        let num_lights = self.lights.len();
 
         // ── Execute render graph ────────────────────────────────────
-        let graph = app_state.graph.as_mut().unwrap();
+        let graph = self.graph.as_mut().unwrap();
         let result = graph.try_execute(ctx.gpu(), |pass, gpu, textures| {
-            let rs = app_state.render.as_mut().unwrap();
+            let rs = self.render.as_mut().unwrap();
             if pass.handle == h.scene_pass {
                 let target = textures.render_target(h.scene_rt).expect("scene_rt");
                 rs.scene_batch

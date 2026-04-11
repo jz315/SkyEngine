@@ -1,10 +1,12 @@
 use crate::gpu::GpuContext;
 use crate::render::core::fullscreen::{FullscreenPass, FullscreenPipeline};
-use crate::render::ecs::RenderSettings2D;
+use crate::render::frame_pipeline::{
+    FrameViewNode, PhaseState, PreparedFrame, PreparedView, ViewExecutionContext,
+};
 use crate::render::graph::{
     CompiledPass, PhysicalResources, RenderGraph, RenderGraphError, ResourceRef, TargetSize,
 };
-use crate::render::pipeline::{FeatureExecutionContext2D, PipelineState2D, RenderFeature2D};
+use std::sync::{Arc, Mutex};
 
 use super::prepared::PreparedLive2DFrameSet;
 use super::renderer::Live2DRenderer;
@@ -16,11 +18,15 @@ use super::renderer::Live2DRenderer;
 pub struct Live2DOverlayNode {
     blit_pipeline: FullscreenPipeline,
     texture_bgl: wgpu::BindGroupLayout,
-    renderer: Live2DRenderer,
+    renderer: Arc<Mutex<Live2DRenderer>>,
 }
 
 impl Live2DOverlayNode {
     pub fn new(ctx: &GpuContext) -> Self {
+        Self::with_shared_renderer(ctx, Arc::new(Mutex::new(Live2DRenderer::new(ctx))))
+    }
+
+    pub fn with_shared_renderer(ctx: &GpuContext, renderer: Arc<Mutex<Live2DRenderer>>) -> Self {
         let texture_bgl = ctx
             .device()
             .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -58,41 +64,45 @@ impl Live2DOverlayNode {
         Self {
             blit_pipeline,
             texture_bgl,
-            renderer: Live2DRenderer::new(ctx),
+            renderer,
         }
     }
 }
 
-impl RenderFeature2D for Live2DOverlayNode {
+impl FrameViewNode for Live2DOverlayNode {
     fn name(&self) -> &'static str {
         "live2d_overlay"
     }
 
-    fn is_enabled(&self, _settings: &RenderSettings2D, _has_surface: bool) -> bool {
+    fn is_enabled(&self, _frame: &PreparedFrame<'_>) -> bool {
         true
     }
 
-    fn setup(&mut self, graph: &mut RenderGraph, state: &mut PipelineState2D) {
+    fn setup(
+        &mut self,
+        graph: &mut RenderGraph,
+        state: &mut PhaseState,
+        _frame: &PreparedFrame<'_>,
+        view: &PreparedView<'_>,
+    ) {
         let input = state
-            .current()
+            .current_color()
             .expect("Live2DOverlayNode requires current input");
-        let format = state
-            .current_format()
-            .expect("Live2DOverlayNode requires current target format");
+        let format = input.format();
 
         let output = graph.create_texture(|b| {
             b.name("live2d_overlay_out")
                 .size(TargetSize::Exact(
-                    state.view_size()[0],
-                    state.view_size()[1],
+                    view.target_size()[0],
+                    view.target_size()[1],
                 ))
                 .format(format);
         });
         graph.add_render_pass("live2d_overlay", |s| {
-            s.read(input);
+            s.read(input.handle());
             s.write_color(0, output);
         });
-        state.set_current(output, format);
+        state.set_current_color(output, format);
     }
 
     fn execute(
@@ -100,7 +110,7 @@ impl RenderFeature2D for Live2DOverlayNode {
         pass: &CompiledPass,
         ctx: &mut GpuContext,
         resources: &PhysicalResources<'_>,
-        execution: &FeatureExecutionContext2D<'_>,
+        execution: &ViewExecutionContext<'_>,
     ) -> Result<(), RenderGraphError> {
         let input_handle = pass
             .reads
@@ -162,25 +172,28 @@ impl RenderFeature2D for Live2DOverlayNode {
             },
         );
 
-        if let Some(prepared_frames) = execution.payload::<PreparedLive2DFrameSet>() {
+        if let Some(prepared_frames) = execution.frame_payload::<PreparedLive2DFrameSet>() {
+            let mut renderer = self
+                .renderer
+                .lock()
+                .expect("Live2D overlay renderer lock poisoned");
             for frame in prepared_frames.frames_for_view(execution.view_index()) {
                 debug_assert_eq!(
                     frame.target_format(),
                     output_rt.format(),
                     "PreparedLive2DFrame target format must match the overlay output",
                 );
-                self.renderer
-                    .execute_prepared_model_to_target(ctx, output_rt, frame);
+                renderer.execute_prepared_model_to_target(ctx, output_rt, frame);
             }
         }
 
         Ok(())
     }
 
-    fn draw_calls(&self, execution: &FeatureExecutionContext2D<'_>) -> usize {
+    fn draw_calls(&self, execution: &ViewExecutionContext<'_>) -> usize {
         let blit_draw = 1usize;
         let live2d_draws = execution
-            .payload::<PreparedLive2DFrameSet>()
+            .frame_payload::<PreparedLive2DFrameSet>()
             .map(|frames| {
                 frames
                     .frames_for_view(execution.view_index())

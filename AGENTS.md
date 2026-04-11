@@ -3,14 +3,14 @@
 ## Overview
 - This repo is a Rust game engine with a chunk-based ECS core and a `wgpu`-based 2D rendering framework.
 - **ECS**: the performance-critical paths are typed prepared queries, chunk iteration, and structural entity/component transitions. Entities, bundles, typed queries, optional query params, filters, deferred commands, resources, and a lightweight system schedule are all in active use.
-- **Rendering**: a declarative render graph (`RenderGraph`) orchestrates GPU workloads. Higher-level passes (`SpriteBatch`, `LightPass`, `CompositePass`, `PostFx`) compose on top. The high-level composition boundary is `RenderPipeline` + `RenderFeature2D`; heterogeneous renderer domains can attach prepared frame data through `FramePayloads2D` instead of being forced into one scene format. The GPU backend is `wgpu`.
+- **Rendering**: the default high-level path is `RenderComposer` + `RenderDomain`, with `Ecs2DDomain` as the main built-in scene domain. Internally, execution is shared through `PreparedFrame` / `PreparedView`, `FramePipeline`, and `RenderGraph`. The GPU backend is `wgpu`.
 - **App lifecycle**: `AppRunner` manages the winit event loop, GPU context, and frame lifecycle behind the `app` feature flag.
 - Benchmarks are Criterion-based under `benches/`, with a single canonical `fair` target and engine-specific implementations split under `benches/fair/`.
 
 ## Canonical API Surface
 - **ECS** entry points: `sky_engine::ecs` — `World`, `EntityId`, `Bundle`, `PreparedQuery`, `Commands`, `With`, `Without`, `System`, `Time`.
-- **Render** entry points: `sky_engine::render` — `RenderPipeline`, `RenderFeature2D`, `RenderGraph`, `PhysicalResources`, `SpriteBatch`, `Material*`, `LightPass`, `Bloom`, `ToneMap`, `Vignette`, `Camera2D`, `Texture`, `RenderTarget`.
-- **Render composition** entry points: `sky_engine::render::pipeline` / `sky_engine::render::expert` — `FramePayloads2D` for frame-scoped typed feature payloads.
+- **Render** entry points: `sky_engine::render` — `RenderComposer`, `RenderDomain`, `Ecs2DDomain`, `Live2DDomain`, `RenderFeature2D`, `RenderSettings2D`, `Camera2D`, `Texture`.
+- **Expert render** entry points: `sky_engine::render::expert` — `FramePipeline`, `RenderGraph`, `RenderPipeline2D`, passes, post-fx, targets, and lower-level GPU composition primitives.
 - **GPU** entry points: `sky_engine::gpu` — `GpuContext` (wraps wgpu device/queue/surface).
 - **App** entry points: `sky_engine::app` (behind `features = ["app"]`) — `AppRunner`, `AppConfig`, `Input`.
 - Preferred entity construction is bundle-based: `world.spawn((A, B, ...))` and `world.spawn_batch(...)`.
@@ -60,8 +60,7 @@
 - `src/render/core/`: foundational GPU types — `Camera2D`, `Color`, `Texture`, `RenderTarget`, `FullscreenPass`.
 - `src/render/gpu_scene2d.rs`: persistent GPU-side scene/cache uploader used by the high-level renderer.
 - `src/render/graph/`: declarative render graph system (see `src/render/graph/AGENTS.md` for detailed docs).
-- `src/render/pipeline/`: high-level multi-view 2D render pipeline (`RenderPipeline`, extractor, prepared frame data, pipeline nodes).
-- `src/render/pipeline/state.rs`: `PipelineState2D`, `FeatureExecutionContext2D`, and `FramePayloads2D` — the frame-scoped composition context for render features.
+- `src/render/pipeline/`: internal 2D scene-domain backend (`Ecs2DDomain` support code plus expert `RenderPipeline2D` adapter).
 - `src/render/passes/`: high-level rendering passes — `SpriteBatch`, `LightPass`, `CompositePass`.
 - `src/render/postfx/`: post-processing effects — `Bloom`, `ToneMap`, `Vignette`.
 - `src/render/resources/`: shared resource systems — `TextureAtlas`, `Blackboard`, `Material*`.
@@ -149,11 +148,11 @@
 - If schedule code changes, preserve group creation order and fixed-step accumulator semantics.
 - Do not rely on `src/main.rs` for correctness, benchmarks, or API direction; it is not the source of truth.
 - Examples are useful usage references, but benchmark behavior and correctness expectations come from `src/` tests plus the bench suites.
-- Render and app-facing example builds are part of the compatibility surface. If you change high-level render APIs, `Renderer2D`, `App`, or demo/shared render helpers, run `cargo check --examples --features app` instead of relying only on unit tests.
-- Unify heterogeneous renderers at the composition layer (`RenderPipeline` / `RenderFeature2D` / `FramePayloads2D`), not by forcing every renderer domain into `SceneCache2D` or `GpuScene2D`.
+- Render and app-facing example builds are part of the compatibility surface. If you change high-level render APIs, `RenderComposer`, `RenderDomain`, `App`, or demo/shared render helpers, run `cargo check --examples --features app` instead of relying only on unit tests.
+- Unify heterogeneous renderers at the composition layer (`RenderComposer` / `RenderDomain` / `PreparedFrame` / `PreparedView`), not by forcing every renderer domain into `SceneCache2D` or `GpuScene2D`.
 - `GpuScene2D` is the sprite/light payload for the current high-level renderer, not the universal frame schema for all future renderers.
 - When adding a new renderer domain (for example Live2D, text, particles, mesh-like 2D), prefer: domain-specific prepare/cache/upload path + feature node + typed frame payload entry.
-- Keep `FeatureExecutionContext2D` generic. Prefer typed payload access over adding one-off renderer-specific fields to the central execution context.
+- Keep render-domain execution contexts generic. Prefer typed payload access over adding one-off renderer-specific fields to shared execution state.
 - Only introduce shared scene-level abstractions for concepts that are truly cross-domain, such as view/camera/viewport/order/layer semantics. Do not prematurely unify geometry/material/runtime models.
 
 ## Render Graph Guidelines

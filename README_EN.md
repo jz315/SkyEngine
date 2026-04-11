@@ -22,7 +22,7 @@
 **SkyEngine** is a high-performance game engine built from scratch in Rust, standing on two pillars:
 
 1. **Chunk-Columnar Archetype ECS** — Components of the same type are stored contiguously within fixed-size memory chunks, naturally aligning with hardware prefetching for extreme iteration performance.
-2. **wgpu 2D Rendering Framework** — A declarative render graph orchestrates GPU workloads, with built-in SpriteBatch, dynamic lighting, Bloom/ToneMap/Vignette post-processing, and Live2D Cubism SDK integration.
+2. **Programmable Scene Rendering** — A high-level `RenderPipelineAsset + RenderComposer` model coordinates ECS 2D, Live2D, and future render domains on top of a declarative render graph, with built-in SpriteBatch, dynamic lighting, Bloom/ToneMap/Vignette post-processing, and Live2D Cubism SDK integration.
 
 SkyEngine takes the **library approach**: no proc macros, no global state, no imposed application structure. Use just the ECS, or combine it with the full rendering pipeline — everything is opt-in.
 
@@ -179,6 +179,16 @@ cargo bench --bench fair -- bevy  # Bevy only
 
 See [`examples/README.md`](examples/README.md) for the full example index and recommended learning order. If you're new to the repo, start with ECS tutorials, then move to render showcases, then the full demos.
 
+Recommended high-level render workflow:
+
+- `clear_screen` and similar minimal samples stay on the no-pipeline `ctx.gpu()` path
+- install the default unified scene pipeline with `App::with_render_pipeline(RenderPipelineAsset::universal_2d())`
+- call `ctx.render()` inside `update()`
+- customize the high-level flow by defining your own `stage / queue / domain / feature / output chain`
+- combine multiple renderer families by attaching multiple `RenderDomain`s to one pipeline
+- add a brand new renderer type by implementing a `RenderDomain`
+- drop to `render::expert::*` only when you need direct graph / pass / target control
+
 ### 1. ECS Tutorials (no GPU required)
 
 ```bash
@@ -194,13 +204,15 @@ cargo run --example tiny_defense    # ECS-only complete mini game
 Recommended order:
 
 1. `clear_screen` — understand the window, GPU context, and per-frame clear pass
-2. `sprite_demo` — add `Camera2D` and `SpriteBatch`
-3. `textured_demo` — move from flat-color sprites to textures and mixed drawing
-4. `lighting_demo` — introduce normals, lighting composition, bloom, and tonemapping
+2. `sprite_demo` — add `Camera` and the default high-level scene pipeline path
+3. `textured_demo` — move from flat-color sprites to textures and mixed drawing on the same pipeline-driven path
+4. `lighting_demo` — introduce normals, lighting composition, bloom, and tonemapping through `App::with_render_pipeline(...)`
 5. `render_graph_showcase` — study how the declarative `RenderGraph` organizes resources and passes
-6. `perf_test` — inspect throughput and scaling after the main path is clear
+6. `frame_pipeline_showcase` — inspect the expert-only `FramePipeline` setup/view/finalize backbone directly
+7. `perf_test` — inspect throughput and scaling after the main path is clear
+8. `renderer_probe` — inspect scene-pipeline workload and timing stats on the default universal path
 
-`live2d_demo` is a specialized render branch and is best read after the main path.
+`live2d_demo` is the first multi-domain branch and is best read after the main path.
 
 ```bash
 cargo run --example clear_screen          --features app
@@ -208,7 +220,9 @@ cargo run --example sprite_demo           --features app
 cargo run --example textured_demo         --features app
 cargo run --example lighting_demo         --features app
 cargo run --example render_graph_showcase --features app
+cargo run --example frame_pipeline_showcase --features app
 cargo run --example perf_test             --features app --release
+cargo run --example renderer_probe        --features app --release
 ```
 
 ### Render Path Map
@@ -224,7 +238,11 @@ lighting_demo
   ↓
 render_graph_showcase
   ↓
+frame_pipeline_showcase
+  ↓
 perf_test
+  ↓
+renderer_probe
 
 specialized branch: live2d_demo
 ```

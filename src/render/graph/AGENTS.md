@@ -107,7 +107,9 @@ Compilation is **idempotent** and cached; the cache is invalidated when passes o
 - These remaining limitations are tracked against the SakuraEngine reference implementation's 12-phase pipeline (see `SakuraEngine_ref/engine/modules/render/render_graph/claude.md`).
 
 ## Relation to Broader Render Module
-- `RenderGraph` is re-exported from `src/render/mod.rs` and is the primary entry point for frame orchestration.
+- `RenderGraph` is re-exported from `src/render/mod.rs`, but the primary frame-orchestration entry point is now `FramePipeline`.
+- `FramePipeline` composes setup/view/finalize nodes and uses `RenderGraph` as its pass/resource backend.
+- `SpriteFramePipeline` is an expert-facing sprite-domain adapter built on top of `FramePipeline`.
 - Physical textures are backed by `RenderTarget` (`src/render/target.rs`).
 - Higher-level passes (`LightPass`, `CompositePass`, `PostFx`) build on top of `RenderGraph` by calling `add_render_pass`/`add_compute_pass` and resolving physical resources from `PhysicalResources`.
 - The `Blackboard` shared data system lives at `src/render/blackboard.rs`.

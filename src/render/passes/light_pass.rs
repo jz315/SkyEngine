@@ -2,13 +2,14 @@
 
 use std::sync::Arc;
 
-use rustc_hash::FxHashMap;
-
 use crate::gpu::GpuContext;
-use crate::render::core::camera::{CameraUniform, RenderView};
+use crate::render::core::camera::RenderView;
 use crate::render::core::target::RenderTarget;
 use crate::render::core::texture::Texture;
 use crate::render::light::Light2D;
+use crate::render::passes::internal::{
+    create_position_quad_geometry, BindGroupCache, CameraBinding, QuadGeometry, RenderPipelineCache,
+};
 
 const MAX_LIGHTS: usize = 4096;
 
@@ -20,33 +21,18 @@ pub(crate) struct LightInstance {
     pub(crate) falloff: [f32; 4],
 }
 
-#[repr(C)]
-#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct QuadVertex {
-    pos: [f32; 2],
-}
-
-const QUAD_VERTICES: [QuadVertex; 4] = [
-    QuadVertex { pos: [0.0, 0.0] },
-    QuadVertex { pos: [1.0, 0.0] },
-    QuadVertex { pos: [1.0, 1.0] },
-    QuadVertex { pos: [0.0, 1.0] },
-];
-
-const QUAD_INDICES: [u16; 6] = [0, 1, 2, 0, 2, 3];
-
 /// Instanced additive light accumulation.
 pub struct LightPass {
     shader: Arc<wgpu::ShaderModule>,
-    pipelines: FxHashMap<wgpu::TextureFormat, Arc<wgpu::RenderPipeline>>,
-    vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
+    pipelines: RenderPipelineCache<wgpu::TextureFormat>,
+    quad: QuadGeometry,
     instance_buffer: wgpu::Buffer,
-    camera_buffer: wgpu::Buffer,
-    camera_bind_group: wgpu::BindGroup,
-    camera_bgl: wgpu::BindGroupLayout,
+    camera: CameraBinding,
     normal_bgl: wgpu::BindGroupLayout,
-    flat_normal: Texture,
+    _flat_normal: Texture,
+    flat_normal_bind_group: wgpu::BindGroup,
+    normal_bind_group_cache: BindGroupCache<usize>,
+    instances_scratch: Vec<LightInstance>,
 }
 
 impl LightPass {
@@ -63,162 +49,23 @@ impl LightPass {
         }
     }
 
-    fn create_pipeline(
-        &self,
-        ctx: &GpuContext,
-        target_format: wgpu::TextureFormat,
-    ) -> wgpu::RenderPipeline {
-        let pipeline_layout =
-            ctx.device()
-                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: Some("light_pass_layout"),
-                    bind_group_layouts: &[&self.camera_bgl, &self.normal_bgl],
-                    push_constant_ranges: &[],
-                });
-
-        ctx.device()
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(&format!("light_pass_pipeline_{target_format:?}")),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &self.shader,
-                    entry_point: Some("vs_main"),
-                    buffers: &[
-                        wgpu::VertexBufferLayout {
-                            array_stride: std::mem::size_of::<QuadVertex>() as u64,
-                            step_mode: wgpu::VertexStepMode::Vertex,
-                            attributes: &[wgpu::VertexAttribute {
-                                offset: 0,
-                                shader_location: 0,
-                                format: wgpu::VertexFormat::Float32x2,
-                            }],
-                        },
-                        wgpu::VertexBufferLayout {
-                            array_stride: std::mem::size_of::<LightInstance>() as u64,
-                            step_mode: wgpu::VertexStepMode::Instance,
-                            attributes: &[
-                                wgpu::VertexAttribute {
-                                    offset: 0,
-                                    shader_location: 1,
-                                    format: wgpu::VertexFormat::Float32x4,
-                                },
-                                wgpu::VertexAttribute {
-                                    offset: 16,
-                                    shader_location: 2,
-                                    format: wgpu::VertexFormat::Float32x4,
-                                },
-                                wgpu::VertexAttribute {
-                                    offset: 32,
-                                    shader_location: 3,
-                                    format: wgpu::VertexFormat::Float32x4,
-                                },
-                            ],
-                        },
-                    ],
-                    compilation_options: Default::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &self.shader,
-                    entry_point: Some("fs_main"),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: target_format,
-                        blend: Some(wgpu::BlendState {
-                            color: wgpu::BlendComponent {
-                                src_factor: wgpu::BlendFactor::One,
-                                dst_factor: wgpu::BlendFactor::One,
-                                operation: wgpu::BlendOperation::Add,
-                            },
-                            alpha: wgpu::BlendComponent {
-                                src_factor: wgpu::BlendFactor::One,
-                                dst_factor: wgpu::BlendFactor::One,
-                                operation: wgpu::BlendOperation::Add,
-                            },
-                        }),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: Default::default(),
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    ..Default::default()
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview: None,
-                cache: None,
-            })
-    }
-
-    fn pipeline_for(
-        &mut self,
-        ctx: &GpuContext,
-        target_format: wgpu::TextureFormat,
-    ) -> Arc<wgpu::RenderPipeline> {
-        if let Some(existing) = self.pipelines.get(&target_format) {
-            return existing.clone();
-        }
-        let pipeline = Arc::new(self.create_pipeline(ctx, target_format));
-        self.pipelines.insert(target_format, pipeline.clone());
-        pipeline
-    }
-
     pub fn new(ctx: &GpuContext, target_format: wgpu::TextureFormat) -> Self {
-        let shader = ctx
-            .device()
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("light_pass_shader"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/light.wgsl").into()),
-            });
+        let shader = Arc::new(
+            ctx.device()
+                .create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("light_pass_shader"),
+                    source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/light.wgsl").into()),
+                }),
+        );
 
-        // Buffers
-        let vertex_buffer = ctx.device().create_buffer(&wgpu::BufferDescriptor {
-            label: Some("light_quad_vb"),
-            size: std::mem::size_of_val(&QUAD_VERTICES) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        ctx.queue()
-            .write_buffer(&vertex_buffer, 0, bytemuck::cast_slice(&QUAD_VERTICES));
-
-        let index_buffer = ctx.device().create_buffer(&wgpu::BufferDescriptor {
-            label: Some("light_quad_ib"),
-            size: std::mem::size_of_val(&QUAD_INDICES) as u64,
-            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        ctx.queue()
-            .write_buffer(&index_buffer, 0, bytemuck::cast_slice(&QUAD_INDICES));
-
+        let quad = create_position_quad_geometry(ctx, "light");
         let instance_buffer = ctx.device().create_buffer(&wgpu::BufferDescriptor {
             label: Some("light_instance_buf"),
             size: (MAX_LIGHTS * std::mem::size_of::<LightInstance>()) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-
-        let camera_buffer = ctx.device().create_buffer(&wgpu::BufferDescriptor {
-            label: Some("light_camera_buf"),
-            size: std::mem::size_of::<CameraUniform>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        // Bind group layouts
-        let camera_bgl = ctx
-            .device()
-            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("light_camera_bgl"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-            });
+        let camera = CameraBinding::new(ctx, "light");
 
         let normal_bgl = ctx
             .device()
@@ -244,28 +91,35 @@ impl LightPass {
                 ],
             });
 
-        let camera_bind_group = ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("light_camera_bg"),
-            layout: &camera_bgl,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: camera_buffer.as_entire_binding(),
-            }],
+        let flat_normal = Texture::flat_normal(ctx);
+        let flat_normal_bind_group = ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("light_normal_bg"),
+            layout: &normal_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(flat_normal.view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(ctx.sampler_linear()),
+                },
+            ],
         });
+
         let mut this = Self {
-            shader: Arc::new(shader),
-            pipelines: FxHashMap::default(),
-            vertex_buffer,
-            index_buffer,
+            shader,
+            pipelines: RenderPipelineCache::new(),
+            quad,
             instance_buffer,
-            camera_buffer,
-            camera_bind_group,
-            camera_bgl,
+            camera,
             normal_bgl,
-            flat_normal: Texture::flat_normal(ctx),
+            _flat_normal: flat_normal,
+            flat_normal_bind_group,
+            normal_bind_group_cache: BindGroupCache::new(),
+            instances_scratch: Vec::with_capacity(256),
         };
-        let pipeline = Arc::new(this.create_pipeline(ctx, target_format));
-        this.pipelines.insert(target_format, pipeline);
+        let _ = this.pipeline_for(ctx, target_format);
         this
     }
 
@@ -281,11 +135,7 @@ impl LightPass {
         Self::validate_targets(normal_target, lightmap);
 
         let pipeline = self.pipeline_for(ctx, lightmap.format());
-        ctx.queue().write_buffer(
-            &self.camera_buffer,
-            0,
-            bytemuck::bytes_of(&view.view_uniform()),
-        );
+        self.camera.upload_view(ctx, view);
 
         let capped_lights = if lights.len() > MAX_LIGHTS {
             eprintln!(
@@ -298,41 +148,24 @@ impl LightPass {
             lights
         };
 
-        let instances: Vec<LightInstance> = capped_lights
-            .iter()
-            .map(|light| LightInstance {
+        self.instances_scratch.clear();
+        self.instances_scratch
+            .extend(capped_lights.iter().map(|light| LightInstance {
                 pos_radius: [light.position[0], light.position[1], light.radius, 0.0],
                 color: light.effective_color(),
                 falloff: [light.falloff.max(0.001), 50.0, 0.0, 0.0],
-            })
-            .collect();
+            }));
 
-        if !instances.is_empty() {
-            ctx.queue()
-                .write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&instances));
+        if !self.instances_scratch.is_empty() {
+            ctx.queue().write_buffer(
+                &self.instance_buffer,
+                0,
+                bytemuck::cast_slice(&self.instances_scratch),
+            );
         }
 
-        // Create normal bind group
-        let normal_view = match normal_target {
-            Some(target) => target.view(),
-            None => self.flat_normal.view(),
-        };
-        let normal_bg = ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("light_normal_bg"),
-            layout: &self.normal_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(normal_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(ctx.sampler_linear()),
-                },
-            ],
-        });
-
-        let instance_count = instances.len() as u32;
+        let normal_bg = self.resolve_normal_bind_group(ctx, normal_target).clone();
+        let instance_count = self.instances_scratch.len() as u32;
         ctx.with_render_pass(
             &wgpu::RenderPassDescriptor {
                 label: Some("light_pass"),
@@ -354,16 +187,138 @@ impl LightPass {
             },
             |pass| {
                 pass.set_pipeline(pipeline.as_ref());
-                pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                pass.set_bind_group(0, &self.camera.bind_group, &[]);
                 pass.set_bind_group(1, &normal_bg, &[]);
-                pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                pass.set_vertex_buffer(0, self.quad.vertex_buffer.slice(..));
                 pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
-                pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                pass.set_index_buffer(self.quad.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
                 if instance_count > 0 {
                     pass.draw_indexed(0..6, 0, 0..instance_count);
                 }
             },
         );
+    }
+
+    fn resolve_normal_bind_group(
+        &mut self,
+        ctx: &GpuContext,
+        normal_target: Option<&RenderTarget>,
+    ) -> &wgpu::BindGroup {
+        let Some(target) = normal_target else {
+            return &self.flat_normal_bind_group;
+        };
+
+        let key = std::ptr::from_ref(target.texture()) as usize;
+        let normal_bgl = self.normal_bgl.clone();
+        let target_view = target.view();
+        let sampler = ctx.sampler_linear();
+        self.normal_bind_group_cache.get_or_create(key, || {
+            ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("light_normal_bg"),
+                layout: &normal_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(target_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    },
+                ],
+            })
+        })
+    }
+
+    fn pipeline_for(
+        &mut self,
+        ctx: &GpuContext,
+        target_format: wgpu::TextureFormat,
+    ) -> Arc<wgpu::RenderPipeline> {
+        let shader = self.shader.clone();
+        let camera_bgl = self.camera.layout.clone();
+        let normal_bgl = self.normal_bgl.clone();
+        self.pipelines.get_or_create(target_format, || {
+            let pipeline_layout =
+                ctx.device()
+                    .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("light_pass_layout"),
+                        bind_group_layouts: &[&camera_bgl, &normal_bgl],
+                        push_constant_ranges: &[],
+                    });
+
+            ctx.device()
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(&format!("light_pass_pipeline_{target_format:?}")),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: shader.as_ref(),
+                        entry_point: Some("vs_main"),
+                        buffers: &[
+                            wgpu::VertexBufferLayout {
+                                array_stride: 8,
+                                step_mode: wgpu::VertexStepMode::Vertex,
+                                attributes: &[wgpu::VertexAttribute {
+                                    offset: 0,
+                                    shader_location: 0,
+                                    format: wgpu::VertexFormat::Float32x2,
+                                }],
+                            },
+                            wgpu::VertexBufferLayout {
+                                array_stride: std::mem::size_of::<LightInstance>() as u64,
+                                step_mode: wgpu::VertexStepMode::Instance,
+                                attributes: &[
+                                    wgpu::VertexAttribute {
+                                        offset: 0,
+                                        shader_location: 1,
+                                        format: wgpu::VertexFormat::Float32x4,
+                                    },
+                                    wgpu::VertexAttribute {
+                                        offset: 16,
+                                        shader_location: 2,
+                                        format: wgpu::VertexFormat::Float32x4,
+                                    },
+                                    wgpu::VertexAttribute {
+                                        offset: 32,
+                                        shader_location: 3,
+                                        format: wgpu::VertexFormat::Float32x4,
+                                    },
+                                ],
+                            },
+                        ],
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: shader.as_ref(),
+                        entry_point: Some("fs_main"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: target_format,
+                            blend: Some(wgpu::BlendState {
+                                color: wgpu::BlendComponent {
+                                    src_factor: wgpu::BlendFactor::One,
+                                    dst_factor: wgpu::BlendFactor::One,
+                                    operation: wgpu::BlendOperation::Add,
+                                },
+                                alpha: wgpu::BlendComponent {
+                                    src_factor: wgpu::BlendFactor::One,
+                                    dst_factor: wgpu::BlendFactor::One,
+                                    operation: wgpu::BlendOperation::Add,
+                                },
+                            }),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleList,
+                        ..Default::default()
+                    },
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview: None,
+                    cache: None,
+                })
+        })
     }
 
     #[cfg(test)]

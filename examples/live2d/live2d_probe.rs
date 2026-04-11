@@ -2,6 +2,8 @@
 //!
 //! Headless benchmark for the Live2D rendering pipeline.  Measures CPU update,
 //! frame preparation, mask pass, model pass, and GPU drain phases independently.
+//! To keep the renderer API unchanged, the exclusive model-pass time is derived
+//! from `full_execute_ms - isolated_mask_ms` for the same prepared frame.
 //!
 //! ```bash
 //! $env:LIVE2D_CUBISM_SDK_NATIVE_DIR='C:\Coding\SkyEngine\CubismSdkForNative'
@@ -14,7 +16,9 @@ use std::time::Instant;
 
 use sky_engine::gpu::GpuContext;
 use sky_engine::render::expert::live2d::render::clipping::ClippingManager;
-use sky_engine::render::expert::live2d::{Live2DModelResource, Live2DRenderer, Live2DUserModel};
+use sky_engine::render::expert::live2d::{
+    runtime::Live2DUpdateTimings, Live2DModelResource, Live2DRenderer, Live2DUserModel,
+};
 use sky_engine::render::expert::RenderTarget;
 
 const DEFAULT_SURFACE_SIZE: [u32; 2] = [1280, 720];
@@ -51,7 +55,7 @@ struct Scenario {
 
 #[derive(Default, Clone)]
 struct FrameTimings {
-    update_ms: f64,
+    update: Live2DUpdateTimings,
     prepare_ms: f64,
     mask_ms: f64,
     model_ms: f64,
@@ -62,7 +66,7 @@ struct StatsAccumulator {
     sample_count: usize,
     frame_ms_sync_sum: f64,
     frame_ms_sync_values: Vec<f64>,
-    update_ms_sum: f64,
+    update_sum: Live2DUpdateTimings,
     prepare_ms_sum: f64,
     mask_ms_sum: f64,
     model_ms_sum: f64,
@@ -78,7 +82,7 @@ struct ScenarioResult {
     texture_count: usize,
     avg_frame_ms_sync: f64,
     p95_frame_ms_sync: f64,
-    avg_update_ms: f64,
+    avg_update: Live2DUpdateTimings,
     avg_prepare_ms: f64,
     avg_mask_ms: f64,
     avg_model_ms: f64,
@@ -100,7 +104,7 @@ impl StatsAccumulator {
         self.sample_count += 1;
         self.frame_ms_sync_sum += frame_ms_sync;
         self.frame_ms_sync_values.push(frame_ms_sync);
-        self.update_ms_sum += timings.update_ms;
+        accumulate_update_timings(&mut self.update_sum, &timings.update);
         self.prepare_ms_sum += timings.prepare_ms;
         self.mask_ms_sum += timings.mask_ms;
         self.model_ms_sum += timings.model_ms;
@@ -127,7 +131,7 @@ impl StatsAccumulator {
             texture_count,
             avg_frame_ms_sync: self.frame_ms_sync_sum * inv,
             p95_frame_ms_sync: self.frame_ms_sync_values[p95_index],
-            avg_update_ms: self.update_ms_sum * inv,
+            avg_update: scaled_update_timings(self.update_sum, inv),
             avg_prepare_ms: self.prepare_ms_sum * inv,
             avg_mask_ms: self.mask_ms_sum * inv,
             avg_model_ms: self.model_ms_sum * inv,
@@ -135,6 +139,38 @@ impl StatsAccumulator {
             avg_mask_draws: self.mask_draws_sum as f64 * inv,
             avg_bind_groups: self.bind_groups_sum as f64 * inv,
         }
+    }
+}
+
+fn accumulate_update_timings(total: &mut Live2DUpdateTimings, sample: &Live2DUpdateTimings) {
+    total.load_parameters += sample.load_parameters;
+    total.motion += sample.motion;
+    total.save_parameters += sample.save_parameters;
+    total.eye_blink += sample.eye_blink;
+    total.expression += sample.expression;
+    total.look += sample.look;
+    total.breath += sample.breath;
+    total.physics += sample.physics;
+    total.lip_sync += sample.lip_sync;
+    total.pose += sample.pose;
+    total.model_update += sample.model_update;
+    total.total += sample.total;
+}
+
+fn scaled_update_timings(sum: Live2DUpdateTimings, scale: f64) -> Live2DUpdateTimings {
+    Live2DUpdateTimings {
+        load_parameters: sum.load_parameters * scale,
+        motion: sum.motion * scale,
+        save_parameters: sum.save_parameters * scale,
+        eye_blink: sum.eye_blink * scale,
+        expression: sum.expression * scale,
+        look: sum.look * scale,
+        breath: sum.breath * scale,
+        physics: sum.physics * scale,
+        lip_sync: sum.lip_sync * scale,
+        pose: sum.pose * scale,
+        model_update: sum.model_update * scale,
+        total: sum.total * scale,
     }
 }
 
@@ -181,13 +217,13 @@ fn main() {
             instances: 1,
         },
         Scenario {
-            name: "animated_x2",
+            name: "render_repeat_x2",
             dt: 1.0 / 60.0,
             animate: true,
             instances: 2,
         },
         Scenario {
-            name: "animated_x4",
+            name: "render_repeat_x4",
             dt: 1.0 / 60.0,
             animate: true,
             instances: 4,
@@ -249,22 +285,43 @@ fn run_scenario(
 
     for frame_index in 0..total_frames {
         let mut timings = FrameTimings::default();
+        let mut frame_mask_draws = 0usize;
+        let mut frame_model_draws = 0usize;
 
         // ── Phase 1: CPU update (motion, physics, etc.) ─────────
-        let t0 = Instant::now();
         if scenario.animate {
-            user_model.update(scenario.dt);
+            timings.update = user_model.update_profiled(scenario.dt);
         }
-        timings.update_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
-        // ── Begin GPU frame ─────────────────────────────────────
+        // ── Phase 3a: Isolated mask diagnostics ─────────────────
+        if has_masks {
+            ctx.begin_frame()
+                .expect("headless begin_frame should succeed");
+            let mut diagnostic_prepared_frames = Vec::with_capacity(scenario.instances);
+            for _inst in 0..scenario.instances {
+                diagnostic_prepared_frames.push(renderer.prepare_frame_for_target(
+                    ctx,
+                    &target,
+                    user_model.model(),
+                    resource.textures(),
+                    &mut clipping,
+                ));
+            }
+            let t2 = Instant::now();
+            for prepared in &diagnostic_prepared_frames {
+                renderer.execute_prepared_mask_pass(ctx, prepared);
+            }
+            timings.mask_ms = t2.elapsed().as_secs_f64() * 1000.0;
+            ctx.end_frame();
+            let _ = ctx.device().poll(wgpu::MaintainBase::Wait);
+        }
+
+        // ── Phase 3b: Actual full render frame ──────────────────
         let frame_start = Instant::now();
         ctx.begin_frame()
             .expect("headless begin_frame should succeed");
-
-        // Render N instances
+        let mut prepared_frames = Vec::with_capacity(scenario.instances);
         for _inst in 0..scenario.instances {
-            // ── Phase 2: Prepare (clipping, uniform push, uploads, bind groups)
             let t1 = Instant::now();
             let prepared = renderer.prepare_frame_for_target(
                 ctx,
@@ -274,12 +331,16 @@ fn run_scenario(
                 &mut clipping,
             );
             timings.prepare_ms += t1.elapsed().as_secs_f64() * 1000.0;
-
-            // ── Phase 3: Render pass (includes any inline mask work) ─
-            let t3 = Instant::now();
-            renderer.execute_prepared_model_to_target(ctx, &target, &prepared);
-            timings.model_ms += t3.elapsed().as_secs_f64() * 1000.0;
+            frame_mask_draws += prepared.mask_draw_count();
+            frame_model_draws += prepared.model_draw_count();
+            prepared_frames.push(prepared);
         }
+        let t3 = Instant::now();
+        for prepared in &prepared_frames {
+            renderer.execute_prepared_model_to_target(ctx, &target, prepared);
+        }
+        let full_execute_ms = t3.elapsed().as_secs_f64() * 1000.0;
+        timings.model_ms = (full_execute_ms - timings.mask_ms).max(0.0);
 
         ctx.end_frame();
         let _ = ctx.device().poll(wgpu::MaintainBase::Wait);
@@ -290,19 +351,9 @@ fn run_scenario(
             .filter(|&i| user_model.model().drawable_is_visible(i))
             .count()
             * scenario.instances;
-        let mask_draws = clipping
-            .as_ref()
-            .map(|c| {
-                c.contexts
-                    .iter()
-                    .flat_map(|ctx_entry| &ctx_entry.mask_drawable_indices)
-                    .filter(|&&idx| user_model.model().drawable_is_visible(idx))
-                    .count()
-            })
-            .unwrap_or(0)
-            * scenario.instances;
-        // Each visible drawable creates 1 bind group, each mask draw creates 1 bind group
-        let bind_groups = (visible_drawables + mask_draws) * scenario.instances;
+        let mask_draws = frame_mask_draws;
+        // One prepared draw maps closely to one bind-group selection in this path.
+        let bind_groups = frame_model_draws + frame_mask_draws;
 
         if frame_index >= config.warmup_frames {
             accum.record(
@@ -409,13 +460,23 @@ fn print_table(results: &[ScenarioResult], config: &ProbeConfig) {
             config.sample_frames,
         );
     }
+    if results.iter().any(|result| result.scenario.instances > 1) {
+        println!(
+            "Note: render_repeat_xN reuses one updated model N times; runtime update timings remain single-instance."
+        );
+    }
     println!(
-        "{:<20} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
+        "{:<20} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
         "scenario",
         "fps",
         "frame",
         "p95",
         "update",
+        "load",
+        "motion",
+        "save",
+        "phys",
+        "mdl_upd",
         "prepare",
         "mask",
         "model",
@@ -423,16 +484,21 @@ fn print_table(results: &[ScenarioResult], config: &ProbeConfig) {
         "mask_d",
         "bgroups"
     );
-    println!("{}", "-".repeat(110));
+    println!("{}", "-".repeat(150));
     for r in results {
         let fps = 1000.0 / r.avg_frame_ms_sync.max(f64::EPSILON);
         println!(
-            "{:<20} {:>8.0} {:>8.4} {:>8.4} {:>8.4} {:>8.4} {:>8.4} {:>8.4} {:>8.1} {:>8.1} {:>8.1}",
+            "{:<20} {:>8.0} {:>8.4} {:>8.4} {:>8.4} {:>8.4} {:>8.4} {:>8.4} {:>8.4} {:>8.4} {:>8.4} {:>8.4} {:>8.4} {:>8.1} {:>8.1} {:>8.1}",
             r.scenario.name,
             fps,
             r.avg_frame_ms_sync,
             r.p95_frame_ms_sync,
-            r.avg_update_ms,
+            r.avg_update.total,
+            r.avg_update.load_parameters,
+            r.avg_update.motion,
+            r.avg_update.save_parameters,
+            r.avg_update.physics,
+            r.avg_update.model_update,
             r.avg_prepare_ms,
             r.avg_mask_ms,
             r.avg_model_ms,
@@ -445,18 +511,30 @@ fn print_table(results: &[ScenarioResult], config: &ProbeConfig) {
 
 fn print_csv(results: &[ScenarioResult]) {
     println!(
-        "scenario,fps_avg,frame_ms_avg,frame_ms_p95,update_ms_avg,prepare_ms_avg,model_ms_avg,drawables,textures,visible_drawables_avg,mask_draws_avg,bind_groups_avg,instances"
+        "scenario,fps_avg,frame_ms_avg,frame_ms_p95,update_ms_avg,load_parameters_ms_avg,motion_ms_avg,save_parameters_ms_avg,eye_blink_ms_avg,expression_ms_avg,look_ms_avg,breath_ms_avg,physics_ms_avg,lip_sync_ms_avg,pose_ms_avg,model_update_ms_avg,prepare_ms_avg,mask_ms_avg,model_ms_avg,drawables,textures,visible_drawables_avg,mask_draws_avg,bind_groups_avg,instances"
     );
     for r in results {
         let fps = 1000.0 / r.avg_frame_ms_sync.max(f64::EPSILON);
         println!(
-            "{},{:.2},{:.4},{:.4},{:.4},{:.4},{:.4},{},{},{:.2},{:.2},{:.2},{}",
+            "{},{:.2},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{},{},{:.2},{:.2},{:.2},{}",
             r.scenario.name,
             fps,
             r.avg_frame_ms_sync,
             r.p95_frame_ms_sync,
-            r.avg_update_ms,
+            r.avg_update.total,
+            r.avg_update.load_parameters,
+            r.avg_update.motion,
+            r.avg_update.save_parameters,
+            r.avg_update.eye_blink,
+            r.avg_update.expression,
+            r.avg_update.look,
+            r.avg_update.breath,
+            r.avg_update.physics,
+            r.avg_update.lip_sync,
+            r.avg_update.pose,
+            r.avg_update.model_update,
             r.avg_prepare_ms,
+            r.avg_mask_ms,
             r.avg_model_ms,
             r.drawable_count,
             r.texture_count,

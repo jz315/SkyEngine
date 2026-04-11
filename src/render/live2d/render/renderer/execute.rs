@@ -251,10 +251,15 @@ impl Live2DRenderer {
 
     pub(super) fn clear_mask_texture(&mut self, ctx: &mut GpuContext) {
         let mask_target = self.mask_texture.as_ref().unwrap();
-        clear_render_target(ctx, mask_target, "live2d_mask_clear");
+        let mut frame = ctx.frame();
+        let _pass = frame.begin_target_pass(
+            "live2d_mask_clear",
+            mask_target,
+            wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+        );
     }
 
-    pub(super) fn blit_root_target_to_surface(&mut self, ctx: &mut GpuContext, opacity: f32) {
+    pub(super) fn blit_root_target_to_surface(&mut self, ctx: &mut GpuContext, color: [f32; 4]) {
         let root_target = self.root_intermediate_target.as_ref().unwrap();
         let texture_id = std::ptr::from_ref(root_target.texture()) as usize;
         let bind_group = self
@@ -279,12 +284,9 @@ impl Live2DRenderer {
             .clone();
 
         self.blit_uniforms.clear();
-        let uniform_offset = self.blit_uniforms.push(
-            ctx,
-            Live2DBlitUniforms {
-                base_color: [opacity, opacity, opacity, opacity],
-            },
-        );
+        let uniform_offset = self
+            .blit_uniforms
+            .push(ctx, Live2DBlitUniforms { base_color: color });
         let surface_format = ctx.surface_format();
         let pipeline = self.blit_pipeline.pipeline(ctx, surface_format);
         let mut frame = ctx.frame();
@@ -299,7 +301,7 @@ impl Live2DRenderer {
         &mut self,
         ctx: &mut GpuContext,
         target: &RenderTarget,
-        opacity: f32,
+        color: [f32; 4],
     ) {
         let root_target = self.root_intermediate_target.as_ref().unwrap();
         let texture_id = std::ptr::from_ref(root_target.texture()) as usize;
@@ -325,12 +327,9 @@ impl Live2DRenderer {
             .clone();
 
         self.blit_uniforms.clear();
-        let uniform_offset = self.blit_uniforms.push(
-            ctx,
-            Live2DBlitUniforms {
-                base_color: [opacity, opacity, opacity, opacity],
-            },
-        );
+        let uniform_offset = self
+            .blit_uniforms
+            .push(ctx, Live2DBlitUniforms { base_color: color });
         let pipeline = self.blit_pipeline.pipeline(ctx, target.format());
         let mut frame = ctx.frame();
         let mut render_pass = frame.begin_target_pass_loaded("live2d_root_blit", target);

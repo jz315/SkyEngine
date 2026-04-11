@@ -10,7 +10,7 @@ use crate::gpu::UploadSlice;
 pub struct PreparedLive2DFrame {
     target_format: wgpu::TextureFormat,
     passes: Vec<PreparedTargetPass>,
-    final_root_opacity: f32,
+    final_root_color: [f32; 4],
 }
 
 impl PreparedLive2DFrame {
@@ -18,12 +18,12 @@ impl PreparedLive2DFrame {
     pub(crate) fn new(
         target_format: wgpu::TextureFormat,
         passes: Vec<PreparedTargetPass>,
-        final_root_opacity: f32,
+        final_root_color: [f32; 4],
     ) -> Self {
         Self {
             target_format,
             passes,
-            final_root_opacity,
+            final_root_color,
         }
     }
 
@@ -53,8 +53,8 @@ impl PreparedLive2DFrame {
     }
 
     #[inline]
-    pub(crate) fn final_root_opacity(&self) -> f32 {
-        self.final_root_opacity
+    pub(crate) fn final_root_color(&self) -> [f32; 4] {
+        self.final_root_color
     }
 
     #[inline]

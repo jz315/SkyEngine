@@ -22,7 +22,7 @@
 **SkyEngine** 是一款 Rust 原生 2D 游戏引擎。核心特性包括：
 
 - **ECS 架构**：高性能的实体组件系统
-- **现代渲染**：基于 wgpu 的 2D 渲染管线
+- **现代渲染**：基于 `RenderPipelineAsset + RenderComposer` 的高层可编程场景管线，以及基于 `wgpu` 的专家级 RenderGraph
 - **简单易用**：用户友好的API，详细的文档
 
 🚧 项目目前处于快速开发阶段，欢迎贡献！
@@ -143,6 +143,17 @@ cargo bench --bench fair -- flecs
 ## 🎮 示例展示
 
 完整示例索引见 [`examples/README.md`](examples/README.md)。如果你是第一次接触这个仓库，建议按“ECS 入门 → Render API → 完整 Demo”的顺序阅读。
+
+高层渲染推荐工作流：
+
+- `clear_screen` 这类最小示例直接走 `ctx.gpu()`，不安装高层管线
+- `App::with_render_pipeline(RenderPipelineAsset::universal_2d())` 安装默认统一场景管线
+- 在 `update()` 里调用 `ctx.render()`
+- 想改高层执行顺序，就自定义 `stage / queue / domain / feature / output chain`
+- 需要组合更多渲染类型时，在同一条 pipeline 里挂多个 `RenderDomain`
+- 需要新增一种渲染类型时，实现一个新的 `RenderDomain`
+- 只有在需要直接控制 graph / pass / target 时，才下潜到 `render::expert::*`
+- 专家级 backend 示例看 `render_graph_showcase` / `frame_pipeline_showcase`，性能统计看 `renderer_probe`
 
 ---
 

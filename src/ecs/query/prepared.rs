@@ -1,4 +1,5 @@
 use super::filter::QueryFilter;
+use super::parallel::{self, ParallelQuerySpec};
 use super::param::QuerySpec;
 use super::{EntityId, PreparedCache, QueryDescriptor, World};
 use core::marker::PhantomData;
@@ -16,6 +17,7 @@ use core::marker::PhantomData;
 pub struct PreparedQuery<Q, Flt = ()> {
     descriptor: QueryDescriptor,
     prepared: PreparedCache,
+    parallel_jobs: parallel::ParallelJobCache,
     marker: PhantomData<fn() -> (Q, Flt)>,
 }
 
@@ -24,6 +26,7 @@ impl<Q: QuerySpec, Flt: QueryFilter> Default for PreparedQuery<Q, Flt> {
         Self {
             descriptor: Q::descriptor(),
             prepared: PreparedCache::default(),
+            parallel_jobs: parallel::ParallelJobCache::default(),
             marker: PhantomData,
         }
     }
@@ -68,6 +71,76 @@ impl<Q: QuerySpec, Flt: QueryFilter> PreparedQuery<Q, Flt> {
                 }
             }
         }
+    }
+
+    /// Iterates *chunk-by-chunk* in parallel using Rayon.
+    ///
+    /// The closure may run on multiple worker threads and chunk execution
+    /// order is unspecified.  Do not perform structural changes, access
+    /// [`World`], or mutate shared state without explicit synchronization.
+    ///
+    /// This API is intended for systems that first gather any resource data
+    /// they need, then process component slices in parallel, and finally
+    /// apply any queued structural changes after the parallel phase.
+    ///
+    /// ```rust
+    /// use sky_engine::ecs::World;
+    ///
+    /// #[derive(Clone, Copy)]
+    /// struct Position {
+    ///     x: f32,
+    ///     y: f32,
+    /// }
+    ///
+    /// #[derive(Clone, Copy)]
+    /// struct Velocity {
+    ///     x: f32,
+    ///     y: f32,
+    /// }
+    ///
+    /// let mut world = World::new();
+    /// world.spawn((
+    ///     Position { x: 0.0, y: 0.0 },
+    ///     Velocity { x: 1.0, y: 2.0 },
+    /// ));
+    ///
+    /// let mut query = world.query::<(&mut Position, &Velocity)>();
+    /// query.par_for_each_chunk(&world, |(positions, velocities)| {
+    ///     for index in 0..positions.len() {
+    ///         positions[index].x += velocities[index].x;
+    ///         positions[index].y += velocities[index].y;
+    ///     }
+    /// });
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use std::cell::Cell;
+    /// use sky_engine::ecs::World;
+    ///
+    /// let mut world = World::new();
+    /// world.spawn((Cell::new(1u32),));
+    ///
+    /// let mut query = world.query::<&Cell<u32>>();
+    /// query.par_for_each_chunk(&world, |_cells| {});
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use std::rc::Rc;
+    /// use sky_engine::ecs::World;
+    ///
+    /// let mut world = World::new();
+    /// world.spawn((Rc::new(1u32),));
+    ///
+    /// let mut query = world.query::<&mut Rc<u32>>();
+    /// query.par_for_each_chunk(&world, |_values| {});
+    /// ```
+    pub fn par_for_each_chunk<F>(&mut self, world: &World, f: F)
+    where
+        Q: ParallelQuerySpec,
+        F: for<'w> Fn(<Q as ParallelQuerySpec>::Chunk<'w>) + Send + Sync,
+    {
+        self.prepare(world);
+        parallel::par_for_each_chunk::<Q, _>(&mut self.parallel_jobs, &self.prepared, world, f);
     }
 
     /// Iterates *entity-by-entity*, providing individual component
@@ -133,6 +206,25 @@ impl<Q: QuerySpec, Flt: QueryFilter> PreparedQuery<Q, Flt> {
                 }
             }
         }
+    }
+
+    /// Like [`par_for_each_chunk`](Self::par_for_each_chunk), but also
+    /// provides the entity ID slice for each chunk.
+    ///
+    /// Entity slices line up with the component slices for that chunk, but
+    /// chunk visitation order remains unspecified.
+    pub fn par_for_each_chunk_with_entities<F>(&mut self, world: &World, f: F)
+    where
+        Q: ParallelQuerySpec,
+        F: for<'w> Fn(&'w [EntityId], <Q as ParallelQuerySpec>::Chunk<'w>) + Send + Sync,
+    {
+        self.prepare(world);
+        parallel::par_for_each_chunk_with_entities::<Q, _>(
+            &mut self.parallel_jobs,
+            &self.prepared,
+            world,
+            f,
+        );
     }
 
     /// Returns the total number of entities matched by this query.

@@ -1,7 +1,8 @@
 //! GPU-accelerated ECS sprite demo.
 //!
 //! Spawns thousands of coloured sprites as ECS entities and renders them
-//! through the high-level [`Renderer2D`].
+//! through the default programmable scene pipeline installed via
+//! `App::with_render_pipeline(...)`.
 //!
 //! ```bash
 //! cargo run --example sprite_demo --features app --release
@@ -10,7 +11,7 @@
 use sky_engine::app::{App, AppConfig, AppState, FrameContext};
 use sky_engine::ecs::World;
 use sky_engine::render::{
-    Camera2D, Color, PrimaryCamera2D, Renderer2DConfig, Sprite2D, Transform2D,
+    Camera, Color, MainCamera, Projection, RenderPipelineAsset, SpriteRenderer, Transform,
 };
 
 const NUM_SPRITES: usize = 5000;
@@ -37,29 +38,33 @@ impl AppState for SpriteDemo {
         let dt = ctx.dt;
         let [w, h] = ctx.surface_size();
 
-        let mut query = ctx
-            .world
-            .query::<(&mut Transform2D, &mut Sprite2D, &Velocity, &Spin, &mut Hue)>();
+        let mut query = ctx.world.query::<(
+            &mut Transform,
+            &mut SpriteRenderer,
+            &Velocity,
+            &Spin,
+            &mut Hue,
+        )>();
         query.for_each(ctx.world, |(transform, sprite, velocity, spin, hue)| {
-            transform.x += velocity.x * dt;
-            transform.y += velocity.y * dt;
-            transform.rotation += spin.0 * dt;
+            transform.position[0] += velocity.x * dt;
+            transform.position[1] += velocity.y * dt;
+            transform.rotate_z(spin.0 * dt);
             hue.0 = (hue.0 + 20.0 * dt) % 360.0;
             sprite.color = Color::hsl(hue.0, 0.8, 0.6);
 
             let hw = w as f32 * 0.5 + sprite.width;
             let hh = h as f32 * 0.5 + sprite.height;
-            if transform.x > hw {
-                transform.x = -hw;
+            if transform.position[0] > hw {
+                transform.position[0] = -hw;
             }
-            if transform.x < -hw {
-                transform.x = hw;
+            if transform.position[0] < -hw {
+                transform.position[0] = hw;
             }
-            if transform.y > hh {
-                transform.y = -hh;
+            if transform.position[1] > hh {
+                transform.position[1] = -hh;
             }
-            if transform.y < -hh {
-                transform.y = hh;
+            if transform.position[1] < -hh {
+                transform.position[1] = hh;
             }
         });
 
@@ -86,15 +91,19 @@ fn main() {
     let mut rng = SimpleRng::new(42);
 
     let mut world = World::new();
-    world.insert_resource(Renderer2DConfig::unlit());
-    world.spawn((Camera2D::new(960.0, 640.0), PrimaryCamera2D));
+    world.spawn((
+        Transform::default(),
+        Camera::new(),
+        Projection::orthographic(960.0, 640.0),
+        MainCamera,
+    ));
 
     for _ in 0..NUM_SPRITES {
         let size = rng.range(4.0, 20.0);
         let hue = rng.range(0.0, 360.0);
         world.spawn((
-            Transform2D::new(rng.range(-480.0, 480.0), rng.range(-320.0, 320.0)),
-            Sprite2D::new(size, size).color(Color::hsl(hue, 0.8, 0.6)),
+            Transform::new(rng.range(-480.0, 480.0), rng.range(-320.0, 320.0)),
+            SpriteRenderer::new(size, size).color(Color::hsl(hue, 0.8, 0.6)),
             Velocity {
                 x: rng.range(-60.0, 60.0),
                 y: rng.range(-60.0, 60.0),
@@ -108,6 +117,7 @@ fn main() {
         AppConfig::new("SkyEngine — ECS Sprite Demo", 960, 640),
         world,
     )
+    .with_render_pipeline(RenderPipelineAsset::universal_unlit())
     .run(SpriteDemo {
         fps_smooth: 0.0,
         frame_count: 0,

@@ -1,28 +1,48 @@
-//! SkyEngine modern 2D rendering facade.
+//! SkyEngine high-level rendering facade built around programmable scene pipelines.
 
+pub(crate) mod composer;
 pub(crate) mod core;
+pub(crate) mod domains;
 mod ecs;
 pub mod expert;
-pub(crate) mod gpu_scene2d;
+pub(crate) mod frame_pipeline;
 pub(crate) mod graph;
+pub(crate) mod internal;
 pub(crate) mod light;
+pub(crate) mod output_chain;
 pub(crate) mod passes;
-pub mod pipeline;
+pub(crate) mod pipeline;
 pub(crate) mod postfx;
-pub(crate) mod renderer2d;
 pub(crate) mod resources;
+pub(crate) mod scene;
+pub(crate) mod stats;
 
 #[cfg(feature = "live2d")]
 pub(crate) mod live2d;
 
-pub use core::{camera::Camera2D, color::Color, texture::Texture};
+pub use composer::RenderComposer;
+pub use core::{camera::Camera2D, color::Color, texture::Texture, viewport::ViewportRect};
+pub use domains::{GpuScene2D, PreparedView2D, RenderDomain, SpriteDomain};
 pub use ecs::{
-    BloomSettings, PointLight2D, PrimaryCamera2D, RenderSettings2D, RenderView2D, Sprite2D,
-    ToneMapSettings, Transform2D, ViewportRect, VignetteSettings,
+    BloomSettings, Camera, CameraViewport, MainCamera, OrderInLayer, Parent, PointLight2D,
+    Quaternion, RenderLayerMask, RenderSettings, SortingLayer, SpriteRenderer, ToneMapSettings,
+    Transform, VignetteSettings,
 };
 pub use passes::batch::Sprite;
-pub use pipeline::{RenderFeature2D, RenderPipeline};
-pub use renderer2d::{Renderer2D, Renderer2DConfig, RendererStats, RendererTimingStats};
+pub use pipeline::{
+    OutputChainConfig, RenderFeature, RenderFeatureExecuteContext, RenderFeatureSetupContext,
+    RenderPipelineAsset, RenderPipelineBuilder,
+};
+pub use scene::{
+    Projection, RenderInjectionPoint, RenderOutputFormat, RenderQueueDesc, RenderQueueSort,
+    RenderStageKey, RenderStats, SceneView,
+};
+pub use stats::RenderTimingStats;
+
+#[cfg(feature = "live2d")]
+pub use domains::Live2DDomain;
+#[cfg(feature = "live2d")]
+pub use ecs::Live2DModelInstance;
 
 #[cfg(test)]
 mod tests {
@@ -30,18 +50,27 @@ mod tests {
 
     #[test]
     fn curated_render_exports_are_available() {
-        let _camera = Camera2D::new(16.0, 9.0);
+        let _camera = Camera::new();
+        let _projection = Projection::orthographic(16.0, 9.0);
         let _color = Color::WHITE;
-        let _settings = RenderSettings2D::default();
+        let _pipeline = RenderPipelineAsset::universal_unlit();
+        let _builder = RenderPipelineAsset::builder();
+        let _format_hint = RenderOutputFormat::Preserve;
+        let _settings = RenderSettings::default();
         let _sprite = Sprite::new(0.0, 0.0, 1.0, 1.0);
-        let _renderer_config = Renderer2DConfig::unlit();
-        let _renderer_stats = RendererStats::default();
-        let _view = RenderView2D::default();
+        let _stats = RenderStats::default();
+        let _timings = RenderTimingStats::default();
+        let _view = CameraViewport::default();
         let _viewport = ViewportRect::default();
-        let _transform = Transform2D::default();
-        let _sprite2d = Sprite2D::new(8.0, 8.0);
+        let _transform = Transform::default();
+        let _sprite_renderer = SpriteRenderer::new(8.0, 8.0);
         let _light = PointLight2D::new(64.0);
-        let _primary_camera = PrimaryCamera2D;
+        let _composer = RenderComposer::from_asset(RenderPipelineAsset::overlay());
+        let _domain = SpriteDomain::unlit();
+        let _main_camera = MainCamera;
+        let _sorting_layer = SortingLayer::default();
+        let _order_in_layer = OrderInLayer::default();
+        let _mask = RenderLayerMask::default();
     }
 
     #[test]

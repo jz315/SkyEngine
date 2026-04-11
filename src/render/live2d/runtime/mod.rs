@@ -15,4 +15,4 @@ pub use motion::{
 pub use physics::{Live2DPhysics, Live2DPhysicsOptions};
 pub use pose::Live2DPose;
 pub(crate) use update::Live2DUpdateScheduler;
-pub use user_model::Live2DUserModel;
+pub use user_model::{Live2DUpdateTimings, Live2DUserModel};

@@ -4736,6 +4736,7 @@ dependencies = [
  "mint",
  "pollster",
  "rand 0.8.5",
+ "rayon",
  "rustc-hash 2.1.2",
  "serde",
  "serde_json",

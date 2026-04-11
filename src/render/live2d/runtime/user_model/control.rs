@@ -1,6 +1,33 @@
 use super::*;
 
 impl Live2DUserModel {
+    pub fn model_opacity(&self) -> f32 {
+        self.model.model_opacity()
+    }
+
+    pub fn set_model_opacity(&mut self, value: f32) {
+        self.model.set_model_opacity(value);
+    }
+
+    pub fn model_color(&self) -> [f32; 4] {
+        self.model.model_color()
+    }
+
+    pub fn set_model_color(&mut self, color: [f32; 4]) {
+        self.model.set_model_color(color);
+    }
+
+    pub fn physics_options(&self) -> Option<Live2DPhysicsOptions> {
+        self.physics.as_ref().map(Live2DPhysics::options)
+    }
+
+    pub fn set_physics_options(&mut self, options: Live2DPhysicsOptions) -> bool {
+        self.physics.as_mut().is_some_and(|physics| {
+            physics.set_options(options);
+            true
+        })
+    }
+
     pub fn set_expression(&mut self, name: &str) -> bool {
         self.expression_player
             .as_mut()

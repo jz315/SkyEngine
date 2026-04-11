@@ -3,6 +3,7 @@
 use crate::gpu::GpuContext;
 use crate::render::core::fullscreen::{FullscreenPass, FullscreenPipeline};
 use crate::render::core::target::RenderTarget;
+use crate::render::passes::internal::BindGroupCache;
 
 const COMPOSITE_SHADER: &str = include_str!("../shaders/composite.wgsl");
 
@@ -10,6 +11,7 @@ const COMPOSITE_SHADER: &str = include_str!("../shaders/composite.wgsl");
 pub struct CompositePass {
     pipeline: FullscreenPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
+    bind_group_cache: BindGroupCache<(usize, usize)>,
 }
 
 impl CompositePass {
@@ -82,6 +84,7 @@ impl CompositePass {
         Self {
             pipeline,
             bind_group_layout,
+            bind_group_cache: BindGroupCache::new(),
         }
     }
 
@@ -94,7 +97,7 @@ impl CompositePass {
     ) {
         Self::validate_targets(scene, lightmap, output);
 
-        let bind_group = self.create_bind_group(ctx, scene, lightmap);
+        let bind_group = self.bind_group(ctx, scene, lightmap).clone();
         let pipeline = self.pipeline.pipeline(ctx, output.format());
         ctx.with_render_pass(
             &wgpu::RenderPassDescriptor {
@@ -124,7 +127,7 @@ impl CompositePass {
         scene: &RenderTarget,
         lightmap: &RenderTarget,
     ) {
-        let bind_group = self.create_bind_group(ctx, scene, lightmap);
+        let bind_group = self.bind_group(ctx, scene, lightmap).clone();
         let pipeline = self.pipeline.pipeline(ctx, ctx.surface_format());
         ctx.with_surface_pass("composite_pass", Some(wgpu::Color::BLACK), |pass| {
             pass.set_pipeline(pipeline.as_ref());
@@ -133,33 +136,43 @@ impl CompositePass {
         });
     }
 
-    fn create_bind_group(
-        &self,
+    fn bind_group(
+        &mut self,
         ctx: &GpuContext,
         scene: &RenderTarget,
         lightmap: &RenderTarget,
-    ) -> wgpu::BindGroup {
-        ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("composite_bg"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(scene.view()),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(ctx.sampler_linear()),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(lightmap.view()),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::Sampler(ctx.sampler_linear()),
-                },
-            ],
+    ) -> &wgpu::BindGroup {
+        let key = (
+            std::ptr::from_ref(scene.texture()) as usize,
+            std::ptr::from_ref(lightmap.texture()) as usize,
+        );
+        let layout = self.bind_group_layout.clone();
+        let scene_view = scene.view();
+        let lightmap_view = lightmap.view();
+        let sampler = ctx.sampler_linear();
+        self.bind_group_cache.get_or_create(key, || {
+            ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("composite_bg"),
+                layout: &layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(scene_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(lightmap_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    },
+                ],
+            })
         })
     }
 }

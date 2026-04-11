@@ -1,4 +1,4 @@
-//! RenderGraph API showcase — exercises the full public API surface.
+//! Expert-only RenderGraph API showcase — exercises the low-level public API surface.
 //!
 //! This example builds a non-trivial graph that exercises:
 //!

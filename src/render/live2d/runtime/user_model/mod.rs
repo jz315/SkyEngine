@@ -7,8 +7,8 @@ use crate::render::live2d::asset::{Live2DHitArea, Live2DLoadError, Live2DModelRe
 use crate::render::live2d::model::Live2DModel;
 use crate::render::live2d::runtime::{
     Live2DBreath, Live2DExpressionPlayer, Live2DEyeBlink, Live2DLipSync, Live2DLook,
-    Live2DMotionPlayer, Live2DPhysics, Live2DPose, Live2DUpdateScheduler, MotionFinishedEvent,
-    MotionFiredEvent, MotionHandle, MotionPriority, MotionStartedEvent,
+    Live2DMotionPlayer, Live2DPhysics, Live2DPhysicsOptions, Live2DPose, Live2DUpdateScheduler,
+    MotionFinishedEvent, MotionFiredEvent, MotionHandle, MotionPriority, MotionStartedEvent,
 };
 
 /// Official-framework-style runtime owner for one mutable Live2D model instance.
@@ -16,6 +16,34 @@ use crate::render::live2d::runtime::{
 /// `Live2DModelResource` holds immutable loaded assets; `Live2DUserModel`
 /// owns the per-instance model state, runtime controllers, interactions, and
 /// frame-to-frame update flow.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Live2DUpdateTimings {
+    /// Time spent in `model.load_parameters()`, in milliseconds.
+    pub load_parameters: f64,
+    /// Time spent in `motion_player.update(...)`, in milliseconds.
+    pub motion: f64,
+    /// Time spent in `model.save_parameters()`, in milliseconds.
+    pub save_parameters: f64,
+    /// Time spent in the EyeBlink stage, in milliseconds.
+    pub eye_blink: f64,
+    /// Time spent in the Expression stage, in milliseconds.
+    pub expression: f64,
+    /// Time spent in the Look stage, in milliseconds.
+    pub look: f64,
+    /// Time spent in the Breath stage, in milliseconds.
+    pub breath: f64,
+    /// Time spent in the Physics stage, in milliseconds.
+    pub physics: f64,
+    /// Time spent in the LipSync stage, in milliseconds.
+    pub lip_sync: f64,
+    /// Time spent in the Pose stage, in milliseconds.
+    pub pose: f64,
+    /// Time spent in `model.update()`, in milliseconds.
+    pub model_update: f64,
+    /// End-to-end `Live2DUserModel::update_profiled()` time, in milliseconds.
+    pub total: f64,
+}
+
 pub struct Live2DUserModel {
     pub(crate) model: Live2DModel,
     pub(crate) motion_player: Option<Live2DMotionPlayer>,

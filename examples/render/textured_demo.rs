@@ -14,7 +14,8 @@ use sky_engine::app::{App, AppConfig, AppState, FrameContext};
 use sky_engine::ecs::{EntityId, World};
 use sky_engine::gpu::GpuContext;
 use sky_engine::render::{
-    Camera2D, Color, PrimaryCamera2D, Renderer2DConfig, Sprite2D, Texture, Transform2D,
+    Camera, Color, MainCamera, Projection, RenderPipelineAsset, RenderSettings, SpriteRenderer,
+    Texture, Transform,
 };
 
 const NUM_PARTICLES: usize = 3000;
@@ -68,14 +69,22 @@ impl AppState for TexturedDemo {
         let circle = Texture::circle(gpu, 64);
         let checker = Texture::checkerboard(gpu, 64, 8, [200, 180, 255, 255], [80, 60, 140, 255]);
 
-        self.camera = Some(world.spawn((Camera2D::new(960.0, 640.0), PrimaryCamera2D)));
+        self.camera = Some(world.spawn((
+            Transform::default(),
+            Camera::new(),
+            Projection::orthographic(960.0, 640.0),
+            MainCamera,
+        )));
 
         for _ in 0..NUM_STARS {
             let x = rng.range(-480.0, 480.0);
             let y = rng.range(-320.0, 320.0);
             let brightness = rng.range(0.3, 1.0);
             let twinkle_speed = rng.range(1.0, 5.0);
-            let entity = world.spawn((Transform2D::from_xyz(x, y, 0.0), Sprite2D::new(2.0, 2.0)));
+            let entity = world.spawn((
+                Transform::from_xyz(x, y, 0.0),
+                SpriteRenderer::new(2.0, 2.0),
+            ));
             self.stars.push(Star {
                 entity,
                 brightness,
@@ -90,8 +99,8 @@ impl AppState for TexturedDemo {
             let angle = rng.range(0.0, std::f32::consts::TAU);
             let spin = rng.range(-1.5, 1.5);
             let entity = world.spawn((
-                Transform2D::from_xyz(x, y, 1.0).with_rotation(angle),
-                Sprite2D::new(size, size)
+                Transform::from_xyz(x, y, 1.0).with_rotation(angle),
+                SpriteRenderer::new(size, size)
                     .texture(checker.clone())
                     .color(Color::new(1.0, 1.0, 1.0, 0.7)),
             ));
@@ -114,8 +123,8 @@ impl AppState for TexturedDemo {
             let color = Color::hsl(hue, 0.9, 0.65);
             let alpha = 0.4 + 0.6 * (1.0 - life);
             let entity = world.spawn((
-                Transform2D::from_xyz(x, y, 2.0),
-                Sprite2D::new(size, size)
+                Transform::from_xyz(x, y, 2.0),
+                SpriteRenderer::new(size, size)
                     .texture(circle.clone())
                     .color(Color::new(color.r, color.g, color.b, alpha)),
             ));
@@ -135,15 +144,15 @@ impl AppState for TexturedDemo {
 
         let [w, h] = ctx.surface_size();
         if let Some(camera) = self.camera {
-            if let Some(camera_component) = ctx.world.get_mut::<Camera2D>(camera) {
-                camera_component.set_viewport(w as f32, h as f32);
+            if let Some(projection) = ctx.world.get_mut::<Projection>(camera) {
+                *projection = Projection::orthographic(w as f32, h as f32);
             }
         }
 
         for star in &self.stars {
             let twinkle = (self.time * star.twinkle_speed).sin() * 0.5 + 0.5;
             let alpha = star.brightness * (0.3 + 0.7 * twinkle);
-            if let Some(sprite) = ctx.world.get_mut::<Sprite2D>(star.entity) {
+            if let Some(sprite) = ctx.world.get_mut::<SpriteRenderer>(star.entity) {
                 sprite.color = Color::new(0.8, 0.85, 1.0, alpha);
             }
         }
@@ -151,58 +160,54 @@ impl AppState for TexturedDemo {
         for block in &mut self.blocks {
             block.angle += block.spin * dt;
             let pulse = 1.0 + 0.15 * (self.time * 2.0 + block.angle).sin();
-            if let Some(transform) = ctx.world.get_mut::<Transform2D>(block.entity) {
-                transform.rotation = block.angle;
+            if let Some(transform) = ctx.world.get_mut::<Transform>(block.entity) {
+                transform.set_rotation_z(block.angle);
             }
-            if let Some(sprite) = ctx.world.get_mut::<Sprite2D>(block.entity) {
+            if let Some(sprite) = ctx.world.get_mut::<SpriteRenderer>(block.entity) {
                 sprite.width = block.size * pulse;
                 sprite.height = block.size * pulse;
             }
         }
 
         for particle in &mut self.particles {
-            let Some(transform) = ctx.world.get_mut::<Transform2D>(particle.entity) else {
+            let Some(transform) = ctx.world.get_mut::<Transform>(particle.entity) else {
                 continue;
             };
 
-            transform.x += particle.vx * dt;
-            transform.y += particle.vy * dt;
+            transform.position[0] += particle.vx * dt;
+            transform.position[1] += particle.vy * dt;
             particle.hue = (particle.hue + 40.0 * dt) % 360.0;
             particle.life = (particle.life + dt * 0.3) % 1.0;
 
             let hw = w as f32 * 0.5 + 24.0;
             let hh = h as f32 * 0.5 + 24.0;
-            if transform.x > hw {
-                transform.x = -hw;
+            if transform.position[0] > hw {
+                transform.position[0] = -hw;
             }
-            if transform.x < -hw {
-                transform.x = hw;
+            if transform.position[0] < -hw {
+                transform.position[0] = hw;
             }
-            if transform.y > hh {
-                transform.y = -hh;
+            if transform.position[1] > hh {
+                transform.position[1] = -hh;
             }
-            if transform.y < -hh {
-                transform.y = hh;
+            if transform.position[1] < -hh {
+                transform.position[1] = hh;
             }
 
-            if let Some(sprite) = ctx.world.get_mut::<Sprite2D>(particle.entity) {
+            if let Some(sprite) = ctx.world.get_mut::<SpriteRenderer>(particle.entity) {
                 let color = Color::hsl(particle.hue, 0.9, 0.65);
                 let alpha = 0.4 + 0.6 * (1.0 - particle.life);
                 sprite.color = Color::new(color.r, color.g, color.b, alpha);
             }
         }
 
-        if let Some(settings) = ctx
-            .world
-            .get_resource_mut::<sky_engine::render::RenderSettings2D>()
-        {
+        if let Some(settings) = ctx.world.get_resource_mut::<RenderSettings>() {
             settings.clear_color = Color::new(0.01, 0.01, 0.03, 1.0);
         } else {
-            ctx.world
-                .insert_resource(sky_engine::render::RenderSettings2D {
-                    clear_color: Color::new(0.01, 0.01, 0.03, 1.0),
-                    ..Default::default()
-                });
+            ctx.world.insert_resource(RenderSettings {
+                clear_color: Color::new(0.01, 0.01, 0.03, 1.0),
+                ..Default::default()
+            });
         }
 
         ctx.render();
@@ -210,13 +215,13 @@ impl AppState for TexturedDemo {
 }
 
 fn main() {
-    let mut world = World::new();
-    world.insert_resource(Renderer2DConfig::unlit());
+    let world = World::new();
 
     App::new(
         AppConfig::new("SkyEngine — ECS Textured Demo", 960, 640),
         world,
     )
+    .with_render_pipeline(RenderPipelineAsset::universal_unlit())
     .run(TexturedDemo::new());
 }
 

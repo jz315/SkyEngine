@@ -8,8 +8,8 @@ use sky_engine::app::{App, AppConfig, AppState, FrameContext};
 use sky_engine::ecs::{With, World};
 use sky_engine::gpu::GpuContext;
 use sky_engine::render::{
-    Camera2D, Color, PointLight2D, PrimaryCamera2D, RenderSettings2D, Renderer2DConfig, Sprite2D,
-    Texture, Transform2D,
+    Camera, Color, Light2D, MainCamera, Projection, RenderPipelineAsset, RenderSettings,
+    SpriteRenderer, Texture, Transform,
 };
 
 const NUM_ORBS: usize = 240;
@@ -83,11 +83,11 @@ impl AppState for LightingDemo {
         for orb in &self.orbs_data {
             let tint = Color::hsl(orb.hue, 0.72, 0.55);
             world.spawn((
-                Transform2D::new(orb.x, orb.y),
-                Sprite2D::new(orb.size, orb.size)
+                Transform::new(orb.x, orb.y),
+                SpriteRenderer::new(orb.size, orb.size)
                     .texture(orb_tex.clone())
                     .color(Color::new(tint.r, tint.g, tint.b, 0.95)),
-                PointLight2D::new(orb.size * 7.0)
+                Light2D::new(orb.size * 7.0)
                     .intensity(orb.intensity)
                     .temperature(orb.temperature)
                     .color(tint)
@@ -111,22 +111,25 @@ impl AppState for LightingDemo {
 
         let mut camera_query = ctx
             .world
-            .query_filtered::<&Camera2D, With<PrimaryCamera2D>>();
-        let mut camera = None;
-        camera_query.for_each(ctx.world, |cam| {
-            if camera.is_none() {
-                camera = Some(*cam);
+            .query_filtered::<(&Transform, &Projection), With<MainCamera>>();
+        let mut camera_transform = None;
+        let mut projection = None;
+        camera_query.for_each(ctx.world, |(transform, camera_projection)| {
+            if camera_transform.is_none() {
+                camera_transform = Some(*transform);
+                projection = Some(*camera_projection);
             }
         });
-        let mut camera = camera.unwrap_or_else(|| Camera2D::new(w as f32, h as f32));
-        camera.set_viewport(w as f32, h as f32);
         let mouse = ctx.input.mouse_position();
-        let mouse_world = camera.screen_to_world(mouse[0], mouse[1]);
+        let projection = projection.unwrap_or_else(|| Projection::orthographic(w as f32, h as f32));
+        let camera_transform = camera_transform.unwrap_or_default();
+        let mouse_world =
+            projection.screen_to_world(camera_transform, [w, h], [mouse[0], mouse[1]]);
 
         let mut orbs = ctx.world.query::<(
-            &mut Transform2D,
-            &mut Sprite2D,
-            &mut PointLight2D,
+            &mut Transform,
+            &mut SpriteRenderer,
+            &mut Light2D,
             &Velocity,
             &Hue,
             &mut Pulse,
@@ -134,28 +137,28 @@ impl AppState for LightingDemo {
         orbs.for_each(
             ctx.world,
             |(transform, sprite, light, velocity, hue, pulse)| {
-                transform.x += velocity.x * dt;
-                transform.y += velocity.y * dt;
+                transform.position[0] += velocity.x * dt;
+                transform.position[1] += velocity.y * dt;
                 pulse.0 += dt * 0.8;
 
                 let half_w = w as f32 * 0.5 + sprite.width;
                 let half_h = h as f32 * 0.5 + sprite.height;
-                if transform.x > half_w {
-                    transform.x = -half_w;
+                if transform.position[0] > half_w {
+                    transform.position[0] = -half_w;
                 }
-                if transform.x < -half_w {
-                    transform.x = half_w;
+                if transform.position[0] < -half_w {
+                    transform.position[0] = half_w;
                 }
-                if transform.y > half_h {
-                    transform.y = -half_h;
+                if transform.position[1] > half_h {
+                    transform.position[1] = -half_h;
                 }
-                if transform.y < -half_h {
-                    transform.y = half_h;
+                if transform.position[1] < -half_h {
+                    transform.position[1] = half_h;
                 }
 
                 let pulse_scale = 1.0 + 0.18 * pulse.0.sin();
-                transform.scale_x = pulse_scale;
-                transform.scale_y = pulse_scale;
+                transform.scale[0] = pulse_scale;
+                transform.scale[1] = pulse_scale;
 
                 let shifted_hue = (hue.base + hue.shift * dt + pulse.0 * 4.0) % 360.0;
                 let lightness = 0.46 + 0.14 * (pulse.0 * 0.7).cos();
@@ -167,10 +170,10 @@ impl AppState for LightingDemo {
 
         let mut mouse_light = ctx
             .world
-            .query::<(&mut Transform2D, &mut PointLight2D, &MouseLight)>();
+            .query::<(&mut Transform, &mut Light2D, &MouseLight)>();
         mouse_light.for_each(ctx.world, |(transform, light, _)| {
-            transform.x = mouse_world[0];
-            transform.y = mouse_world[1];
+            transform.position[0] = mouse_world[0];
+            transform.position[1] = mouse_world[1];
             light.intensity = 1.8 + 0.25 * (dt * 60.0).sin().abs();
         });
 
@@ -197,14 +200,18 @@ fn main() {
     let mut rng = SimpleRng::new(1337);
 
     let mut world = World::new();
-    world.insert_resource(Renderer2DConfig::lit_hdr());
-    world.insert_resource(RenderSettings2D::default());
-    world.spawn((Camera2D::new(1280.0, 720.0), PrimaryCamera2D));
+    world.insert_resource(RenderSettings::default());
+    world.spawn((
+        Transform::default(),
+        Camera::new(),
+        Projection::orthographic(1280.0, 720.0),
+        MainCamera,
+    ));
 
     // Mouse light entity.
     world.spawn((
-        Transform2D::new(0.0, 0.0),
-        PointLight2D::new(150.0)
+        Transform::new(0.0, 0.0),
+        Light2D::new(150.0)
             .intensity(1.8)
             .temperature(5000.0)
             .color(Color::rgb(1.0, 0.95, 0.85))
@@ -216,6 +223,7 @@ fn main() {
         AppConfig::new("SkyEngine — ECS Lighting Demo", 1280, 720),
         world,
     )
+    .with_render_pipeline(RenderPipelineAsset::universal_2d())
     .run(LightingDemo::new(&mut rng));
 }
 

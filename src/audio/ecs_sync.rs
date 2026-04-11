@@ -26,7 +26,7 @@ impl AudioServer {
                 pitch: emitter.pitch,
                 pan: 0.0,
                 looped: emitter.looped,
-                spatial: Some(emitter.spatial.with_position(transform.x, transform.y)),
+                spatial: Some(emitter.spatial.with_position(transform.x(), transform.y())),
             };
 
             if self
@@ -47,7 +47,7 @@ fn find_listener_pose(world: &World) -> ([f32; 2], f32) {
     let mut result = None;
     explicit.for_each(world, |(listener, transform)| {
         if result.is_none() && listener.enabled {
-            result = Some(([transform.x, transform.y], transform.rotation));
+            result = Some(([transform.x(), transform.y()], transform.rotation_z()));
         }
     });
     if let Some(result) = result {
@@ -58,7 +58,7 @@ fn find_listener_pose(world: &World) -> ([f32; 2], f32) {
     let mut fallback = None;
     camera.for_each(world, |(_, transform)| {
         if fallback.is_none() {
-            fallback = Some(([transform.x, transform.y], transform.rotation));
+            fallback = Some(([transform.x(), transform.y()], transform.rotation_z()));
         }
     });
     fallback.unwrap_or(([0.0, 0.0], 0.0))

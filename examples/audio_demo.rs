@@ -19,8 +19,8 @@ impl AppState for DemoState {
     fn update(&mut self, ctx: &mut FrameContext) {
         self.elapsed += ctx.dt;
         if let Some(transform) = ctx.world.get_mut::<Transform2D>(self.emitter) {
-            transform.x = self.elapsed.cos() * 4.0;
-            transform.y = (self.elapsed * 0.5).sin() * 2.0;
+            transform.position[0] = self.elapsed.cos() * 4.0;
+            transform.position[1] = (self.elapsed * 0.5).sin() * 2.0;
         }
         ctx.set_title(&format!("audio_demo | t={:.2}s", self.elapsed));
         if self.elapsed > 8.0 {

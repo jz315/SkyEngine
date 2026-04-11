@@ -70,6 +70,68 @@ mod tests {
     }
 
     #[test]
+    fn unrestricted_bezier_matches_official_cardano_solver() {
+        let points = [
+            MotionPoint {
+                time: 0.0,
+                value: -0.2,
+            },
+            MotionPoint {
+                time: 0.15,
+                value: 1.0,
+            },
+            MotionPoint {
+                time: 0.85,
+                value: -0.5,
+            },
+            MotionPoint {
+                time: 1.0,
+                value: 0.8,
+            },
+        ];
+
+        for sample_time in [0.0, 0.08, 0.2, 0.37, 0.61, 0.9, 1.0] {
+            let actual = bezier_evaluate(points, sample_time);
+            let expected = official_bezier_evaluate(points, sample_time);
+            assert!(
+                (actual - expected).abs() < 0.0001,
+                "sample_time={sample_time} actual={actual} expected={expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn unrestricted_bezier_uses_official_quadratic_fallback_when_cubic_term_collapses() {
+        let points = [
+            MotionPoint {
+                time: 0.0,
+                value: 0.0,
+            },
+            MotionPoint {
+                time: 1.0 / 3.0,
+                value: 0.25,
+            },
+            MotionPoint {
+                time: 2.0 / 3.0,
+                value: 0.75,
+            },
+            MotionPoint {
+                time: 1.0,
+                value: 1.0,
+            },
+        ];
+
+        for sample_time in [0.05, 0.25, 0.5, 0.75, 0.95] {
+            let actual_t = solve_bezier_parameter(points, sample_time);
+            let expected_t = official_cardano_root(points, sample_time);
+            assert!(
+                (actual_t - expected_t).abs() < 0.0001,
+                "sample_time={sample_time} actual_t={actual_t} expected_t={expected_t}"
+            );
+        }
+    }
+
+    #[test]
     fn restricted_bezier_uses_normalized_endpoints() {
         let segments = parse_segments(
             &[0.0, 0.0, 1.0, 0.0, 1.0 / 3.0, 0.0, 2.0 / 3.0, 1.0, 1.0],
@@ -444,6 +506,7 @@ mod tests {
                 group_name: "TapBody".to_string(),
                 motion_name: "tap".to_string(),
                 priority: MotionPriority::Normal,
+                is_loop_cycle: false,
             }],
             pending_sounds: vec!["sound.wav".to_string()],
             ..Default::default()
@@ -514,6 +577,52 @@ mod tests {
         assert_eq!(finished.len(), 1);
         assert_eq!(finished[0].handle, handle);
         assert_eq!(finished[0].group_name, "TapBody");
+        assert!(!finished[0].is_loop_cycle);
+    }
+
+    #[test]
+    fn interrupted_motion_fadeout_does_not_emit_finished_event() {
+        let mut old = dummy_motion("old");
+        old.duration = 10.0;
+        old.fade_in_seconds = 0.0;
+        old.fade_out_seconds = 0.5;
+
+        let mut new = dummy_motion("new");
+        new.duration = 10.0;
+        new.fade_in_seconds = 0.0;
+        new.fade_out_seconds = 0.5;
+
+        let mut player = Live2DMotionPlayer {
+            groups: vec![MotionGroup {
+                name: "TapBody".to_string(),
+                motions: vec![old, new],
+            }],
+            ..Default::default()
+        };
+
+        let mut model = dummy_model();
+        let old_handle = player
+            .start_motion_priority("TapBody", 0, MotionPriority::Normal)
+            .expect("old motion should start");
+        assert!(player.update(&mut model, 0.0));
+        assert!(player.update(&mut model, 0.1));
+        assert!(player.take_finished_motions().is_empty());
+
+        let new_handle = player
+            .start_motion_priority("TapBody", 1, MotionPriority::Force)
+            .expect("new motion should start");
+        assert!(player.update(&mut model, 0.0));
+        let started = player.take_started_motions();
+        assert!(started.iter().any(|event| event.handle == new_handle));
+
+        assert!(player.update(&mut model, 0.6));
+
+        assert!(player.is_finished_handle(old_handle));
+        assert!(!player.is_finished_handle(new_handle));
+        assert!(
+            player.take_finished_motions().is_empty(),
+            "interrupted fade-out should not emit a finished event"
+        );
     }
 
     #[test]
@@ -538,6 +647,88 @@ mod tests {
         let finished = player.take_finished_motions();
         assert_eq!(finished.len(), 1);
         assert_eq!(finished[0].handle, handle);
+        assert!(!finished[0].is_loop_cycle);
+    }
+
+    #[test]
+    fn looping_motion_emits_finished_event_for_each_completed_cycle() {
+        let mut looping = dummy_motion("loop");
+        looping.duration = 1.0;
+        looping.is_looping = true;
+        looping.source_frame_rate = 30.0;
+
+        let mut player = Live2DMotionPlayer {
+            groups: vec![MotionGroup {
+                name: "Idle".to_string(),
+                motions: vec![looping],
+            }],
+            idle_group_index: Some(0),
+            ..Default::default()
+        };
+
+        let handle = player
+            .start_motion_priority("Idle", 0, MotionPriority::Idle)
+            .expect("looping motion should start");
+
+        let mut model = dummy_model();
+        assert!(player.update(&mut model, 0.0));
+        assert!(player.take_finished_motions().is_empty());
+
+        assert!(player.update(&mut model, 1.1));
+
+        let finished = player.take_finished_motions();
+        assert_eq!(finished.len(), 1);
+        assert_eq!(finished[0].handle, handle);
+        assert!(finished[0].is_loop_cycle);
+        assert!(!player.is_finished_handle(handle));
+        assert_eq!(player.motion_queue.len(), 1);
+    }
+
+    #[test]
+    fn looping_motion_can_emit_loop_cycle_event_and_finish_same_update() {
+        let mut looping = dummy_motion("loop");
+        looping.duration = 1.0;
+        looping.is_looping = true;
+        looping.source_frame_rate = 30.0;
+        looping.fade_in_seconds = 0.0;
+        looping.fade_out_seconds = 0.8;
+
+        let mut replacement = dummy_motion("replacement");
+        replacement.duration = 10.0;
+        replacement.fade_in_seconds = 0.0;
+        replacement.fade_out_seconds = 0.1;
+
+        let mut player = Live2DMotionPlayer {
+            groups: vec![MotionGroup {
+                name: "Idle".to_string(),
+                motions: vec![looping, replacement],
+            }],
+            idle_group_index: Some(0),
+            ..Default::default()
+        };
+
+        let mut model = dummy_model();
+        let loop_handle = player
+            .start_motion_priority("Idle", 0, MotionPriority::Idle)
+            .expect("looping motion should start");
+
+        assert!(player.update(&mut model, 0.0));
+        assert!(player.update(&mut model, 0.95));
+
+        let replacement_handle = player
+            .start_motion_priority("Idle", 1, MotionPriority::Force)
+            .expect("replacement motion should start");
+        assert!(player.update(&mut model, 0.2));
+        assert_eq!(player.take_finished_motions().len(), 1);
+
+        assert!(player.update(&mut model, 0.95));
+
+        let finished = player.take_finished_motions();
+        assert_eq!(finished.len(), 1);
+        assert_eq!(finished[0].handle, loop_handle);
+        assert!(finished[0].is_loop_cycle);
+        assert!(player.is_finished_handle(loop_handle));
+        assert!(!player.is_finished_handle(replacement_handle));
     }
 
     #[test]
@@ -690,10 +881,11 @@ mod tests {
     }
 
     #[test]
-    fn looping_motion_events_fire_across_multiple_wraps() {
+    fn looping_motion_events_only_report_current_cycle_after_wrap() {
         let mut looping = dummy_motion("loop");
         looping.duration = 1.0;
         looping.is_looping = true;
+        looping.source_frame_rate = 30.0;
         looping.user_events = vec![
             MotionUserEvent {
                 time_seconds: 0.2,
@@ -714,14 +906,16 @@ mod tests {
             ..Default::default()
         };
 
-        player.collect_fired_events(0, 0, 0.6, 2.3);
+        let mut model = dummy_model();
+        let _ = player.start_idle_motion_if_finished();
+        assert!(player.update(&mut model, 0.0));
+        assert!(player.take_fired_events().is_empty());
+
+        assert!(player.update(&mut model, 2.3));
 
         let events = player.take_fired_events();
-        assert_eq!(events.len(), 4);
-        assert_eq!(events[0].value, "b");
-        assert_eq!(events[1].value, "a");
-        assert_eq!(events[2].value, "b");
-        assert_eq!(events[3].value, "a");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].value, "a");
     }
 
     #[test]
@@ -752,5 +946,106 @@ mod tests {
         let events = player.take_fired_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].value, "upper");
+    }
+
+    fn official_bezier_evaluate(points: [MotionPoint; 4], time: f32) -> f32 {
+        let t = official_cardano_root(points, time);
+        official_cubic_bezier_scalar(
+            points[0].value,
+            points[1].value,
+            points[2].value,
+            points[3].value,
+            t,
+        )
+    }
+
+    fn official_cubic_bezier_scalar(p0: f32, p1: f32, p2: f32, p3: f32, t: f32) -> f32 {
+        let one_minus_t = 1.0 - t;
+        one_minus_t * one_minus_t * one_minus_t * p0
+            + 3.0 * one_minus_t * one_minus_t * t * p1
+            + 3.0 * one_minus_t * t * t * p2
+            + t * t * t * p3
+    }
+
+    fn official_cardano_root(points: [MotionPoint; 4], time: f32) -> f32 {
+        let x = time.clamp(points[0].time, points[3].time);
+        let a = points[3].time - 3.0 * points[2].time + 3.0 * points[1].time - points[0].time;
+        let b = 3.0 * points[2].time - 6.0 * points[1].time + 3.0 * points[0].time;
+        let c = 3.0 * points[1].time - 3.0 * points[0].time;
+        let d = points[0].time - x;
+
+        official_cardano_algorithm_for_bezier(a, b, c, d)
+    }
+
+    fn official_quadratic_equation(a: f32, b: f32, c: f32) -> f32 {
+        const EPSILON: f32 = 0.00001;
+
+        if a.abs() < EPSILON {
+            if b.abs() < EPSILON {
+                return -c;
+            }
+            return -c / b;
+        }
+
+        -(b + (b * b - 4.0 * a * c).sqrt()) / (2.0 * a)
+    }
+
+    fn official_cardano_algorithm_for_bezier(a: f32, b: f32, c: f32, d: f32) -> f32 {
+        const EPSILON: f32 = 0.00001;
+        const CENTER: f32 = 0.5;
+        const THRESHOLD: f32 = CENTER + 0.01;
+
+        if a.abs() < EPSILON {
+            return official_quadratic_equation(b, c, d).clamp(0.0, 1.0);
+        }
+
+        let ba = b / a;
+        let ca = c / a;
+        let da = d / a;
+
+        let p = (3.0 * ca - ba * ba) / 3.0;
+        let p3 = p / 3.0;
+        let q = (2.0 * ba * ba * ba - 9.0 * ba * ca + 27.0 * da) / 27.0;
+        let q2 = q / 2.0;
+        let discriminant = q2 * q2 + p3 * p3 * p3;
+
+        if discriminant < 0.0 {
+            let mp3 = -p / 3.0;
+            let r = (mp3 * mp3 * mp3).sqrt();
+            let cosphi = (-q / (2.0 * r)).clamp(-1.0, 1.0);
+            let phi = cosphi.acos();
+            let t1 = 2.0 * r.cbrt();
+
+            let root1 = t1 * (phi / 3.0).cos() - ba / 3.0;
+            if (root1 - CENTER).abs() < THRESHOLD {
+                return root1.clamp(0.0, 1.0);
+            }
+
+            let root2 = t1 * ((phi + 2.0 * std::f32::consts::PI) / 3.0).cos() - ba / 3.0;
+            if (root2 - CENTER).abs() < THRESHOLD {
+                return root2.clamp(0.0, 1.0);
+            }
+
+            let root3 = t1 * ((phi + 4.0 * std::f32::consts::PI) / 3.0).cos() - ba / 3.0;
+            return root3.clamp(0.0, 1.0);
+        }
+
+        if discriminant == 0.0 {
+            let u1 = if q2 < 0.0 { (-q2).cbrt() } else { -q2.cbrt() };
+
+            let root1 = 2.0 * u1 - ba / 3.0;
+            if (root1 - CENTER).abs() < THRESHOLD {
+                return root1.clamp(0.0, 1.0);
+            }
+
+            let root2 = -u1 - ba / 3.0;
+            return root2.clamp(0.0, 1.0);
+        }
+
+        let sd = discriminant.sqrt();
+        let u1 = (sd - q2).cbrt();
+        let v1 = (sd + q2).cbrt();
+        let root1 = u1 - v1 - ba / 3.0;
+        root1.clamp(0.0, 1.0)
     }
 }

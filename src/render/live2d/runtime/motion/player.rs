@@ -163,20 +163,12 @@ impl Live2DMotionPlayer {
             };
             self.setup_motion_queue_entry(i, motion_duration, is_looping);
 
-            let (
-                elapsed,
-                fade_in_elapsed,
-                end_time_seconds,
-                previous_event_check_seconds,
-                started_at_seconds,
-            ) = {
+            let (elapsed, fade_in_elapsed, end_time_seconds) = {
                 let entry = &self.motion_queue[i];
                 (
                     (self.user_time_seconds - entry.start_time_seconds).max(0.0),
                     (self.user_time_seconds - entry.fade_in_start_time_seconds).max(0.0),
                     entry.end_time_seconds,
-                    entry.last_event_check_seconds,
-                    entry.start_time_seconds,
                 )
             };
             let motion_time = self.groups[group_index].motions[motion_index].sample_time(elapsed);
@@ -214,29 +206,34 @@ impl Live2DMotionPlayer {
             self.motion_queue[i].state_weight = fade_weight;
             updated = true;
 
-            let previous_elapsed = (previous_event_check_seconds - started_at_seconds).max(0.0);
-            let next_elapsed = (self.user_time_seconds - started_at_seconds).max(0.0);
-            self.collect_fired_events(group_index, motion_index, previous_elapsed, next_elapsed);
-            self.motion_queue[i].last_event_check_seconds = self.user_time_seconds;
-
             // Check finish conditions
             let reached_end_time =
                 end_time_seconds > 0.0 && self.user_time_seconds >= end_time_seconds;
-
-            if reached_end_time && !is_looping {
-                self.motion_queue[i].finished = true;
-                self.emit_finished(group_index, motion_index, priority, handle);
-            } else if reached_end_time {
-                self.motion_queue[i].finished = true;
-                self.emit_finished(group_index, motion_index, priority, handle);
-            } else if is_looping
+            let reached_natural_end = !is_looping && elapsed >= motion_duration;
+            let reached_loop_wrap = is_looping
                 && effective_loop_duration > f32::EPSILON
-                && elapsed >= effective_loop_duration
-            {
+                && elapsed >= effective_loop_duration;
+
+            if reached_natural_end {
+                self.motion_queue[i].finished = true;
+                self.emit_finished(group_index, motion_index, priority, handle, false);
+            } else if reached_loop_wrap {
                 self.update_for_next_loop(i, motion_time, is_loop_fade_in_enabled);
-            } else {
-                self.motion_queue[i].elapsed_seconds = next_elapsed;
+                self.emit_finished(group_index, motion_index, priority, handle, true);
+                if reached_end_time {
+                    self.motion_queue[i].finished = true;
+                }
+            } else if reached_end_time {
+                // Cubism finishes interrupted motions silently when fade-out completes.
+                self.motion_queue[i].finished = true;
             }
+
+            let started_at_seconds = self.motion_queue[i].start_time_seconds;
+            let previous_elapsed =
+                self.motion_queue[i].last_event_check_seconds - started_at_seconds;
+            let next_elapsed = self.user_time_seconds - started_at_seconds;
+            self.collect_fired_events(group_index, motion_index, previous_elapsed, next_elapsed);
+            self.motion_queue[i].last_event_check_seconds = self.user_time_seconds;
 
             if !self.motion_queue[i].finished {
                 self.apply_triggered_fade_out(i);
@@ -636,12 +633,14 @@ impl Live2DMotionPlayer {
         motion_index: usize,
         priority: MotionPriority,
         handle: MotionHandle,
+        is_loop_cycle: bool,
     ) {
         let event = MotionFinishedEvent {
             handle,
             group_name: self.groups[group_index].name.clone(),
             motion_name: self.groups[group_index].motions[motion_index].name.clone(),
             priority,
+            is_loop_cycle,
         };
         if let Some(handler) = self.finished_motion_handler.as_mut() {
             handler(&event);
@@ -656,70 +655,28 @@ impl Live2DMotionPlayer {
         previous_elapsed: f32,
         next_elapsed: f32,
     ) {
-        let (group_name, motion_name, duration, is_looping, user_events) = {
+        let (group_name, motion_name, user_events) = {
             let motion = &self.groups[group_index].motions[motion_index];
             (
                 self.groups[group_index].name.clone(),
                 motion.name.clone(),
-                motion.duration.max(0.0),
-                motion.is_looping,
                 motion.user_events.clone(),
             )
         };
 
-        if user_events.is_empty() || duration <= f32::EPSILON {
+        if user_events.is_empty() {
             return;
         }
-
-        let mut fired = Vec::new();
-
-        if !is_looping {
-            let end_time = next_elapsed.min(duration);
-            if end_time < previous_elapsed {
-                return;
-            }
-            for event in &user_events {
-                if event.time_seconds > previous_elapsed && event.time_seconds <= end_time {
-                    fired.push((
-                        event.time_seconds,
-                        MotionFiredEvent {
-                            group_name: group_name.clone(),
-                            motion_name: motion_name.clone(),
-                            value: event.value.clone(),
-                            time_seconds: event.time_seconds,
-                        },
-                    ));
-                }
-            }
-        } else {
-            for event in &user_events {
-                let mut event_elapsed = event.time_seconds;
-                if event_elapsed <= previous_elapsed {
-                    let skipped_loops = ((previous_elapsed - event_elapsed) / duration).floor();
-                    event_elapsed += skipped_loops * duration;
-                    while event_elapsed <= previous_elapsed {
-                        event_elapsed += duration;
-                    }
-                }
-
-                while event_elapsed > previous_elapsed && event_elapsed <= next_elapsed {
-                    fired.push((
-                        event_elapsed,
-                        MotionFiredEvent {
-                            group_name: group_name.clone(),
-                            motion_name: motion_name.clone(),
-                            value: event.value.clone(),
-                            time_seconds: event.time_seconds,
-                        },
-                    ));
-                    event_elapsed += duration;
-                }
+        for event in &user_events {
+            if event.time_seconds > previous_elapsed && event.time_seconds <= next_elapsed {
+                self.pending_events.push(MotionFiredEvent {
+                    group_name: group_name.clone(),
+                    motion_name: motion_name.clone(),
+                    value: event.value.clone(),
+                    time_seconds: event.time_seconds,
+                });
             }
         }
-
-        fired.sort_by(|lhs, rhs| lhs.0.total_cmp(&rhs.0));
-        self.pending_events
-            .extend(fired.into_iter().map(|(_, event)| event));
     }
 }
 

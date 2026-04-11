@@ -89,6 +89,24 @@ impl Live2DModel {
         self.model_opacity = value.clamp(0.0, 1.0);
     }
 
+    pub fn model_color(&self) -> [f32; 4] {
+        self.model_color
+    }
+
+    pub fn set_model_color(&mut self, color: [f32; 4]) {
+        self.model_color = color.map(|channel| channel.clamp(0.0, 1.0));
+    }
+
+    pub(crate) fn premultiplied_model_color_with_opacity(&self, opacity: f32) -> [f32; 4] {
+        let alpha = (self.model_color[3] * opacity).clamp(0.0, 1.0);
+        [
+            self.model_color[0] * alpha,
+            self.model_color[1] * alpha,
+            self.model_color[2] * alpha,
+            alpha,
+        ]
+    }
+
     pub fn load_parameters(&mut self) {
         let count = self.parameter_count();
         if self.saved_parameter_values.len() != count {

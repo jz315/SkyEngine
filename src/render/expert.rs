@@ -2,6 +2,8 @@
 //!
 //! This namespace preserves the lower-level render graph / pass / target API for
 //! advanced users who want direct control over GPU resources and execution.
+//! `SpriteFramePipeline` also lives here as the opt-in sprite-domain adapter; it
+//! is no longer part of the default high-level render story.
 
 pub use super::core::{
     camera::{Camera2D, CameraUniform, RenderView, ViewUniform},
@@ -9,8 +11,19 @@ pub use super::core::{
     fullscreen::{compose_fullscreen_shader, FullscreenPass, FullscreenPipeline},
     target::{RenderTarget, RenderTargetDescriptor},
     texture::{Texture, TextureCreateDesc, TextureError, TextureFileDesc, TextureUploadDesc},
+    viewport::ViewportRect,
 };
-pub use super::gpu_scene2d::GpuScene2D;
+pub use super::domains::sprite::GpuScene2D;
+pub use super::domains::sprite::{
+    SpriteCompositeNode, SpriteDomainExecuteContext, SpriteDomainFeature, SpriteDomainSetupContext,
+    SpriteDomainStage, SpriteFramePipeline, SpriteLightNode, SpriteSceneNode,
+};
+pub use super::frame_pipeline::{
+    CompletedViewState, FinalizeExecutionContext, FinalizePhaseState, FrameExecutionStats,
+    FrameFinalizeNode, FramePayloadStore, FramePipeline, FrameSetupNode, FrameViewNode, PhaseState,
+    PreparedFrame, PreparedView, ResourceSlotMap, SetupExecutionContext, SlotResource,
+    TextureFormat, TextureSlot, ViewExecutionContext, ViewPayloadStore,
+};
 pub use super::graph::{
     AliasingStats, BufferBuilder, BufferHandle, ColorOutput, CompiledPass, CopyOp, CopyPassSetup,
     DebugProfiler, DepthStencilOutput, ImportedTexture, LoadOp, PassFlags, PassHandle, PassSetup,
@@ -18,15 +31,12 @@ pub use super::graph::{
     RenderGraphProfiler, ResourceRef, TargetSize, TextureBuilder, TextureHandle,
 };
 pub use super::light::{color_temperature, Light2D};
+pub use super::output_chain::{BloomNode, ToneMapNode, ViewportBlitNode, VignetteNode};
 pub use super::passes::{
     batch::{Sprite, SpriteBatch},
     composite_pass::CompositePass,
     light_pass::LightPass,
     mesh_pass::{MeshDraw, MeshPass, MeshPassError},
-};
-pub use super::pipeline::{
-    BloomNode, CompositeNode, FramePayloads2D, LightNode, PipelineState2D, RenderFeature2D,
-    RenderPipeline, SpritePass, ToneMapNode, ViewportBlitNode, VignetteNode,
 };
 pub use super::postfx::{bloom::Bloom, tonemap::ToneMap, vignette::Vignette, PostFx};
 pub use super::resources::{

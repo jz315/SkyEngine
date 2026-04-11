@@ -150,6 +150,9 @@ pub enum AssetError {
         id: AssetId,
         dependency: AssetId,
     },
+    DependencyCycle {
+        cycle: Vec<AssetId>,
+    },
     VersionMismatch {
         path: PathBuf,
         expected: u32,
@@ -216,6 +219,14 @@ impl Display for AssetError {
             Self::DependencyFailed { id, dependency } => {
                 write!(f, "Asset `{id}` dependency `{dependency}` failed")
             }
+            Self::DependencyCycle { cycle } => {
+                let path = cycle
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" -> ");
+                write!(f, "Asset dependency cycle detected: {path}")
+            }
             Self::VersionMismatch {
                 path,
                 expected,
@@ -250,6 +261,12 @@ pub struct AssetMeta {
     pub cooker: String,
     pub version: u32,
     pub source_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cooked_hash: Option<String>,
     #[serde(default)]
     pub dependencies: Vec<AssetId>,
     #[serde(default)]
@@ -292,6 +309,8 @@ impl Default for AssetRegistryManifest {
 pub struct AssetConfig {
     pub asset_root: PathBuf,
     pub target: String,
+    pub background_loading: bool,
+    pub install_budget_per_update: Option<usize>,
 }
 
 impl AssetConfig {
@@ -300,7 +319,21 @@ impl AssetConfig {
         Self {
             asset_root: asset_root.into(),
             target: target.into(),
+            background_loading: false,
+            install_budget_per_update: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_background_loading(mut self, enabled: bool) -> Self {
+        self.background_loading = enabled;
+        self
+    }
+
+    #[must_use]
+    pub fn with_install_budget_per_update(mut self, budget: usize) -> Self {
+        self.install_budget_per_update = Some(budget);
+        self
     }
 
     #[must_use]

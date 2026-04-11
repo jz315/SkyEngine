@@ -205,8 +205,10 @@ tuple query 目前支持 1 到 8 个组件位。
 ```rust
 query.for_each(&world, |item| { ... });
 query.for_each_chunk(&world, |chunk| { ... });
+query.par_for_each_chunk(&world, |chunk| { ... });
 query.for_each_with_entity(&world, |entity, item| { ... });
 query.for_each_chunk_with_entities(&world, |entities, chunk| { ... });
+query.par_for_each_chunk_with_entities(&world, |entities, chunk| { ... });
 
 query.count(&world) -> usize
 query.is_empty(&world) -> bool
@@ -230,6 +232,28 @@ query.for_each_chunk(&world, |(positions, velocities)| {
     }
 });
 ```
+
+并行 chunk 遍历：
+
+```rust
+let mut query = world.query::<(&mut Position, &Velocity)>();
+let dt = 0.016f32;
+
+query.par_for_each_chunk(&world, |(positions, velocities)| {
+    for i in 0..positions.len() {
+        positions[i].x += velocities[i].x * dt;
+        positions[i].y += velocities[i].y * dt;
+    }
+});
+```
+
+并行接口约定：
+
+- chunk 执行顺序未定义
+- 并行闭包不能直接做结构修改
+- 并行闭包不应捕获 `&mut` 外部状态；若需要共享结果，使用原子或 `Mutex`
+- 若系统需要资源输入，先在并行阶段前顺序取出并复制到 owned 数据
+- 若系统需要结构修改，先并行收集结果，再顺序 `Commands::apply()` 或调用 `world.*`
 
 ### 过滤器
 

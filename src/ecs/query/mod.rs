@@ -1,5 +1,6 @@
 mod dynamic;
 mod filter;
+mod parallel;
 mod param;
 mod prepared;
 

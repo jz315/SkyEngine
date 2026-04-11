@@ -5,6 +5,7 @@
 //! ```rust,no_run
 //! use sky_engine::app::{App, AppConfig, FrameContext};
 //! use sky_engine::ecs::World;
+//! use sky_engine::render::RenderPipelineAsset;
 //!
 //! struct Game;
 //!
@@ -14,7 +15,9 @@
 //!     }
 //! }
 //!
-//! App::new(AppConfig::new("Hello", 960, 640), World::new()).run(Game);
+//! App::new(AppConfig::new("Hello", 960, 640), World::new())
+//!     .with_render_pipeline(RenderPipelineAsset::universal_2d())
+//!     .run(Game);
 //! ```
 
 use std::sync::Arc;
@@ -29,22 +32,37 @@ use crate::app::config::{AppConfig, RedrawMode};
 use crate::app::input::{Input, KeyCode};
 use crate::ecs::World;
 use crate::gpu::GpuContext;
-use crate::render::renderer2d::{Renderer2D, Renderer2DConfig};
-use crate::render::RendererStats;
+use crate::render::{RenderComposer, RenderPipelineAsset, RenderStats};
 
-fn update_input_from_window_event(input: &mut Input, event: &WindowEvent) {
+fn update_input_from_window_event(input: &mut Input, event: &WindowEvent, suppressed: bool) {
     match event {
         WindowEvent::KeyboardInput { event, .. } => {
             if let winit::keyboard::PhysicalKey::Code(code) = event.physical_key {
                 let key = KeyCode::from_winit(code);
-                match event.state {
-                    ElementState::Pressed => input.key_down(key),
-                    ElementState::Released => input.key_up(key),
+                match (event.state, suppressed) {
+                    (ElementState::Pressed, false) => input.key_down(key),
+                    (ElementState::Released, false) => input.key_up(key),
+                    (ElementState::Pressed, true) => input.suppress_key_down(key),
+                    (ElementState::Released, true) => input.suppress_key_up(key),
                 }
             }
         }
+        WindowEvent::CursorEntered { .. } => {
+            if suppressed {
+                input.set_cursor_in_window(false);
+            } else {
+                input.set_cursor_in_window(true);
+            }
+        }
+        WindowEvent::CursorLeft { .. } => {
+            input.set_cursor_in_window(false);
+        }
         WindowEvent::CursorMoved { position, .. } => {
-            input.set_mouse_position(position.x as f32, position.y as f32);
+            if suppressed {
+                input.set_mouse_position_suppressed(position.x as f32, position.y as f32);
+            } else {
+                input.set_mouse_position(position.x as f32, position.y as f32);
+            }
         }
         WindowEvent::MouseInput {
             state: button_state,
@@ -57,12 +75,24 @@ fn update_input_from_window_event(input: &mut Input, event: &WindowEvent) {
                 winit::event::MouseButton::Middle => 2,
                 _ => return,
             };
-            match button_state {
-                ElementState::Pressed => input.mouse_button_down(index),
-                ElementState::Released => input.mouse_button_up(index),
+            match (button_state, suppressed) {
+                (ElementState::Pressed, false) => input.mouse_button_down(index),
+                (ElementState::Released, false) => input.mouse_button_up(index),
+                (ElementState::Pressed, true) => {
+                    input.set_cursor_in_window(false);
+                    input.suppress_mouse_button_down(index);
+                }
+                (ElementState::Released, true) => {
+                    input.set_cursor_in_window(false);
+                    input.suppress_mouse_button_up(index);
+                }
             }
         }
         WindowEvent::MouseWheel { delta, .. } => {
+            if suppressed {
+                input.set_cursor_in_window(false);
+                return;
+            }
             let (dx, dy) = match delta {
                 winit::event::MouseScrollDelta::LineDelta(x, y) => (*x, *y),
                 winit::event::MouseScrollDelta::PixelDelta(pos) => (pos.x as f32, pos.y as f32),
@@ -87,6 +117,7 @@ fn update_input_from_window_event(input: &mut Input, event: &WindowEvent) {
 /// use sky_engine::app::{App, AppConfig, AppState, FrameContext};
 /// use sky_engine::ecs::World;
 /// use sky_engine::gpu::GpuContext;
+/// use sky_engine::render::RenderPipelineAsset;
 ///
 /// struct MyGame;
 ///
@@ -101,7 +132,9 @@ fn update_input_from_window_event(input: &mut Input, event: &WindowEvent) {
 ///     }
 /// }
 ///
-/// App::new(AppConfig::new("My Game", 1280, 720), World::new()).run(MyGame);
+/// App::new(AppConfig::new("My Game", 1280, 720), World::new())
+///     .with_render_pipeline(RenderPipelineAsset::universal_2d())
+///     .run(MyGame);
 /// ```
 pub trait AppState: 'static {
     /// Called once after the GPU is ready and `Input` resource exists.
@@ -145,7 +178,7 @@ where
 /// # use sky_engine::app::FrameContext;
 /// fn update(ctx: &mut FrameContext) {
 ///     // ECS systems already ticked (if auto_tick enabled)
-///     ctx.render();  // draw Camera/Sprite/Light entities
+///     ctx.render();  // draw using the installed render pipeline
 /// }
 /// ```
 pub struct FrameContext<'a> {
@@ -160,7 +193,7 @@ pub struct FrameContext<'a> {
 
     // ── Internal ────────────────────────────────────────────────────────
     gpu: &'a mut GpuContext,
-    renderer: &'a mut Renderer2D,
+    renderer: Option<&'a mut RenderComposer>,
     window: &'a Window,
     exit_requested: &'a mut bool,
     redraw_requested: &'a mut bool,
@@ -169,12 +202,12 @@ pub struct FrameContext<'a> {
 }
 
 impl<'a> FrameContext<'a> {
-    /// Render the current frame from ECS components.
-    ///
-    /// Extracts camera, sprites, and lights from the [`World`] and draws
-    /// them using the internal [`Renderer2D`].
+    /// Execute the installed render pipeline.
     pub fn render(&mut self) {
-        self.renderer.render_world(self.gpu, self.world);
+        self.renderer
+            .as_deref_mut()
+            .expect("FrameContext::render requires App::with_render_pipeline(...)")
+            .render_world(self.gpu, self.world);
     }
 
     /// Current surface size in physical pixels `[width, height]`.
@@ -185,8 +218,11 @@ impl<'a> FrameContext<'a> {
 
     /// Rendering statistics from the most recent `render()`.
     #[inline]
-    pub fn render_stats(&self) -> RendererStats {
-        self.renderer.stats()
+    pub fn render_stats(&self) -> RenderStats {
+        self.renderer
+            .as_deref()
+            .map(RenderComposer::stats)
+            .unwrap_or_default()
     }
 
     /// Update the window title bar.
@@ -201,6 +237,21 @@ impl<'a> FrameContext<'a> {
     #[inline]
     pub fn gpu(&mut self) -> &mut GpuContext {
         self.gpu
+    }
+
+    /// Mutably access a registered render domain by concrete type.
+    pub fn domain_mut<T: 'static>(&mut self) -> Option<&mut T> {
+        self.renderer.as_deref_mut()?.domain_mut::<T>()
+    }
+
+    /// Mutably access a render domain and the GPU at the same time.
+    pub fn with_domain_mut<T: 'static, R>(
+        &mut self,
+        f: impl FnOnce(&mut T, &mut GpuContext) -> R,
+    ) -> Option<R> {
+        let renderer = self.renderer.as_deref_mut()?;
+        let domain = renderer.domain_mut::<T>()?;
+        Some(f(domain, self.gpu))
     }
 
     /// Request the application to exit after this frame.
@@ -252,6 +303,7 @@ impl<'a> FrameContext<'a> {
 /// ```rust,no_run
 /// use sky_engine::app::{App, AppConfig, AppState, FrameContext};
 /// use sky_engine::ecs::World;
+/// use sky_engine::render::RenderPipelineAsset;
 ///
 /// struct MyApp;
 ///
@@ -261,11 +313,14 @@ impl<'a> FrameContext<'a> {
 ///     }
 /// }
 ///
-/// App::new(AppConfig::new("Demo", 960, 640), World::new()).run(MyApp);
+/// App::new(AppConfig::new("Demo", 960, 640), World::new())
+///     .with_render_pipeline(RenderPipelineAsset::universal_unlit())
+///     .run(MyApp);
 /// ```
 pub struct App {
     config: AppConfig,
     world: World,
+    renderer: Option<RenderComposer>,
 }
 
 impl App {
@@ -274,7 +329,16 @@ impl App {
     /// The [`World`] is the centre of your application — spawn entities,
     /// register systems, and insert resources before calling `.run()`.
     pub fn new(config: AppConfig, world: World) -> Self {
-        Self { config, world }
+        Self {
+            config,
+            world,
+            renderer: None,
+        }
+    }
+
+    pub fn with_render_pipeline(mut self, pipeline: RenderPipelineAsset) -> Self {
+        self.renderer = Some(RenderComposer::from_asset(pipeline));
+        self
     }
 
     /// Enter the main loop.
@@ -288,6 +352,7 @@ impl App {
         let mut handler = RunnerHandler {
             config: self.config,
             world: Some(self.world),
+            renderer: self.renderer,
             app_state: Box::new(state),
             runtime: None,
             pending_redraw: false,
@@ -303,7 +368,7 @@ impl App {
 struct RuntimeState {
     window: Arc<Window>,
     gpu: GpuContext,
-    renderer: Renderer2D,
+    renderer: Option<RenderComposer>,
     input: Input,
     last_frame_time: Option<Instant>,
     occluded: bool,
@@ -314,6 +379,7 @@ struct RuntimeState {
 struct RunnerHandler {
     config: AppConfig,
     world: Option<World>,
+    renderer: Option<RenderComposer>,
     app_state: Box<dyn AppState>,
     runtime: Option<RuntimeState>,
     pending_redraw: bool,
@@ -416,7 +482,7 @@ impl RunnerHandler {
                                 input: &input_snapshot,
                                 dt,
                                 gpu: &mut rt.gpu,
-                                renderer: &mut rt.renderer,
+                                renderer: rt.renderer.as_mut(),
                                 window: &rt.window,
                                 exit_requested: &mut exit_requested,
                                 redraw_requested: &mut redraw_requested,
@@ -462,10 +528,14 @@ impl RunnerHandler {
                         should_exit = exit_requested;
                     }
                     Err(crate::gpu::GpuError::SurfaceLost) => {
-                        rt.renderer.surface_lost();
+                        if let Some(renderer) = rt.renderer.as_mut() {
+                            renderer.surface_lost();
+                        }
                         let size = rt.window.inner_size();
                         rt.gpu.resize_surface(size.width, size.height);
-                        rt.renderer.resize(&rt.gpu, size.width, size.height);
+                        if let Some(renderer) = rt.renderer.as_mut() {
+                            renderer.resize(&rt.gpu, size.width, size.height);
+                        }
                         rt.last_frame_time = None;
                         request_redraw = true;
                     }
@@ -502,7 +572,7 @@ impl ApplicationHandler for RunnerHandler {
             return;
         }
 
-        // First resume — create window, GPU backend, and renderer.
+        // First resume — create window, GPU backend, and optional render pipeline.
         let attrs = WindowAttributes::default()
             .with_title(&self.config.title)
             .with_inner_size(winit::dpi::LogicalSize::new(
@@ -534,13 +604,8 @@ impl ApplicationHandler for RunnerHandler {
         );
         window.set_title(&title);
 
-        // Determine render path from World resource (default: lit_hdr).
         let world = self.world.as_mut().expect("world must be present");
-        let render_config = world
-            .get_resource::<Renderer2DConfig>()
-            .copied()
-            .unwrap_or(Renderer2DConfig::lit_hdr());
-        let renderer = Renderer2D::new(&gpu, render_config);
+        let renderer = self.renderer.take();
 
         // Insert Input resource into the World (updated in-place each frame).
         let input = Input::new();
@@ -667,7 +732,9 @@ impl ApplicationHandler for RunnerHandler {
 
             WindowEvent::Resized(size) => {
                 rt.gpu.resize_surface(size.width, size.height);
-                rt.renderer.resize(&rt.gpu, size.width, size.height);
+                if let Some(renderer) = rt.renderer.as_mut() {
+                    renderer.resize(&rt.gpu, size.width, size.height);
+                }
                 if size.width == 0 || size.height == 0 {
                     rt.last_frame_time = None;
                 }
@@ -695,15 +762,17 @@ impl ApplicationHandler for RunnerHandler {
             }
 
             WindowEvent::KeyboardInput { .. }
+            | WindowEvent::CursorEntered { .. }
+            | WindowEvent::CursorLeft { .. }
             | WindowEvent::CursorMoved { .. }
             | WindowEvent::MouseInput { .. }
             | WindowEvent::MouseWheel { .. } => {
                 #[cfg(feature = "egui")]
-                if egui_consumed {
-                    return;
-                }
+                let suppressed = egui_consumed;
+                #[cfg(not(feature = "egui"))]
+                let suppressed = false;
 
-                update_input_from_window_event(&mut rt.input, &event);
+                update_input_from_window_event(&mut rt.input, &event, suppressed);
                 self.request_redraw();
             }
 
@@ -717,5 +786,30 @@ impl ApplicationHandler for RunnerHandler {
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.shutdown_world();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_defaults_to_no_installed_pipeline() {
+        let app = App::new(AppConfig::new("test", 64, 64), World::new());
+        assert!(app.renderer.is_none());
+    }
+
+    #[test]
+    fn with_render_pipeline_installs_the_supplied_pipeline() {
+        let app = App::new(AppConfig::new("test", 64, 64), World::new())
+            .with_render_pipeline(RenderPipelineAsset::universal_unlit());
+        assert!(app.renderer.is_some());
+    }
+
+    #[test]
+    fn with_render_pipeline_accepts_the_default_universal_2d_pipeline() {
+        let app = App::new(AppConfig::new("test", 64, 64), World::new())
+            .with_render_pipeline(RenderPipelineAsset::universal_2d());
+        assert!(app.renderer.is_some());
     }
 }

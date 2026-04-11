@@ -43,6 +43,19 @@ fn model_opacity_is_tracked_separately_from_drawables() {
 }
 
 #[test]
+fn model_color_is_clamped_and_premultiplied_separately() {
+    let mut model = sample_model();
+    model.set_model_color([1.5, 0.5, -1.0, 0.25]);
+    model.set_model_opacity(0.1);
+
+    assert_eq!(model.model_color(), [1.0, 0.5, 0.0, 0.25]);
+    assert_eq!(
+        model.premultiplied_model_color_with_opacity(0.5),
+        [0.125, 0.0625, 0.0, 0.125]
+    );
+}
+
+#[test]
 fn hit_test_is_disabled_while_model_is_translucent() {
     let mut model = sample_model();
     let drawable_index = (0..model.drawable_count())

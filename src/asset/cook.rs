@@ -29,13 +29,15 @@ pub fn import_path(
     let source_key = source_key(asset_root, &source)?;
     let meta_path = meta_path_for(&source);
 
-    let meta = if meta_path.exists() {
+    let mut meta = if meta_path.exists() {
         let mut meta = read_meta(&meta_path)?;
         meta.source_path = source_key.clone();
         meta
     } else {
         default_meta_for_source(&source_key)
     };
+    normalize_meta_for_source(&source_key, &mut meta);
+    update_source_and_meta_hashes(&source, &mut meta)?;
 
     write_meta(&meta_path, &meta)?;
     Ok(meta)
@@ -122,11 +124,18 @@ pub fn verify(config: &AssetConfig) -> Result<VerifyReport, AssetError> {
     }
 
     let mut known_ids = std::collections::HashSet::new();
+    let mut seen_meta_ids = std::collections::HashMap::new();
     let mut metas = Vec::new();
     for meta_path in meta_files {
         match read_meta(&meta_path) {
             Ok(meta) => {
                 known_ids.insert(meta.asset_id);
+                if let Some(previous) = seen_meta_ids.insert(meta.asset_id, meta_path.clone()) {
+                    report.issues.push(format!(
+                        "duplicate asset id {} in {:?} and {:?}",
+                        meta.asset_id, previous, meta_path
+                    ));
+                }
                 metas.push((meta_path, meta));
             }
             Err(error) => report.issues.push(error.to_string()),
@@ -135,7 +144,8 @@ pub fn verify(config: &AssetConfig) -> Result<VerifyReport, AssetError> {
 
     for (meta_path, meta) in &metas {
         let source = config.asset_root.join(&meta.source_path);
-        if !source.exists() {
+        let source_exists = source.exists();
+        if !source_exists {
             report.issues.push(format!(
                 "meta {:?} points to missing source {:?}",
                 meta_path, source
@@ -156,7 +166,7 @@ pub fn verify(config: &AssetConfig) -> Result<VerifyReport, AssetError> {
                 "cooked artifact missing for {} at {:?}",
                 meta.asset_id, cooked_path
             ));
-        } else if is_asset_dirty(&source, meta_path, &cooked_path)? {
+        } else if source_exists && is_asset_dirty(&source, meta_path, &cooked_path, meta)? {
             report.issues.push(format!(
                 "cooked artifact out of date for {} at {:?}",
                 meta.asset_id, cooked_path
@@ -176,13 +186,33 @@ pub fn verify(config: &AssetConfig) -> Result<VerifyReport, AssetError> {
                 continue;
             };
 
-            if entry.source_path != meta.source_path || entry.asset_type != meta.asset_type {
+            let expected = build_manifest_entry(meta);
+            if entry.asset_type != expected.asset_type
+                || entry.importer != expected.importer
+                || entry.cooker != expected.cooker
+                || entry.version != expected.version
+                || entry.source_path != expected.source_path
+                || entry.cooked_path != expected.cooked_path
+                || entry.dependencies != expected.dependencies
+                || entry.import_settings != expected.import_settings
+            {
                 report.issues.push(format!(
                     "manifest entry mismatch for asset {}",
                     meta.asset_id
                 ));
             }
         }
+    }
+
+    for cycle in dependency_cycles(&metas) {
+        report.issues.push(format!(
+            "dependency cycle detected: {}",
+            cycle
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(" -> ")
+        ));
     }
 
     if report.is_clean() {
@@ -200,7 +230,8 @@ fn ensure_cooked_entry(
     meta: &AssetMeta,
 ) -> Result<AssetManifestEntry, AssetError> {
     let cooked_path = config.cooked_root().join(cooked_relative_path(meta));
-    if !cooked_path.exists() || is_asset_dirty(source, &meta_path_for(source), &cooked_path)? {
+    if !cooked_path.exists() || is_asset_dirty(source, &meta_path_for(source), &cooked_path, meta)?
+    {
         cook_meta(config, source, meta)
     } else {
         Ok(build_manifest_entry(meta))
@@ -215,8 +246,9 @@ fn cook_meta(
     let cooked_relative = cooked_relative_path(meta);
     let cooked_path = config.cooked_root().join(&cooked_relative);
     let meta_path = meta_path_for(source);
+    let mut updated_meta = meta.clone();
 
-    if !cooked_path.exists() || is_asset_dirty(source, &meta_path, &cooked_path)? {
+    if !cooked_path.exists() || is_asset_dirty(source, &meta_path, &cooked_path, meta)? {
         if let Some(parent) = cooked_path.parent() {
             std::fs::create_dir_all(parent).map_err(|error| AssetError::Io {
                 path: parent.to_path_buf(),
@@ -230,7 +262,11 @@ fn cook_meta(
         }
     }
 
-    let mut entry = build_manifest_entry(meta);
+    update_source_and_meta_hashes(source, &mut updated_meta)?;
+    updated_meta.cooked_hash = Some(file_hash(&cooked_path)?);
+    write_meta(&meta_path, &updated_meta)?;
+
+    let mut entry = build_manifest_entry(&updated_meta);
     entry.cooked_path = normalize_source_key(&cooked_relative);
     Ok(entry)
 }
@@ -440,8 +476,93 @@ fn meta_path_for(source: &Path) -> PathBuf {
     source.with_file_name(format!("{file_name}.meta"))
 }
 
+fn import_settings_object_mut(
+    import_settings: &mut serde_json::Value,
+) -> &mut serde_json::Map<String, serde_json::Value> {
+    if !import_settings.is_object() {
+        *import_settings = serde_json::Value::Object(serde_json::Map::new());
+    }
+    import_settings
+        .as_object_mut()
+        .expect("import_settings should be an object after normalization")
+}
+
+fn set_import_setting_bool(import_settings: &mut serde_json::Value, key: &str, value: bool) {
+    import_settings_object_mut(import_settings)
+        .insert(key.to_string(), serde_json::Value::Bool(value));
+}
+
+fn infer_default_audio_stream(source_key: &str) -> bool {
+    let lower = normalize_source_key(source_key);
+    Path::new(&lower).components().any(|component| {
+        let std::path::Component::Normal(part) = component else {
+            return false;
+        };
+        let Some(part) = part.to_str() else {
+            return false;
+        };
+        part.split(|ch: char| !ch.is_ascii_alphanumeric())
+            .filter(|token| !token.is_empty())
+            .any(|token| matches!(token, "music" | "bgm" | "stream" | "streaming"))
+    })
+}
+
+fn normalize_meta_for_source(source_key: &str, meta: &mut AssetMeta) {
+    meta.source_path = source_key.to_string();
+
+    match source_asset_kind(Path::new(source_key)) {
+        Some(AssetKind::Texture) => {
+            meta.asset_type = "texture".to_string();
+            meta.importer = "texture.image".to_string();
+            meta.cooker = "texture.rgba8".to_string();
+            let srgb = meta
+                .import_settings
+                .get("srgb")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(true);
+            set_import_setting_bool(&mut meta.import_settings, "srgb", srgb);
+        }
+        Some(AssetKind::SoundClip) => {
+            let stream = meta
+                .import_settings
+                .get("stream")
+                .and_then(|value| value.as_bool())
+                .unwrap_or_else(|| infer_default_audio_stream(source_key));
+            meta.asset_type = if stream {
+                "music_track".to_string()
+            } else {
+                "sound_clip".to_string()
+            };
+            meta.importer = "audio.symphonia".to_string();
+            meta.cooker = "audio.copy".to_string();
+            set_import_setting_bool(&mut meta.import_settings, "stream", stream);
+        }
+        Some(AssetKind::MusicTrack) | None => {}
+    }
+}
+
+fn update_source_and_meta_hashes(source: &Path, meta: &mut AssetMeta) -> Result<(), AssetError> {
+    let previous_source_hash = meta.source_hash.clone();
+    let previous_meta_hash = meta.meta_hash.clone();
+
+    let source_hash = file_hash(source)?;
+    meta.source_hash = Some(source_hash.clone());
+    let meta_hash = meta_fingerprint_hash(meta)?;
+    meta.meta_hash = Some(meta_hash.clone());
+
+    if previous_source_hash.as_deref() != Some(source_hash.as_str())
+        || previous_meta_hash.as_deref() != Some(meta_hash.as_str())
+    {
+        meta.cooked_hash = None;
+    }
+
+    Ok(())
+}
+
 fn default_meta_for_source(source_key: &str) -> AssetMeta {
-    match asset_kind_from_source_key(source_key) {
+    match source_asset_kind(Path::new(source_key))
+        .expect("default_meta_for_source should only run for supported source files")
+    {
         AssetKind::Texture => AssetMeta {
             asset_id: AssetId::new(),
             asset_type: "texture".to_string(),
@@ -449,29 +570,33 @@ fn default_meta_for_source(source_key: &str) -> AssetMeta {
             cooker: "texture.rgba8".to_string(),
             version: 1,
             source_path: source_key.to_string(),
+            source_hash: None,
+            meta_hash: None,
+            cooked_hash: None,
             dependencies: Vec::new(),
             import_settings: serde_json::json!({ "srgb": true }),
         },
-        AssetKind::SoundClip => AssetMeta {
-            asset_id: AssetId::new(),
-            asset_type: "sound_clip".to_string(),
-            importer: "audio.symphonia".to_string(),
-            cooker: "audio.copy".to_string(),
-            version: 1,
-            source_path: source_key.to_string(),
-            dependencies: Vec::new(),
-            import_settings: serde_json::json!({ "stream": false }),
-        },
-        AssetKind::MusicTrack => AssetMeta {
-            asset_id: AssetId::new(),
-            asset_type: "music_track".to_string(),
-            importer: "audio.symphonia".to_string(),
-            cooker: "audio.copy".to_string(),
-            version: 1,
-            source_path: source_key.to_string(),
-            dependencies: Vec::new(),
-            import_settings: serde_json::json!({ "stream": true }),
-        },
+        AssetKind::SoundClip => {
+            let stream = infer_default_audio_stream(source_key);
+            AssetMeta {
+                asset_id: AssetId::new(),
+                asset_type: if stream {
+                    "music_track".to_string()
+                } else {
+                    "sound_clip".to_string()
+                },
+                importer: "audio.symphonia".to_string(),
+                cooker: "audio.copy".to_string(),
+                version: 1,
+                source_path: source_key.to_string(),
+                source_hash: None,
+                meta_hash: None,
+                cooked_hash: None,
+                dependencies: Vec::new(),
+                import_settings: serde_json::json!({ "stream": stream }),
+            }
+        }
+        AssetKind::MusicTrack => unreachable!("source files never map directly to music_track"),
     }
 }
 
@@ -481,21 +606,6 @@ fn source_asset_kind(path: &Path) -> Option<AssetKind> {
         "png" => Some(AssetKind::Texture),
         "wav" | "ogg" | "mp3" => Some(AssetKind::SoundClip),
         _ => None,
-    }
-}
-
-fn asset_kind_from_source_key(source_key: &str) -> AssetKind {
-    let lower = source_key.to_ascii_lowercase();
-    if lower.ends_with(".png") {
-        AssetKind::Texture
-    } else if lower.contains("/music/")
-        || lower.contains("/bgm/")
-        || lower.contains("music")
-        || lower.contains("bgm")
-    {
-        AssetKind::MusicTrack
-    } else {
-        AssetKind::SoundClip
     }
 }
 
@@ -547,10 +657,35 @@ fn resolve_query_path(asset_root: &Path, query: &str) -> PathBuf {
     }
 }
 
-fn is_asset_dirty(source: &Path, meta_path: &Path, cooked_path: &Path) -> Result<bool, AssetError> {
+fn is_asset_dirty(
+    source: &Path,
+    meta_path: &Path,
+    cooked_path: &Path,
+    meta: &AssetMeta,
+) -> Result<bool, AssetError> {
     if !cooked_path.exists() {
         return Ok(true);
     }
+    let Some(source_hash) = &meta.source_hash else {
+        return Ok(true);
+    };
+    let Some(meta_hash) = &meta.meta_hash else {
+        return Ok(true);
+    };
+    let Some(cooked_hash) = &meta.cooked_hash else {
+        return Ok(true);
+    };
+
+    if &file_hash(source)? != source_hash {
+        return Ok(true);
+    }
+    if &meta_fingerprint_hash(meta)? != meta_hash {
+        return Ok(true);
+    }
+    if &file_hash(cooked_path)? != cooked_hash {
+        return Ok(true);
+    }
+
     let source_time = modified_time(source)?;
     let meta_time = modified_time(meta_path)?;
     let cooked_time = modified_time(cooked_path)?;
@@ -570,11 +705,134 @@ fn modified_time(path: &Path) -> Result<SystemTime, AssetError> {
         })
 }
 
+fn file_hash(path: &Path) -> Result<String, AssetError> {
+    let bytes = std::fs::read(path).map_err(|error| AssetError::Io {
+        path: path.to_path_buf(),
+        message: error.to_string(),
+    })?;
+    Ok(hash_bytes(&bytes))
+}
+
+fn meta_fingerprint_hash(meta: &AssetMeta) -> Result<String, AssetError> {
+    let fingerprint = serde_json::json!({
+        "asset_id": meta.asset_id.to_string(),
+        "asset_type": meta.asset_type,
+        "importer": meta.importer,
+        "cooker": meta.cooker,
+        "version": meta.version,
+        "source_path": meta.source_path,
+        "dependencies": meta
+            .dependencies
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        "import_settings": meta.import_settings,
+    });
+    let bytes = serde_json::to_vec(&fingerprint).map_err(|error| AssetError::Internal {
+        message: format!("failed to serialize asset meta fingerprint: {error}"),
+    })?;
+    Ok(hash_bytes(&bytes))
+}
+
+fn hash_bytes(bytes: &[u8]) -> String {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    format!("{hash:016x}")
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AssetKind {
     Texture,
     SoundClip,
     MusicTrack,
+}
+
+fn dependency_cycles(metas: &[(PathBuf, AssetMeta)]) -> Vec<Vec<AssetId>> {
+    let graph: std::collections::HashMap<AssetId, Vec<AssetId>> = metas
+        .iter()
+        .map(|(_, meta)| (meta.asset_id, meta.dependencies.clone()))
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut cycles = Vec::new();
+
+    for asset_id in graph.keys().copied() {
+        if let Some(cycle) = dependency_cycle_from_graph(&graph, asset_id) {
+            let key = canonical_cycle_key(&cycle);
+            if seen.insert(key) {
+                cycles.push(cycle);
+            }
+        }
+    }
+
+    cycles
+}
+
+fn dependency_cycle_from_graph(
+    graph: &std::collections::HashMap<AssetId, Vec<AssetId>>,
+    start: AssetId,
+) -> Option<Vec<AssetId>> {
+    fn visit(
+        graph: &std::collections::HashMap<AssetId, Vec<AssetId>>,
+        current: AssetId,
+        stack: &mut Vec<AssetId>,
+        visited: &mut std::collections::HashSet<AssetId>,
+    ) -> Option<Vec<AssetId>> {
+        if let Some(index) = stack.iter().position(|asset_id| *asset_id == current) {
+            let mut cycle = stack[index..].to_vec();
+            cycle.push(current);
+            return Some(cycle);
+        }
+
+        if !visited.insert(current) {
+            return None;
+        }
+
+        stack.push(current);
+        for dependency in graph.get(&current).into_iter().flatten().copied() {
+            if let Some(cycle) = visit(graph, dependency, stack, visited) {
+                return Some(cycle);
+            }
+        }
+        stack.pop();
+        None
+    }
+
+    let mut stack = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+    visit(graph, start, &mut stack, &mut visited)
+}
+
+fn canonical_cycle_key(cycle: &[AssetId]) -> String {
+    let cycle = if cycle.len() > 1 && cycle.first() == cycle.last() {
+        &cycle[..cycle.len() - 1]
+    } else {
+        cycle
+    };
+
+    if cycle.is_empty() {
+        return String::new();
+    }
+
+    let labels: Vec<_> = cycle.iter().map(ToString::to_string).collect();
+    let mut best = None::<String>;
+    for start in 0..labels.len() {
+        let mut rotated = Vec::with_capacity(labels.len() + 1);
+        for offset in 0..labels.len() {
+            rotated.push(labels[(start + offset) % labels.len()].clone());
+        }
+        rotated.push(rotated[0].clone());
+        let candidate = rotated.join(" -> ");
+        if best.as_ref().map_or(true, |current| candidate < *current) {
+            best = Some(candidate);
+        }
+    }
+    best.unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -585,6 +843,11 @@ mod tests {
     fn write_png(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let image = image::RgbaImage::from_raw(1, 1, vec![255, 0, 0, 255]).unwrap();
         image.save(path)?;
+        Ok(())
+    }
+
+    fn write_audio_placeholder(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        std::fs::write(path, b"placeholder audio")?;
         Ok(())
     }
 
@@ -635,6 +898,160 @@ mod tests {
 
         let result = verify(&config);
         assert!(matches!(result, Err(AssetError::VerificationFailed { .. })));
+        Ok(())
+    }
+
+    #[test]
+    fn import_marks_music_tokens_as_streaming_audio() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let music_dir = dir.path().join("music");
+        std::fs::create_dir_all(&music_dir)?;
+        let source = music_dir.join("boss_theme.wav");
+        write_audio_placeholder(&source)?;
+
+        let meta = import_path(dir.path(), &source)?;
+
+        assert_eq!(meta.asset_type, "music_track");
+        assert!(meta.source_hash.is_some());
+        assert!(meta.meta_hash.is_some());
+        assert_eq!(
+            meta.import_settings
+                .get("stream")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn import_does_not_treat_partial_audio_names_as_music() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempdir()?;
+        let source = dir.path().join("musicbox.wav");
+        write_audio_placeholder(&source)?;
+
+        let meta = import_path(dir.path(), &source)?;
+
+        assert_eq!(meta.asset_type, "sound_clip");
+        assert_eq!(
+            meta.import_settings
+                .get("stream")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn import_normalizes_audio_meta_when_stream_flag_changes(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let source = dir.path().join("speech.wav");
+        write_audio_placeholder(&source)?;
+
+        let meta = import_path(dir.path(), &source)?;
+        assert_eq!(meta.asset_type, "sound_clip");
+
+        let meta_path = meta_path_for(&source);
+        let mut updated = read_meta(&meta_path)?;
+        updated.asset_type = "sound_clip".to_string();
+        updated.import_settings = serde_json::json!({ "stream": true });
+        write_meta(&meta_path, &updated)?;
+
+        let normalized = import_path(dir.path(), &source)?;
+        assert_eq!(normalized.asset_type, "music_track");
+        assert_eq!(
+            normalized
+                .import_settings
+                .get("stream")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn verify_reports_dependency_cycles() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let source_a = dir.path().join("a.wav");
+        let source_b = dir.path().join("b.wav");
+        write_audio_placeholder(&source_a)?;
+        write_audio_placeholder(&source_b)?;
+
+        let meta_a = import_path(dir.path(), &source_a)?;
+        let meta_b = import_path(dir.path(), &source_b)?;
+
+        let meta_a_path = meta_path_for(&source_a);
+        let meta_b_path = meta_path_for(&source_b);
+
+        let mut updated_a = read_meta(&meta_a_path)?;
+        updated_a.dependencies = vec![meta_b.asset_id];
+        write_meta(&meta_a_path, &updated_a)?;
+
+        let mut updated_b = read_meta(&meta_b_path)?;
+        updated_b.dependencies = vec![meta_a.asset_id];
+        write_meta(&meta_b_path, &updated_b)?;
+
+        let config = AssetConfig::new(dir.path(), "native");
+        let manifest = AssetRegistryManifest {
+            version: ASSET_SYSTEM_VERSION,
+            target: "native".to_string(),
+            assets: vec![
+                build_manifest_entry(&updated_a),
+                build_manifest_entry(&updated_b),
+            ],
+        };
+        write_manifest(&config, &manifest)?;
+        let cooked_a = config.cooked_root().join(cooked_relative_path(&updated_a));
+        let cooked_b = config.cooked_root().join(cooked_relative_path(&updated_b));
+        std::fs::create_dir_all(
+            cooked_a
+                .parent()
+                .expect("audio output should have a parent"),
+        )?;
+        std::fs::create_dir_all(
+            cooked_b
+                .parent()
+                .expect("audio output should have a parent"),
+        )?;
+        std::fs::write(cooked_a, b"a")?;
+        std::fs::write(cooked_b, b"b")?;
+
+        let result = verify(&config);
+        let Err(AssetError::VerificationFailed { issues }) = result else {
+            panic!("expected verification failure");
+        };
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.contains("dependency cycle detected")),
+            "issues: {issues:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn verify_detects_tampered_cooked_artifact_even_when_newer(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let source = dir.path().join("hero.png");
+        write_png(&source)?;
+
+        let config = AssetConfig::new(dir.path(), "native");
+        let manifest = cook_all(&config)?;
+        let cooked_path = config.cooked_root().join(&manifest.assets[0].cooked_path);
+        std::fs::write(&cooked_path, b"tampered")?;
+
+        let result = verify(&config);
+        let Err(AssetError::VerificationFailed { issues }) = result else {
+            panic!("expected verification failure");
+        };
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.contains("cooked artifact out of date")),
+            "issues: {issues:?}"
+        );
         Ok(())
     }
 }

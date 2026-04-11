@@ -31,6 +31,8 @@ pub trait RenderView {
 pub struct Camera2D {
     /// World-space position of the camera centre.
     pub position: [f32; 2],
+    /// Rotation around the Z axis in radians.
+    pub rotation: f32,
     /// Zoom factor (1.0 = no zoom, 2.0 = 2× zoom in).
     pub zoom: f32,
     /// Viewport width in pixels (updated on resize).
@@ -57,6 +59,7 @@ impl Camera2D {
     pub fn new(width: f32, height: f32) -> Self {
         Self {
             position: [0.0, 0.0],
+            rotation: 0.0,
             zoom: 1.0,
             viewport_width: width,
             viewport_height: height,
@@ -81,20 +84,48 @@ impl Camera2D {
         let hw = viewport_width * 0.5 / zoom;
         let hh = viewport_height * 0.5 / zoom;
 
-        let left = self.position[0] - hw;
-        let right = self.position[0] + hw;
-        let bottom = self.position[1] - hh;
-        let top = self.position[1] + hh;
-
-        // Orthographic projection matrix (column-major)
-        let sx = 2.0 / (right - left);
-        let sy = 2.0 / (top - bottom);
-        let tx = -(right + left) / (right - left);
-        let ty = -(top + bottom) / (top - bottom);
-
-        [
-            sx, 0.0, 0.0, 0.0, 0.0, sy, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, tx, ty, 0.0, 1.0,
-        ]
+        let projection = [
+            hw.recip(),
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            hh.recip(),
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        ];
+        let (sin_r, cos_r) = self.rotation.sin_cos();
+        let rotation = [
+            cos_r, -sin_r, 0.0, 0.0, sin_r, cos_r, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        let translation = [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            -self.position[0],
+            -self.position[1],
+            0.0,
+            1.0,
+        ];
+        let view = mul_mat4(rotation, translation);
+        mul_mat4(projection, view)
     }
 
     fn build_uniform(&self) -> ViewUniform {
@@ -144,13 +175,28 @@ impl Camera2D {
         let zoom = self.sanitized_zoom();
         let hw = viewport_width * 0.5 / zoom;
         let hh = viewport_height * 0.5 / zoom;
-
-        let world_x = self.position[0] + (screen_x / viewport_width - 0.5) * 2.0 * hw;
-        // Flip Y: screen Y goes down, world Y goes up
-        let world_y = self.position[1] - (screen_y / viewport_height - 0.5) * 2.0 * hh;
+        let local_x = (screen_x / viewport_width - 0.5) * 2.0 * hw;
+        let local_y = -(screen_y / viewport_height - 0.5) * 2.0 * hh;
+        let (sin_r, cos_r) = self.rotation.sin_cos();
+        let world_x = self.position[0] + cos_r * local_x - sin_r * local_y;
+        let world_y = self.position[1] + sin_r * local_x + cos_r * local_y;
 
         [world_x, world_y]
     }
+}
+
+fn mul_mat4(lhs: [f32; 16], rhs: [f32; 16]) -> [f32; 16] {
+    let mut out = [0.0; 16];
+    for row in 0..4 {
+        for col in 0..4 {
+            let mut value = 0.0;
+            for k in 0..4 {
+                value += lhs[k * 4 + row] * rhs[col * 4 + k];
+            }
+            out[col * 4 + row] = value;
+        }
+    }
+    out
 }
 
 impl RenderView for Camera2D {

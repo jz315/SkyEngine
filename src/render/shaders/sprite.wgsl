@@ -19,7 +19,7 @@ var<uniform> camera: CameraUniform;
 // ── Per-instance data (vertex buffer, instanced) ────────────────────────────
 struct InstanceInput {
     @location(2) transform: vec4<f32>,   // x, y, width, height
-    @location(3) rotation: vec4<f32>,    // sin(a), cos(a), _pad, _pad
+    @location(3) rotation: vec4<f32>,    // sin(a), cos(a), z, _pad
     @location(4) color: vec4<f32>,       // RGBA tint
     @location(5) uv_rect: vec4<f32>,     // u_min, v_min, u_max, v_max
 };
@@ -55,10 +55,10 @@ fn vs_main(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
     );
 
     // Translate to world position
-    let world_pos = rotated + inst.transform.xy;
+    let world_pos = vec3<f32>(rotated + inst.transform.xy, inst.rotation.z);
 
     // Camera view-projection
-    out.clip_position = camera.view_proj * vec4<f32>(world_pos, 0.0, 1.0);
+    out.clip_position = camera.view_proj * vec4<f32>(world_pos, 1.0);
     out.color = inst.color;
     out.uv = mix(inst.uv_rect.xy, inst.uv_rect.zw, vert.uv);
 

@@ -114,10 +114,16 @@ impl Live2DModelResource {
     ///
     /// # Example
     /// ```no_run
+    /// # use sky_engine::gpu::GpuContext;
+    /// # use sky_engine::render::expert::live2d::Live2DModelResource;
+    /// # fn demo(ctx: &GpuContext) -> Result<(), Box<dyn std::error::Error>> {
     /// let resource = Live2DModelResource::load(
     ///     &ctx,
     ///     "assets/Haru/Haru.model3.json",
     /// )?;
+    /// # let _ = resource;
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn load(
         ctx: &GpuContext,

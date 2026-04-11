@@ -18,6 +18,7 @@ pub struct Input {
     keys_released: [bool; KEY_COUNT],
     mouse_position: [f32; 2],
     mouse_position_prev: [f32; 2],
+    cursor_in_window: bool,
     mouse_buttons: [bool; 3], // left, right, middle
     mouse_buttons_pressed: [bool; 3],
     mouse_buttons_released: [bool; 3],
@@ -32,6 +33,7 @@ impl Input {
             keys_released: [false; KEY_COUNT],
             mouse_position: [0.0; 2],
             mouse_position_prev: [0.0; 2],
+            cursor_in_window: false,
             mouse_buttons: [false; 3],
             mouse_buttons_pressed: [false; 3],
             mouse_buttons_released: [false; 3],
@@ -67,6 +69,16 @@ impl Input {
 
     pub(crate) fn set_mouse_position(&mut self, x: f32, y: f32) {
         self.mouse_position = [x, y];
+        self.cursor_in_window = true;
+    }
+
+    pub(crate) fn set_mouse_position_suppressed(&mut self, x: f32, y: f32) {
+        self.mouse_position = [x, y];
+        self.cursor_in_window = false;
+    }
+
+    pub(crate) fn set_cursor_in_window(&mut self, in_window: bool) {
+        self.cursor_in_window = in_window;
     }
 
     pub(crate) fn mouse_button_down(&mut self, button: usize) {
@@ -88,10 +100,28 @@ impl Input {
         self.scroll_delta[1] += dy;
     }
 
+    pub(crate) fn suppress_key_down(&mut self, _key: KeyCode) {}
+
+    pub(crate) fn suppress_key_up(&mut self, key: KeyCode) {
+        let idx = key as usize;
+        if idx < KEY_COUNT {
+            self.keys_held[idx] = false;
+        }
+    }
+
+    pub(crate) fn suppress_mouse_button_down(&mut self, _button: usize) {}
+
+    pub(crate) fn suppress_mouse_button_up(&mut self, button: usize) {
+        if button < 3 {
+            self.mouse_buttons[button] = false;
+        }
+    }
+
     pub(crate) fn reset(&mut self) {
         self.keys_held = [false; KEY_COUNT];
         self.keys_pressed = [false; KEY_COUNT];
         self.keys_released = [false; KEY_COUNT];
+        self.cursor_in_window = false;
         self.mouse_buttons = [false; 3];
         self.mouse_buttons_pressed = [false; 3];
         self.mouse_buttons_released = [false; 3];
@@ -126,6 +156,12 @@ impl Input {
     #[inline]
     pub fn mouse_position(&self) -> [f32; 2] {
         self.mouse_position
+    }
+
+    /// Is the cursor currently inside the window client area?
+    #[inline]
+    pub fn mouse_in_window(&self) -> bool {
+        self.cursor_in_window
     }
 
     /// Mouse movement delta since last frame.
@@ -345,5 +381,46 @@ impl KeyCode {
             W::Tab => Self::Tab,
             _ => Self::Unknown,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Input, KeyCode};
+
+    #[test]
+    fn suppressed_release_clears_held_without_emitting_one_shot() {
+        let mut input = Input::new();
+        input.key_down(KeyCode::KeyA);
+        input.begin_frame();
+
+        input.suppress_key_up(KeyCode::KeyA);
+
+        assert!(!input.key_held(KeyCode::KeyA));
+        assert!(!input.key_released(KeyCode::KeyA));
+    }
+
+    #[test]
+    fn cursor_presence_tracks_window_membership() {
+        let mut input = Input::new();
+        assert!(!input.mouse_in_window());
+
+        input.set_mouse_position(10.0, 20.0);
+        assert!(input.mouse_in_window());
+
+        input.set_cursor_in_window(false);
+        assert!(!input.mouse_in_window());
+
+        input.reset();
+        assert!(!input.mouse_in_window());
+    }
+
+    #[test]
+    fn suppressed_pointer_position_does_not_mark_cursor_as_game_visible() {
+        let mut input = Input::new();
+        input.set_mouse_position_suppressed(32.0, 48.0);
+
+        assert_eq!(input.mouse_position(), [32.0, 48.0]);
+        assert!(!input.mouse_in_window());
     }
 }

@@ -8,8 +8,8 @@ struct CameraUniform {
 var<uniform> camera: CameraUniform;
 
 struct SpriteRecord {
-    transform: vec4<f32>,
-    rotation: vec4<f32>,
+    transform: vec4<f32>,   // x, y, width, height
+    rotation: vec4<f32>,    // sin(a), cos(a), z, _pad
     color: vec4<f32>,
     uv_rect: vec4<f32>,
 };
@@ -46,8 +46,8 @@ fn vs_main(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
         scaled.x * sin_a + scaled.y * cos_a,
     );
 
-    let world_pos = rotated + sprite.transform.xy;
-    out.clip_position = camera.view_proj * vec4<f32>(world_pos, 0.0, 1.0);
+    let world_pos = vec3<f32>(rotated + sprite.transform.xy, sprite.rotation.z);
+    out.clip_position = camera.view_proj * vec4<f32>(world_pos, 1.0);
     out.color = sprite.color;
     out.uv = mix(sprite.uv_rect.xy, sprite.uv_rect.zw, vert.uv);
     return out;

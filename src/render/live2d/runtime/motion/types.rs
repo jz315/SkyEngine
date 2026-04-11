@@ -440,6 +440,9 @@ pub struct MotionFinishedEvent {
     pub group_name: String,
     pub motion_name: String,
     pub priority: MotionPriority,
+    /// Matches Cubism's finished callback behavior for looping motions.
+    /// `true` means one loop cycle completed and the same handle kept running.
+    pub is_loop_cycle: bool,
 }
 
 /// Borrowed motion entry returned by [`Live2DMotionPlayer::motion_entries`].

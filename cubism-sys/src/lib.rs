@@ -96,6 +96,33 @@ pub const MOC_VERSION_53: csmMocVersion = 6;
 pub const PARAMETER_TYPE_NORMAL: csmParameterType = 0;
 pub const PARAMETER_TYPE_BLEND_SHAPE: csmParameterType = 1;
 
+// Color blend types
+pub const CSM_COLOR_BLEND_TYPE_NORMAL: c_int = 0;
+pub const CSM_COLOR_BLEND_TYPE_ADD: c_int = 3;
+pub const CSM_COLOR_BLEND_TYPE_ADD_GLOW: c_int = 4;
+pub const CSM_COLOR_BLEND_TYPE_DARKEN: c_int = 5;
+pub const CSM_COLOR_BLEND_TYPE_MULTIPLY: c_int = 6;
+pub const CSM_COLOR_BLEND_TYPE_COLOR_BURN: c_int = 7;
+pub const CSM_COLOR_BLEND_TYPE_LINEAR_BURN: c_int = 8;
+pub const CSM_COLOR_BLEND_TYPE_LIGHTEN: c_int = 9;
+pub const CSM_COLOR_BLEND_TYPE_SCREEN: c_int = 10;
+pub const CSM_COLOR_BLEND_TYPE_COLOR_DODGE: c_int = 11;
+pub const CSM_COLOR_BLEND_TYPE_OVERLAY: c_int = 12;
+pub const CSM_COLOR_BLEND_TYPE_SOFT_LIGHT: c_int = 13;
+pub const CSM_COLOR_BLEND_TYPE_HARD_LIGHT: c_int = 14;
+pub const CSM_COLOR_BLEND_TYPE_LINEAR_LIGHT: c_int = 15;
+pub const CSM_COLOR_BLEND_TYPE_HUE: c_int = 16;
+pub const CSM_COLOR_BLEND_TYPE_COLOR: c_int = 17;
+pub const CSM_COLOR_BLEND_TYPE_ADD_COMPATIBLE: c_int = 1;
+pub const CSM_COLOR_BLEND_TYPE_MULTIPLY_COMPATIBLE: c_int = 2;
+
+// Alpha blend types
+pub const CSM_ALPHA_BLEND_TYPE_OVER: c_int = 0;
+pub const CSM_ALPHA_BLEND_TYPE_ATOP: c_int = 1;
+pub const CSM_ALPHA_BLEND_TYPE_OUT: c_int = 2;
+pub const CSM_ALPHA_BLEND_TYPE_CONJOINT_OVER: c_int = 3;
+pub const CSM_ALPHA_BLEND_TYPE_DISJOINT_OVER: c_int = 4;
+
 /// Log handler function pointer.
 pub type csmLogFunction = Option<extern "C" fn(message: *const c_char)>;
 

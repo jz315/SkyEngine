@@ -66,9 +66,9 @@ impl Live2DRenderer {
                         .collect(),
                 }],
                 if uses_complex_root_composite {
-                    model.model_opacity()
+                    model.premultiplied_model_color_with_opacity(1.0)
                 } else {
-                    1.0
+                    [1.0, 1.0, 1.0, 1.0]
                 },
             )
         };
@@ -190,7 +190,11 @@ impl Live2DRenderer {
 
         self.cached_offscreen_clipping = offscreen_clipping;
 
-        PreparedLive2DFrame::new(format, passes, model.model_opacity())
+        PreparedLive2DFrame::new(
+            format,
+            passes,
+            model.premultiplied_model_color_with_opacity(1.0),
+        )
     }
 
     pub(super) fn close_completed_offscreens(
@@ -395,21 +399,18 @@ impl Live2DRenderer {
                     alpha_blend_type: 0,
                 };
                 let uniform_offset = self.uniforms.push_staged(ctx, uniforms);
+                let Some(texture) = model
+                    .drawable_texture_index(mask_idx)
+                    .try_into()
+                    .ok()
+                    .and_then(|tex_idx: usize| textures.get(tex_idx))
+                else {
+                    continue;
+                };
                 let (vertex_upload, index_upload, index_count) =
                     self.upload_drawable(ctx, positions, uvs, indices);
-
-                let tex_idx = model.drawable_texture_index(mask_idx) as usize;
-                let (color_view, color_texture_id) = if let Some(texture) = textures.get(tex_idx) {
-                    (
-                        texture.view().clone(),
-                        std::ptr::from_ref(texture.texture()) as usize,
-                    )
-                } else {
-                    (
-                        self.dummy_texture.view().clone(),
-                        std::ptr::from_ref(self.dummy_texture.texture()) as usize,
-                    )
-                };
+                let color_view = texture.view().clone();
+                let color_texture_id = std::ptr::from_ref(texture.texture()) as usize;
                 let texture_bind_group_key = [color_texture_id, dummy_mask_texture_id];
 
                 draws.push(PreparedMaskDraw {
@@ -447,9 +448,12 @@ impl Live2DRenderer {
         draw_idx: usize,
         clipping: Option<&ClippingManager>,
         projection: &[f32; 16],
-        apply_model_opacity: bool,
+        apply_model_color: bool,
     ) -> (Option<PreparedModelDraw>, Option<MaskRequest>) {
         if !model.drawable_is_visible(draw_idx) {
+            return (None, None);
+        }
+        if model.drawable_opacity(draw_idx) <= f32::EPSILON {
             return (None, None);
         }
 
@@ -467,13 +471,12 @@ impl Live2DRenderer {
             projection_matrix: *projection,
             clip_matrix,
             base_color: {
-                let opacity = model.drawable_opacity(draw_idx)
-                    * if apply_model_opacity {
-                        model.model_opacity()
-                    } else {
-                        1.0
-                    };
-                [opacity, opacity, opacity, opacity]
+                let opacity = model.drawable_opacity(draw_idx);
+                if apply_model_color {
+                    model.premultiplied_model_color_with_opacity(opacity)
+                } else {
+                    [opacity, opacity, opacity, opacity]
+                }
             },
             multiply_color: model.drawable_multiply_color(draw_idx),
             screen_color: model.drawable_screen_color(draw_idx),
@@ -484,10 +487,18 @@ impl Live2DRenderer {
             } else {
                 0.0
             },
-            color_blend_type: raw_blend_to_color_blend_type(raw_blend),
-            alpha_blend_type: raw_blend_to_alpha_blend_type(raw_blend),
+            color_blend_type: raw_blend_to_color_blend_type(raw_blend) as u32,
+            alpha_blend_type: raw_blend_to_alpha_blend_type(raw_blend) as u32,
         };
         let uniform_offset = self.uniforms.push_staged(ctx, uniforms);
+        let Some(texture) = model
+            .drawable_texture_index(draw_idx)
+            .try_into()
+            .ok()
+            .and_then(|tex_idx: usize| textures.get(tex_idx))
+        else {
+            return (None, None);
+        };
         let (vertex_upload, index_upload, index_count) =
             self.upload_drawable(ctx, positions, uvs, indices);
 
@@ -506,18 +517,8 @@ impl Live2DRenderer {
             } else {
                 (0usize, None)
             };
-        let tex_idx = model.drawable_texture_index(draw_idx) as usize;
-        let (color_view, color_texture_id) = if let Some(texture) = textures.get(tex_idx) {
-            (
-                texture.view().clone(),
-                std::ptr::from_ref(texture.texture()) as usize,
-            )
-        } else {
-            (
-                self.dummy_texture.view().clone(),
-                std::ptr::from_ref(self.dummy_texture.texture()) as usize,
-            )
-        };
+        let color_view = texture.view().clone();
+        let color_texture_id = std::ptr::from_ref(texture.texture()) as usize;
         let texture_bind_group_key = [
             color_texture_id,
             std::ptr::from_ref(mask_texture.texture()) as usize,

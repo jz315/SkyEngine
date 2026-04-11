@@ -11,7 +11,7 @@ use sky_engine::app::{App, AppConfig, AppState, FrameContext};
 use sky_engine::ecs::World;
 use sky_engine::gpu::GpuContext;
 use sky_engine::render::expert::SpriteBatch;
-use sky_engine::render::{Camera2D, Color, Renderer2DConfig, Sprite, Texture};
+use sky_engine::render::{Camera2D, Color, Sprite, Texture};
 
 struct PerfTest {
     batch: Option<SpriteBatch>,
@@ -127,12 +127,9 @@ impl AppState for PerfTest {
 }
 
 fn main() {
-    let mut world = World::new();
-    world.insert_resource(Renderer2DConfig::unlit());
-
     App::new(
         AppConfig::new("SkyEngine — Perf Test", 1280, 720).with_vsync(false),
-        world,
+        World::new(),
     )
     .run(PerfTest::new());
 }

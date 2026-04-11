@@ -14,7 +14,7 @@
   - update model state every frame
   - prepare per-frame GPU work
   - execute mask/model/offscreen/composite passes
-  - optionally attach prepared output into `FramePayloads2D`
+  - optionally attach prepared output into `PreparedFrame`
 
 ## Top-Level Layout
 - `mod.rs`: module wiring and curated re-exports for common Live2D types.
@@ -125,7 +125,7 @@
   - `execute.rs`: prepared pass execution and root/backdrop copies
   - `frame_entrypoints.rs`: public prepare/execute entry points
 - `feature.rs`:
-  - graph-backed overlay node for `FramePayloads2D`
+  - graph-backed overlay node for `FramePipeline` view phase
 
 ## Full Chain
 1. `Live2DModelResource::load(ctx, model_json_path)`
@@ -250,9 +250,10 @@
 ## Graph Integration
 - `PreparedLive2DFrameSet` is the multi-view sparse container for prepared frames.
 - `Live2DOverlayNode`:
+  - is a `FrameViewNode`
+  - reads the `"current_color"` slot from the generic `PhaseState`
   - allocates `live2d_overlay_out`
-  - copies the previous `current` target into it
-  - looks up `PreparedLive2DFrameSet` from `FramePayloads2D`
+  - looks up `PreparedLive2DFrameSet` from `PreparedFrame`
   - executes all prepared Live2D frames for the active view
 - Live2D integration happens at the prepared-frame boundary.
 - Do not force Live2D data into sprite-batch scene structures just to reuse unrelated code.

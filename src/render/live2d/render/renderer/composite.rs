@@ -1,4 +1,8 @@
 use super::*;
+use cubism_sys::{
+    CSM_ALPHA_BLEND_TYPE_OVER, CSM_COLOR_BLEND_TYPE_ADD_COMPATIBLE,
+    CSM_COLOR_BLEND_TYPE_MULTIPLY_COMPATIBLE, CSM_COLOR_BLEND_TYPE_NORMAL,
+};
 
 impl Live2DRenderer {
     pub(super) fn prepare_composite_draw(
@@ -34,8 +38,8 @@ impl Live2DRenderer {
             } else {
                 0.0
             },
-            color_blend_type: raw_blend_to_color_blend_type(raw_blend),
-            alpha_blend_type: raw_blend_to_alpha_blend_type(raw_blend),
+            color_blend_type: raw_blend_to_color_blend_type(raw_blend) as u32,
+            alpha_blend_type: raw_blend_to_alpha_blend_type(raw_blend) as u32,
         };
         let uniform_offset = self.composite_uniforms.push_staged(ctx, uniforms);
         let source_target = &self.offscreen_targets[offscreen_index];
@@ -59,7 +63,7 @@ impl Live2DRenderer {
         textures: &[Texture],
         clipping: Option<&ClippingManager>,
         projection: &[f32; 16],
-        apply_model_opacity: bool,
+        apply_model_color: bool,
     ) -> Vec<PreparedModelDraw> {
         let mut draws = Vec::new();
 
@@ -71,7 +75,7 @@ impl Live2DRenderer {
                 draw_idx,
                 clipping,
                 projection,
-                apply_model_opacity,
+                apply_model_color,
             ) {
                 draws.push(draw);
             }
@@ -660,12 +664,12 @@ impl Live2DRenderer {
     }
 }
 
-pub(super) fn raw_blend_to_color_blend_type(raw_blend: i32) -> u32 {
-    (raw_blend as u32) & 0xFF
+pub(super) fn raw_blend_to_color_blend_type(raw_blend: i32) -> i32 {
+    raw_blend & 0xFF
 }
 
-pub(super) fn raw_blend_to_alpha_blend_type(raw_blend: i32) -> u32 {
-    ((raw_blend as u32) >> 8) & 0xFF
+pub(super) fn raw_blend_to_alpha_blend_type(raw_blend: i32) -> i32 {
+    (raw_blend >> 8) & 0xFF
 }
 
 pub(super) fn compatible_blend_mode(raw_blend: i32) -> Option<BlendMode> {
@@ -673,9 +677,9 @@ pub(super) fn compatible_blend_mode(raw_blend: i32) -> Option<BlendMode> {
         raw_blend_to_color_blend_type(raw_blend),
         raw_blend_to_alpha_blend_type(raw_blend),
     ) {
-        (0, 0) => Some(BlendMode::Normal),
-        (1, _) => Some(BlendMode::Additive),
-        (2, _) => Some(BlendMode::Multiplicative),
+        (CSM_COLOR_BLEND_TYPE_NORMAL, CSM_ALPHA_BLEND_TYPE_OVER) => Some(BlendMode::Normal),
+        (CSM_COLOR_BLEND_TYPE_ADD_COMPATIBLE, _) => Some(BlendMode::Additive),
+        (CSM_COLOR_BLEND_TYPE_MULTIPLY_COMPATIBLE, _) => Some(BlendMode::Multiplicative),
         _ => None,
     }
 }
@@ -689,17 +693,60 @@ pub(super) fn clear_render_target(ctx: &mut GpuContext, target: &RenderTarget, l
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cubism_sys::{
+        CSM_ALPHA_BLEND_TYPE_ATOP, CSM_ALPHA_BLEND_TYPE_CONJOINT_OVER,
+        CSM_ALPHA_BLEND_TYPE_DISJOINT_OVER, CSM_COLOR_BLEND_TYPE_ADD,
+        CSM_COLOR_BLEND_TYPE_ADD_GLOW,
+    };
+
+    fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .expect("No suitable GPU adapter found for Live2D renderer tests");
+
+        pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("live2d_renderer_test_device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::Performance,
+            },
+            None,
+        ))
+        .expect("Failed to create test GPU device")
+    }
+
+    fn sample_model() -> Live2DModel {
+        let moc_bytes = std::fs::read(
+            "CubismSdkForNative/CubismSdkForNative-5-r.5/Samples/Resources/Haru/Haru.moc3",
+        )
+        .expect("sample moc3 should exist");
+        Live2DModel::from_moc3_bytes(&moc_bytes).expect("sample moc3 should load")
+    }
 
     #[test]
     fn compatible_blend_only_accepts_framework_compatible_modes() {
-        assert_eq!(compatible_blend_mode(0), Some(BlendMode::Normal));
-        assert_eq!(compatible_blend_mode(1), Some(BlendMode::Additive));
-        assert_eq!(compatible_blend_mode(2), Some(BlendMode::Multiplicative));
+        assert_eq!(
+            compatible_blend_mode(CSM_COLOR_BLEND_TYPE_NORMAL),
+            Some(BlendMode::Normal)
+        );
+        assert_eq!(
+            compatible_blend_mode(CSM_COLOR_BLEND_TYPE_ADD_COMPATIBLE),
+            Some(BlendMode::Additive)
+        );
+        assert_eq!(
+            compatible_blend_mode(CSM_COLOR_BLEND_TYPE_MULTIPLY_COMPATIBLE),
+            Some(BlendMode::Multiplicative)
+        );
 
-        let normal_atop = (1 << 8) | 0;
-        let add = 3;
-        let add_glow = 4;
-        let conjoint_over = (3 << 8) | 0;
+        let normal_atop = (CSM_ALPHA_BLEND_TYPE_ATOP << 8) | CSM_COLOR_BLEND_TYPE_NORMAL;
+        let add = CSM_COLOR_BLEND_TYPE_ADD;
+        let add_glow = CSM_COLOR_BLEND_TYPE_ADD_GLOW;
+        let conjoint_over = (CSM_ALPHA_BLEND_TYPE_CONJOINT_OVER << 8) | CSM_COLOR_BLEND_TYPE_NORMAL;
 
         assert_eq!(compatible_blend_mode(normal_atop), None);
         assert_eq!(compatible_blend_mode(add), None);
@@ -709,8 +756,125 @@ mod tests {
 
     #[test]
     fn raw_blend_splits_color_and_alpha_channels() {
-        let raw = (4 << 8) | 15;
+        let raw = (CSM_ALPHA_BLEND_TYPE_DISJOINT_OVER << 8) | 15;
         assert_eq!(raw_blend_to_color_blend_type(raw), 15);
-        assert_eq!(raw_blend_to_alpha_blend_type(raw), 4);
+        assert_eq!(
+            raw_blend_to_alpha_blend_type(raw),
+            CSM_ALPHA_BLEND_TYPE_DISJOINT_OVER
+        );
+    }
+
+    #[test]
+    fn compatible_blend_constants_match_official_core_values() {
+        assert_eq!(CSM_COLOR_BLEND_TYPE_NORMAL, 0);
+        assert_eq!(CSM_COLOR_BLEND_TYPE_ADD_COMPATIBLE, 1);
+        assert_eq!(CSM_COLOR_BLEND_TYPE_MULTIPLY_COMPATIBLE, 2);
+        assert_eq!(CSM_COLOR_BLEND_TYPE_ADD, 3);
+        assert_eq!(CSM_COLOR_BLEND_TYPE_ADD_GLOW, 4);
+        assert_eq!(CSM_ALPHA_BLEND_TYPE_OVER, 0);
+        assert_eq!(CSM_ALPHA_BLEND_TYPE_ATOP, 1);
+        assert_eq!(CSM_ALPHA_BLEND_TYPE_CONJOINT_OVER, 3);
+        assert_eq!(CSM_ALPHA_BLEND_TYPE_DISJOINT_OVER, 4);
+    }
+
+    #[test]
+    fn zero_opacity_drawables_are_skipped_in_model_prepare_path() {
+        let (device, queue) = create_test_device();
+        let mut ctx =
+            GpuContext::new_headless(device, queue, wgpu::TextureFormat::Rgba8Unorm, [64, 64]);
+        let mut renderer = Live2DRenderer::new(&ctx);
+        let mut model = sample_model();
+        let format = ctx.surface_format();
+
+        renderer.ensure_pipelines(&ctx, format);
+        renderer.ensure_mask_texture(&ctx);
+
+        let drawable_index = (0..model.drawable_count())
+            .find(|&index| {
+                model.drawable_is_visible(index)
+                    && model.drawable_opacity(index) > f32::EPSILON
+                    && !model.drawable_vertex_positions(index).is_empty()
+                    && !model.drawable_indices(index).is_empty()
+                    && model.drawable_parent_part_index(index) >= 0
+            })
+            .expect("sample model should have a visible drawable with a parent part");
+        let parent_part_index = model.drawable_parent_part_index(drawable_index) as usize;
+
+        model.set_part_opacity(parent_part_index, 0.0);
+        model.update();
+        assert!(
+            model.drawable_opacity(drawable_index) <= f32::EPSILON,
+            "test expects part opacity to zero out drawable opacity"
+        );
+
+        let projection = model.render_matrix_for_view(64.0, 64.0);
+        let (draw, mask_request) = renderer.prepare_model_draw_for_index(
+            &mut ctx,
+            &model,
+            &[],
+            drawable_index,
+            None,
+            &projection,
+            false,
+        );
+
+        assert!(draw.is_none());
+        assert!(mask_request.is_none());
+    }
+
+    #[test]
+    fn missing_texture_drawables_are_skipped_in_model_prepare_path() {
+        let (device, queue) = create_test_device();
+        let mut ctx =
+            GpuContext::new_headless(device, queue, wgpu::TextureFormat::Rgba8Unorm, [64, 64]);
+        let mut renderer = Live2DRenderer::new(&ctx);
+        let model = sample_model();
+        let format = ctx.surface_format();
+
+        renderer.ensure_pipelines(&ctx, format);
+        renderer.ensure_mask_texture(&ctx);
+
+        let drawable_index = (0..model.drawable_count())
+            .find(|&index| {
+                model.drawable_is_visible(index)
+                    && model.drawable_opacity(index) > f32::EPSILON
+                    && !model.drawable_vertex_positions(index).is_empty()
+                    && !model.drawable_indices(index).is_empty()
+            })
+            .expect("sample model should have a drawable that can render");
+
+        let projection = model.render_matrix_for_view(64.0, 64.0);
+        let (draw, mask_request) = renderer.prepare_model_draw_for_index(
+            &mut ctx,
+            &model,
+            &[],
+            drawable_index,
+            None,
+            &projection,
+            false,
+        );
+
+        assert!(draw.is_none());
+        assert!(mask_request.is_none());
+    }
+
+    #[test]
+    fn missing_texture_mask_drawables_are_skipped() {
+        let (device, queue) = create_test_device();
+        let mut ctx =
+            GpuContext::new_headless(device, queue, wgpu::TextureFormat::Rgba8Unorm, [64, 64]);
+        let mut renderer = Live2DRenderer::new(&ctx);
+        let model = sample_model();
+        let clipping = ClippingManager::new(&model);
+
+        renderer.ensure_pipelines(&ctx, ctx.surface_format());
+        renderer.ensure_mask_texture(&ctx);
+
+        assert!(
+            clipping.has_masks(),
+            "sample model should exercise mask rendering"
+        );
+        let draws = renderer.prepare_mask_draws(&mut ctx, &model, &[], &clipping);
+        assert!(draws.is_empty());
     }
 }

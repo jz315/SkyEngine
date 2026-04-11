@@ -1,4 +1,4 @@
-//! High-level Renderer2D performance probe.
+//! RenderComposer performance probe for the default universal scene pipeline.
 //!
 //! Runs controlled headless scenarios and reports synchronized frame timings
 //! plus lightweight internal phase timings.
@@ -9,23 +9,17 @@
 //! cargo run --example renderer_probe --features app --release -- --frames 180 --warmup 60
 //! ```
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use sky_engine::ecs::{EntityId, World};
 use sky_engine::gpu::GpuContext;
-use sky_engine::render::expert::{
-    CompiledPass, PhysicalResources, RenderGraph, RenderGraphError, TargetSize,
-};
-use sky_engine::render::pipeline::{FeatureExecutionContext2D, PipelineState2D};
 use sky_engine::render::{
-    BloomSettings, Camera2D, Color, PointLight2D, PrimaryCamera2D, RenderFeature2D, RenderPipeline,
-    RenderSettings2D, RenderView2D, Renderer2D, Renderer2DConfig, RendererStats, Sprite2D,
-    ToneMapSettings, Transform2D, ViewportRect, VignetteSettings,
+    BloomSettings, Camera, CameraViewport, Color, Light2D, MainCamera, Projection, RenderComposer,
+    RenderPipelineAsset, RenderSettings, RenderStats, SpriteRenderer, ToneMapSettings, Transform,
+    ViewportRect, VignetteSettings,
 };
 
 const DEFAULT_SURFACE_SIZE: [u32; 2] = [1280, 720];
-static NEXT_KEEP_ALIVE_SINK_NAME: AtomicU64 = AtomicU64::new(1);
 
 struct ProbeConfig {
     warmup_frames: usize,
@@ -46,13 +40,19 @@ impl Default for ProbeConfig {
 #[derive(Clone, Copy)]
 struct Scenario {
     name: &'static str,
-    path: Renderer2DConfig,
+    path: ProbeRenderPath,
     sprites: usize,
     lights: usize,
     views: usize,
     sprite_dirty_ratio: f32,
     light_dirty_ratio: f32,
     postfx: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProbeRenderPath {
+    Unlit,
+    LitHdr,
 }
 
 struct ProbeScene {
@@ -99,7 +99,7 @@ struct ScenarioResult {
 }
 
 impl StatsAccumulator {
-    fn record(&mut self, frame_ms_sync: f64, stats: RendererStats) {
+    fn record(&mut self, frame_ms_sync: f64, stats: RenderStats) {
         self.sample_count += 1;
         self.frame_ms_sync_sum += frame_ms_sync;
         self.frame_ms_sync_values.push(frame_ms_sync);
@@ -157,7 +157,7 @@ fn main() {
     let scenarios = [
         Scenario {
             name: "unlit_static_0",
-            path: Renderer2DConfig::unlit(),
+            path: ProbeRenderPath::Unlit,
             sprites: 10_000,
             lights: 0,
             views: 1,
@@ -167,7 +167,7 @@ fn main() {
         },
         Scenario {
             name: "unlit_sparse_1",
-            path: Renderer2DConfig::unlit(),
+            path: ProbeRenderPath::Unlit,
             sprites: 10_000,
             lights: 0,
             views: 1,
@@ -177,7 +177,7 @@ fn main() {
         },
         Scenario {
             name: "unlit_sparse_5",
-            path: Renderer2DConfig::unlit(),
+            path: ProbeRenderPath::Unlit,
             sprites: 10_000,
             lights: 0,
             views: 1,
@@ -187,7 +187,7 @@ fn main() {
         },
         Scenario {
             name: "unlit_full_100",
-            path: Renderer2DConfig::unlit(),
+            path: ProbeRenderPath::Unlit,
             sprites: 10_000,
             lights: 0,
             views: 1,
@@ -197,7 +197,7 @@ fn main() {
         },
         Scenario {
             name: "unlit_multiview_static",
-            path: Renderer2DConfig::unlit(),
+            path: ProbeRenderPath::Unlit,
             sprites: 10_000,
             lights: 0,
             views: 2,
@@ -207,7 +207,7 @@ fn main() {
         },
         Scenario {
             name: "lit_static_postfx",
-            path: Renderer2DConfig::lit_hdr(),
+            path: ProbeRenderPath::LitHdr,
             sprites: 4_000,
             lights: 256,
             views: 1,
@@ -217,7 +217,7 @@ fn main() {
         },
         Scenario {
             name: "lit_sparse_5_postfx",
-            path: Renderer2DConfig::lit_hdr(),
+            path: ProbeRenderPath::LitHdr,
             sprites: 4_000,
             lights: 256,
             views: 1,
@@ -227,7 +227,7 @@ fn main() {
         },
         Scenario {
             name: "lit_static_no_postfx",
-            path: Renderer2DConfig::lit_hdr(),
+            path: ProbeRenderPath::LitHdr,
             sprites: 4_000,
             lights: 256,
             views: 1,
@@ -251,13 +251,12 @@ fn main() {
 }
 
 fn run_scenario(ctx: &mut GpuContext, scenario: Scenario, config: &ProbeConfig) -> ScenarioResult {
-    let mut pipeline = if scenario.path == Renderer2DConfig::lit_hdr() {
-        RenderPipeline::lit_hdr(ctx)
-    } else {
-        RenderPipeline::unlit(ctx)
+    let mut renderer = match scenario.path {
+        ProbeRenderPath::Unlit => {
+            RenderComposer::from_asset(RenderPipelineAsset::universal_unlit())
+        }
+        ProbeRenderPath::LitHdr => RenderComposer::from_asset(RenderPipelineAsset::universal_2d()),
     };
-    pipeline.add(Box::new(KeepAliveNode));
-    let mut renderer = Renderer2D::from_pipeline(ctx, scenario.path, pipeline);
     let mut scene = build_scene(ctx, scenario);
     let mut accum = StatsAccumulator {
         frame_ms_sync_values: Vec::with_capacity(config.sample_frames),
@@ -290,62 +289,15 @@ fn run_scenario(ctx: &mut GpuContext, scenario: Scenario, config: &ProbeConfig) 
     accum.finish(scenario)
 }
 
-#[derive(Default)]
-struct KeepAliveNode;
-
-impl RenderFeature2D for KeepAliveNode {
-    fn name(&self) -> &'static str {
-        "keep_alive"
-    }
-
-    fn setup(&mut self, graph: &mut RenderGraph, state: &mut PipelineState2D) {
-        let input = state
-            .current()
-            .expect("KeepAliveNode requires current input");
-        let sink_name = format!(
-            "keep_alive_sink_{}",
-            NEXT_KEEP_ALIVE_SINK_NAME.fetch_add(1, Ordering::Relaxed)
-        );
-        let sink = graph.create_texture(|b| {
-            b.name(sink_name.clone())
-                .size(TargetSize::Exact(
-                    state.view_size()[0],
-                    state.view_size()[1],
-                ))
-                .format(state.surface_format())
-                .persistent();
-        });
-        graph.add_render_pass("keep_alive", |s| {
-            s.read(input);
-            s.write_color(0, sink);
-        });
-        state.set_current(sink);
-    }
-
-    fn execute(
-        &mut self,
-        _pass: &CompiledPass,
-        _ctx: &mut GpuContext,
-        _resources: &PhysicalResources<'_>,
-        _execution: &FeatureExecutionContext2D<'_>,
-    ) -> Result<(), RenderGraphError> {
-        Ok(())
-    }
-
-    fn draw_calls(&self, _execution: &FeatureExecutionContext2D<'_>) -> usize {
-        0
-    }
-}
-
 fn build_scene(ctx: &GpuContext, scenario: Scenario) -> ProbeScene {
     let mut rng = SimpleRng::new(seed_for_scenario(scenario.name));
     let mut world = World::new();
 
-    if scenario.path == Renderer2DConfig::lit_hdr() {
+    if scenario.path == ProbeRenderPath::LitHdr {
         world.insert_resource(if scenario.postfx {
-            RenderSettings2D::default()
+            RenderSettings::default()
         } else {
-            RenderSettings2D {
+            RenderSettings {
                 bloom: BloomSettings {
                     enabled: false,
                     ..Default::default()
@@ -358,7 +310,7 @@ fn build_scene(ctx: &GpuContext, scenario: Scenario) -> ProbeScene {
                     enabled: false,
                     ..Default::default()
                 },
-                ..RenderSettings2D::default()
+                ..RenderSettings::default()
             }
         });
     }
@@ -372,8 +324,8 @@ fn build_scene(ctx: &GpuContext, scenario: Scenario) -> ProbeScene {
         let x = rng.range(-620.0, 620.0);
         let y = rng.range(-340.0, 340.0);
         let entity = world.spawn((
-            Transform2D::from_xyz(x, y, (index % 32) as f32 * 0.01),
-            Sprite2D::new(size, size).color(Color::hsl(hue, 0.8, 0.6)),
+            Transform::from_xyz(x, y, (index % 32) as f32 * 0.01),
+            SpriteRenderer::new(size, size).color(Color::hsl(hue, 0.8, 0.6)),
         ));
         sprite_entities.push(entity);
     }
@@ -383,8 +335,8 @@ fn build_scene(ctx: &GpuContext, scenario: Scenario) -> ProbeScene {
         for _ in 0..scenario.lights {
             let hue = rng.range(0.0, 360.0);
             let entity = world.spawn((
-                Transform2D::new(rng.range(-620.0, 620.0), rng.range(-340.0, 340.0)),
-                PointLight2D::new(rng.range(36.0, 120.0))
+                Transform::new(rng.range(-620.0, 620.0), rng.range(-340.0, 340.0)),
+                Light2D::new(rng.range(36.0, 120.0))
                     .intensity(rng.range(0.7, 1.6))
                     .color(Color::hsl(hue, 0.7, 0.55))
                     .temperature(rng.range(2800.0, 8500.0))
@@ -406,23 +358,29 @@ fn spawn_views(world: &mut World, views: usize) {
     match views {
         0 | 1 => {
             world.spawn((
-                Camera2D::new(
+                Transform::default(),
+                Camera::new(),
+                Projection::orthographic(
                     DEFAULT_SURFACE_SIZE[0] as f32,
                     DEFAULT_SURFACE_SIZE[1] as f32,
                 ),
-                PrimaryCamera2D,
+                MainCamera,
             ));
         }
         2 => {
             let half_width = DEFAULT_SURFACE_SIZE[0] / 2;
             world.spawn((
-                Camera2D::new(half_width as f32, DEFAULT_SURFACE_SIZE[1] as f32),
-                RenderView2D::new(ViewportRect::new(0, 0, half_width, DEFAULT_SURFACE_SIZE[1])),
-                PrimaryCamera2D,
+                Transform::default(),
+                Camera::new(),
+                Projection::orthographic(half_width as f32, DEFAULT_SURFACE_SIZE[1] as f32),
+                CameraViewport::new(ViewportRect::new(0, 0, half_width, DEFAULT_SURFACE_SIZE[1])),
+                MainCamera,
             ));
             world.spawn((
-                Camera2D::new(half_width as f32, DEFAULT_SURFACE_SIZE[1] as f32),
-                RenderView2D::new(ViewportRect::new(
+                Transform::default(),
+                Camera::new(),
+                Projection::orthographic(half_width as f32, DEFAULT_SURFACE_SIZE[1] as f32),
+                CameraViewport::new(ViewportRect::new(
                     half_width,
                     0,
                     DEFAULT_SURFACE_SIZE[0] - half_width,
@@ -445,15 +403,15 @@ fn apply_dirty(
     let sprite_dirty_count = dirty_count(sprite_entities.len(), scenario.sprite_dirty_ratio);
     for offset in 0..sprite_dirty_count {
         let entity = sprite_entities[(frame_index * 997 + offset) % sprite_entities.len()];
-        if let Some(transform) = world.get_mut::<Transform2D>(entity) {
-            transform.x += 1.5 + (offset % 7) as f32 * 0.1;
-            transform.y += 0.5 + (offset % 5) as f32 * 0.07;
-            transform.rotation += 0.01;
-            if transform.x > 640.0 {
-                transform.x = -640.0;
+        if let Some(transform) = world.get_mut::<Transform>(entity) {
+            transform.position[0] += 1.5 + (offset % 7) as f32 * 0.1;
+            transform.position[1] += 0.5 + (offset % 5) as f32 * 0.07;
+            transform.rotate_z(0.01);
+            if transform.position[0] > 640.0 {
+                transform.position[0] = -640.0;
             }
-            if transform.y > 360.0 {
-                transform.y = -360.0;
+            if transform.position[1] > 360.0 {
+                transform.position[1] = -360.0;
             }
         }
     }
@@ -461,17 +419,17 @@ fn apply_dirty(
     let light_dirty_count = dirty_count(light_entities.len(), scenario.light_dirty_ratio);
     for offset in 0..light_dirty_count {
         let entity = light_entities[(frame_index * 131 + offset) % light_entities.len()];
-        if let Some(transform) = world.get_mut::<Transform2D>(entity) {
-            transform.x += 1.2;
-            transform.y -= 0.8;
-            if transform.x > 640.0 {
-                transform.x = -640.0;
+        if let Some(transform) = world.get_mut::<Transform>(entity) {
+            transform.position[0] += 1.2;
+            transform.position[1] -= 0.8;
+            if transform.position[0] > 640.0 {
+                transform.position[0] = -640.0;
             }
-            if transform.y < -360.0 {
-                transform.y = 360.0;
+            if transform.position[1] < -360.0 {
+                transform.position[1] = 360.0;
             }
         }
-        if let Some(light) = world.get_mut::<PointLight2D>(entity) {
+        if let Some(light) = world.get_mut::<Light2D>(entity) {
             light.radius = 36.0 + ((frame_index + offset) % 96) as f32;
         }
     }
@@ -542,7 +500,7 @@ fn print_help() {
 
 fn print_table(results: &[ScenarioResult], config: &ProbeConfig) {
     println!(
-        "Renderer2D probe | headless | warmup={} | sample={}",
+        "RenderComposer probe | headless | warmup={} | sample={}",
         config.warmup_frames, config.sample_frames
     );
     println!(
