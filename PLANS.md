@@ -943,26 +943,16 @@ impl<M: Material> Extractor for ExtractMeshes<M> {
 4. GPU UPLOAD (dirty tracking only)
    └─ gpu_scene.upload_all(queue)   // 遍历所有注册的 GpuTable，各自 upload 脏数据
 
-5. PER-VIEW RENDER (FramePipeline 执行)
+5. PER-VIEW RENDER (FramePipeline 按 Builder 顺序执行)
    for each view:
-     ┌── OpaquePhase ─────────────────────────────────────────┐
-     │ color_target + depth_target (depth_write ON)           │
-     │ for item in view.phases.opaque:                        │
-     │   draw_fn.draw(pass, item) or draw_fn.execute(ctx,...) │
-     └───────────────────────────────────────────────────────┘
-     ┌── TransparentPhase ────────────────────────────────────┐
-     │ color_target + depth_target (depth_write OFF, test ON) │
-     │ for item in view.phases.transparent:                   │
-     │   draw_fn.draw(pass, item) or draw_fn.execute(ctx,...) │
-     └───────────────────────────────────────────────────────┘
-     ┌── User passes (e.g., OutlinePass) ────────────────────┐
-     │ user_pass.execute(ctx, view)                           │
-     └───────────────────────────────────────────────────────┘
+     for step in pipeline.steps:             ← 按 Builder 插入顺序
+       match step:
+         Phase(p)    → p.render(ctx, view)  ← Opaque/Transparent/自定义
+         Compute(c)  → c.execute(ctx, view) ← GPU 粒子、物理等
+         Pass(p)     → p.execute(ctx, view) ← 屏幕空间效果、outline 等
+         PostFx(f)   → f.execute(ctx, view) ← Bloom、ToneMap 等
 
-6. PostFx (per view)
-   └─ Bloom → ToneMap → Vignette
-
-7. PRESENT
+6. PRESENT
 ```
 
 **2D 向后兼容:** 正交 Camera 的 Frustum 是一个 AABB。
@@ -1001,23 +991,55 @@ RenderPipelineAsset ──────────→ FramePipeline::from_asset(
 ```rust
 /// 用户通过 Builder 定义帧渲染管线
 pub struct RenderPipelineBuilder {
-    phases: Vec<Box<dyn RenderPhase>>,
-    custom_passes: Vec<Box<dyn RenderPass>>,
-    postfx: Vec<Box<dyn PostFxPass>>,
-    output_chain: OutputChainConfig,
+    steps: Vec<PipelineStep>,   // 按插入顺序保存，顺序 = 执行顺序
+    extractors: Vec<Box<dyn Extractor>>,
+    gpu_tables: Vec<Box<dyn GpuTable>>,
+    draw_functions: DrawFunctionRegistry,
+}
+
+enum PipelineStep {
+    Phase(Box<dyn RenderPhase>),
+    Compute(Box<dyn ComputePass>),
+    Pass(Box<dyn RenderPass>),
+    PostFx(Box<dyn PostFxPass>),
 }
 
 impl RenderPipelineBuilder {
     pub fn new() -> Self;
 
-    /// 添加一个排序+绘制 phase (Opaque, Transparent, etc.)
-    pub fn add_phase<P: RenderPhase>(mut self, phase: P) -> Self;
+    // === 基础层 — 逐项注册 ===
 
-    /// 添加用户自定义 pass (outline, shadow, etc.)
-    pub fn add_pass<P: RenderPass>(mut self, pass: P) -> Self;
+    /// 添加一个排序+绘制 phase (Opaque, Transparent, etc.)
+    pub fn add_phase<P: RenderPhase>(self, phase: P) -> Self;
+
+    /// 添加用户自定义 pass (outline, shadow, screen-space effect, etc.)
+    pub fn add_pass<P: RenderPass>(self, pass: P) -> Self;
+
+    /// 添加 compute dispatch (GPU 粒子、物理模拟等)
+    pub fn add_compute<C: ComputePass>(self, compute: C) -> Self;
 
     /// 添加后处理
-    pub fn add_postfx<F: PostFxPass>(mut self, fx: F) -> Self;
+    pub fn add_postfx<F: PostFxPass>(self, fx: F) -> Self;
+
+    /// 注册 extractor (从 ECS 提取数据)
+    pub fn add_extractor<E: Extractor>(self, extractor: E) -> Self;
+
+    /// 注册 GPU 表
+    pub fn add_gpu_table<T: GpuTable>(self, table: T) -> Self;
+
+    /// 注册 material (自动注册 DrawFunction + Extractor，等价于 register_material)
+    pub fn register_material<M: Material>(self) -> Self;
+
+    /// 注册 DrawFunction
+    pub fn add_draw_function<F: DrawFunction>(self, func: F) -> Self;
+
+    // === 便利层 — Feature 打包注册 ===
+
+    /// 注册一个 RenderFeature，它会调用上述基础方法注册自己的组件
+    pub fn add_feature<F: RenderFeature>(mut self, feature: F) -> Self {
+        feature.register(&mut self);  // Feature 委托给 Builder
+        self
+    }
 
     /// 编译为 Asset
     pub fn build(self) -> RenderPipelineAsset;
@@ -1034,11 +1056,127 @@ pub trait RenderPass: Send + 'static {
     fn execute(&mut self, ctx: &mut RenderPassExecuteContext) -> Result<(), RenderError>;
 }
 
-/// 内置预设管线
+/// Compute Pass (GPU 计算)
+pub trait ComputePass: Send + 'static {
+    fn name(&self) -> &'static str;
+    fn execute(&mut self, ctx: &mut GpuContext, view: &View);
+}
+```
+
+---
+
+## RenderFeature — 可复用的渲染模块
+
+RenderFeature 是 **便利层**，把相关的 extractor、draw function、gpu table、compute pass
+打包成一个可复用模块。它不是独立的执行系统 — 它委托给 Builder。
+
+```rust
+/// RenderFeature — 封装一组相关的渲染组件。
+/// 只有一个方法：告诉 Builder 自己需要什么。
+pub trait RenderFeature: Send + 'static {
+    fn name(&self) -> &'static str;
+
+    /// 向 Builder 注册自己的组件（extractor, draw function, gpu table, compute 等）
+    fn register(&self, builder: &mut RenderPipelineBuilder);
+}
+```
+
+**内置 Feature:**
+
+```rust
+/// Sprite 渲染 (引擎内置)
+struct SpriteFeature;
+impl RenderFeature for SpriteFeature {
+    fn name(&self) -> &'static str { "sprite" }
+    fn register(&self, builder: &mut RenderPipelineBuilder) {
+        builder.register_material::<SpriteMaterial>();
+        // → 自动注册 DrawMesh<SpriteMaterial> + ExtractSprites
+    }
+}
+
+/// Live2D 渲染 (引擎内置, feature-gated)
+struct Live2DFeature;
+impl RenderFeature for Live2DFeature {
+    fn name(&self) -> &'static str { "live2d" }
+    fn register(&self, builder: &mut RenderPipelineBuilder) {
+        builder.add_extractor(ExtractLive2D::new());
+        builder.add_draw_function(DrawLive2D::new());  // standalone
+    }
+}
+```
+
+**用户自定义 Feature:**
+
+```rust
+/// 骨骼动画 — 用户代码，零引擎修改
+struct SkeletonFeature;
+impl RenderFeature for SkeletonFeature {
+    fn name(&self) -> &'static str { "skeleton" }
+    fn register(&self, builder: &mut RenderPipelineBuilder) {
+        builder.add_extractor(BoneExtractor::new());
+        builder.add_gpu_table(BoneMatrixTable::new());
+        // bone data 由 StandardMaterial 的 shader 在 group(2) 读取
+    }
+}
+
+/// GPU 粒子 — 用户代码，零引擎修改
+struct ParticleFeature;
+impl RenderFeature for ParticleFeature {
+    fn name(&self) -> &'static str { "particles" }
+    fn register(&self, builder: &mut RenderPipelineBuilder) {
+        builder.add_extractor(ParticleExtractor::new());
+        builder.add_compute(ParticleSimulation::new());
+        builder.add_draw_function(DrawParticle::new());
+    }
+}
+```
+
+**Builder 组合 — 位置决定执行顺序:**
+
+```rust
+// 简单 2D — 一行 Feature
+let pipeline = RenderPipelineBuilder::new()
+    .add_feature(SpriteFeature)
+    .add_phase(TransparentPhase::new())
+    .add_postfx(Bloom::default())
+    .build();
+
+// 复杂 3D — Feature 混合 Builder
+let pipeline = RenderPipelineBuilder::new()
+    .add_feature(SkeletonFeature)           // 注册 bone extractor + gpu table
+    .add_feature(SpriteFeature)             // 注册 sprite material
+    .add_phase(OpaquePhase::new())          // Opaque 渲染
+    .add_feature(ParticleFeature)           // compute dispatch (在 Opaque 之后)
+    .add_phase(TransparentPhase::new())     // Transparent 渲染
+    .add_feature(Live2DFeature)             // Live2D (standalone, Transparent 参与排序)
+    .add_pass(SSRPass::new())               // 屏幕空间反射 (在 Transparent 之后)
+    .add_postfx(Bloom::default())
+    .add_postfx(ToneMap::default())
+    .build();
+
+// 完全自定义 — 不用 Feature，直接用 Builder
+let pipeline = RenderPipelineBuilder::new()
+    .add_extractor(MyExtractor::new())
+    .add_gpu_table(MyTable::new())
+    .add_phase(OpaquePhase::new())
+    .add_compute(MyComputePass::new())
+    .add_phase(TransparentPhase::new())
+    .add_pass(MyScreenSpacePass::new())
+    .add_postfx(MyPostFx::new())
+    .build();
+```
+
+**关系:** Feature 是 Builder 的便利层，不是独立系统。
+用户可以选择任一粒度 — 用 Feature 打包，或用 Builder 逐项注册。
+
+内置预设管线：
+
+```rust
 impl RenderPipelineAsset {
     /// 2D sprite 游戏 (和现在行为一致)
     pub fn forward_2d() -> Self {
         Self::builder()
+            .add_feature(SpriteFeature)
             .add_phase(TransparentPhase::new())
             .add_postfx(Bloom::default())
             .add_postfx(ToneMap::default())
@@ -1048,6 +1186,7 @@ impl RenderPipelineAsset {
     /// 通用 3D forward rendering
     pub fn forward_3d() -> Self {
         Self::builder()
+            .add_feature(SpriteFeature)
             .add_phase(OpaquePhase::new())
             .add_phase(TransparentPhase::new())
             .add_postfx(Bloom::default())
@@ -1337,11 +1476,14 @@ pass.set_bind_group(3, gpu_scene.table::<BoneMatrixTable>().bind_group(), &[]);
 - 实现 `ExtractLive2D` 将 Live2D entity 提交为 PhaseItem
 - **验证**: Live2D + sprite 在同一场景正确排序渲染，layer/order 正确
 
-### Step 7: 用户自定义 + 清理
+### Step 7: RenderFeature + 用户自定义 + 清理
+- 实现 `RenderFeature` trait + `add_feature()` Builder API
+- 实现 `add_compute()` 、`add_extractor()` 、`add_gpu_table()` Builder 方法
+- 将 SpriteFeature、Live2DFeature 包装为内置 Feature
 - 完善 RenderPipelineBuilder → Asset → FramePipeline 链路
 - 删除旧的 Domain/SpriteDomain 代码
 - 写文档和 examples
-- **验证**: example 展示自定义 Material (一行 register，即可渲染)
+- **验证**: example 展示自定义 Feature（骨骼动画或 compute 粒子），零引擎修改
 
 ---
 
@@ -1393,5 +1535,8 @@ depth = float_to_u16(view_depth)  // front-to-back (最小化 overdraw)
 | Sub-mesh 策略 | 展开为独立 PhaseItem (方案 B) | 跨 entity 合批；100 个角色的相同 material sub-mesh 可合并 |
 | Live2D | standalone DrawFunction | Phase 自动 break/resume pass；内部多 pass 自管；与 sprite 混排 |
 | Builder/Pipeline 关系 | Builder（声明）→ Asset（数据）→ FramePipeline（执行） | 三层职责清晰 |
+| RenderFeature | Feature 委托 Builder，不是独立系统 | 便利层打包，基础层逐项注册，用户选择粒度 |
+| 用户扩展 | Feature + Builder 插入点 | 用户可添加 extractor/compute/pass/table，零引擎修改 |
+| 管线执行顺序 | Builder 插入位置 = 执行顺序 | 显式，无隐式依赖，无拓扑排序 |
 | GpuScene 职责 | GpuTableManager 消费者 + view uniforms | 不硬编码具体表类型，新增数据类型零修改 GpuScene |
 | Shadow Map | 未来: DirectionalLight → shadow View (depth-only Phase) | View 抽象已兼容，不需要改架构 |
