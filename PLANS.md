@@ -495,14 +495,33 @@ pub trait RenderPhase: Send + 'static {
     /// 排序
     fn sort(&mut self);
 
-    /// 执行（使用注册的 DrawFunction）
+    /// 执行 — Phase 自动管理 render pass 的 break/resume。
+    /// 遇到 inline draw → 在共享 render pass 内画；
+    /// 遇到 standalone draw → 结束当前 pass，让 DrawFunction 自由操作 GPU，
+    /// 完成后重启 pass（LoadOp::Load 保留已画内容）。
     fn render(
         &self,
-        encoder: &mut wgpu::RenderPass,
+        ctx: &mut GpuContext,
+        target: &RenderTarget,
         draw_functions: &DrawFunctionRegistry,
         world: &World,
-        gpu_scene: &GpuScene,  // 通过 gpu_scene.table::<T>() 访问具体表
-    );
+        gpu_scene: &GpuScene,
+        pipeline_cache: &PipelineCache,
+    ) {
+        let mut pass = begin_pass(ctx, target, LoadOp::Clear);
+
+        for item in &self.items {
+            let draw_fn = draw_functions.get(item.draw_function_id);
+
+            if draw_fn.is_standalone() {
+                drop(pass);  // 结束当前 batch
+                draw_fn.execute(ctx, item, target, world, gpu_scene);
+                pass = begin_pass(ctx, target, LoadOp::Load);  // 恢复
+            } else {
+                draw_fn.draw(&mut pass, item, world, gpu_scene, pipeline_cache);
+            }
+        }
+    }
 
     /// 深度/blend 配置
     fn depth_stencil_state(&self) -> Option<wgpu::DepthStencilState>;
@@ -512,40 +531,65 @@ pub trait RenderPhase: Send + 'static {
 }
 ```
 
-### 4. DrawFunction — 可扩展的绘制方式
+### 4. DrawFunction — 两档式可扩展绘制
 
-DrawFunction 分两类：
+DrawFunction 分两档（inline / standalone），统一参与 Phase 排序，
+无需为复杂渲染器（Live2D、粒子、体积光等）设置特殊的预渲染阶段。
 
-| 类型 | 描述 | 例子 |
-|---|---|---|
-| **通用 DrawFunction** | 走 Mesh + Material 系统，由 `register_material` 自动注册 | `DrawMesh<SpriteMaterial>`, `DrawMesh<StandardMaterial>` |
-| **不透明 DrawFunction** | 内部自管渲染循环，不走 Mesh/Material | `DrawLive2D` (内部管 drawable 排序、clipping、state 切换) |
+| 档位 | `is_standalone()` | 接收 | 适用 |
+|---|---|---|---|
+| **Inline** | `false` (默认) | `&mut wgpu::RenderPass` | sprite、3D mesh 等单 draw call 渲染 |
+| **Standalone** | `true` | `&mut GpuContext` + `&RenderTarget` | Live2D、粒子等需要多 pass / texture copy 的渲染 |
+
+Phase 执行时自动处理两档切换：inline 项合在一个 render pass 内连续画；
+遇到 standalone 项时 Phase 结束当前 pass → 交给 DrawFunction 自由操作 GPU → 重启 pass（`LoadOp::Load`）。
+对调用方完全透明。
 
 ```rust
 /// 注册一种"怎么画"的方式。
-/// 引擎内置 DrawMesh<M: Material>，用户可以注册新的。
 pub trait DrawFunction: Send + Sync + 'static {
+    /// 是否需要独立 GPU 上下文（多 render pass / texture copy 等）？
+    /// 默认 false = inline draw，在共享 RenderPass 内画。
+    fn is_standalone(&self) -> bool { false }
+
+    /// Inline 模式：在共享 RenderPass 内画一个 item。
+    /// Phase 保证同一个 pass 不会被打断。
     fn draw(
         &self,
-        pass: &mut wgpu::RenderPass,
-        item: &PhaseItem,
-        world: &World,
-        gpu_scene: &GpuScene,  // 通过 gpu_scene.table::<T>() 访问需要的表
-        pipeline_cache: &PipelineCache,
-    );
-}
+        _pass: &mut wgpu::RenderPass,
+        _item: &PhaseItem,
+        _world: &World,
+        _gpu_scene: &GpuScene,
+        _pipeline_cache: &PipelineCache,
+    ) { }
 
-/// 通用 DrawFunction: mesh + material 绘制
-/// 由 register_material::<M>() 自动注册，用户不需要手动创建
+    /// Standalone 模式：拿到完整 GpuContext，可以创建自己的 render pass、
+    /// 做 texture copy、compute dispatch 等任意操作。
+    /// 结果必须写入 target（Phase 后续内容会 LoadOp::Load 叠加在上面）。
+    fn execute(
+        &self,
+        _ctx: &mut GpuContext,
+        _item: &PhaseItem,
+        _target: &RenderTarget,
+        _world: &World,
+        _gpu_scene: &GpuScene,
+    ) { }
+}
+```
+
+**Inline DrawFunction — Mesh + Material（默认路径）:**
+
+```rust
 pub struct DrawMesh<M: Material> {
     _phantom: PhantomData<M>,
 }
 
 impl<M: Material> DrawFunction for DrawMesh<M> {
+    // is_standalone() 默认 false → inline
+
     fn draw(&self, pass: &mut wgpu::RenderPass, item: &PhaseItem, ...) {
         let mesh = renderer.meshes().get(item.mesh_handle).unwrap();
         let sub = &mesh.sub_meshes[item.sub_mesh_index as usize];
-        // 通过 type-erased handle 从 MaterialStorage<M> 取回 typed material
         let material = renderer.materials::<M>().get(item.material_handle).unwrap();
         let pipeline = pipeline_cache.get_or_create(material, ...);
 
@@ -556,7 +600,6 @@ impl<M: Material> DrawFunction for DrawMesh<M> {
         pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
         if let Some(ib) = &mesh.index_buffer {
             pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-            // 只绘制当前 sub-mesh 的区段
             pass.draw_indexed(sub.index_offset..(sub.index_offset + sub.index_count),
                               sub.vertex_offset, instance_range);
         } else {
@@ -564,30 +607,54 @@ impl<M: Material> DrawFunction for DrawMesh<M> {
         }
     }
 }
+```
 
-/// 不透明 DrawFunction: Live2D
-/// 在 Phase 排序层面占一个 slot（整个模型一个 sort key），
-/// 内部自管 drawable 排序、clipping mask、state 切换。
-/// 不走 Mesh/Material 系统。
-pub struct DrawLive2D;
-impl DrawFunction for DrawLive2D {
-    fn draw(&self, pass: &mut wgpu::RenderPass, item: &PhaseItem, ...) {
-        // 从 World 取 Live2D model instance
-        // 内部迭代 drawables，管理自己的 vertex buffer、clipping mask、blend state
-        // 对 Phase 来说这是一个原子操作
-    }
+**Standalone DrawFunction — Live2D:**
+
+```rust
+/// Live2D 模型在 Phase 排序层面占一个 sort key（参与 sprite 混排），
+/// 但执行时拿到完整 GpuContext，内部自管多 pass 渲染流程：
+///   mask pass → drawable passes → composite pass → blit to target
+pub struct DrawLive2D {
+    renderer: Live2DRenderer,
 }
 
-/// DrawFunction 注册表 — 运行时注册
+impl DrawFunction for DrawLive2D {
+    fn is_standalone(&self) -> bool { true }
+
+    fn execute(&self, ctx: &mut GpuContext, item: &PhaseItem, target: &RenderTarget, ...) {
+        let model = world.get::<Live2DModelInstance>(item.entity);
+        // 1. render mask pass        (独立 render pass)
+        // 2. render drawables         (多个 render pass，含 blend backup copy)
+        // 3. composite                (fullscreen quad pass)
+        // 4. blit result to target    (最终结果写入 Phase 的 target)
+    }
+}
+```
+
+**Phase 执行序列示意:**
+
+```
+TransparentPhase 排序后:
+  sprite A  (sort=100)  → draw()    ─┐
+  sprite B  (sort=150)  → draw()     ├─ 合在一个 render pass
+  sprite C  (sort=180)  → draw()    ─┘
+  live2d X  (sort=200)  → execute()  ← end pass → mask/draw/composite/blit → resume pass
+  sprite D  (sort=250)  → draw()    ─┐
+  sprite E  (sort=300)  → draw()     ├─ 新的 render pass (LoadOp::Load)
+  live2d Y  (sort=400)  → execute()  ← end pass → 多 pass → resume pass
+  sprite F  (sort=500)  → draw()    ─  最后一个 render pass
+```
+
+**DrawFunction 注册表:**
+
+```rust
 pub struct DrawFunctionRegistry {
     functions: Vec<Box<dyn DrawFunction>>,
 }
 
 impl DrawFunctionRegistry {
-    /// 注册一个新的绘制方式，返回 ID
     pub fn register<F: DrawFunction>(&mut self, func: F) -> DrawFunctionId;
-
-    /// 获取
     pub fn get(&self, id: DrawFunctionId) -> &dyn DrawFunction;
 }
 ```
@@ -622,6 +689,96 @@ pub struct MeshRenderer {
 // 灯光
 pub struct PointLight { ... }         // 从 PointLight2D 重命名，加 z 位置
 pub struct DirectionalLight { ... }   // 新增
+```
+
+---
+
+## View 抽象 — per-view 渲染
+
+整个 Extract→Phase→Render 流程以 **View** 为单位执行。
+一个 Camera entity 生成一个 View；未来 shadow map 也生成 View。
+
+```rust
+/// View — 一次渲染所需的全部视角信息。
+/// 每个 Camera entity 生成一个 View。
+pub struct View {
+    pub entity: EntityId,            // Camera entity
+    pub view_matrix: Mat4,           // world → view
+    pub projection: Mat4,            // view → clip
+    pub view_proj: Mat4,             // world → clip (缓存)
+    pub inverse_view: Mat4,          // view → world (lighting 需要)
+    pub camera_position: Vec3,       // world-space 相机位置
+    pub frustum: Frustum,            // 视锥体 (6 planes)
+    pub viewport: Viewport,          // pixel rect + near/far
+    pub layer_mask: u32,             // RenderLayerMask 过滤
+    pub color_target: RenderTarget,  // 颜色输出
+    pub depth_target: DepthTarget,   // 深度缓冲 (OpaquePhase 写, TransparentPhase 读)
+    pub phases: PhaseSet,            // 每个 View 有独立的 Phase items
+}
+
+/// 深度缓冲 — OpaquePhase 和 TransparentPhase 共享
+/// OpaquePhase:      depth_write = true,  depth_test = true
+/// TransparentPhase: depth_write = false, depth_test = true
+pub struct DepthTarget {
+    pub texture: wgpu::Texture,
+    pub view: wgpu::TextureView,
+    pub format: wgpu::TextureFormat,  // 默认 Depth32Float
+}
+
+/// View Uniforms — GPU group(0) 绑定
+/// 每帧 per-view 上传一次
+#[repr(C)]
+pub struct ViewUniforms {
+    pub view: [f32; 16],             // view matrix (column-major)
+    pub projection: [f32; 16],      // projection matrix
+    pub view_proj: [f32; 16],       // view * projection
+    pub inverse_view: [f32; 16],    // inverse view (for world-space reconstruction)
+    pub camera_position: [f32; 3],  // world-space camera position
+    pub _pad0: f32,
+    pub viewport_size: [f32; 2],    // viewport width, height (pixels)
+    pub near: f32,                  // near plane
+    pub far: f32,                   // far plane
+    pub time: f32,                  // 累计时间 (秒)
+    pub delta_time: f32,            // 帧 delta (秒)
+    pub _pad1: [f32; 2],
+}
+
+/// 6-plane frustum，用于 CPU 侧 culling
+pub struct Frustum {
+    planes: [Vec4; 6],  // left, right, bottom, top, near, far
+}
+
+impl Frustum {
+    /// 从 view_proj 矩阵提取 6 个 plane (Gribb-Hartmann 方法)
+    pub fn from_view_proj(view_proj: Mat4) -> Self;
+
+    /// BoundingSphere 是否与 frustum 相交？
+    pub fn intersects_sphere(&self, center: Vec3, radius: f32) -> bool;
+}
+
+/// View 收集：从 ECS 中所有 Camera entity 生成 View 列表
+pub fn collect_views(world: &World) -> Vec<View> {
+    world.query::<(&Camera, &Transform, &Projection, Option<&RenderLayerMask>)>()
+        .for_each_with_entity(|entity, (camera, transform, projection, layer_mask)| {
+            let view_matrix = transform.inverse_matrix();
+            let proj_matrix = projection.matrix();
+            let view_proj = proj_matrix * view_matrix;
+            views.push(View {
+                entity,
+                view_matrix,
+                projection: proj_matrix,
+                view_proj,
+                inverse_view: view_matrix.inverse(),
+                camera_position: transform.position(),
+                frustum: Frustum::from_view_proj(view_proj),
+                viewport: camera.viewport,
+                layer_mask: layer_mask.map(|m| m.0).unwrap_or(u32::MAX),
+                color_target: camera.target.clone(),
+                depth_target: create_or_reuse_depth_target(camera),
+                phases: PhaseSet::new(),
+            });
+        });
+}
 ```
 
 **`MeshRenderer` 为什么不是泛型？**
@@ -689,13 +846,14 @@ pub struct ExtractSchedule {
     extractors: Vec<Box<dyn Extractor>>,
 }
 
-/// Extractor trait — 从 ECS World → Phase Items
+/// Extractor trait — 从 ECS World → Phase Items (per-view)
 trait Extractor: Send + 'static {
     fn extract(
         &mut self,
         world: &World,
+        view: &View,              // 当前 View (frustum, layer_mask, ...)
         phases: &mut PhaseSet,
-        gpu_scene: &mut GpuScene,  // 通过 gpu_scene.table_mut::<T>() 写入具体表
+        gpu_scene: &mut GpuScene,
         renderer: &Renderer,
     );
 }
@@ -707,12 +865,23 @@ struct ExtractMeshes<M: Material> {
 }
 
 impl<M: Material> Extractor for ExtractMeshes<M> {
-    fn extract(&mut self, world: &World, phases: &mut PhaseSet, ...) {
-        world.query::<(&Transform, &MeshRenderer)>()
-            .for_each_with_entity(|entity, (transform, mesh_renderer)| {
+    fn extract(&mut self, world: &World, view: &View, phases: &mut PhaseSet, ...) {
+        world.query::<(&Transform, &MeshRenderer, Option<&RenderLayerMask>)>()
+            .for_each_with_entity(|entity, (transform, mesh_renderer, layer_mask)| {
                 if !mesh_renderer.visible { return; }
 
+                // Layer 过滤
+                let mask = layer_mask.map(|m| m.0).unwrap_or(u32::MAX);
+                if mask & view.layer_mask == 0 { return; }
+
                 let mesh = renderer.meshes().get(mesh_renderer.mesh).unwrap();
+
+                // Frustum culling (整个 mesh 的 bounding sphere)
+                let world_pos = transform.position();
+                let scale = transform.max_scale();
+                if !view.frustum.intersects_sphere(
+                    world_pos, mesh.bounding_sphere.radius * scale
+                ) { return; }
 
                 // 每个 sub-mesh 展开为独立的 PhaseItem
                 for (sub_idx, sub) in mesh.sub_meshes.iter().enumerate() {
@@ -726,8 +895,10 @@ impl<M: Material> Extractor for ExtractMeshes<M> {
                         phases.opaque_mut()
                     };
 
+                    // sort_key 里的 depth 是 view-space depth
+                    let view_depth = view.view_depth(world_pos);
                     phase.add_item(PhaseItem {
-                        sort_key: compute_sort_key(transform, material),
+                        sort_key: compute_sort_key(view_depth, material),
                         draw_function_id: self.draw_fn_id,
                         entity,
                         mesh_handle: mesh_renderer.mesh,
@@ -750,44 +921,52 @@ impl<M: Material> Extractor for ExtractMeshes<M> {
 ```
 每帧:
 
-1. EXTRACT (由 ExtractSchedule 驱动，可扩展)
-   ├─ ExtractSprites          → SceneCache / TransparentPhaseInput
-   ├─ ExtractMeshes<StdMat>   → SceneCache / Opaque+TransparentPhaseInput
-   ├─ ExtractMeshes<Unlit>    → SceneCache / Opaque+TransparentPhaseInput
-   ├─ ExtractMeshes<Custom>   → SceneCache / Opaque+TransparentPhaseInput
-   ├─ ExtractLive2D           → Live2DPhaseInput
-   └─ ExtractLights           → SceneCache / GpuScene light source
+1. COLLECT VIEWS
+   ├─ 遍历 Camera entities → View 列表
+   ├─ 每个 View: view_matrix, projection, frustum, depth_target, PhaseSet
+   └─ (未来: DirectionalLight → shadow View)
 
-2. PREPARE (CPU, per frame / per view)
-   ├─ build PreparedFrame / PreparedView payloads
-   ├─ cull visible items per view
-   ├─ opaque_phase.sort()        // front-to-back by depth
-   ├─ transparent_phase.sort()   // back-to-front by (layer, order, depth)
-   └─ build draw spans / texture tables / phase items
+2. PER-VIEW EXTRACT (由 ExtractSchedule 驱动，可扩展)
+   for each view:
+     ├─ ExtractSprites(view)      → frustum cull → TransparentPhase items
+     ├─ ExtractMeshes<StdMat>(view) → frustum cull → Opaque+Transparent items
+     ├─ ExtractMeshes<Custom>(view)  → frustum cull → Opaque+Transparent items
+     ├─ ExtractLive2D(view)       → layer filter → TransparentPhase items
+     └─ ExtractLights(view)       → GpuScene light table
 
-3. GPU UPLOAD (dirty tracking only)
+3. PER-VIEW PREPARE
+   for each view:
+     ├─ view.phases.opaque.sort()        // front-to-back by view-depth
+     ├─ view.phases.transparent.sort()   // back-to-front by (layer, order, view-depth)
+     └─ upload ViewUniforms for this view
+
+4. GPU UPLOAD (dirty tracking only)
    └─ gpu_scene.upload_all(queue)   // 遍历所有注册的 GpuTable，各自 upload 脏数据
-   (Material 参数不在 GpuScene 中；mesh/material lookup 也不在这里)
 
-4. RENDER (FramePipeline 执行 RenderPipelineAsset)
-    ┌── RenderGraph pass: "Opaque" ──────────────────────────┐
-    │ for item in opaque_phase.items:                        │
-    │   draw_functions.get(item.draw_fn_id).draw(pass, item) │
-   │   (auto-batch: skip set_pipeline if same as last)      │
-   └────────────────────────────────────────────────────────┘
-   ┌── RenderGraph pass: "Transparent" ─────────────────────┐
-   │ for item in transparent_phase.items:                    │
-   │   draw_functions.get(item.draw_fn_id).draw(pass, item) │
-   └────────────────────────────────────────────────────────┘
-   ┌── User passes (e.g., OutlinePass) ────────────────────┐
-   │ user_pass.execute(ctx)                                 │
-   └────────────────────────────────────────────────────────┘
-   ┌── PostFx (保留现有) ──────────────────────────────────┐
-   │ Bloom → ToneMap → Vignette                             │
-   └────────────────────────────────────────────────────────┘
+5. PER-VIEW RENDER (FramePipeline 执行)
+   for each view:
+     ┌── OpaquePhase ─────────────────────────────────────────┐
+     │ color_target + depth_target (depth_write ON)           │
+     │ for item in view.phases.opaque:                        │
+     │   draw_fn.draw(pass, item) or draw_fn.execute(ctx,...) │
+     └───────────────────────────────────────────────────────┘
+     ┌── TransparentPhase ────────────────────────────────────┐
+     │ color_target + depth_target (depth_write OFF, test ON) │
+     │ for item in view.phases.transparent:                   │
+     │   draw_fn.draw(pass, item) or draw_fn.execute(ctx,...) │
+     └───────────────────────────────────────────────────────┘
+     ┌── User passes (e.g., OutlinePass) ────────────────────┐
+     │ user_pass.execute(ctx, view)                           │
+     └───────────────────────────────────────────────────────┘
 
-5. PRESENT
+6. PostFx (per view)
+   └─ Bloom → ToneMap → Vignette
+
+7. PRESENT
 ```
+
+**2D 向后兼容:** 正交 Camera 的 Frustum 是一个 AABB。
+`DepthTarget` 对 2D-only 场景可以省略（Phase 检查 `depth_stencil_state()` 返回 None 时不绑定深度）。
 
 ---
 
@@ -1137,19 +1316,26 @@ pass.set_bind_group(3, gpu_scene.table::<BoneMatrixTable>().bind_group(), &[]);
 - 保留旧代码作为 fallback
 - **验证**: 所有 sprite examples 正常
 
-### Step 5: OpaquePhase + StandardMaterial + Mesh 加载
-- 添加 `OpaquePhase`
+### Step 5: View + Depth + OpaquePhase + StandardMaterial + Mesh 加载
+- 实现 `View` 抽象、`ViewUniforms`、`DepthTarget`
+- 实现 `Frustum::from_view_proj()` + `intersects_sphere()` culling
+- 帧执行流程改为 per-view（collect_views → per-view extract → per-view render）
+- 添加 `OpaquePhase`（使用 `DepthTarget`，depth_write ON）
+- `TransparentPhase` 绑定同一个 `DepthTarget`（depth_write OFF, depth_test ON）
 - 实现 `StandardMaterial`
 - 添加 `SubMesh` 结构，`Mesh::from_gltf()` 按 primitive 生成 sub-meshes
 - `MeshRenderer.materials: Vec<MaterialHandle>` 支持 per-sub-mesh material
-- `ExtractMeshes` 展开 sub-mesh 为独立 PhaseItem（跨 entity 合批）
-- **验证**: 能渲染一个多 material 的 glTF 模型
+- `ExtractMeshes` 加 frustum cull + layer filter + 展开 sub-mesh
+- **验证**: 能渲染一个多 material 的 glTF 模型，有正确的深度遮挡
 
 ### Step 6: Live2D 迁移
-- `Live2DDomain` → `DrawLive2D` (不透明 DrawFunction)
-- Live2D 模型整体作为一个 PhaseItem 进入 TransparentPhase
-- 内部 drawable 排序/clipping 由 DrawLive2D 自管
-- **验证**: Live2D + sprite 在同一场景正确渲染
+- `Live2DDomain` → `DrawLive2D` (standalone DrawFunction)
+- `DrawLive2D::is_standalone() = true`，拿 `&mut GpuContext` + `&RenderTarget`
+- 内部自管 mask pass → drawable passes → composite → blit to target
+- Live2D 模型作为 PhaseItem 进入 TransparentPhase，与 sprite 自然混排
+- Phase 执行时自动 break/resume render pass
+- 实现 `ExtractLive2D` 将 Live2D entity 提交为 PhaseItem
+- **验证**: Live2D + sprite 在同一场景正确排序渲染，layer/order 正确
 
 ### Step 7: 用户自定义 + 清理
 - 完善 RenderPipelineBuilder → Asset → FramePipeline 链路
@@ -1197,11 +1383,15 @@ depth = float_to_u16(view_depth)  // front-to-back (最小化 overdraw)
 | Material 注册 | `register_material::<M>()` 一行搞定 | 自动注册 DrawFunction + Extract + Layout |
 | Sprite 是什么 | `Mesh::QUAD + SpriteMaterial` | 不是特殊类型，是通用系统的一个实例化 |
 | 2D 是什么 | 正交相机 | 不是特殊渲染路径 |
+| View 抽象 | per-view extract/prepare/render | 多 Camera 和未来 shadow map 共用同一套流程 |
+| 深度缓冲 | OpaquePhase 写 + TransparentPhase 读，共享同一个 `DepthTarget` | 3D 深度遮挡正确；2D 可选省略 |
+| Frustum Culling | Extract 时 `Frustum::intersects_sphere()` | CPU 侧剔除不可见 entity，减少 PhaseItem 和 draw call |
 | Phase 数量 | 2 个内置 (Opaque + Transparent) | 用户可以添加自定义 phase |
-| Extract 驱动 | `ExtractSchedule` 注册式 | 用户新增 Material 不需要改 frame loop |
-| 排序策略 | Sort-key (u64) | 内联排序，无 allocation |
+| Extract 驱动 | `ExtractSchedule` 注册式 (per-view) | 用户新增 Material 不需要改 frame loop |
+| 排序策略 | Sort-key (u64), depth = view-space depth | 内联排序，无 allocation |
 | Batch 策略 | 排序后扫描连续相同 batch_key | 自然 batch，不需要显式管理 |
 | Sub-mesh 策略 | 展开为独立 PhaseItem (方案 B) | 跨 entity 合批；100 个角色的相同 material sub-mesh 可合并 |
-| Live2D | 不透明 DrawFunction | 一个 sort key，内部自管 drawable/clipping |
+| Live2D | standalone DrawFunction | Phase 自动 break/resume pass；内部多 pass 自管；与 sprite 混排 |
 | Builder/Pipeline 关系 | Builder（声明）→ Asset（数据）→ FramePipeline（执行） | 三层职责清晰 |
 | GpuScene 职责 | GpuTableManager 消费者 + view uniforms | 不硬编码具体表类型，新增数据类型零修改 GpuScene |
+| Shadow Map | 未来: DirectionalLight → shadow View (depth-only Phase) | View 抽象已兼容，不需要改架构 |
