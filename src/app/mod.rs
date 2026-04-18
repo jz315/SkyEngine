@@ -4,14 +4,12 @@
 //! to the ECS world.
 
 pub mod config;
-pub mod input;
 pub mod runner;
 
 #[cfg(feature = "egui")]
 pub(crate) mod egui_integration;
 
 pub use config::{AppConfig, RedrawMode};
-pub use input::{Input, KeyCode};
 pub use runner::{App, AppState, FrameContext};
 
 /// Re-export the egui crate for user convenience.

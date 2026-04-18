@@ -919,52 +919,6 @@ impl GpuContext {
         self.queue.submit(std::iter::once(finished));
     }
 
-    /// Execute a scoped render pass.
-    ///
-    /// # Panics
-    /// Panics if called outside a `begin_frame` / `end_frame` pair.
-    pub fn with_render_pass<F>(&mut self, desc: &wgpu::RenderPassDescriptor<'_>, f: F)
-    where
-        F: FnOnce(&mut wgpu::RenderPass<'_>),
-    {
-        let mut frame = self.frame();
-        let mut pass = frame.begin_render_pass(desc);
-        f(&mut *pass);
-    }
-
-    /// Execute a scoped compute pass.
-    ///
-    /// # Panics
-    /// Panics if called outside a `begin_frame` / `end_frame` pair.
-    pub fn with_compute_pass<F>(&mut self, desc: &wgpu::ComputePassDescriptor<'_>, f: F)
-    where
-        F: FnOnce(&mut wgpu::ComputePass<'_>),
-    {
-        let mut frame = self.frame();
-        let mut pass = frame.begin_compute_pass(desc);
-        f(&mut *pass);
-    }
-
-    /// Execute a scoped render pass targeting the current frame's surface.
-    pub fn with_surface_pass<F>(&mut self, label: &str, clear: Option<wgpu::Color>, f: F)
-    where
-        F: FnOnce(&mut wgpu::RenderPass<'_>),
-    {
-        let mut frame = self.frame();
-        let mut pass = frame.begin_surface_pass(label, Some(clear.unwrap_or(wgpu::Color::BLACK)));
-        f(&mut *pass);
-    }
-
-    /// Execute a scoped render pass that preserves the current surface contents.
-    pub fn with_surface_pass_loaded<F>(&mut self, label: &str, f: F)
-    where
-        F: FnOnce(&mut wgpu::RenderPass<'_>),
-    {
-        let mut frame = self.frame();
-        let mut pass = frame.begin_surface_pass_loaded(label);
-        f(&mut *pass);
-    }
-
     /// Finish the frame: submit the command encoder and present the surface.
     pub fn end_frame(&mut self) {
         let frame = self
@@ -1043,7 +997,7 @@ mod tests {
     use super::{
         align_up, DynamicUniformBuffer, FrameUploadArena, GpuContext, INITIAL_VERTEX_UPLOAD_BYTES,
     };
-    use crate::render::core::target::RenderTarget;
+    use crate::render::gpu::RenderTarget;
 
     fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());

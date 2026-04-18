@@ -7,8 +7,9 @@
 use sky_engine::app::{App, AppConfig, AppState, FrameContext};
 use sky_engine::ecs::{With, World};
 use sky_engine::gpu::GpuContext;
+use sky_engine::math::Vec2;
 use sky_engine::render::{
-    Camera, Color, Light2D, MainCamera, Projection, RenderPipelineAsset, RenderSettings,
+    CameraMarker, Color, MainCamera, PointLight, Projection, RenderPipelineAsset, RenderSettings,
     SpriteRenderer, Texture, Transform,
 };
 
@@ -83,11 +84,11 @@ impl AppState for LightingDemo {
         for orb in &self.orbs_data {
             let tint = Color::hsl(orb.hue, 0.72, 0.55);
             world.spawn((
-                Transform::new(orb.x, orb.y),
+                Transform::from_xy(orb.x, orb.y),
                 SpriteRenderer::new(orb.size, orb.size)
                     .texture(orb_tex.clone())
                     .color(Color::new(tint.r, tint.g, tint.b, 0.95)),
-                Light2D::new(orb.size * 7.0)
+                PointLight::new(orb.size * 7.0)
                     .intensity(orb.intensity)
                     .temperature(orb.temperature)
                     .color(tint)
@@ -123,13 +124,16 @@ impl AppState for LightingDemo {
         let mouse = ctx.input.mouse_position();
         let projection = projection.unwrap_or_else(|| Projection::orthographic(w as f32, h as f32));
         let camera_transform = camera_transform.unwrap_or_default();
-        let mouse_world =
-            projection.screen_to_world(camera_transform, [w, h], [mouse[0], mouse[1]]);
+        let mouse_world = projection.screen_to_world(
+            camera_transform,
+            Vec2::new(w as f32, h as f32),
+            Vec2::new(mouse[0], mouse[1]),
+        );
 
         let mut orbs = ctx.world.query::<(
             &mut Transform,
             &mut SpriteRenderer,
-            &mut Light2D,
+            &mut PointLight,
             &Velocity,
             &Hue,
             &mut Pulse,
@@ -170,7 +174,7 @@ impl AppState for LightingDemo {
 
         let mut mouse_light = ctx
             .world
-            .query::<(&mut Transform, &mut Light2D, &MouseLight)>();
+            .query::<(&mut Transform, &mut PointLight, &MouseLight)>();
         mouse_light.for_each(ctx.world, |(transform, light, _)| {
             transform.position[0] = mouse_world[0];
             transform.position[1] = mouse_world[1];
@@ -203,15 +207,15 @@ fn main() {
     world.insert_resource(RenderSettings::default());
     world.spawn((
         Transform::default(),
-        Camera::new(),
+        CameraMarker::new(),
         Projection::orthographic(1280.0, 720.0),
         MainCamera,
     ));
 
     // Mouse light entity.
     world.spawn((
-        Transform::new(0.0, 0.0),
-        Light2D::new(150.0)
+        Transform::from_xy(0.0, 0.0),
+        PointLight::new(150.0)
             .intensity(1.8)
             .temperature(5000.0)
             .color(Color::rgb(1.0, 0.95, 0.85))
@@ -223,7 +227,7 @@ fn main() {
         AppConfig::new("SkyEngine — ECS Lighting Demo", 1280, 720),
         world,
     )
-    .with_render_pipeline(RenderPipelineAsset::universal_2d())
+    .with_render_pipeline(RenderPipelineAsset::forward_2d())
     .run(LightingDemo::new(&mut rng));
 }
 

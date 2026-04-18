@@ -2,20 +2,6 @@ use super::composite::clear_render_target;
 use super::*;
 
 impl Live2DRenderer {
-    pub fn prepare_frame_for_surface(
-        &mut self,
-        ctx: &mut GpuContext,
-        model: &Live2DModel,
-        textures: &[Texture],
-        clipping: &mut Option<ClippingManager>,
-    ) -> PreparedLive2DFrame {
-        let format = ctx.surface_format();
-        let [w, h] = ctx.surface_size();
-        let mvp = model.render_matrix_for_view(w as f32, h as f32);
-        self.prepare_frame(ctx, format, [w, h], &mvp, model, textures, clipping)
-    }
-
-    /// Prepare all Live2D draw data for an arbitrary target format and size.
     pub fn prepare_frame_for_view(
         &mut self,
         ctx: &mut GpuContext,
@@ -77,20 +63,6 @@ impl Live2DRenderer {
             textures,
             clipping,
         )
-    }
-
-    /// Execute a previously prepared frame into the current surface.
-    pub fn execute_prepared_to_surface(
-        &mut self,
-        ctx: &mut GpuContext,
-        prepared: &PreparedLive2DFrame,
-    ) {
-        debug_assert_eq!(
-            prepared.target_format(),
-            ctx.surface_format(),
-            "PreparedLive2DFrame target format must match the current surface format",
-        );
-        self.execute_prepared_model_to_surface(ctx, prepared);
     }
 
     /// Execute a previously prepared frame into `target`.

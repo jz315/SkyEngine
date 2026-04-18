@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::gpu::GpuContext;
-use crate::render::core::texture::Texture;
+use crate::render::gpu::Texture;
 use crate::render::live2d::model::{Live2DLayout, Live2DModel};
 use crate::render::live2d::runtime::{
     Live2DBreath, Live2DExpressionPlayer, Live2DEyeBlink, Live2DLipSync, Live2DLook,

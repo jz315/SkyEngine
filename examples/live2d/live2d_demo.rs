@@ -1,6 +1,6 @@
 //! # Live2D Demo
 //!
-//! Render-domain integration example for loading and rendering Cubism models
+//! Render-feature integration example for loading and rendering Cubism models
 //! on top of the default ECS 2D render path, with an egui control panel for
 //! model switching and expression selection.
 //!
@@ -12,13 +12,13 @@
 
 use std::path::{Path, PathBuf};
 
-use sky_engine::app::{egui, App, AppConfig, AppState, FrameContext, KeyCode};
+use sky_engine::app::{egui, App, AppConfig, AppState, FrameContext};
 use sky_engine::ecs::{EntityId, World};
+use sky_engine::input::KeyCode;
 use sky_engine::render::expert::live2d::{Live2DLoadError, Live2DUserModel};
 use sky_engine::render::{
-    Camera, Color, Live2DDomain, Live2DModelInstance, MainCamera, OutputChainConfig, Projection,
-    RenderPipelineAsset, RenderQueueDesc, RenderQueueSort, RenderSettings, SortingLayer,
-    SpriteDomain, SpriteRenderer, Transform,
+    CameraMarker, Color, Live2DFeature, Live2DModelInstance, MainCamera, Projection,
+    RenderPipelineAsset, RenderSettings, SortingLayer, SpriteFeature, SpriteRenderer, Transform,
 };
 
 const DEFAULT_MODEL_PATH: &str =
@@ -176,9 +176,9 @@ impl Live2DDemoApp {
                 .expect("spawned Live2DModelInstance should be queryable")
                 .clone();
             let loaded = ctx
-                .with_domain_mut::<Live2DDomain, _>(|domain, gpu| {
-                    let index = domain.ensure_entity_loaded(entity, &instance, gpu)?;
-                    let user_model = domain
+                .with_feature_mut::<Live2DFeature, _>(|feature, gpu| {
+                    let index = feature.ensure_entity_loaded(entity, &instance, gpu)?;
+                    let user_model = feature
                         .user_model_for_entity(entity)
                         .expect("loaded Live2D model should be queryable");
                     Ok::<_, Live2DLoadError>((
@@ -186,12 +186,12 @@ impl Live2DDemoApp {
                         ModelSlot::from_user_model(entity, path, user_model),
                     ))
                 })
-                .expect("live2d_demo requires an installed Live2DDomain");
+                .expect("live2d_demo requires an installed Live2DFeature");
             match loaded {
                 Ok((index, slot)) => {
                     let drawable_count = ctx
-                        .with_domain_mut::<Live2DDomain, _>(|domain, _gpu| {
-                            domain
+                        .with_feature_mut::<Live2DFeature, _>(|feature, _gpu| {
+                            feature
                                 .model(index)
                                 .map(|model| model.drawable_count())
                                 .unwrap_or(0)
@@ -339,8 +339,8 @@ impl Live2DDemoApp {
             let drag_y = 1.0 - mouse_position[1] / surface_size[1].max(1) as f32 * 2.0;
             let active = self.active_entity();
             let tapped = ctx
-                .with_domain_mut::<Live2DDomain, _>(|domain, _gpu| {
-                    let Some(slot) = domain.user_model_mut_for_entity(active) else {
+                .with_feature_mut::<Live2DFeature, _>(|feature, _gpu| {
+                    let Some(slot) = feature.user_model_mut_for_entity(active) else {
                         return false;
                     };
                     let _ = slot.set_drag(drag_x, drag_y);
@@ -353,8 +353,8 @@ impl Live2DDemoApp {
             }
         } else {
             let active = self.active_entity();
-            let _ = ctx.with_domain_mut::<Live2DDomain, _>(|domain, _gpu| {
-                if let Some(slot) = domain.user_model_mut_for_entity(active) {
+            let _ = ctx.with_feature_mut::<Live2DFeature, _>(|feature, _gpu| {
+                if let Some(slot) = feature.user_model_mut_for_entity(active) {
                     let _ = slot.clear_drag();
                 }
             });
@@ -363,8 +363,8 @@ impl Live2DDemoApp {
 
     fn update_active_model(&mut self, ctx: &mut FrameContext<'_>, dt: f32) {
         let active = self.active_entity();
-        let _ = ctx.with_domain_mut::<Live2DDomain, _>(|domain, _gpu| {
-            if let Some(slot) = domain.user_model_mut_for_entity(active) {
+        let _ = ctx.with_feature_mut::<Live2DFeature, _>(|feature, _gpu| {
+            if let Some(slot) = feature.user_model_mut_for_entity(active) {
                 slot.update(dt);
             }
         });
@@ -372,8 +372,8 @@ impl Live2DDemoApp {
 
     fn drain_runtime_events(&mut self, ctx: &mut FrameContext<'_>) {
         let active = self.active_entity();
-        let _ = ctx.with_domain_mut::<Live2DDomain, _>(|domain, _gpu| {
-            let Some(slot) = domain.user_model_mut_for_entity(active) else {
+        let _ = ctx.with_feature_mut::<Live2DFeature, _>(|feature, _gpu| {
+            let Some(slot) = feature.user_model_mut_for_entity(active) else {
                 return;
             };
 
@@ -477,8 +477,8 @@ impl AppState for Live2DDemoApp {
         if let Some((group_name, motion_index, motion_name)) = actions.clicked_motion {
             let active = self.active_entity();
             let played = ctx
-                .with_domain_mut::<Live2DDomain, _>(|domain, _gpu| {
-                    domain
+                .with_feature_mut::<Live2DFeature, _>(|feature, _gpu| {
+                    feature
                         .user_model_mut_for_entity(active)
                         .is_some_and(|slot| slot.set_motion(&group_name, motion_index))
                 })
@@ -491,8 +491,8 @@ impl AppState for Live2DDemoApp {
             let expression_name = self.active_slot().expression_names[expression_index].clone();
             let active = self.active_entity();
             let played = ctx
-                .with_domain_mut::<Live2DDomain, _>(|domain, _gpu| {
-                    domain
+                .with_feature_mut::<Live2DFeature, _>(|feature, _gpu| {
+                    feature
                         .user_model_mut_for_entity(active)
                         .is_some_and(|slot| slot.set_expression(&expression_name))
                 })
@@ -665,7 +665,7 @@ fn main() {
     });
     world.spawn((
         Transform::default(),
-        Camera::new(),
+        CameraMarker::new(),
         Projection::orthographic(1280.0, 720.0),
         MainCamera,
     ));
@@ -683,28 +683,9 @@ fn main() {
     ));
 
     let pipeline = RenderPipelineAsset::builder()
-        .add_stage("Opaque")
-        .add_stage("Transparent")
-        .add_stage("Overlay")
-        .add_queue(RenderQueueDesc::new(
-            "transparent",
-            "Transparent",
-            RenderQueueSort::TransparentScene,
-        ))
-        .add_queue(RenderQueueDesc::new(
-            "overlay",
-            "Overlay",
-            RenderQueueSort::OverlayStable,
-        ))
-        .add_domain(SpriteDomain::unlit(), "transparent")
-        .add_domain(Live2DDomain::new(), "overlay")
-        .output_chain(
-            OutputChainConfig::after_stage("Transparent")
-                .bloom(false)
-                .vignette(false)
-                .tonemap(false)
-                .color_resolve(false),
-        )
+        .add_feature(SpriteFeature::unlit())
+        .add_feature(Live2DFeature::new())
+        .add_phase(sky_engine::render::expert::TransparentPhase::new())
         .build();
 
     App::new(config, world)

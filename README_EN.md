@@ -7,7 +7,7 @@
     <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/Rust-2021_Edition-orange?logo=rust&logoColor=white" alt="Rust"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
     <a href="https://github.com/nicories/wgpu"><img src="https://img.shields.io/badge/GPU-wgpu_24-green?logo=webgpu" alt="wgpu"></a>
-    <a href="BENCHMARKS.md"><img src="https://img.shields.io/badge/Bench-Criterion-purple" alt="Criterion"></a>
+    <a href="benches/BENCHMARKS.md"><img src="https://img.shields.io/badge/Bench-Criterion-purple" alt="Criterion"></a>
   </p>
 </p>
 
@@ -22,7 +22,7 @@
 **SkyEngine** is a high-performance game engine built from scratch in Rust, standing on two pillars:
 
 1. **Chunk-Columnar Archetype ECS** — Components of the same type are stored contiguously within fixed-size memory chunks, naturally aligning with hardware prefetching for extreme iteration performance.
-2. **Programmable Scene Rendering** — A high-level `RenderPipelineAsset + RenderComposer` model coordinates ECS 2D, Live2D, and future render domains on top of a declarative render graph, with built-in SpriteBatch, dynamic lighting, Bloom/ToneMap/Vignette post-processing, and Live2D Cubism SDK integration.
+2. **Programmable Scene Rendering** — A high-level `RenderPipelineAsset + RenderComposer` model coordinates ECS 2D, Live2D, and future renderer features on top of a declarative render graph, with built-in SpriteBatch, dynamic lighting, Bloom/ToneMap/Vignette post-processing, and Live2D Cubism SDK integration.
 
 SkyEngine takes the **library approach**: no proc macros, no global state, no imposed application structure. Use just the ECS, or combine it with the full rendering pipeline — everything is opt-in.
 
@@ -30,6 +30,7 @@ SkyEngine takes the **library approach**: no proc macros, no global state, no im
 > - In fair benchmarks, iteration performance is **2.7x–4.2x faster than hecs**, with overall frame simulation **14% ahead of hecs, 19% ahead of Bevy**.
 > - Pure Rust, zero-unsafe typed query API while retaining a low-level raw API for tooling and scripting.
 > - Batteries-included rendering: RenderGraph with automatic resource aliasing, transient allocation, and dead-pass culling — no manual GPU resource lifetime management.
+> - An engine-owned `sky_engine::math` layer now fronts shared math types while the current backend remains `glam`.
 
 ---
 
@@ -140,7 +141,7 @@ fn main() {
 
 ## 📊 Benchmarks
 
-All data from `cargo bench --bench fair` — apples-to-apples comparison using Criterion on the same Windows machine. Full history in [BENCHMARKS.md](BENCHMARKS.md).
+All data from `cargo bench --bench fair` — apples-to-apples comparison using Criterion on the same Windows machine. Full history in [benches/BENCHMARKS.md](benches/BENCHMARKS.md).
 
 ### Iteration Performance
 
@@ -182,11 +183,13 @@ See [`examples/README.md`](examples/README.md) for the full example index and re
 Recommended high-level render workflow:
 
 - `clear_screen` and similar minimal samples stay on the no-pipeline `ctx.gpu()` path
-- install the default unified scene pipeline with `App::with_render_pipeline(RenderPipelineAsset::universal_2d())`
+- install the default unified scene pipeline with `App::with_render_pipeline(RenderPipelineAsset::forward_2d())`
 - call `ctx.render()` inside `update()`
-- customize the high-level flow by defining your own `stage / queue / domain / feature / output chain`
-- combine multiple renderer families by attaching multiple `RenderDomain`s to one pipeline
-- add a brand new renderer type by implementing a `RenderDomain`
+- customize the high-level flow by registering your own `phase / compute / pass / postfx / feature` steps
+- combine multiple renderer families by composing multiple features, extractors, and draw functions into one pipeline
+- add a brand new renderer type by implementing a `RenderFeature`, `Extractor`, `DrawFunction`, or custom pipeline step
+- `StandardMaterial` normal maps now use tangent-space shading, and `Mesh::from_gltf(...)` prepares tangent data for that path
+- `RenderPipelineAsset::forward_3d()` now runs a directional shadow-map phase automatically for perspective views with shadow-casting `DirectionalLight`s
 - drop to `render::expert::*` only when you need direct graph / pass / target control
 
 ### 1. ECS Tutorials (no GPU required)
@@ -212,7 +215,7 @@ Recommended order:
 7. `perf_test` — inspect throughput and scaling after the main path is clear
 8. `renderer_probe` — inspect scene-pipeline workload and timing stats on the default universal path
 
-`live2d_demo` is the first multi-domain branch and is best read after the main path.
+`live2d_demo` is the first multi-feature branch and is best read after the main path.
 
 ```bash
 cargo run --example clear_screen          --features app
@@ -316,7 +319,7 @@ SkyEngine/
 │   └── legacy/                 #   Historical SkyEngine CPU demos
 ├── benches/                    # 📊 Criterion benchmarks
 ├── docs/                       # 📖 Documentation
-├── BENCHMARKS.md               # Benchmark methodology and history
+├── benches/BENCHMARKS.md       # Benchmark methodology and history
 ├── Cargo.toml
 └── LICENSE                     # MIT
 ```
@@ -392,7 +395,7 @@ Contributions are welcome! Please follow this workflow:
 | Document | Description |
 |----------|-------------|
 | [API Reference](docs/api.md) | Full ECS API documentation |
-| [BENCHMARKS.md](BENCHMARKS.md) | Benchmark methodology and history |
+| [benches/BENCHMARKS.md](benches/BENCHMARKS.md) | Benchmark methodology and history |
 | [src/render/AGENTS.md](src/render/AGENTS.md) | Rendering module architecture guide |
 | [src/render/graph/AGENTS.md](src/render/graph/AGENTS.md) | RenderGraph detailed design docs |
 

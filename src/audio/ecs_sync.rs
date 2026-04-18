@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use crate::ecs::World;
-use crate::render::{PrimaryCamera2D, Transform2D};
+use crate::render::{MainCamera, Transform};
 
 use super::server::AudioServer;
 use super::types::{AudioError, AudioPlaybackSettings};
@@ -13,7 +13,7 @@ impl AudioServer {
         self.set_listener_pose(listener_position, listener_rotation)?;
 
         let mut seen = HashSet::new();
-        let mut emitters = world.query::<(&Transform2D, &AudioEmitter2D)>();
+        let mut emitters = world.query::<(&Transform, &AudioEmitter2D)>();
         emitters.for_each_with_entity(world, |entity, (transform, emitter)| {
             if !emitter.enabled || !emitter.autoplay {
                 let _ = self.stop_emitter_binding(entity);
@@ -43,7 +43,7 @@ impl AudioServer {
 }
 
 fn find_listener_pose(world: &World) -> ([f32; 2], f32) {
-    let mut explicit = world.query::<(&AudioListener2D, &Transform2D)>();
+    let mut explicit = world.query::<(&AudioListener2D, &Transform)>();
     let mut result = None;
     explicit.for_each(world, |(listener, transform)| {
         if result.is_none() && listener.enabled {
@@ -54,7 +54,7 @@ fn find_listener_pose(world: &World) -> ([f32; 2], f32) {
         return result;
     }
 
-    let mut camera = world.query::<(&PrimaryCamera2D, &Transform2D)>();
+    let mut camera = world.query::<(&MainCamera, &Transform)>();
     let mut fallback = None;
     camera.for_each(world, |(_, transform)| {
         if fallback.is_none() {
@@ -68,18 +68,15 @@ fn find_listener_pose(world: &World) -> ([f32; 2], f32) {
 mod tests {
     use super::*;
     use crate::ecs::World;
-    use crate::render::PrimaryCamera2D;
+    use crate::render::MainCamera;
 
     #[test]
     fn explicit_listener_wins_over_camera() {
         let mut world = World::new();
-        world.spawn((
-            PrimaryCamera2D,
-            Transform2D::new(5.0, 6.0).with_rotation(1.0),
-        ));
+        world.spawn((MainCamera, Transform::from_xy(5.0, 6.0).with_rotation(1.0)));
         world.spawn((
             AudioListener2D::default(),
-            Transform2D::new(1.0, 2.0).with_rotation(0.25),
+            Transform::from_xy(1.0, 2.0).with_rotation(0.25),
         ));
 
         let (position, rotation) = find_listener_pose(&world);
@@ -90,10 +87,7 @@ mod tests {
     #[test]
     fn primary_camera_is_used_when_no_explicit_listener_exists() {
         let mut world = World::new();
-        world.spawn((
-            PrimaryCamera2D,
-            Transform2D::new(3.0, 4.0).with_rotation(0.75),
-        ));
+        world.spawn((MainCamera, Transform::from_xy(3.0, 4.0).with_rotation(0.75)));
 
         let (position, rotation) = find_listener_pose(&world);
         assert_eq!(position, [3.0, 4.0]);

@@ -11,7 +11,9 @@ struct ClearScreen;
 
 impl AppState for ClearScreen {
     fn update(&mut self, ctx: &mut FrameContext) {
-        ctx.gpu().with_surface_pass(
+        let gpu = ctx.gpu();
+        let mut frame = gpu.frame();
+        let _pass = frame.begin_surface_pass(
             "clear",
             Some(wgpu::Color {
                 r: 0.1,
@@ -19,7 +21,6 @@ impl AppState for ClearScreen {
                 b: 0.3,
                 a: 1.0,
             }),
-            |_| {},
         );
     }
 }

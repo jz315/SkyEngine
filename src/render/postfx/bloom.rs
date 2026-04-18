@@ -1,8 +1,8 @@
 //! Bloom post-processing.
 
 use crate::gpu::GpuContext;
-use crate::render::core::fullscreen::{FullscreenPass, FullscreenPipeline};
-use crate::render::core::target::RenderTarget;
+use crate::render::gpu::RenderTarget;
+use crate::render::gpu::{FullscreenPass, FullscreenPipeline};
 use crate::render::postfx::PostFx;
 
 #[repr(C)]
@@ -301,27 +301,25 @@ impl Bloom {
         } else {
             wgpu::LoadOp::Load
         };
-        ctx.with_render_pass(
-            &wgpu::RenderPassDescriptor {
-                label: Some("bloom_pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: output.view(),
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                ..Default::default()
+        let color_attachments = [Some(wgpu::RenderPassColorAttachment {
+            view: output.view(),
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load,
+                store: wgpu::StoreOp::Store,
             },
-            |pass| {
-                pass.set_pipeline(pipeline);
-                pass.set_bind_group(0, input_bg, &[]);
-                pass.set_bind_group(1, &self.params_bind_group, &[]);
-                FullscreenPass::draw(pass);
-            },
-        );
+        })];
+        let mut frame = ctx.frame();
+        let mut pass = frame.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("bloom_pass"),
+            color_attachments: &color_attachments,
+            depth_stencil_attachment: None,
+            ..Default::default()
+        });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, input_bg, &[]);
+        pass.set_bind_group(1, &self.params_bind_group, &[]);
+        FullscreenPass::draw(&mut pass);
     }
 
     pub fn apply(&mut self, ctx: &mut GpuContext, input: &RenderTarget, output: &RenderTarget) {
@@ -433,27 +431,25 @@ impl Bloom {
                 },
             ],
         });
-        ctx.with_render_pass(
-            &wgpu::RenderPassDescriptor {
-                label: Some("bloom_combine_pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: output.view(),
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                ..Default::default()
+        let color_attachments = [Some(wgpu::RenderPassColorAttachment {
+            view: output.view(),
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                store: wgpu::StoreOp::Store,
             },
-            |pass| {
-                pass.set_pipeline(combine_pipeline.as_ref());
-                pass.set_bind_group(0, &combine_bg, &[]);
-                pass.set_bind_group(1, &self.params_bind_group, &[]);
-                FullscreenPass::draw(pass);
-            },
-        );
+        })];
+        let mut frame = ctx.frame();
+        let mut pass = frame.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("bloom_combine_pass"),
+            color_attachments: &color_attachments,
+            depth_stencil_attachment: None,
+            ..Default::default()
+        });
+        pass.set_pipeline(combine_pipeline.as_ref());
+        pass.set_bind_group(0, &combine_bg, &[]);
+        pass.set_bind_group(1, &self.params_bind_group, &[]);
+        FullscreenPass::draw(&mut pass);
     }
 }
 

@@ -3,10 +3,9 @@
 ## Architecture Overview
 
 ```text
-Application / AppRunner
+Application / App
     -> GpuContext
         -> active frame ownership
-        -> compatibility facade (`with_*`)
         -> frame upload arena (`upload_vertices`, `upload_indices_u16`)
         -> samplers / device / queue
     -> GpuFrame
@@ -29,7 +28,6 @@ Application / AppRunner
 `render::core::camera` also exposes a small view abstraction now:
 
 - `ViewUniform` is the packed GPU view struct
-- `CameraUniform` remains as a compatibility alias
 - `RenderView` is the pass-facing trait implemented by `Camera2D`
 
 `RenderGraph` still keeps its own copy/upload execution path and submit boundaries. It does not currently reuse the frame upload arena.
@@ -81,17 +79,6 @@ Notes:
 - surface-backed contexts acquire the swapchain image in `begin_frame()`
 - headless contexts still allow `begin_frame()` so target-only rendering can use the same frame API
 - `end_frame()` always submits the encoder; presentation only happens when a surface exists
-
-### Compatibility facade
-
-Older scoped helpers remain available:
-
-- `with_surface_pass(...)`
-- `with_surface_pass_loaded(...)`
-- `with_render_pass(...)`
-- `with_compute_pass(...)`
-
-These are compatibility wrappers on top of the explicit frame recorder. New render code should prefer `ctx.frame()`.
 
 ### `flush()`
 
@@ -247,9 +234,7 @@ let tex = Texture::from_file_desc(
 );
 ```
 
-### Convenience wrappers
-
-These are still kept for compatibility:
+### Convenience constructors
 
 - `from_rgba8(...)`
 - `from_rgba8_with_label(...)`
@@ -262,7 +247,7 @@ Defaults:
 - `from_rgba8` / `from_png` still mean **sRGB color texture**
 - non-color data must opt into an explicit format
 
-This keeps old call sites stable while removing the assumption that every uploaded texture is sRGB.
+These constructors keep common color-texture uploads short while preserving explicit format control for non-color data.
 
 ---
 
@@ -313,9 +298,19 @@ batch.flush_to_surface(&mut ctx, &camera, Some(clear));
 
 - `Mesh::from_vertices(...)` for non-indexed geometry
 - `Mesh::from_vertices_indices(...)` for indexed geometry via `MeshIndexData::U16` / `MeshIndexData::U32`
+- `Mesh::from_gltf(...)` expands triangle primitives into sub-meshes and uploads tangent-capable vertex data
 - vertex and index buffers are created with `COPY_DST`, so the resource shape is future-proof for dynamic updates
+- high-level material pipelines resolve vertex inputs by semantic against the actual mesh layout, so compatible superset layouts are accepted
 
 `MeshPass` is the runtime renderer for those meshes:
+
+For the high-level programmable renderer:
+
+- `UnlitMaterial` requires `Position + UV0`
+- `StandardMaterial` requires `Position + Normal + UV0`
+- `StandardMaterial` with `normal_texture` requires `Position + Normal + Tangent + UV0`
+- glTF meshes loaded through `Mesh::from_gltf(...)` provide tangent data for `StandardMaterial` normal mapping
+- `RenderPipelineAsset::forward_3d()` now includes a directional-shadow phase; perspective views with visible shadow-casting `DirectionalLight`s produce a per-view shadow map consumed by `StandardMaterial`
 
 - shader contract reserves bind group `0` for the shared `ViewUniform`
 - `create_pipeline_cache(...)` builds a `MaterialPipelineCache` with that reserved view slot

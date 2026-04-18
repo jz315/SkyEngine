@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::gpu::GpuContext;
-use crate::render::core::texture::{Texture, TextureUploadDesc};
+use crate::render::gpu::{Texture, TextureUploadDesc};
 use crate::render::live2d::model::{Live2DLayout, Live2DModel};
 
 use super::*;

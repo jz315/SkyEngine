@@ -11,7 +11,8 @@
 use sky_engine::app::{App, AppConfig, AppState, FrameContext};
 use sky_engine::ecs::World;
 use sky_engine::render::{
-    Camera, Color, MainCamera, Projection, RenderPipelineAsset, SpriteRenderer, Transform,
+    CameraMarker, Color, MainCamera, Projection, RenderPipelineAsset, SpriteFeature,
+    SpriteRenderer, Transform, TransparentPhase,
 };
 
 const NUM_SPRITES: usize = 5000;
@@ -93,7 +94,7 @@ fn main() {
     let mut world = World::new();
     world.spawn((
         Transform::default(),
-        Camera::new(),
+        CameraMarker::new(),
         Projection::orthographic(960.0, 640.0),
         MainCamera,
     ));
@@ -102,7 +103,7 @@ fn main() {
         let size = rng.range(4.0, 20.0);
         let hue = rng.range(0.0, 360.0);
         world.spawn((
-            Transform::new(rng.range(-480.0, 480.0), rng.range(-320.0, 320.0)),
+            Transform::from_xy(rng.range(-480.0, 480.0), rng.range(-320.0, 320.0)),
             SpriteRenderer::new(size, size).color(Color::hsl(hue, 0.8, 0.6)),
             Velocity {
                 x: rng.range(-60.0, 60.0),
@@ -117,7 +118,12 @@ fn main() {
         AppConfig::new("SkyEngine — ECS Sprite Demo", 960, 640),
         world,
     )
-    .with_render_pipeline(RenderPipelineAsset::universal_unlit())
+    .with_render_pipeline(
+        RenderPipelineAsset::builder()
+            .add_feature(SpriteFeature::unlit())
+            .add_phase(TransparentPhase::new())
+            .build(),
+    )
     .run(SpriteDemo {
         fps_smooth: 0.0,
         frame_count: 0,

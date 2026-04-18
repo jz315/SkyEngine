@@ -18,13 +18,15 @@
 
 use std::f32::consts::TAU;
 
-use sky_engine::app::{App, AppConfig, KeyCode};
+use sky_engine::app::{App, AppConfig};
 use sky_engine::ecs::{EntityId, PreparedQuery, System, World};
 use sky_engine::gpu::GpuContext;
+use sky_engine::input::KeyCode;
+use sky_engine::math::Transform;
 use sky_engine::render::expert::{
     Bloom, CompositePass, Light2D, LightPass, RenderGraph, SpriteBatch, TargetSize, ToneMap,
 };
-use sky_engine::render::{Camera2D, Color, Sprite, Texture};
+use sky_engine::render::{Camera, Color, Sprite, Texture};
 
 // ─── Configuration ──────────────────────────────────────────────────────────
 
@@ -571,7 +573,7 @@ fn speed_color(speed: f32) -> Color {
 // ─── Render state ───────────────────────────────────────────────────────────
 
 struct RenderState {
-    camera: Camera2D,
+    camera: Camera,
     scene_batch: SpriteBatch,
     normal_batch: SpriteBatch,
     circle_tex: Texture,
@@ -598,7 +600,7 @@ impl RenderState {
         tonemap.gamma = 2.2;
 
         Self {
-            camera: Camera2D::new(W, H),
+            camera: Camera::new(W, H),
             scene_batch: SpriteBatch::new(gpu),
             normal_batch: SpriteBatch::new(gpu),
             circle_tex: Texture::circle(gpu, 32),
@@ -742,7 +744,7 @@ fn main() {
         let mouse_sim_y = (mouse[1] / win_h as f32) * H;
         let mouse_valid = mouse[0] >= 0.0 && mouse[0] < win_w as f32;
 
-        // For rendering we flip Y because Camera2D uses +Y up.
+        // For rendering we flip Y because the Camera uses +Y up.
         let mouse_render_y = H - mouse_sim_y;
 
         // ── ECS: update input resource & tick simulation ─────────
@@ -771,7 +773,7 @@ fn main() {
         let rs = render_state.as_mut().unwrap();
 
         // Camera centred so that world coords [0,W]×[0,H] fill the viewport.
-        rs.camera.position = [W * 0.5, H * 0.5];
+        rs.camera.transform = Transform::from_xyz(W * 0.5, H * 0.5, 0.0);
 
         // ── Build sprites ───────────────────────────────────────
         rs.scene_batch.set_texture(&rs.circle_tex);

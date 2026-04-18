@@ -4,7 +4,7 @@
 //! actual wgpu textures and buffers.
 
 use super::*;
-use crate::render::core::target::RenderTargetDescriptor;
+use crate::render::gpu::RenderTargetDescriptor;
 
 impl RenderGraph {
     // ── Physical resource management ────────────────────────────────────

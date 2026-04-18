@@ -11,12 +11,12 @@ use sky_engine::app::{App, AppConfig, AppState, FrameContext};
 use sky_engine::ecs::World;
 use sky_engine::gpu::GpuContext;
 use sky_engine::render::expert::SpriteBatch;
-use sky_engine::render::{Camera2D, Color, Sprite, Texture};
+use sky_engine::render::{Camera, Color, Sprite, Texture};
 
 struct PerfTest {
     batch: Option<SpriteBatch>,
     circle_tex: Option<Texture>,
-    camera: Camera2D,
+    camera: Camera,
     positions: Vec<(f32, f32, f32, f32, f32)>,
     time: f32,
     frame_count: u64,
@@ -53,7 +53,7 @@ impl PerfTest {
         Self {
             batch: None,
             circle_tex: None,
-            camera: Camera2D::new(1280.0, 720.0),
+            camera: Camera::new(1280.0, 720.0),
             positions,
             time: 0.0,
             frame_count: 0,

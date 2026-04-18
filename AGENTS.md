@@ -3,16 +3,17 @@
 ## Overview
 - This repo is a Rust game engine with a chunk-based ECS core and a `wgpu`-based 2D rendering framework.
 - **ECS**: the performance-critical paths are typed prepared queries, chunk iteration, and structural entity/component transitions. Entities, bundles, typed queries, optional query params, filters, deferred commands, resources, and a lightweight system schedule are all in active use.
-- **Rendering**: the default high-level path is `RenderComposer` + `RenderDomain`, with `Ecs2DDomain` as the main built-in scene domain. Internally, execution is shared through `PreparedFrame` / `PreparedView`, `FramePipeline`, and `RenderGraph`. The GPU backend is `wgpu`.
-- **App lifecycle**: `AppRunner` manages the winit event loop, GPU context, and frame lifecycle behind the `app` feature flag.
+- **Rendering**: the default high-level path is `RenderComposer` + registration-driven `RenderPipelineAsset` / `RenderPipelineBuilder`, with built-in `SpriteFeature`, `OpaquePhase`, `TransparentPhase`, and optional `Live2DFeature`. Internally, execution is shared through `PreparedFrame` / `PreparedView`, `FramePipeline`, and `RenderGraph`. The GPU backend is `wgpu`.
+- **App lifecycle**: `App` manages the winit event loop, GPU context, and frame lifecycle behind the `app` feature flag.
 - Benchmarks are Criterion-based under `benches/`, with a single canonical `fair` target and engine-specific implementations split under `benches/fair/`.
 
 ## Canonical API Surface
 - **ECS** entry points: `sky_engine::ecs` — `World`, `EntityId`, `Bundle`, `PreparedQuery`, `Commands`, `With`, `Without`, `System`, `Time`.
-- **Render** entry points: `sky_engine::render` — `RenderComposer`, `RenderDomain`, `Ecs2DDomain`, `Live2DDomain`, `RenderFeature2D`, `RenderSettings2D`, `Camera2D`, `Texture`.
-- **Expert render** entry points: `sky_engine::render::expert` — `FramePipeline`, `RenderGraph`, `RenderPipeline2D`, passes, post-fx, targets, and lower-level GPU composition primitives.
+- **Render** entry points: `sky_engine::render` — `RenderComposer`, `RenderPipelineAsset`, `RenderPipelineBuilder`, `RenderFeature`, `RenderPhase`, `SpriteFeature`, `Camera`, `Color`, `Texture`.
+- **Expert render** entry points: `sky_engine::render::expert` — `FramePipeline`, `RenderGraph`, `DrawFunction`, `OpaquePhase`, `TransparentPhase`, passes, post-fx, targets, and lower-level GPU composition primitives.
 - **GPU** entry points: `sky_engine::gpu` — `GpuContext` (wraps wgpu device/queue/surface).
-- **App** entry points: `sky_engine::app` (behind `features = ["app"]`) — `AppRunner`, `AppConfig`, `Input`.
+- **Input** entry points: `sky_engine::input` (behind `features = ["app"]`) — `Input`, `InputActions`, `InputBinding`.
+- **App** entry points: `sky_engine::app` (behind `features = ["app"]`) — `App`, `AppConfig`, `FrameContext`.
 - Preferred entity construction is bundle-based: `world.spawn((A, B, ...))` and `world.spawn_batch(...)`.
 - Preferred query construction is typed: `world.query::<Q>()` or `world.query_filtered::<Q, Flt>()`.
 - Low-level compatibility/benchmark helpers live under `sky_engine::ecs::raw`.
@@ -50,26 +51,33 @@
 - `examples/demo/`: full GPU showcase demos (`boids`, `boids_classic`, `cosmic_jellyfish`, `neon_galaxy`).
 - `examples/legacy/particles.rs`, `examples/legacy/asteroids.rs`, `examples/legacy/snake.rs`: legacy CPU-rendered demos.
 - `examples/compare/boids_hecs.rs`, `examples/compare/boids_bevy.rs`, `examples/compare/boids_bevy_gpu.rs`: comparison examples.
-- `README.md`, `README_CN.md`: user-facing overview and quick-start docs.
-- `BENCHMARKS.md`: benchmark policy, history, and recorded local results.
+- `README.md`, `README_EN.md`: user-facing overview and quick-start docs.
+- `benches/BENCHMARKS.md`, `benches/BENCHMARKS_CN.md`: benchmark policy, history, and recorded local results.
 - `docs/api.md`: API notes/reference material.
 - `src/gpu/context.rs`: `GpuContext` — wgpu device/queue/surface wrapper, headless mode for tests, frame encoder lifecycle.
 - `src/gpu/mod.rs`: GPU module re-exports.
 - `src/render/`: 2D rendering framework (see `src/render/AGENTS.md` for full module docs).
 - `src/render/mod.rs`: render module re-exports.
-- `src/render/core/`: foundational GPU types — `Camera2D`, `Color`, `Texture`, `RenderTarget`, `FullscreenPass`.
-- `src/render/gpu_scene2d.rs`: persistent GPU-side scene/cache uploader used by the high-level renderer.
+- `src/render/component/`: ECS-facing render components and settings — camera markers/viewports, sprite/mesh/light components, render settings.
+- `src/render/view/`: camera/view/projection/frustum/viewport/transform resolution types used to build `SceneView`s.
+- `src/render/gpu/`: shared GPU resource layer — `Texture`, `RenderTarget`, fullscreen helpers, `GpuScene`, `GpuTableManager`.
+- `src/render/lighting/`: light data, GPU light tables, `LightPass`, and directional shadow support.
+- `src/render/sprite/`: sprite rendering and `SpriteBatch`.
+- `src/render/mesh/`: mesh rendering and `MeshPass`.
+- `src/render/composite/`: `CompositePass` for scene/light composition.
+- `src/render/runtime/`: high-level runtime orchestration around `RenderComposer`.
+- `src/render/runtime/presentation.rs`: internal viewport presentation/blit node used by the runtime.
+- `src/render/runtime/stats.rs`: render timing helpers and `RenderTimingStats`.
+- `src/render/execution/`: generic prepared-frame execution backbone around `FramePipeline`.
 - `src/render/graph/`: declarative render graph system (see `src/render/graph/AGENTS.md` for detailed docs).
-- `src/render/pipeline/`: internal 2D scene-domain backend (`Ecs2DDomain` support code plus expert `RenderPipeline2D` adapter).
-- `src/render/passes/`: high-level rendering passes — `SpriteBatch`, `LightPass`, `CompositePass`.
+- `src/render/pipeline/`: registration-driven pipeline builder/runtime traits, asset descriptors, and phase/pass/postfx/compute extension points.
 - `src/render/postfx/`: post-processing effects — `Bloom`, `ToneMap`, `Vignette`.
 - `src/render/resources/`: shared resource systems — `TextureAtlas`, `Blackboard`, `Material*`.
 - `src/render/shaders/`: all WGSL shader sources.
-- `src/render/light.rs`: `Light2D` — 2D point light descriptor and color temperature utility.
 - `src/render/live2d/`: Live2D Cubism model renderer (see `src/render/live2d/AGENTS.md`, feature-gated).
-- `src/app/runner.rs`: `AppRunner` — winit event loop, frame lifecycle, GPU context management.
+- `src/app/runner.rs`: `App` — winit event loop, frame lifecycle, GPU context management.
 - `src/app/config.rs`: `AppConfig` — window title, size, vsync.
-- `src/app/input.rs`: `Input` — keyboard/mouse state tracking.
+- `src/input/`: `Input`, action maps, bindings, and raw keyboard/mouse state helpers.
 
 ## Current Query Model
 - Preferred runtime path: `world.query::<Q>() -> PreparedQuery<Q>` and `world.query_filtered::<Q, Flt>() -> PreparedQuery<Q, Flt>`.
@@ -132,7 +140,7 @@
 - `fair` only includes workloads that Sky, hecs, and Bevy can all express through safe public APIs.
 - Query/prepared state must be created outside the timed loop in `fair` for every engine.
 - Engine-specific fair implementations live under `benches/fair/` and are selected via Criterion filters rather than separate bench targets.
-- Historical benchmark numbers live in `BENCHMARKS.md`; treat them as machine-specific and time-specific.
+- Historical benchmark numbers live in `benches/BENCHMARKS.md` / `benches/BENCHMARKS_CN.md`; treat them as machine-specific and time-specific.
 
 ## Implementation Guidelines
 - Prefer bundle-based `spawn` / `spawn_batch` for normal runtime code.
@@ -148,12 +156,12 @@
 - If schedule code changes, preserve group creation order and fixed-step accumulator semantics.
 - Do not rely on `src/main.rs` for correctness, benchmarks, or API direction; it is not the source of truth.
 - Examples are useful usage references, but benchmark behavior and correctness expectations come from `src/` tests plus the bench suites.
-- Render and app-facing example builds are part of the compatibility surface. If you change high-level render APIs, `RenderComposer`, `RenderDomain`, `App`, or demo/shared render helpers, run `cargo check --examples --features app` instead of relying only on unit tests.
-- Unify heterogeneous renderers at the composition layer (`RenderComposer` / `RenderDomain` / `PreparedFrame` / `PreparedView`), not by forcing every renderer domain into `SceneCache2D` or `GpuScene2D`.
-- `GpuScene2D` is the sprite/light payload for the current high-level renderer, not the universal frame schema for all future renderers.
-- When adding a new renderer domain (for example Live2D, text, particles, mesh-like 2D), prefer: domain-specific prepare/cache/upload path + feature node + typed frame payload entry.
-- Keep render-domain execution contexts generic. Prefer typed payload access over adding one-off renderer-specific fields to shared execution state.
-- Only introduce shared scene-level abstractions for concepts that are truly cross-domain, such as view/camera/viewport/order/layer semantics. Do not prematurely unify geometry/material/runtime models.
+- Render and app-facing example builds are part of the compatibility surface. If you change high-level render APIs, `RenderComposer`, `RenderPipelineAsset`, `RenderPipelineBuilder`, `RenderPhase`, `App`, or demo/shared render helpers, run `cargo check --examples --features app` instead of relying only on unit tests.
+- Unify heterogeneous renderers at the composition layer (`RenderComposer` / `RenderPipelineAsset` / `PreparedFrame` / `PreparedView`), not by forcing every renderer feature into one shared scene schema.
+- `GpuScene` is the shared scene upload layer for the current high-level renderer, not the universal frame schema for every future renderer payload.
+- When adding a new renderer family (for example Live2D, text, particles, mesh-like 2D), prefer: family-specific prepare/cache/upload path + feature registration + typed frame/view payload entry.
+- Keep render-phase and draw execution contexts generic. Prefer typed payload access over adding one-off renderer-specific fields to shared execution state.
+- Only introduce shared scene-level abstractions for concepts that are truly cross-feature, such as view/camera/viewport/order/layer semantics. Do not prematurely unify geometry/material/runtime models.
 
 ## Render Graph Guidelines
 - The render graph has its own detailed `AGENTS.md` at `src/render/graph/AGENTS.md`; read it before modifying graph internals.

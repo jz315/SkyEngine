@@ -14,9 +14,9 @@ use std::time::Instant;
 use sky_engine::ecs::{EntityId, World};
 use sky_engine::gpu::GpuContext;
 use sky_engine::render::{
-    BloomSettings, Camera, CameraViewport, Color, Light2D, MainCamera, Projection, RenderComposer,
-    RenderPipelineAsset, RenderSettings, RenderStats, SpriteRenderer, ToneMapSettings, Transform,
-    ViewportRect, VignetteSettings,
+    BloomSettings, CameraMarker, CameraViewport, Color, MainCamera, PointLight, Projection,
+    RenderComposer, RenderPipelineAsset, RenderSettings, RenderStats, SpriteFeature,
+    SpriteRenderer, ToneMapSettings, Transform, TransparentPhase, ViewportRect, VignetteSettings,
 };
 
 const DEFAULT_SURFACE_SIZE: [u32; 2] = [1280, 720];
@@ -252,10 +252,13 @@ fn main() {
 
 fn run_scenario(ctx: &mut GpuContext, scenario: Scenario, config: &ProbeConfig) -> ScenarioResult {
     let mut renderer = match scenario.path {
-        ProbeRenderPath::Unlit => {
-            RenderComposer::from_asset(RenderPipelineAsset::universal_unlit())
-        }
-        ProbeRenderPath::LitHdr => RenderComposer::from_asset(RenderPipelineAsset::universal_2d()),
+        ProbeRenderPath::Unlit => RenderComposer::from_asset(
+            RenderPipelineAsset::builder()
+                .add_feature(SpriteFeature::unlit())
+                .add_phase(TransparentPhase::new())
+                .build(),
+        ),
+        ProbeRenderPath::LitHdr => RenderComposer::from_asset(RenderPipelineAsset::forward_2d()),
     };
     let mut scene = build_scene(ctx, scenario);
     let mut accum = StatsAccumulator {
@@ -335,8 +338,8 @@ fn build_scene(ctx: &GpuContext, scenario: Scenario) -> ProbeScene {
         for _ in 0..scenario.lights {
             let hue = rng.range(0.0, 360.0);
             let entity = world.spawn((
-                Transform::new(rng.range(-620.0, 620.0), rng.range(-340.0, 340.0)),
-                Light2D::new(rng.range(36.0, 120.0))
+                Transform::from_xy(rng.range(-620.0, 620.0), rng.range(-340.0, 340.0)),
+                PointLight::new(rng.range(36.0, 120.0))
                     .intensity(rng.range(0.7, 1.6))
                     .color(Color::hsl(hue, 0.7, 0.55))
                     .temperature(rng.range(2800.0, 8500.0))
@@ -359,7 +362,7 @@ fn spawn_views(world: &mut World, views: usize) {
         0 | 1 => {
             world.spawn((
                 Transform::default(),
-                Camera::new(),
+                CameraMarker::new(),
                 Projection::orthographic(
                     DEFAULT_SURFACE_SIZE[0] as f32,
                     DEFAULT_SURFACE_SIZE[1] as f32,
@@ -371,14 +374,14 @@ fn spawn_views(world: &mut World, views: usize) {
             let half_width = DEFAULT_SURFACE_SIZE[0] / 2;
             world.spawn((
                 Transform::default(),
-                Camera::new(),
+                CameraMarker::new(),
                 Projection::orthographic(half_width as f32, DEFAULT_SURFACE_SIZE[1] as f32),
                 CameraViewport::new(ViewportRect::new(0, 0, half_width, DEFAULT_SURFACE_SIZE[1])),
                 MainCamera,
             ));
             world.spawn((
                 Transform::default(),
-                Camera::new(),
+                CameraMarker::new(),
                 Projection::orthographic(half_width as f32, DEFAULT_SURFACE_SIZE[1] as f32),
                 CameraViewport::new(ViewportRect::new(
                     half_width,
@@ -429,7 +432,7 @@ fn apply_dirty(
                 transform.position[1] = 360.0;
             }
         }
-        if let Some(light) = world.get_mut::<Light2D>(entity) {
+        if let Some(light) = world.get_mut::<PointLight>(entity) {
             light.radius = 36.0 + ((frame_index + offset) % 96) as f32;
         }
     }

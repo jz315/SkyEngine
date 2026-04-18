@@ -8,6 +8,8 @@ use kira::track::{SpatialTrackBuilder, TrackBuilder, TrackHandle};
 use kira::{AudioManager, AudioManagerSettings, Decibels, DefaultBackend, Panning, Tween};
 use mint::{Quaternion, Vector3};
 
+use crate::math;
+
 use super::assets::{MusicTrack, SoundClip};
 use super::types::{
     AudioBusId, AudioConfig, AudioError, AudioInstanceId, AudioPlaybackSettings,
@@ -628,13 +630,13 @@ fn vec3(position: [f32; 2]) -> Vector3<f32> {
 }
 
 fn quat_from_rotation(rotation: f32) -> Quaternion<f32> {
-    let half = rotation * 0.5;
+    let rotation = math::Quat::from_rotation_z(rotation);
     Quaternion {
-        s: half.cos(),
+        s: rotation.w(),
         v: Vector3 {
-            x: 0.0,
-            y: 0.0,
-            z: half.sin(),
+            x: rotation.x(),
+            y: rotation.y(),
+            z: rotation.z(),
         },
     }
 }

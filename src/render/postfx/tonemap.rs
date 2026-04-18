@@ -1,8 +1,8 @@
 //! HDR tonemapping.
 
 use crate::gpu::GpuContext;
-use crate::render::core::fullscreen::{FullscreenPass, FullscreenPipeline};
-use crate::render::core::target::RenderTarget;
+use crate::render::gpu::RenderTarget;
+use crate::render::gpu::{FullscreenPass, FullscreenPipeline};
 use crate::render::postfx::PostFx;
 
 #[repr(C)]
@@ -109,12 +109,12 @@ impl ToneMap {
         ctx.queue()
             .write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&uniform));
 
-        ctx.with_surface_pass("tonemap_pass", Some(wgpu::Color::BLACK), |pass| {
-            pass.set_pipeline(pipeline.as_ref());
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.set_bind_group(1, &self.params_bind_group, &[]);
-            FullscreenPass::draw(pass);
-        });
+        let mut frame = ctx.frame();
+        let mut pass = frame.begin_surface_pass("tonemap_pass", Some(wgpu::Color::BLACK));
+        pass.set_pipeline(pipeline.as_ref());
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.set_bind_group(1, &self.params_bind_group, &[]);
+        FullscreenPass::draw(&mut pass);
     }
 
     pub fn apply_to_target(
@@ -131,27 +131,25 @@ impl ToneMap {
         ctx.queue()
             .write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&uniform));
 
-        ctx.with_render_pass(
-            &wgpu::RenderPassDescriptor {
-                label: Some("tonemap_pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: output.view(),
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                ..Default::default()
+        let color_attachments = [Some(wgpu::RenderPassColorAttachment {
+            view: output.view(),
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                store: wgpu::StoreOp::Store,
             },
-            |pass| {
-                pass.set_pipeline(pipeline.as_ref());
-                pass.set_bind_group(0, &bind_group, &[]);
-                pass.set_bind_group(1, &self.params_bind_group, &[]);
-                FullscreenPass::draw(pass);
-            },
-        );
+        })];
+        let mut frame = ctx.frame();
+        let mut pass = frame.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("tonemap_pass"),
+            color_attachments: &color_attachments,
+            depth_stencil_attachment: None,
+            ..Default::default()
+        });
+        pass.set_pipeline(pipeline.as_ref());
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.set_bind_group(1, &self.params_bind_group, &[]);
+        FullscreenPass::draw(&mut pass);
     }
 
     fn create_texture_bg(&self, ctx: &GpuContext, input: &RenderTarget) -> wgpu::BindGroup {

@@ -8,6 +8,9 @@
 //! layout.  This design yields excellent cache locality during iteration and
 //! supports both typed and dynamic queries.
 //!
+//! Engine-owned math types are available from `sky_engine::math`, currently
+//! backed by `glam` internally.
+//!
 //! ## Quick Start
 //!
 //! ```rust
@@ -41,6 +44,7 @@ use mimalloc::MiMalloc;
 static GLOBAL: MiMalloc = MiMalloc;
 
 pub mod ecs;
+pub mod math;
 pub mod reflect;
 
 #[cfg(feature = "asset")]
@@ -51,6 +55,9 @@ pub mod gpu;
 
 #[cfg(feature = "app")]
 pub mod render;
+
+#[cfg(feature = "app")]
+pub mod input;
 
 #[cfg(feature = "app")]
 pub mod app;

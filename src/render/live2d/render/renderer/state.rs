@@ -10,10 +10,9 @@ use crate::gpu::{DynamicUniformBuffer, GpuContext};
 
 use super::super::clipping::{ClippingManager, ClippingObjectKind};
 use super::super::prepared::{PreparedPassTarget, PreparedTargetItem};
-use crate::render::core::fullscreen::FullscreenPipeline;
-use crate::render::core::target::RenderTarget;
-use crate::render::core::texture::Texture;
-use crate::render::live2d::model::Live2DModel;
+use crate::render::gpu::FullscreenPipeline;
+use crate::render::gpu::RenderTarget;
+use crate::render::gpu::Texture;
 
 /// Per-drawable uniform data uploaded to the GPU.
 #[repr(C)]
@@ -118,15 +117,10 @@ impl SegmentBuilder {
 /// # use sky_engine::render::Texture;
 /// # use sky_engine::render::expert::live2d::{Live2DModel, Live2DRenderer};
 /// # use sky_engine::render::expert::live2d::render::clipping::ClippingManager;
-/// # fn frame(
-/// #     ctx: &mut GpuContext,
-/// #     model: &Live2DModel,
-/// #     textures: &[Texture],
-/// #     clipping_mgr: &mut Option<ClippingManager>,
-/// # ) {
+/// # fn frame(ctx: &mut GpuContext, target: &crate::render::expert::RenderTarget, model: &Live2DModel, textures: &[Texture], clipping_mgr: &mut Option<ClippingManager>) {
 /// let mut renderer = Live2DRenderer::new(ctx);
-/// // In frame loop:
-/// renderer.draw_to_surface(ctx, model, textures, clipping_mgr);
+/// let prepared = renderer.prepare_frame_for_target(ctx, target, model, textures, clipping_mgr);
+/// renderer.execute_prepared_to_target(ctx, target, &prepared);
 /// # }
 /// ```
 pub struct Live2DRenderer {
@@ -435,51 +429,6 @@ impl Live2DRenderer {
             cached_format: None,
             vertex_scratch: Vec::with_capacity(512),
         }
-    }
-
-    /// Draw a Live2D model to the current surface.
-    ///
-    /// This is the main entry point. It:
-    /// 1. Renders mask pass (if model uses clipping)
-    /// 2. Renders model pass (all drawables in sorted render order)
-    pub fn draw_to_surface(
-        &mut self,
-        ctx: &mut GpuContext,
-        model: &Live2DModel,
-        textures: &[Texture],
-        clipping: &mut Option<ClippingManager>,
-    ) {
-        let prepared = self.prepare_frame_for_surface(ctx, model, textures, clipping);
-        self.execute_prepared_to_surface(ctx, &prepared);
-    }
-
-    /// Draw a Live2D model to the current surface using a caller-provided MVP.
-    pub fn draw_to_surface_with_projection(
-        &mut self,
-        ctx: &mut GpuContext,
-        projection: &[f32; 16],
-        model: &Live2DModel,
-        textures: &[Texture],
-        clipping: &mut Option<ClippingManager>,
-    ) {
-        let format = ctx.surface_format();
-        let [w, h] = ctx.surface_size();
-        let prepared =
-            self.prepare_frame(ctx, format, [w, h], projection, model, textures, clipping);
-        self.execute_prepared_to_surface(ctx, &prepared);
-    }
-
-    /// Draw a Live2D model to an off-screen render target.
-    pub fn draw_to_target(
-        &mut self,
-        ctx: &mut GpuContext,
-        target: &RenderTarget,
-        model: &Live2DModel,
-        textures: &[Texture],
-        clipping: &mut Option<ClippingManager>,
-    ) {
-        let prepared = self.prepare_frame_for_target(ctx, target, model, textures, clipping);
-        self.execute_prepared_to_target(ctx, target, &prepared);
     }
 
     // Prepare all Live2D draw data needed to render into the current surface.

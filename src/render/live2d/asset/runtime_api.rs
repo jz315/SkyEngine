@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::render::core::texture::Texture;
+use crate::render::gpu::Texture;
 use crate::render::live2d::runtime::Live2DUserModel;
 
 use super::*;

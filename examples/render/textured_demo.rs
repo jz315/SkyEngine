@@ -14,8 +14,8 @@ use sky_engine::app::{App, AppConfig, AppState, FrameContext};
 use sky_engine::ecs::{EntityId, World};
 use sky_engine::gpu::GpuContext;
 use sky_engine::render::{
-    Camera, Color, MainCamera, Projection, RenderPipelineAsset, RenderSettings, SpriteRenderer,
-    Texture, Transform,
+    CameraMarker, Color, MainCamera, Projection, RenderPipelineAsset, RenderSettings,
+    SpriteFeature, SpriteRenderer, Texture, Transform, TransparentPhase,
 };
 
 const NUM_PARTICLES: usize = 3000;
@@ -71,7 +71,7 @@ impl AppState for TexturedDemo {
 
         self.camera = Some(world.spawn((
             Transform::default(),
-            Camera::new(),
+            CameraMarker::new(),
             Projection::orthographic(960.0, 640.0),
             MainCamera,
         )));
@@ -221,7 +221,12 @@ fn main() {
         AppConfig::new("SkyEngine — ECS Textured Demo", 960, 640),
         world,
     )
-    .with_render_pipeline(RenderPipelineAsset::universal_unlit())
+    .with_render_pipeline(
+        RenderPipelineAsset::builder()
+            .add_feature(SpriteFeature::unlit())
+            .add_phase(TransparentPhase::new())
+            .build(),
+    )
     .run(TexturedDemo::new());
 }
 

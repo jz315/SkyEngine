@@ -13,7 +13,9 @@ If you're new to the project, read and run examples in this order:
 5. `tiny_defense` — a complete ECS-only game loop
 6. `clear_screen` → `sprite_demo` → `textured_demo` → `lighting_demo`
 7. `render_graph_showcase` → `perf_test` → `renderer_probe`
-8. `boids` / `boids_classic` / `cosmic_jellyfish` / `neon_galaxy`
+8. `custom_feature_demo` — a public zero-engine-modification `RenderFeature` extension example
+9. `custom_material_demo` — a public user-defined `Material` + `MeshRenderer` example
+10. `boids` / `boids_classic` / `cosmic_jellyfish` / `neon_galaxy`
 
 ## Render Learning Path
 
@@ -27,14 +29,18 @@ The `examples/render/` directory now forms a complete path from first window to 
 6. **`frame_pipeline_showcase`** — inspect the expert-only setup/view/finalize execution backbone directly.
 7. **`perf_test`** — low-level `SpriteBatch` throughput / scaling observation.
 8. **`renderer_probe`** — headless `RenderComposer` probe for the default universal scene pipeline.
-9. **`live2d_demo`** — programmable multi-domain example (`SpriteDomain + Live2DDomain`) after you already know the base render stack.
+9. **`custom_feature_demo`** — add a custom `RenderFeature` that injects its own post-fx step without changing engine code.
+10. **`custom_material_demo`** — add a custom `Material`, upload a mesh, and render it through the public high-level pipeline.
+11. **`live2d_demo`** — programmable multi-feature example (`SpriteFeature + Live2DFeature`) after you already know the base render stack.
 
 Render mental model for the example set:
 
 - `clear_screen` teaches the expert/no-pipeline `ctx.gpu()` path.
-- `sprite_demo`, `textured_demo`, and `lighting_demo` teach the default high-level path: `App -> RenderPipelineAsset -> RenderComposer -> SpriteDomain`.
-- If you need to tweak the high-level flow, change `stage / queue / domain / feature / output chain`.
-- If you need another renderer family, add another `RenderDomain`.
+- `sprite_demo`, `textured_demo`, and `lighting_demo` teach the default high-level path: `App -> RenderPipelineAsset -> RenderComposer -> SpriteFeature`.
+- If you need to tweak the high-level flow, change builder registrations and ordered steps such as `phase / compute / pass / postfx / feature`.
+- If you need another renderer family, add another `RenderFeature`.
+- `custom_feature_demo` is the first public example that shows a user-defined `RenderFeature` inserting its own post-fx step.
+- `custom_material_demo` is the public end-to-end example for `impl Material`, `register_material::<M>()`, and runtime mesh/material setup through `FrameContext::with_renderer_mut(...)`.
 - `render_graph_showcase` and `frame_pipeline_showcase` are expert-facing backend examples, not the default extension path.
 
 Recommended progression:
@@ -55,6 +61,10 @@ frame_pipeline_showcase
 perf_test
   ↓
 renderer_probe
+  ↓
+custom_feature_demo
+  ↓
+custom_material_demo
 
 specialized branch: live2d_demo
 ```
@@ -86,6 +96,8 @@ cargo run --example render_graph_showcase --features app
 cargo run --example frame_pipeline_showcase --features app
 cargo run --example perf_test --features app --release
 cargo run --example renderer_probe --features app --release
+cargo run --example custom_feature_demo --features app --release
+cargo run --example custom_material_demo --features app --release
 ```
 
 Suggested study order inside `render/`:
@@ -98,8 +110,10 @@ Suggested study order inside `render/`:
 - `frame_pipeline_showcase` — expert-only setup/view/finalize backbone
 - `perf_test` — low-level throughput / scaling observation
 - `renderer_probe` — scene-pipeline workload matrix for the default universal path
+- `custom_feature_demo` — public `RenderFeature` extension with a custom post-fx
+- `custom_material_demo` — public custom `Material` + uploaded mesh path
 
-`live2d_demo` is the first multi-domain branch after the main path. It routes sprites and Live2D through the same programmable scene pipeline:
+`live2d_demo` is the first multi-feature branch after the main path. It routes sprites and Live2D through the same transparent scene phase:
 
 ```bash
 cargo run --example live2d_demo --features "live2d egui" --release -- <path-to-model3.json>

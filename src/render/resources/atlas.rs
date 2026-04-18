@@ -20,7 +20,7 @@ use std::borrow::Cow;
 use rustc_hash::FxHashMap;
 
 use crate::gpu::GpuContext;
-use crate::render::core::texture::Texture;
+use crate::render::gpu::Texture;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AtlasError {

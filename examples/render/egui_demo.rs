@@ -28,16 +28,19 @@ impl EguiDemo {
 impl AppState for EguiDemo {
     fn update(&mut self, ctx: &mut FrameContext) {
         // Clear to a nice dark background
-        ctx.gpu().with_surface_pass(
-            "clear",
-            Some(wgpu::Color {
-                r: 0.08,
-                g: 0.08,
-                b: 0.12,
-                a: 1.0,
-            }),
-            |_| {},
-        );
+        {
+            let gpu = ctx.gpu();
+            let mut frame = gpu.frame();
+            let _pass = frame.begin_surface_pass(
+                "clear",
+                Some(wgpu::Color {
+                    r: 0.08,
+                    g: 0.08,
+                    b: 0.12,
+                    a: 1.0,
+                }),
+            );
+        }
 
         let dt = ctx.dt;
         let counter = &mut self.counter;

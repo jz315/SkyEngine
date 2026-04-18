@@ -12,9 +12,9 @@ pub(super) use super::prepared::{
     PreparedTargetPass,
 };
 pub(super) use crate::gpu::{GpuContext, UploadSlice};
-pub(super) use crate::render::core::fullscreen::FullscreenPass;
-pub(super) use crate::render::core::target::RenderTarget;
-pub(super) use crate::render::core::texture::Texture;
+pub(super) use crate::render::gpu::FullscreenPass;
+pub(super) use crate::render::gpu::RenderTarget;
+pub(super) use crate::render::gpu::Texture;
 pub(super) use crate::render::live2d::model::{BlendMode, Live2DModel, Live2DRenderObject};
 pub(super) use state::*;
 

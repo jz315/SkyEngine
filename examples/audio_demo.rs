@@ -8,7 +8,7 @@ use sky_engine::audio::{
     AudioPlaybackSettings, AudioServer, MusicTrack, SoundClip,
 };
 use sky_engine::ecs::World;
-use sky_engine::render::Transform2D;
+use sky_engine::render::Transform;
 
 struct DemoState {
     elapsed: f32,
@@ -18,7 +18,7 @@ struct DemoState {
 impl AppState for DemoState {
     fn update(&mut self, ctx: &mut FrameContext) {
         self.elapsed += ctx.dt;
-        if let Some(transform) = ctx.world.get_mut::<Transform2D>(self.emitter) {
+        if let Some(transform) = ctx.world.get_mut::<Transform>(self.emitter) {
             transform.position[0] = self.elapsed.cos() * 4.0;
             transform.position[1] = (self.elapsed * 0.5).sin() * 2.0;
         }
@@ -67,9 +67,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     world.insert_resource(audio_server.clone());
     world.insert_resource(audio_commands);
 
-    world.spawn((AudioListener2D::default(), Transform2D::default()));
+    world.spawn((AudioListener2D::default(), Transform::default()));
     let emitter = world.spawn((
-        Transform2D::new(4.0, 0.0),
+        Transform::from_xy(4.0, 0.0),
         AudioEmitter2D::sound(sfx).looped(true),
     ));
 

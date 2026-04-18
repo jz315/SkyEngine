@@ -7,7 +7,7 @@
     <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/Rust-2021_Edition-orange?logo=rust&logoColor=white" alt="Rust"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
     <a href="https://github.com/nicories/wgpu"><img src="https://img.shields.io/badge/GPU-wgpu_24-green?logo=webgpu" alt="wgpu"></a>
-    <a href="BENCHMARKS.md"><img src="https://img.shields.io/badge/Bench-Criterion-purple" alt="Criterion"></a>
+    <a href="benches/BENCHMARKS_CN.md"><img src="https://img.shields.io/badge/Bench-Criterion-purple" alt="Criterion"></a>
   </p>
 </p>
 
@@ -23,6 +23,7 @@
 
 - **ECS 架构**：高性能的实体组件系统
 - **现代渲染**：基于 `RenderPipelineAsset + RenderComposer` 的高层可编程场景管线，以及基于 `wgpu` 的专家级 RenderGraph
+- **数学模块**：提供 engine-owned 的 `sky_engine::math` 公共数学层，当前内部基于 `glam`
 - **简单易用**：用户友好的API，详细的文档
 
 🚧 项目目前处于快速开发阶段，欢迎贡献！
@@ -147,11 +148,13 @@ cargo bench --bench fair -- flecs
 高层渲染推荐工作流：
 
 - `clear_screen` 这类最小示例直接走 `ctx.gpu()`，不安装高层管线
-- `App::with_render_pipeline(RenderPipelineAsset::universal_2d())` 安装默认统一场景管线
+- `App::with_render_pipeline(RenderPipelineAsset::forward_2d())` 安装默认统一场景管线
 - 在 `update()` 里调用 `ctx.render()`
-- 想改高层执行顺序，就自定义 `stage / queue / domain / feature / output chain`
-- 需要组合更多渲染类型时，在同一条 pipeline 里挂多个 `RenderDomain`
-- 需要新增一种渲染类型时，实现一个新的 `RenderDomain`
+- 想改高层执行顺序，就自定义 builder 注册和有序步骤：`phase / compute / pass / postfx / feature`
+- 需要组合更多渲染类型时，在同一条 pipeline 里组合多个 feature、extractor、draw function 和 pipeline step
+- 需要新增一种渲染类型时，优先实现新的 `RenderFeature`、`Extractor`、`DrawFunction` 或自定义 step
+- `StandardMaterial` 的 normal map 现在走切线空间；`Mesh::from_gltf(...)` 会自动准备 tangent 数据
+- `RenderPipelineAsset::forward_3d()` 现在会为透视视图和可投影的 `DirectionalLight` 自动执行 directional shadow map
 - 只有在需要直接控制 graph / pass / target 时，才下潜到 `render::expert::*`
 - 专家级 backend 示例看 `render_graph_showcase` / `frame_pipeline_showcase`，性能统计看 `renderer_probe`
 
@@ -182,7 +185,7 @@ cargo bench --bench fair -- flecs
 | 文档 | 说明 |
 |------|------|
 | [API 参考](docs/api.md) | ECS 完整 API 文档（中文） |
-| [BENCHMARKS.md](BENCHMARKS.md) | 基准测试方法论与历史记录 |
+| [benches/BENCHMARKS_CN.md](benches/BENCHMARKS_CN.md) | 基准测试方法论与历史记录 |
 | [src/render/AGENTS.md](src/render/AGENTS.md) | 渲染模块架构指南 |
 | [src/render/graph/AGENTS.md](src/render/graph/AGENTS.md) | RenderGraph 详细设计文档 |
 

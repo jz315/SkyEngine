@@ -72,36 +72,6 @@ impl PreparedLive2DFrame {
     }
 }
 
-/// Sparse per-view collection of prepared Live2D frames.
-#[derive(Default)]
-pub struct PreparedLive2DFrameSet {
-    views: Vec<Vec<PreparedLive2DFrame>>,
-}
-
-impl PreparedLive2DFrameSet {
-    #[inline]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn push(&mut self, view_index: usize, frame: PreparedLive2DFrame) {
-        if view_index >= self.views.len() {
-            self.views.resize_with(view_index + 1, Vec::new);
-        }
-        self.views[view_index].push(frame);
-    }
-
-    #[inline]
-    pub fn frames_for_view(&self, view_index: usize) -> &[PreparedLive2DFrame] {
-        self.views.get(view_index).map(Vec::as_slice).unwrap_or(&[])
-    }
-
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.views.iter().all(Vec::is_empty)
-    }
-}
-
 pub(crate) enum PreparedPassTarget {
     Root,
     Offscreen(usize),

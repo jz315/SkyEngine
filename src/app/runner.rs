@@ -16,7 +16,7 @@
 //! }
 //!
 //! App::new(AppConfig::new("Hello", 960, 640), World::new())
-//!     .with_render_pipeline(RenderPipelineAsset::universal_2d())
+//!     .with_render_pipeline(RenderPipelineAsset::forward_2d())
 //!     .run(Game);
 //! ```
 
@@ -29,9 +29,9 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::app::config::{AppConfig, RedrawMode};
-use crate::app::input::{Input, KeyCode};
 use crate::ecs::World;
 use crate::gpu::GpuContext;
+use crate::input::raw::{Input, KeyCode, MouseButton};
 use crate::render::{RenderComposer, RenderPipelineAsset, RenderStats};
 
 fn update_input_from_window_event(input: &mut Input, event: &WindowEvent, suppressed: bool) {
@@ -69,12 +69,10 @@ fn update_input_from_window_event(input: &mut Input, event: &WindowEvent, suppre
             button,
             ..
         } => {
-            let index = match button {
-                winit::event::MouseButton::Left => 0,
-                winit::event::MouseButton::Right => 1,
-                winit::event::MouseButton::Middle => 2,
-                _ => return,
+            let Some(mb) = MouseButton::from_winit(*button) else {
+                return;
             };
+            let index = mb.index();
             match (button_state, suppressed) {
                 (ElementState::Pressed, false) => input.mouse_button_down(index),
                 (ElementState::Released, false) => input.mouse_button_up(index),
@@ -117,7 +115,7 @@ fn update_input_from_window_event(input: &mut Input, event: &WindowEvent, suppre
 /// use sky_engine::app::{App, AppConfig, AppState, FrameContext};
 /// use sky_engine::ecs::World;
 /// use sky_engine::gpu::GpuContext;
-/// use sky_engine::render::RenderPipelineAsset;
+/// use sky_engine::render::{RenderPipelineAsset, SpriteFeature, TransparentPhase};
 ///
 /// struct MyGame;
 ///
@@ -133,7 +131,7 @@ fn update_input_from_window_event(input: &mut Input, event: &WindowEvent, suppre
 /// }
 ///
 /// App::new(AppConfig::new("My Game", 1280, 720), World::new())
-///     .with_render_pipeline(RenderPipelineAsset::universal_2d())
+///     .with_render_pipeline(RenderPipelineAsset::forward_2d())
 ///     .run(MyGame);
 /// ```
 pub trait AppState: 'static {
@@ -239,19 +237,31 @@ impl<'a> FrameContext<'a> {
         self.gpu
     }
 
-    /// Mutably access a registered render domain by concrete type.
-    pub fn domain_mut<T: 'static>(&mut self) -> Option<&mut T> {
-        self.renderer.as_deref_mut()?.domain_mut::<T>()
+    /// Mutably access a registered render feature by concrete type.
+    pub fn feature_mut<T: 'static>(&mut self) -> Option<&mut T> {
+        self.renderer.as_deref_mut()?.feature_mut::<T>()
     }
 
-    /// Mutably access a render domain and the GPU at the same time.
-    pub fn with_domain_mut<T: 'static, R>(
+    /// Mutably access a render feature and the GPU at the same time.
+    pub fn with_feature_mut<T: 'static, R>(
         &mut self,
         f: impl FnOnce(&mut T, &mut GpuContext) -> R,
     ) -> Option<R> {
         let renderer = self.renderer.as_deref_mut()?;
-        let domain = renderer.domain_mut::<T>()?;
-        Some(f(domain, self.gpu))
+        let feature = renderer.feature_mut::<T>()?;
+        Some(f(feature, self.gpu))
+    }
+
+    /// Mutably access the installed [`RenderComposer`] and the GPU together.
+    ///
+    /// This is the escape hatch for runtime mesh/material setup that depends on
+    /// both renderer-owned registries and a live [`GpuContext`].
+    pub fn with_renderer_mut<R>(
+        &mut self,
+        f: impl FnOnce(&mut RenderComposer, &mut GpuContext) -> R,
+    ) -> Option<R> {
+        let renderer = self.renderer.as_deref_mut()?;
+        Some(f(renderer, self.gpu))
     }
 
     /// Request the application to exit after this frame.
@@ -303,7 +313,7 @@ impl<'a> FrameContext<'a> {
 /// ```rust,no_run
 /// use sky_engine::app::{App, AppConfig, AppState, FrameContext};
 /// use sky_engine::ecs::World;
-/// use sky_engine::render::RenderPipelineAsset;
+/// use sky_engine::render::{RenderPipelineAsset, SpriteFeature, TransparentPhase};
 ///
 /// struct MyApp;
 ///
@@ -314,7 +324,12 @@ impl<'a> FrameContext<'a> {
 /// }
 ///
 /// App::new(AppConfig::new("Demo", 960, 640), World::new())
-///     .with_render_pipeline(RenderPipelineAsset::universal_unlit())
+///     .with_render_pipeline(
+///         RenderPipelineAsset::builder()
+///             .add_feature(SpriteFeature::unlit())
+///             .add_phase(TransparentPhase::new())
+///             .build(),
+///     )
 ///     .run(MyApp);
 /// ```
 pub struct App {
@@ -455,6 +470,11 @@ impl RunnerHandler {
             rt.last_frame_time = Some(now);
 
             Self::sync_input_resource(world, input_snapshot);
+
+            // Update action-based input system (if registered).
+            if let Some(actions) = world.get_resource_mut::<crate::input::InputActions>() {
+                actions.update(&input_snapshot);
+            }
 
             #[cfg(feature = "asset")]
             if let Some(asset_server) = world.get_resource::<crate::asset::AssetServer>().cloned() {
@@ -801,15 +821,19 @@ mod tests {
 
     #[test]
     fn with_render_pipeline_installs_the_supplied_pipeline() {
-        let app = App::new(AppConfig::new("test", 64, 64), World::new())
-            .with_render_pipeline(RenderPipelineAsset::universal_unlit());
+        let app = App::new(AppConfig::new("test", 64, 64), World::new()).with_render_pipeline(
+            RenderPipelineAsset::builder()
+                .add_feature(crate::render::SpriteFeature::unlit())
+                .add_phase(crate::render::TransparentPhase::new())
+                .build(),
+        );
         assert!(app.renderer.is_some());
     }
 
     #[test]
-    fn with_render_pipeline_accepts_the_default_universal_2d_pipeline() {
+    fn with_render_pipeline_accepts_the_default_forward_2d_pipeline() {
         let app = App::new(AppConfig::new("test", 64, 64), World::new())
-            .with_render_pipeline(RenderPipelineAsset::universal_2d());
+            .with_render_pipeline(RenderPipelineAsset::forward_2d());
         assert!(app.renderer.is_some());
     }
 }

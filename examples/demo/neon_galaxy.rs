@@ -17,7 +17,7 @@ use sky_engine::render::expert::{
     Bloom, CompositePass, Light2D, LightPass, RenderGraph, SpriteBatch, TargetSize, ToneMap,
     Vignette,
 };
-use sky_engine::render::{Camera2D, Color, Sprite, Texture};
+use sky_engine::render::{Camera, Color, Sprite, Texture};
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Constants
@@ -83,7 +83,7 @@ struct CoreParticle {
 // ═══════════════════════════════════════════════════════════════════════════
 
 struct RenderState {
-    camera: Camera2D,
+    camera: Camera,
     scene_batch: SpriteBatch,
     normal_batch: SpriteBatch,
     circle_tex: Texture,
@@ -115,7 +115,7 @@ impl RenderState {
         tonemap.gamma = 2.2;
 
         Self {
-            camera: Camera2D::new(1280.0, 720.0),
+            camera: Camera::new(1280.0, 720.0),
             scene_batch: SpriteBatch::new(gpu),
             normal_batch: SpriteBatch::new(gpu),
             circle_tex: Texture::circle(gpu, 32),

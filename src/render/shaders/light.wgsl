@@ -1,10 +1,10 @@
-struct CameraUniform {
+struct ViewUniform {
     view_proj: mat4x4<f32>,
     camera: vec4<f32>,
     viewport: vec4<f32>,
 };
 
-@group(0) @binding(0) var<uniform> camera: CameraUniform;
+@group(0) @binding(0) var<uniform> camera: ViewUniform;
 @group(1) @binding(0) var normal_texture: texture_2d<f32>;
 @group(1) @binding(1) var normal_sampler: sampler;
 

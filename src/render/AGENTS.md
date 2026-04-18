@@ -2,205 +2,235 @@
 
 ## Overview
 - This module is SkyEngine's `wgpu`-based rendering framework.
-- Public API is intentionally split into two layers:
-  - `sky_engine::render::*` is the curated high-level facade built around `RenderPipelineAsset` + `RenderComposer` + `RenderDomain`.
-  - `sky_engine::render::expert::*` is the explicit low-level entry point for `FramePipeline`, `RenderGraph`, passes, post-fx, targets, and resource systems.
-- High-level architecture is now scene-first and domain-based:
-  - shared scene model (`SceneView`, `Projection`, `Transform`)
-  - programmable pipeline definition (`stage / queue / domain / feature / output chain`)
-  - runtime composition (`RenderComposer`)
-  - domain-local prepare/upload/execute paths (`SpriteDomain`, `Live2DDomain`, future domains)
-- The composition boundary for mixing heterogeneous renderers is the frame/pipeline layer (`PreparedFrame` / `PreparedView` + `FramePipeline` + `RenderGraph`). Do not treat `GpuScene2D` or `PreparedView2D` as the universal frame schema.
-- `2D` is not the top-level architectural concept. It is a domain-local usage pattern built on the shared scene model, typically `orthographic + planar content`.
-- The GPU backend is `wgpu`. All rendering goes through `GpuContext` (`src/gpu/context.rs`).
-- Shader language is WGSL. All shaders live under `shaders/`.
-- The module is gated behind `features = ["app"]` for window/surface-dependent code. The optional `live2d` sub-module requires `features = ["live2d"]`.
+- The public high-level surface is centered on `RenderPipelineAsset` + `RenderPipelineBuilder` + `RenderComposer`.
+- The runtime is registration-driven:
+  - `RenderFeature` installs renderer families into the builder/runtime.
+  - `Extractor`s pull ECS state into per-view phase data.
+  - `DrawFunction`s execute sorted `PhaseItem`s.
+  - `PipelineStep::{Phase, Compute, Pass, PostFx}` defines execution order.
+  - `GpuScene` + `GpuTableManager` own shared GPU-side tables such as model matrices and lights.
+- The composition boundary for heterogeneous renderers is `PreparedFrame` / `PreparedView` + `FramePipeline`.
+- `2D` is a usage pattern, not the architectural root. Sprite, mesh, lighting, and Live2D all plug into the same frame pipeline.
+- The GPU backend is `wgpu`. All rendering goes through `GpuContext` in `src/gpu/context.rs`.
+- Shader language is WGSL. Shaders live under `shaders/`.
+- The module is compiled behind `features = ["app"]`. Live2D integration additionally requires `features = ["live2d"]`.
 
 ## Module Architecture
 
 ```text
 render/
-├── mod.rs              — Public render facade and curated re-exports
-├── composer/           — High-level runtime orchestration (`RenderComposer`)
-├── scene/              — Shared scene/view/projection/sort semantics
-├── pipeline/           — Programmable pipeline definitions (`RenderPipelineAsset`, features)
-├── domains/
-│   ├── sprite/         — Built-in sprite/light render domain
-│   └── live2d/         — High-level Live2D domain integration
-├── output_chain/       — Shared post-fx / resolve / presentation nodes
-├── frame_pipeline.rs   — Generic three-phase frame orchestration core
+├── mod.rs              — Curated public facade and re-exports
+├── expert.rs           — Expert-facing low-level facade
+├── component/          — ECS-facing render components and settings
+├── view/               — Camera/view/projection/frustum/transform types
+├── gpu/                — Shared GPU resources, targets, textures, tables
+├── lighting/           — Light data, light table, light pass, shadows
+├── sprite/             — Sprite public API and sprite batch renderer
+├── mesh/               — Mesh pass implementation
+├── composite/          — Scene/light composition pass
+├── runtime/            — High-level orchestration (`RenderComposer`)
+├── extract/            — Registered ECS extraction path
+├── phase/              — `PhaseItem`, sorting, draw dispatch
+├── pipeline/           — Builder/asset/feature/step definitions
+├── execution/          — Generic prepared-frame execution backbone
 ├── graph/              — Declarative render graph system
-├── core/               — Foundational GPU/view/texture/target types
-├── passes/             — Reusable render passes (`SpriteBatch`, `MeshPass`, `LightPass`, ...)
-├── postfx/             — Reusable post-processing effects
-├── resources/          — Shared render resources (`TextureAtlas`, `Material*`, `Mesh`, ...)
-├── live2d/             — Low-level Live2D renderer/runtime implementation
-└── shaders/            — WGSL shader sources
+├── resources/          — Mesh/material/atlas/blackboard resources
+├── postfx/             — Reusable effect implementations
+├── live2d/             — Low-level Cubism runtime/renderer and feature bridge
+└── shaders/            — WGSL sources
 ```
 
 ## Sub-Module AGENTS.md References
-- **Render Graph**: see [`graph/AGENTS.md`](graph/AGENTS.md) for the full render graph compilation pipeline, handle model, aliasing, reordering, and execution model.
-- **Live2D**: see [`live2d/AGENTS.md`](live2d/AGENTS.md) for the Cubism runtime, renderer architecture, and GPU infrastructure requirements.
+- Render graph internals: [`graph/AGENTS.md`](graph/AGENTS.md)
+- Low-level Live2D runtime and renderer: [`live2d/AGENTS.md`](live2d/AGENTS.md)
+
+## Canonical High-Level Surface
+- Start normal app code from `sky_engine::render::*`.
+- Preferred high-level names are:
+  - `RenderComposer`
+  - `RenderPipelineAsset`
+  - `RenderPipelineBuilder`
+  - `RenderFeature`
+  - `SpriteFeature`
+  - `DirectionalShadowPhase`
+  - `Bloom`, `ToneMap`, `Vignette`
+  - `Camera`, `Color`, `ViewportRect`, `SceneView`
+  - `Texture`
+  - `GpuScene`, `GpuTable`, `GpuTableManager`
+  - `Material`, `MaterialStorage`, `MaterialHandle`
+- Expert entry points live under `sky_engine::render::expert::*`.
 
 ## File Map
 
 ### `mod.rs`
-- Module declarations and curated public re-exports.
-- Normal application code should start from `sky_engine::render::*`.
-- Low-level rendering code should opt into `sky_engine::render::expert::*` instead of internal module paths.
-- Preferred high-level names are:
-  - `RenderComposer`
-  - `RenderDomain`
-  - `SpriteDomain`
-  - `Live2DDomain`
+- Curated public re-exports.
+- Exposes the registration-driven render API and expert namespace.
 
-### `composer/`
-- Owns the high-level runtime orchestration layer.
+### `component/`
+- Owns ECS-facing render components and renderer settings.
 - Important files:
-  - `render_composer.rs` — `RenderComposer` state and external runtime API (`from_asset`, `stats`, resize/surface-loss handling, domain lookup)
-  - `view_collection.rs` — world camera/view extraction and resolved transform gathering
-  - `frame_builder.rs` — per-frame extraction/prepare/frame-payload assembly and stats population
-  - `pipeline_runtime.rs` — compiled pipeline installation into `FramePipeline`, feature node wiring, output-chain injection, target-format propagation
-  - `nodes.rs` — composer-level utility nodes such as clear seeding and headless keep-alive
-- `RenderComposer` should stay an orchestration shell, not a god object. New high-level responsibilities should usually land in a helper module next to it.
+  - `camera.rs` — ECS camera marker, `CameraViewport`, `MainCamera`
+  - `sprite.rs` — `SpriteRenderer`, sorting components
+  - `mesh.rs` — `MeshRenderer`
+  - `light.rs` — `PointLight`, `DirectionalLight`
+  - `settings.rs` — `RenderSettings`, bloom/tonemap/vignette settings
+  - `hierarchy.rs` — `Parent`
+- Keep ECS-facing authoring data here; do not push it down into runtime/execution modules.
 
-### `scene/`
-- Owns shared scene semantics used by all render domains.
+### `view/`
+- Owns camera/view/projection semantics and scene-view construction.
 - Important files:
-  - `view.rs` — `SceneView`, `Projection`, transform resolution, shared scene math helpers
-  - `types.rs` — render-stage keys, queue descriptors, injection points, stats, output-format policies
-- Keep this layer cross-domain. Only concepts that make sense for sprite, Live2D, and future mesh/3D domains belong here.
+  - `camera.rs` — public `Camera`, `RenderView`, `ViewUniform`
+  - `scene_view.rs` — `SceneView`, `SceneViewKind`, fallback/build helpers
+  - `viewport.rs` — `ViewportRect`
+  - `projection.rs` — projection-to-view-uniform construction
+  - `transform.rs` — `SceneTransformResolver`, `ResolvedSceneTransforms`
+  - `types.rs` — `RenderStats`, `RenderQueueSort`, `SCENE_HDR_FORMAT`
+- Shared view/camera/transform concepts belong here, not in `execution/` or `runtime/`.
+
+### `gpu/`
+- Owns the shared GPU resource layer.
+- Important files:
+  - `scene.rs` — `GpuScene`, the shared scene upload state used by the high-level runtime
+  - `mod.rs` — `GpuTable`, `GpuTableManager`, re-exports for texture/target/fullscreen helpers
+  - `model_matrix.rs` — `ModelMatrixTable`
+  - `target.rs` — `RenderTarget`, `RenderTargetDescriptor`, depth-format helpers
+  - `texture.rs` — `Texture` and creation/upload helpers
+  - `fullscreen.rs` — `FullscreenPass`, `FullscreenPipeline`
+  - `helpers.rs` — bind-group/pipeline caches and quad geometry helpers shared by sprite/light/composite code
+- Extend shared GPU data by registering tables, not by hard-coding more one-off fields into unrelated runtime objects.
+
+### `lighting/`
+- Owns light-domain code and directional shadow support.
+- Important files:
+  - `data.rs` — `Light2D`, `color_temperature`
+  - `gpu_table.rs` — `GpuLight`, `LightTable`
+  - `pass.rs` — `LightPass`
+  - `shadow/` — shadow bind groups, shadow view payloads, `DirectionalShadowPhase`
+- Keep light/shadow concepts together here. Do not split them back across unrelated folders.
+
+### `sprite/`, `mesh/`, and `composite/`
+- `sprite/` owns sprite-specific rendering. `batch/mod.rs` implements `SpriteBatch` and `Sprite`.
+- `mesh/` owns `MeshPass`, mesh draw preparation/recording, and mesh-pass errors/tests.
+- `composite/` owns `CompositePass`.
+- If a helper is only used by one renderer family, keep it local to that family rather than promoting it to a generic module too early.
+
+### `runtime/`
+- Owns the high-level runtime layer.
+- Important files:
+  - `composer.rs` — stores runtime features, pipeline steps, material registry, mesh registry, draw-function registry, and `GpuScene`
+  - `frame_builder.rs` — main frame flow: resolve transforms, collect views, run extractors, populate phases, upload GPU tables, build `PreparedFrame`
+  - `pipeline_runtime.rs` — translates `PipelineStep`s into `FramePipeline` nodes
+  - `view_collection.rs` — world camera/view collection
+  - `nodes.rs` — runtime-installed step nodes for phase/compute/pass/post-fx execution
+  - `presentation.rs` — `ViewportBlitNode`
+  - `stats.rs` — `RenderTimingStats` and timing helpers
+- `RenderComposer` should stay an orchestrator. Put new heavy logic in adjacent helpers rather than turning it into a god object.
 
 ### `pipeline/`
-- Owns programmable pipeline definition, not draw-time sprite internals.
+- Owns declaration-time configuration, not per-frame execution state.
 - Important files:
-  - `asset.rs` — `RenderPipelineAsset`, `RenderPipelineBuilder`, compiled stage/queue/domain/feature plan, `OutputChainConfig`
-  - `feature.rs` — `RenderFeature`, setup/execute contexts, feature node adapter
-- `pipeline/` should describe *what* gets scheduled, not own domain-local prepare/upload data.
+  - `asset.rs` — `RenderPipelineBuilder`, `RenderPipelineAsset`, `PipelineStep`, material registrations
+  - `features.rs` — `RenderFeature`, runtime feature hooks, built-in `SpriteFeature`, and optional `Live2DFeature`
+  - `phases.rs` / `passes.rs` — `RenderPhase`, `RenderPass`, `ComputePass`, and `PostFxPass`
+  - `contexts.rs` — setup/execute context types for phases, passes, compute, and post-fx
+  - `builtins.rs` — built-in `Bloom`, `ToneMap`, and `Vignette` registrations
+- Builder execution order is explicit and linear:
+  - `add_phase(...)`
+  - `add_compute(...)`
+  - `add_pass(...)`
+  - `add_postfx(...)`
+  - `add_feature(...)`
+  - `add_extractor(...)`
+  - `add_draw_function(...)`
+  - `add_gpu_table(...)`
+  - `register_material::<M>()`
 
-### `domains/sprite/`
-- Owns the built-in sprite/light render domain.
+### `extract/`
+- Owns ECS extraction into per-view phase data.
+- Built-in extractors populate sprite and mesh draws into `OpaquePhase` / `TransparentPhase`.
+- New renderer families should normally enter the high-level runtime here or through `RenderFeature` hooks rather than via ad-hoc branches in `RenderComposer`.
+
+### `phase/`
+- Owns `PhaseItem`, sorting, and draw dispatch.
+- Built-in flow is centered on opaque and transparent phase execution plus `DrawFunctionRegistry`.
+- Keep phase payloads generic and sortable; do not sneak renderer-specific global state into shared execution contexts.
+
+### `execution/`
+- Generic prepared-frame execution backbone.
+- Key concepts:
+  - `PreparedFrame`
+  - `PreparedView`
+  - `FramePipeline`
+  - setup/view/finalize nodes
+  - typed frame/view payload stores
+  - `PhaseState` / `CompletedViewState` / `FinalizePhaseState`
+  - typed scene inputs via `SceneGBufferSlots` (`scene_color`, `scene_depth`, `scene_normal`, `scene_velocity`, and future material buffers)
+- Scene-input allocation/reuse rules should live in execution helpers so passes reuse one policy for attaching scene depth/normal/velocity instead of open-coding texture creation.
+- This is the main composition boundary for mixing sprite, mesh, shadows, Live2D, and future renderers.
+
+### `graph/`
+- Owns the low-level declarative render graph backend.
+- Read [`graph/AGENTS.md`](graph/AGENTS.md) before changing internals there.
+
+### `postfx/` and `resources/`
+- `postfx/` owns reusable effect implementations behind the built-in post-fx markers.
+- `resources/` owns shared material, mesh, atlas, and blackboard systems.
+- `resources/mesh.rs` uploads tangent-capable glTF meshes for `StandardMaterial` normal mapping.
+- Material pipelines resolve vertex inputs by semantic against the actual mesh layout, so meshes may contain extra attributes if the material-required ones are present with compatible formats.
+- `StandardMaterial` without a normal map requires `Position + Normal + UV0`.
+- `StandardMaterial` with a normal map requires `Position + Normal + Tangent + UV0`.
+- The built-in 3D path now runs `SceneNormalPrepass` and `SceneMaterialPrepass` ahead of opaque shading, so `scene_depth/normal/velocity/albedo/material/emissive` should be treated as canonical scene inputs, not ad-hoc pass-local attachments.
+- Custom mesh materials can opt into `SceneMaterialPrepass` by implementing the `Material::scene_prepass_*` hooks; once they do, they participate in scene gbuffer generation without extra engine-side registration.
+
+### `live2d/`
+- Owns both the low-level Cubism runtime/renderer and the high-level Live2D feature integration.
 - Important files:
-  - `backend.rs` — sprite-domain-local prepare/upload/execute contexts and backend state
-  - `extractor.rs` — ECS-to-scene-cache synchronization
-  - `scene_cache.rs` — sprite/light scene cache and dirty tracking
-  - `prepared.rs` — sorted/cull-checked per-view sprite/light instances and draw spans
-  - `gpu_scene.rs` — `GpuScene2D`, the sprite-domain GPU payload inserted into `PreparedFrame`
-  - `sprite_pass/`, `light_node/`, `composite_node.rs` — sprite-domain view execution nodes
-  - `render_pipeline.rs` — expert-facing `SpriteFramePipeline` adapter layered on `FramePipeline`
-  - `access.rs` — sprite-domain-only typed payload helpers
-- `GpuScene2D` and `PreparedView2D` are sprite-domain implementation details exposed for expert use. They are not the universal frame contract.
-- `SpriteDomainFeature` is a sprite-domain-specific expert hook. Do not expand it into the top-level render architecture.
+  - `feature.rs` — `Live2DFeature`, ECS extraction, per-view preparation, transparent-phase item submission
+  - `draw.rs` — `DrawLive2D`, the standalone transparent-phase draw function
+  - `backend.rs` — feature-owned backend/runtime bridge
+  - `render/` — low-level prepared-frame and renderer implementation
 
-### `domains/live2d/`
-- Owns the high-level Live2D domain integration that plugs Live2D into the shared programmable pipeline.
-- Important files:
-  - `domain.rs` — `Live2DDomain`, ECS extraction, view filtering/sorting, per-view prepared-frame insertion
-  - `backend.rs` — high-level Live2D domain state, model instances, per-view prepared frame accumulation, overlay-node creation
-- The low-level Live2D renderer/runtime still lives under `src/render/live2d/`.
-
-### `output_chain/`
-- Owns shared post-fx / resolve / final-blit nodes that are not specific to one domain.
-- Current nodes:
-  - `BloomNode`
-  - `ToneMapNode`
-  - `VignetteNode`
-  - `ColorResolveNode`
-  - `ViewportBlitNode`
-- This layer is the shared output chain installed by `RenderComposer` after the configured stage boundary from `OutputChainConfig`.
-
-### `frame_pipeline.rs`
-- `FramePipeline` is the generic three-phase frame orchestrator:
-  - `frame_setup`
-  - `per_view`
-  - `frame_finalize`
-- Uses `PreparedFrame` + `PreparedView` as the cross-domain frame contract.
-- `FramePayloadStore` and `ViewPayloadStore` are typed registries for prepared data.
-- `PhaseState` + `ResourceSlotMap` carry cross-phase resource slots. The only framework-reserved slot is `"current_color"`.
-- New renderer domains should plug into `FramePipeline` first, then optionally wrap themselves in a curated facade.
+## Runtime Flow
+1. `RenderComposer::render_world()` resolves transforms and collects `SceneView`s.
+2. Registered features run `extract(...)` and may extend the view list through `collect_views(...)`.
+3. Registered `Extractor`s populate per-view `OpaquePhase` and `TransparentPhase`.
+4. Registered features run `prepare(...)` and may append additional phase items.
+5. `RenderComposer` also prepares per-view directional-shadow payloads used by `StandardMaterial` and `DirectionalShadowPhase`.
+6. Shared GPU tables are updated and uploaded through `GpuScene`.
+7. `RenderComposer` builds a `PreparedFrame` and one `PreparedView` per visible view, then lets features inject typed frame/view payloads.
+8. `pipeline_runtime.rs` converts `PipelineStep`s into `FramePipeline` nodes.
+9. `FramePipeline` executes phases, compute steps, custom passes, post-fx, and final viewport presentation.
 
 ## Composition Boundary
-- `RenderPipelineAsset` is the high-level definition surface. It describes stages, queues, domains, feature injection points, and the shared output chain.
-- `RenderComposer` is the runtime object that owns the active set of `RenderDomain`s and translates one compiled pipeline into a `FramePipeline` execution.
-- `FramePipeline` is the generic backend composition layer for mixing render domains under one frame, graph, and three-phase execution model.
-- `PreparedFrame` carries frame-scoped typed payloads; each `PreparedView` carries view-scoped typed payloads.
-- New render domains should normally follow this shape:
-  - domain-specific extract/cache/prepare/upload path
-  - one or more `FrameViewNode` / `FrameSetupNode` / `FrameFinalizeNode`
-  - typed payload access through `PreparedFrame` / `PreparedView`
-- Only promote abstractions into shared pipeline state when they represent true cross-domain concepts, such as camera/view/viewport/order/layer behavior. Keep renderer-specific geometry, masking, batching, and runtime semantics local to that renderer.
-
-## Core / Passes / PostFx / Resources
-
-### `core/`
-- Foundational GPU/view types:
-  - `camera.rs` — `Camera2D`, `ViewUniform`, `RenderView`
-  - `color.rs` — linear RGBA color utilities
-  - `texture.rs` — GPU texture wrapper and upload/file descriptors
-  - `target.rs` — resizable persistent render targets
-  - `fullscreen.rs` — shared fullscreen triangle helpers and pipeline cache
-  - `viewport.rs` — viewport rectangle helpers
-
-### `passes/`
-- Reusable render passes and draw helpers:
-  - `SpriteBatch`
-  - `MeshPass`
-  - `LightPass`
-  - `CompositePass`
-- These are reusable low-level building blocks and are not themselves high-level render domains.
-
-### `postfx/`
-- Reusable post-processing effect implementations:
-  - `Bloom`
-  - `ToneMap`
-  - `Vignette`
-- The high-level output chain nodes wrap these effects into `FrameViewNode`s.
-
-### `resources/`
-- Shared render resources and authoring/runtime helpers:
-  - `TextureAtlas`
-  - `Blackboard`
-  - `Material*`
-  - `Mesh`
-
-## Rendering Pipeline (Typical SpriteDomain Frame)
-
-1. **Transform resolve + view collection**: `WorldViewCollector` resolves scene transforms and extracts visible camera views.
-2. **Domain extraction**: each `RenderDomain` extracts its own world state. For `SpriteDomain`, `SceneExtractor::sync_incremental()` refreshes `SceneCache2D`.
-3. **Preparation**: each domain prepares view-scoped data. For `SpriteDomain`, `PreparedRenderWorld2D::prepare_scene()` sorts visible sprites/lights per view and builds draw spans.
-4. **GPU upload**: each domain uploads its own prepared data. For `SpriteDomain`, `GpuScene2D::upload_scene_frame()` uploads the prepared per-frame instance data.
-5. **Scene assembly**: `RenderComposer` builds a `PreparedFrame`, inserts shared frame payloads (`RenderSettings`, `GpuScene2D`, Live2D prepared frames, etc.), and inserts one `PreparedView` per visible view with domain-specific payloads such as `PreparedView2D`.
-6. **View phase**: active domains contribute view nodes on top of `FramePipeline`; the built-in sprite domain runs `SpriteSceneNode`, `SpriteLightNode`, and `SpriteCompositeNode`, while the shared output chain handles post-fx and presentation.
-7. **Present**: `ViewportBlitNode` writes the prepared view result to the surface when a surface exists, then `GpuContext::end_frame()` submits and presents.
-
-Other domains may replace steps 2–6 with their own prepare/upload/execute phases, but they should still converge at the same composition layer: nodes scheduled by `FramePipeline`, with data routed through typed frame/view payloads.
+- `RenderPipelineAsset` is the declarative configuration.
+- `RenderComposer` owns live runtime state for that asset.
+- `PreparedFrame` / `PreparedView` carry typed data between preparation and execution.
+- `FramePipeline` is the execution engine.
+- New renderer integrations should normally follow this shape:
+  - feature registration
+  - extractor and/or per-view preparation
+  - phase items or explicit pipeline steps
+  - typed payload access through prepared frame/view stores
 
 ## Implementation Guidelines
-- Keep top-level render architecture scene-first and domain-based. Do not reintroduce `2D` as the main architectural story.
-- All new passes that render to `RenderTarget` must support per-format pipeline caching.
-- New fullscreen effects should build on `FullscreenPipeline` + `compose_fullscreen_shader()`, not standalone vertex shaders.
-- `RenderTarget` always includes `COPY_SRC | COPY_DST` usage. This is intentional for render graph copy ops.
-- Do not bundle samplers with `Texture` objects. Sampler selection happens at bind group creation time.
-- Uniform buffers must follow WGSL alignment rules (16-byte struct alignment, 4/8/16 per field).
-- If you touch `RenderComposer`, keep orchestration helpers factored into nearby modules instead of growing one central file.
-- If a helper needs `GpuScene2D`, `PreparedView2D`, sprite draw spans, or sprite-domain payload access, it belongs in `domains/sprite/access.rs`, not `frame_pipeline.rs` or `pipeline/`.
-- Do not force Live2D or future render domains into `SceneCache2D` / `PreparedRenderWorld2D` unless the semantics genuinely match sprite/light rendering.
-- Prefer graph-backed composition over direct surface-only integration when adding a new render domain.
-- New domain-specific data should enter execution through typed payloads on `PreparedFrame` / `PreparedView`, not through a monolithic shared execution context.
-- If you change high-level render or app-facing APIs, also validate demos/examples with `cargo check --examples --features app`. The render examples are part of the supported surface.
+- Do not reintroduce the legacy domain-centric API model, old presentation config APIs, or app-side domain access patterns.
+- Keep new high-level work registration-driven: builder registrations, extractors, draw functions, phases, GPU tables, and explicit pipeline steps.
+- Keep ECS authoring in `component/`, view/camera semantics in `view/`, shared GPU resources in `gpu/`, and light/shadow logic in `lighting/`.
+- `GpuScene` is shared scene upload state, not a universal home for every renderer-specific cache.
+- Only promote concepts into shared frame state when they are truly cross-renderer.
+- When a pass needs canonical scene inputs, use the typed scene-input accessors on execution state. `SceneGBufferSlots` is the source of truth; the generic slot map is for ad-hoc resources and does not mirror `scene_*` attachments.
+- Keep Live2D-specific semantics local to `live2d/`.
+- If you change public render or app-facing APIs, validate examples with `cargo check --examples --features app`.
 
 ## Test Commands
-- Run all render tests: `cargo test --features app`
+- Run render tests: `cargo test --features app`
 - Run render graph tests: `cargo test --features app graph`
-- Run specific pass tests: `cargo test --features app render::passes`
-- Run post-fx tests: `cargo test --features app render::postfx`
-- Run material tests: `cargo test --features app render::resources::material`
-- Run atlas tests: `cargo test --features app render::resources::atlas`
-- Run blackboard tests: `cargo test --features app render::resources::blackboard`
-- Run render/example compile check after public renderer or app changes: `cargo check --examples --features app`
-- GPU-dependent tests require a GPU-capable environment and use `GpuContext::new_headless()`.
+- Run runtime tests: `cargo test --features app render::runtime::tests`
+- Run extract tests: `cargo test --features app render::extract`
+- Run example compile check after high-level renderer changes: `cargo check --examples --features app`
 
 ## Relation to Other Modules
-- **GPU**: `src/gpu/context.rs` provides `GpuContext` — the wgpu device/queue/surface wrapper. All render code takes `&GpuContext` or `&mut GpuContext`.
-- **ECS**: render passes and resources are not ECS-aware by default. High-level integration happens through domain extraction and app-level frame execution.
-- **App**: `src/app/runner.rs` manages the winit event loop and `GpuContext` lifecycle, and drives `RenderComposer` during the frame loop. `FrameContext` exposes `domain_mut` / `with_domain_mut` for domain access.
+- GPU: `src/gpu/context.rs` provides `GpuContext`.
+- ECS: high-level integration happens through extractors operating on `World`.
+- App: `src/app/runner.rs` drives `RenderComposer` and exposes `feature_mut` / `with_feature_mut` on `FrameContext`.

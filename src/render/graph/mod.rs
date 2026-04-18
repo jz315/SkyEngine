@@ -70,7 +70,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::gpu::GpuContext;
-use crate::render::core::target::RenderTarget;
+use crate::render::gpu::RenderTarget;
 use crate::render::resources::blackboard::Blackboard;
 
 pub use alias::AliasingStats;
@@ -602,28 +602,6 @@ impl RenderGraph {
         self.max_dep_level = 0;
         self.culled_count = 0;
         self.compiled = false;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn debug_declared_pass_names(&self) -> Vec<String> {
-        self.passes
-            .iter()
-            .map(|pass| pass.name.to_string())
-            .collect()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn debug_declared_surface_loads(&self, pass_name: &str) -> Vec<LoadOp> {
-        self.passes
-            .iter()
-            .filter(|pass| pass.name == pass_name)
-            .flat_map(|pass| {
-                pass.color_outputs
-                    .iter()
-                    .filter(|output| matches!(output.target, ResourceRef::Surface))
-                    .map(|output| output.load)
-            })
-            .collect()
     }
 
     /// Destroy all currently owned physical resources.

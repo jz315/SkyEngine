@@ -16,14 +16,16 @@
 
 use std::f32::consts::TAU;
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext, KeyCode};
+use sky_engine::app::{App, AppConfig, AppState, FrameContext};
 use sky_engine::ecs::{EntityId, PreparedQuery, System, World};
 use sky_engine::gpu::GpuContext;
+use sky_engine::input::KeyCode;
+use sky_engine::math::Transform;
 use sky_engine::render::expert::{
     Bloom, CompositePass, Light2D, LightPass, PassHandle, RenderGraph, SpriteBatch, TargetSize,
     TextureHandle, ToneMap,
 };
-use sky_engine::render::{Camera2D, Color, Sprite, Texture};
+use sky_engine::render::{Camera, Color, Sprite, Texture};
 
 // ─── Configuration ──────────────────────────────────────────────────────────
 
@@ -624,7 +626,7 @@ impl System for BoidStepSystem {
 // ─── Render state (owned by the lifecycle struct, not Rc'd) ─────────────────
 
 struct RenderState {
-    camera: Camera2D,
+    camera: Camera,
     scene_batch: SpriteBatch,
     normal_batch: SpriteBatch,
     circle_tex: Texture,
@@ -649,7 +651,7 @@ impl RenderState {
         tonemap.exposure = 2.2;
         tonemap.gamma = 2.2;
         Self {
-            camera: Camera2D::new(W, H),
+            camera: Camera::new(W, H),
             scene_batch: SpriteBatch::new(gpu),
             normal_batch: SpriteBatch::new(gpu),
             circle_tex: Texture::circle(gpu, 32),
@@ -868,7 +870,7 @@ impl AppState for SpiritWispsApp {
         // ── Build sprites & lights ──────────────────────────────────
         let rs = self.render.as_mut().unwrap();
         let h = *self.handles.as_ref().unwrap();
-        rs.camera.position = [W * 0.5, H * 0.5];
+        rs.camera.transform = Transform::from_xyz(W * 0.5, H * 0.5, 0.0);
 
         self.lights.clear();
 
