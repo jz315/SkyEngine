@@ -1,48 +1,63 @@
 //! SkyEngine high-level rendering facade built around programmable scene pipelines.
 
-pub(crate) mod composer;
-pub(crate) mod core;
-pub(crate) mod domains;
-mod ecs;
+pub(crate) mod component;
+pub(crate) mod composite;
+pub(crate) mod execution;
 pub mod expert;
-pub(crate) mod frame_pipeline;
+pub(crate) mod extract;
+pub(crate) mod gpu;
 pub(crate) mod graph;
-pub(crate) mod internal;
-pub(crate) mod light;
-pub(crate) mod output_chain;
-pub(crate) mod passes;
+pub(crate) mod lighting;
+pub(crate) mod mesh;
+pub(crate) mod phase;
 pub(crate) mod pipeline;
 pub(crate) mod postfx;
 pub(crate) mod resources;
-pub(crate) mod scene;
-pub(crate) mod stats;
+pub(crate) mod runtime;
+pub(crate) mod sprite;
+pub(crate) mod view;
 
 #[cfg(feature = "live2d")]
 pub(crate) mod live2d;
 
-pub use composer::RenderComposer;
-pub use core::{camera::Camera2D, color::Color, texture::Texture, viewport::ViewportRect};
-pub use domains::{GpuScene2D, PreparedView2D, RenderDomain, SpriteDomain};
-pub use ecs::{
-    BloomSettings, Camera, CameraViewport, MainCamera, OrderInLayer, Parent, PointLight2D,
-    Quaternion, RenderLayerMask, RenderSettings, SortingLayer, SpriteRenderer, ToneMapSettings,
-    Transform, VignetteSettings,
+pub use crate::math::{Projection, Quat, Transform};
+pub use component::{
+    BloomSettings, Camera as CameraMarker, CameraViewport, DirectionalLight,
+    GlobalIlluminationSettings, MainCamera, MeshRenderer, OrderInLayer, Parent, PointLight,
+    ProbeVolumeGiSettings, RenderLayerMask, RenderSettings, ScreenSpaceGiSettings, SortingLayer,
+    SpriteRenderer, ToneMapSettings, VignetteSettings,
 };
-pub use passes::batch::Sprite;
+pub use gpu::{
+    is_depth_format, GpuScene, GpuTable, GpuTableManager, ModelMatrixTable, Texture,
+    DEFAULT_DEPTH_FORMAT,
+};
+pub use lighting::DirectionalShadowPhase;
+pub use lighting::{GpuLight, Light2D, LightTable};
+pub use phase::{OpaquePhase, TransparentPhase};
 pub use pipeline::{
-    OutputChainConfig, RenderFeature, RenderFeatureExecuteContext, RenderFeatureSetupContext,
-    RenderPipelineAsset, RenderPipelineBuilder,
+    Bloom, ComputePass, ComputePassExecuteContext, ComputePassSetupContext, GlobalIllumination,
+    PipelineStepDescriptor, PostFxPass, PostFxPassExecuteContext, PostFxPassSetupContext,
+    RenderFeature, RenderPass, RenderPassExecuteContext, RenderPassSetupContext, RenderPhase,
+    RenderPhaseExecuteContext, RenderPhaseSetupContext, RenderPipelineAsset, RenderPipelineBuilder,
+    RenderPipelineDescriptor, SceneMaterialPrepass, SceneNormalPrepass, SpriteFeature, ToneMap,
+    Vignette,
 };
-pub use scene::{
-    Projection, RenderInjectionPoint, RenderOutputFormat, RenderQueueDesc, RenderQueueSort,
-    RenderStageKey, RenderStats, SceneView,
+pub use resources::material::{
+    AlphaMode, Material, MaterialBindContext, MaterialHandle, MaterialRenderState, MaterialStorage,
+    SceneBindingDesc, SceneBindingKind, ShaderSource, SpriteMaterial, StandardMaterial,
+    UnlitMaterial,
 };
-pub use stats::RenderTimingStats;
+pub use runtime::RenderComposer;
+pub use runtime::RenderTimingStats;
+pub use sprite::Sprite;
+pub use view::{
+    Camera, Color, Frustum, RenderQueueSort, RenderStats, SceneView, SceneViewKind, ViewportRect,
+};
 
 #[cfg(feature = "live2d")]
-pub use domains::Live2DDomain;
+pub use component::Live2DModelInstance;
 #[cfg(feature = "live2d")]
-pub use ecs::Live2DModelInstance;
+pub use pipeline::Live2DFeature;
 
 #[cfg(test)]
 mod tests {
@@ -50,12 +65,15 @@ mod tests {
 
     #[test]
     fn curated_render_exports_are_available() {
-        let _camera = Camera::new();
+        let _camera = Camera::new(16.0, 9.0);
+        let _camera_marker = CameraMarker::new();
         let _projection = Projection::orthographic(16.0, 9.0);
         let _color = Color::WHITE;
-        let _pipeline = RenderPipelineAsset::universal_unlit();
+        let _pipeline = RenderPipelineAsset::builder()
+            .add_feature(SpriteFeature::unlit())
+            .add_phase(TransparentPhase::new())
+            .build();
         let _builder = RenderPipelineAsset::builder();
-        let _format_hint = RenderOutputFormat::Preserve;
         let _settings = RenderSettings::default();
         let _sprite = Sprite::new(0.0, 0.0, 1.0, 1.0);
         let _stats = RenderStats::default();
@@ -63,10 +81,20 @@ mod tests {
         let _view = CameraViewport::default();
         let _viewport = ViewportRect::default();
         let _transform = Transform::default();
+        let _material_state = MaterialRenderState::transparent();
+        let _sprite_material = SpriteMaterial::default();
+        let _unlit_material = UnlitMaterial::default();
+        let _standard_material = StandardMaterial::default();
+        let _depth_format = DEFAULT_DEPTH_FORMAT;
+        let _opaque_phase = expert::OpaquePhase::new();
+        let _mesh_renderer = MeshRenderer::new(
+            expert::Mesh::QUAD,
+            expert::MaterialHandle::new::<SpriteMaterial>(0, 0),
+        );
         let _sprite_renderer = SpriteRenderer::new(8.0, 8.0);
-        let _light = PointLight2D::new(64.0);
-        let _composer = RenderComposer::from_asset(RenderPipelineAsset::overlay());
-        let _domain = SpriteDomain::unlit();
+        let _light = PointLight::new(64.0);
+        let _composer = RenderComposer::from_asset(RenderPipelineAsset::builder().build());
+        let _feature = SpriteFeature::unlit();
         let _main_camera = MainCamera;
         let _sorting_layer = SortingLayer::default();
         let _order_in_layer = OrderInLayer::default();

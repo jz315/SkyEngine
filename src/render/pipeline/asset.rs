@@ -1,207 +1,189 @@
-use std::borrow::Cow;
+use std::any::TypeId;
 
-use rustc_hash::FxHashMap;
+use crate::render::extract::{ExtractMeshes, ExtractSprites, Extractor};
+use crate::render::phase::{
+    DrawFunction, DrawFunctionId, DrawMesh, DrawSprite, OpaquePhase, TransparentPhase,
+};
+use crate::render::resources::material::{Material, SpriteMaterial};
+use crate::render::GpuTable;
 
-use crate::render::domains::{RenderDomain, SpriteDomain};
-use crate::render::ecs::RenderSettings;
-use crate::render::scene::{
-    RenderInjectionPoint, RenderQueueDesc, RenderQueueSort, RenderStageKey, SCENE_HDR_FORMAT,
+use super::{
+    AnyRenderFeature, Bloom, ComputePass, GlobalIllumination, PostFxPass, RenderFeature,
+    RenderPass, RenderPhase, SceneMaterialPrepass, SceneNormalPrepass, ToneMap,
 };
 
-use super::{RenderFeature, SharedRenderFeature};
-
-#[derive(Debug, Clone)]
-pub struct OutputChainConfig {
-    postfx_after_stage: Option<RenderStageKey>,
-    pub(crate) bloom: bool,
-    pub(crate) vignette: bool,
-    pub(crate) tonemap: bool,
-    pub(crate) color_resolve: bool,
+pub(crate) struct MaterialRegistration {
+    pub(crate) type_id: TypeId,
+    pub(crate) type_name: &'static str,
+    pub(crate) register:
+        fn(&mut crate::render::resources::material::MaterialRegistry, &wgpu::Device),
 }
 
-impl OutputChainConfig {
-    #[inline]
-    pub fn none() -> Self {
-        Self {
-            postfx_after_stage: None,
-            bloom: false,
-            vignette: false,
-            tonemap: false,
-            color_resolve: false,
-        }
-    }
-
-    #[inline]
-    pub fn after_stage(stage: impl Into<RenderStageKey>) -> Self {
-        Self {
-            postfx_after_stage: Some(stage.into()),
-            bloom: true,
-            vignette: true,
-            tonemap: true,
-            color_resolve: true,
-        }
-    }
-
-    #[inline]
-    pub fn postfx_after_stage(&self) -> Option<&RenderStageKey> {
-        self.postfx_after_stage.as_ref()
-    }
-
-    #[inline]
-    pub fn bloom(mut self, enabled: bool) -> Self {
-        self.bloom = enabled;
-        self
-    }
-
-    #[inline]
-    pub fn vignette(mut self, enabled: bool) -> Self {
-        self.vignette = enabled;
-        self
-    }
-
-    #[inline]
-    pub fn tonemap(mut self, enabled: bool) -> Self {
-        self.tonemap = enabled;
-        self
-    }
-
-    #[inline]
-    pub fn color_resolve(mut self, enabled: bool) -> Self {
-        self.color_resolve = enabled;
-        self
-    }
-
-    #[inline]
-    pub(crate) fn has_enabled_nodes(&self) -> bool {
-        self.bloom || self.vignette || self.tonemap || self.color_resolve
-    }
-
-    #[inline]
-    pub(crate) fn output_format_after_settings(
-        &self,
-        settings: RenderSettings,
-        mut current: wgpu::TextureFormat,
-        surface: wgpu::TextureFormat,
-    ) -> wgpu::TextureFormat {
-        let bloom_active = self.bloom && settings.bloom.enabled;
-        let vignette_active = self.vignette && settings.vignette.enabled;
-        let tonemap_active = self.tonemap && settings.tonemap.enabled;
-        let color_resolve_active = self.color_resolve && !tonemap_active;
-
-        if bloom_active || vignette_active {
-            current = SCENE_HDR_FORMAT;
-        }
-        if tonemap_active || color_resolve_active {
-            current = surface;
-        }
-
-        current
-    }
+pub enum PipelineStep {
+    Phase(Box<dyn RenderPhase>),
+    Compute(Box<dyn ComputePass>),
+    Pass(Box<dyn RenderPass>),
+    PostFx(Box<dyn PostFxPass>),
 }
 
-pub(crate) struct DomainEntry {
-    pub(crate) queue: Cow<'static, str>,
-    pub(crate) sort_policy: RenderQueueSort,
-    pub(crate) domain: Box<dyn RenderDomain>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PipelineStepDescriptor {
+    Phase(&'static str),
+    Compute(&'static str),
+    Pass(&'static str),
+    PostFx(&'static str),
 }
 
-pub(crate) struct FeatureEntry {
-    pub(crate) injection_point: RenderInjectionPoint,
-    pub(crate) feature: SharedRenderFeature,
-}
-
-pub(crate) struct CompiledRenderPipeline {
-    pub(crate) stages: Vec<RenderStageKey>,
-    pub(crate) queues: Vec<RenderQueueDesc>,
-    pub(crate) queues_by_stage: Vec<Vec<usize>>,
-    pub(crate) domains_by_queue: Vec<Vec<usize>>,
-    pub(crate) before_stage: FxHashMap<String, Vec<usize>>,
-    pub(crate) after_stage: FxHashMap<String, Vec<usize>>,
-    pub(crate) before_queue: FxHashMap<String, Vec<usize>>,
-    pub(crate) after_queue: FxHashMap<String, Vec<usize>>,
-    pub(crate) before_present: Vec<usize>,
-    pub(crate) output_chain: OutputChainConfig,
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RenderPipelineDescriptor {
+    pub feature_names: Vec<&'static str>,
+    pub step_names: Vec<PipelineStepDescriptor>,
+    pub extractor_names: Vec<&'static str>,
+    pub gpu_table_names: Vec<&'static str>,
+    pub draw_function_names: Vec<&'static str>,
+    pub material_names: Vec<&'static str>,
 }
 
 pub struct RenderPipelineBuilder {
-    stages: Vec<RenderStageKey>,
-    queues: Vec<RenderQueueDesc>,
-    domains: Vec<DomainEntry>,
-    features: Vec<FeatureEntry>,
-    output_chain: OutputChainConfig,
+    runtime_features: Vec<Box<dyn AnyRenderFeature>>,
+    feature_names: Vec<&'static str>,
+    steps: Vec<PipelineStep>,
+    extractors: Vec<Box<dyn Extractor>>,
+    gpu_tables: Vec<Box<dyn GpuTable>>,
+    draw_functions: Vec<Box<dyn DrawFunction>>,
+    materials: Vec<MaterialRegistration>,
 }
 
 impl RenderPipelineBuilder {
-    pub fn new() -> Self {
-        Self {
-            stages: Vec::new(),
-            queues: Vec::new(),
-            domains: Vec::new(),
-            features: Vec::new(),
-            output_chain: OutputChainConfig::none(),
+    fn register_draw_function_boxed(
+        &mut self,
+        draw_function: Box<dyn DrawFunction>,
+    ) -> DrawFunctionId {
+        let id = DrawFunctionId::from_raw(self.draw_functions.len());
+        self.draw_functions.push(draw_function);
+        id
+    }
+
+    pub(crate) fn register_draw_function<F>(&mut self, func: F) -> DrawFunctionId
+    where
+        F: DrawFunction + 'static,
+    {
+        self.register_draw_function_boxed(Box::new(func))
+    }
+
+    fn register_material_inner<M>(&mut self)
+    where
+        M: Material + 'static,
+    {
+        let type_id = TypeId::of::<M>();
+        if self
+            .materials
+            .iter()
+            .any(|registration| registration.type_id == type_id)
+        {
+            return;
+        }
+
+        self.materials.push(MaterialRegistration {
+            type_id,
+            type_name: std::any::type_name::<M>(),
+            register: |registry, device| registry.register_material::<M>(device),
+        });
+
+        if type_id == TypeId::of::<SpriteMaterial>() {
+            let draw_function_id = self.register_draw_function(DrawSprite::new());
+            self.extractors
+                .push(Box::new(ExtractSprites::new(draw_function_id)));
+        } else {
+            let draw_function_id = self.register_draw_function(DrawMesh::<M>::new());
+            self.extractors
+                .push(Box::new(ExtractMeshes::<M>::new(draw_function_id)));
         }
     }
 
-    pub fn add_stage(mut self, stage: impl Into<RenderStageKey>) -> Self {
-        self.stages.push(stage.into());
-        self
+    pub fn new() -> Self {
+        Self {
+            runtime_features: Vec::new(),
+            feature_names: Vec::new(),
+            steps: Vec::new(),
+            extractors: Vec::new(),
+            gpu_tables: Vec::new(),
+            draw_functions: Vec::new(),
+            materials: Vec::new(),
+        }
     }
 
-    pub fn add_queue(mut self, queue: RenderQueueDesc) -> Self {
-        self.queues.push(queue);
-        self
-    }
-
-    pub fn add_domain<D>(mut self, domain: D, queue: impl Into<Cow<'static, str>>) -> Self
+    pub fn add_phase<P>(mut self, phase: P) -> Self
     where
-        D: RenderDomain + 'static,
+        P: RenderPhase + 'static,
     {
-        self.domains.push(DomainEntry {
-            queue: queue.into(),
-            sort_policy: RenderQueueSort::TransparentScene,
-            domain: Box::new(domain),
-        });
+        self.steps.push(PipelineStep::Phase(Box::new(phase)));
         self
     }
 
-    pub fn add_boxed_domain(
-        mut self,
-        domain: Box<dyn RenderDomain>,
-        queue: impl Into<Cow<'static, str>>,
-    ) -> Self {
-        self.domains.push(DomainEntry {
-            queue: queue.into(),
-            sort_policy: RenderQueueSort::TransparentScene,
-            domain,
-        });
+    pub fn add_pass<P>(mut self, pass: P) -> Self
+    where
+        P: RenderPass + 'static,
+    {
+        self.steps.push(PipelineStep::Pass(Box::new(pass)));
         self
     }
 
-    pub fn add_feature<F>(mut self, feature: F, injection_point: RenderInjectionPoint) -> Self
+    pub fn add_postfx<F>(mut self, fx: F) -> Self
+    where
+        F: PostFxPass + 'static,
+    {
+        self.steps.push(PipelineStep::PostFx(Box::new(fx)));
+        self
+    }
+
+    pub fn add_extractor<E>(mut self, extractor: E) -> Self
+    where
+        E: Extractor + 'static,
+    {
+        self.extractors.push(Box::new(extractor));
+        self
+    }
+
+    pub fn add_gpu_table<T>(mut self, table: T) -> Self
+    where
+        T: GpuTable + 'static,
+    {
+        self.gpu_tables.push(Box::new(table));
+        self
+    }
+
+    pub fn add_compute<C>(mut self, compute: C) -> Self
+    where
+        C: ComputePass + 'static,
+    {
+        self.steps.push(PipelineStep::Compute(Box::new(compute)));
+        self
+    }
+
+    pub fn add_draw_function<F>(mut self, func: F) -> Self
+    where
+        F: DrawFunction + 'static,
+    {
+        let _ = self.register_draw_function(func);
+        self
+    }
+
+    pub fn register_material<M>(mut self) -> Self
+    where
+        M: Material + 'static,
+    {
+        self.register_material_inner::<M>();
+        self
+    }
+
+    pub fn add_feature<F>(mut self, mut feature: F) -> Self
     where
         F: RenderFeature + 'static,
     {
-        self.features.push(FeatureEntry {
-            injection_point,
-            feature: SharedRenderFeature::new(Box::new(feature)),
-        });
-        self
-    }
-
-    pub fn add_boxed_feature(
-        mut self,
-        feature: Box<dyn RenderFeature>,
-        injection_point: RenderInjectionPoint,
-    ) -> Self {
-        self.features.push(FeatureEntry {
-            injection_point,
-            feature: SharedRenderFeature::new(feature),
-        });
-        self
-    }
-
-    pub fn output_chain(mut self, output_chain: OutputChainConfig) -> Self {
-        self.output_chain = output_chain;
+        self.feature_names.push(feature.name());
+        feature.register(&mut self);
+        self.runtime_features.push(Box::new(feature));
         self
     }
 
@@ -217,9 +199,13 @@ impl Default for RenderPipelineBuilder {
 }
 
 pub struct RenderPipelineAsset {
-    pub(crate) compiled: CompiledRenderPipeline,
-    pub(crate) domains: Vec<DomainEntry>,
-    pub(crate) features: Vec<FeatureEntry>,
+    pub(crate) runtime_features: Vec<Box<dyn AnyRenderFeature>>,
+    pub(crate) feature_names: Vec<&'static str>,
+    pub(crate) steps: Vec<PipelineStep>,
+    pub(crate) extractors: Vec<Box<dyn Extractor>>,
+    pub(crate) gpu_tables: Vec<Box<dyn GpuTable>>,
+    pub(crate) draw_functions: Vec<Box<dyn DrawFunction>>,
+    pub(crate) materials: Vec<MaterialRegistration>,
 }
 
 impl RenderPipelineAsset {
@@ -228,204 +214,72 @@ impl RenderPipelineAsset {
         RenderPipelineBuilder::new()
     }
 
-    pub fn universal_2d() -> Self {
+    pub fn forward_2d() -> Self {
         Self::builder()
-            .add_stage("Opaque")
-            .add_stage("Transparent")
-            .add_stage("Overlay")
-            .add_queue(RenderQueueDesc::new(
-                "transparent",
-                "Transparent",
-                RenderQueueSort::TransparentScene,
-            ))
-            .add_queue(RenderQueueDesc::new(
-                "overlay",
-                "Overlay",
-                RenderQueueSort::OverlayStable,
-            ))
-            .add_domain(SpriteDomain::lit_hdr(), "transparent")
-            .output_chain(OutputChainConfig::after_stage("Transparent"))
+            .add_feature(super::SpriteFeature::lit_hdr())
+            .add_phase(TransparentPhase::new())
+            .add_postfx(Bloom::default())
+            .add_postfx(ToneMap::default())
             .build()
     }
 
-    pub fn universal_unlit() -> Self {
+    pub fn forward_3d() -> Self {
         Self::builder()
-            .add_stage("Opaque")
-            .add_stage("Transparent")
-            .add_stage("Overlay")
-            .add_queue(RenderQueueDesc::new(
-                "transparent",
-                "Transparent",
-                RenderQueueSort::TransparentScene,
-            ))
-            .add_queue(RenderQueueDesc::new(
-                "overlay",
-                "Overlay",
-                RenderQueueSort::OverlayStable,
-            ))
-            .add_domain(SpriteDomain::unlit(), "transparent")
-            .output_chain(OutputChainConfig::none())
+            .add_feature(super::SpriteFeature::lit_hdr())
+            .add_phase(crate::render::lighting::shadow::DirectionalShadowPhase::new())
+            .add_phase(SceneNormalPrepass::default())
+            .add_phase(SceneMaterialPrepass::default())
+            .add_phase(OpaquePhase::new())
+            .add_postfx(GlobalIllumination::default())
+            .add_phase(TransparentPhase::new())
+            .add_postfx(Bloom::default())
+            .add_postfx(ToneMap::default())
             .build()
     }
 
-    pub fn overlay() -> Self {
-        Self::builder()
-            .add_stage("Overlay")
-            .add_queue(RenderQueueDesc::new(
-                "overlay",
-                "Overlay",
-                RenderQueueSort::OverlayStable,
-            ))
-            .output_chain(OutputChainConfig::none())
-            .build()
+    pub fn descriptor(&self) -> RenderPipelineDescriptor {
+        RenderPipelineDescriptor {
+            feature_names: self.feature_names.clone(),
+            step_names: self
+                .steps
+                .iter()
+                .map(|step| match step {
+                    PipelineStep::Phase(phase) => PipelineStepDescriptor::Phase(phase.name()),
+                    PipelineStep::Compute(compute) => {
+                        PipelineStepDescriptor::Compute(compute.name())
+                    }
+                    PipelineStep::Pass(pass) => PipelineStepDescriptor::Pass(pass.name()),
+                    PipelineStep::PostFx(fx) => PipelineStepDescriptor::PostFx(fx.name()),
+                })
+                .collect(),
+            extractor_names: self
+                .extractors
+                .iter()
+                .map(|extractor| extractor.name())
+                .collect(),
+            gpu_table_names: self.gpu_tables.iter().map(|table| table.name()).collect(),
+            draw_function_names: self
+                .draw_functions
+                .iter()
+                .map(|draw_function| draw_function.name())
+                .collect(),
+            material_names: self
+                .materials
+                .iter()
+                .map(|registration| registration.type_name)
+                .collect(),
+        }
     }
 
     fn from_builder(builder: RenderPipelineBuilder) -> Self {
-        let mut queue_sort_lookup = FxHashMap::<String, RenderQueueSort>::default();
-        for queue in &builder.queues {
-            queue_sort_lookup.insert(queue.name().to_string(), queue.sort_policy());
-        }
-        let mut domains = builder.domains;
-        for domain in &mut domains {
-            domain.sort_policy = *queue_sort_lookup
-                .get(domain.queue.as_ref())
-                .unwrap_or(&RenderQueueSort::TransparentScene);
-        }
-        let compiled = CompiledRenderPipeline::compile(
-            &builder.stages,
-            &builder.queues,
-            &domains,
-            &builder.features,
-            builder.output_chain,
-        );
         Self {
-            compiled,
-            domains,
-            features: builder.features,
-        }
-    }
-}
-
-impl CompiledRenderPipeline {
-    fn compile(
-        stages: &[RenderStageKey],
-        queues: &[RenderQueueDesc],
-        domains: &[DomainEntry],
-        features: &[FeatureEntry],
-        output_chain: OutputChainConfig,
-    ) -> Self {
-        let mut stage_lookup = FxHashMap::<String, usize>::default();
-        for (index, stage) in stages.iter().enumerate() {
-            let name = stage.as_str().to_string();
-            assert!(
-                stage_lookup.insert(name.clone(), index).is_none(),
-                "duplicate render stage `{name}`"
-            );
-        }
-
-        let mut queue_lookup = FxHashMap::<String, usize>::default();
-        let mut queues_by_stage = vec![Vec::new(); stages.len()];
-        for (index, queue) in queues.iter().enumerate() {
-            let queue_name = queue.name().to_string();
-            assert!(
-                queue_lookup.insert(queue_name.clone(), index).is_none(),
-                "duplicate render queue `{queue_name}`"
-            );
-            let stage_index = *stage_lookup.get(queue.stage().as_str()).unwrap_or_else(|| {
-                panic!(
-                    "queue `{queue_name}` references unknown stage `{}`",
-                    queue.stage()
-                )
-            });
-            queues_by_stage[stage_index].push(index);
-        }
-
-        let mut domains_by_queue = vec![Vec::new(); queues.len()];
-        for (index, domain) in domains.iter().enumerate() {
-            let queue_index = *queue_lookup.get(domain.queue.as_ref()).unwrap_or_else(|| {
-                panic!(
-                    "domain `{}` references unknown queue `{}`",
-                    domain.domain.name(),
-                    domain.queue
-                )
-            });
-            domains_by_queue[queue_index].push(index);
-        }
-
-        let mut before_stage = FxHashMap::<String, Vec<usize>>::default();
-        let mut after_stage = FxHashMap::<String, Vec<usize>>::default();
-        let mut before_queue = FxHashMap::<String, Vec<usize>>::default();
-        let mut after_queue = FxHashMap::<String, Vec<usize>>::default();
-        let mut before_present = Vec::new();
-        for (index, feature) in features.iter().enumerate() {
-            let feature_name = feature.feature.name();
-            match &feature.injection_point {
-                RenderInjectionPoint::BeforeStage(stage) => {
-                    assert!(
-                        stage_lookup.contains_key(stage.as_str()),
-                        "feature `{}` references unknown stage `{stage}`",
-                        feature_name
-                    );
-                    before_stage
-                        .entry(stage.as_str().to_string())
-                        .or_default()
-                        .push(index);
-                }
-                RenderInjectionPoint::AfterStage(stage) => {
-                    assert!(
-                        stage_lookup.contains_key(stage.as_str()),
-                        "feature `{}` references unknown stage `{stage}`",
-                        feature_name
-                    );
-                    after_stage
-                        .entry(stage.as_str().to_string())
-                        .or_default()
-                        .push(index);
-                }
-                RenderInjectionPoint::BeforeQueue(queue) => {
-                    assert!(
-                        queue_lookup.contains_key(queue.as_ref()),
-                        "feature `{}` references unknown queue `{queue}`",
-                        feature_name
-                    );
-                    before_queue
-                        .entry(queue.to_string())
-                        .or_default()
-                        .push(index);
-                }
-                RenderInjectionPoint::AfterQueue(queue) => {
-                    assert!(
-                        queue_lookup.contains_key(queue.as_ref()),
-                        "feature `{}` references unknown queue `{queue}`",
-                        feature_name
-                    );
-                    after_queue
-                        .entry(queue.to_string())
-                        .or_default()
-                        .push(index);
-                }
-                RenderInjectionPoint::BeforePresent => before_present.push(index),
-            }
-        }
-
-        if let Some(stage) = output_chain.postfx_after_stage() {
-            assert!(
-                stage_lookup.contains_key(stage.as_str()),
-                "output chain references unknown stage `{stage}`"
-            );
-        }
-
-        Self {
-            stages: stages.to_vec(),
-            queues: queues.to_vec(),
-            queues_by_stage,
-            domains_by_queue,
-            before_stage,
-            after_stage,
-            before_queue,
-            after_queue,
-            before_present,
-            output_chain,
+            runtime_features: builder.runtime_features,
+            feature_names: builder.feature_names,
+            steps: builder.steps,
+            extractors: builder.extractors,
+            gpu_tables: builder.gpu_tables,
+            draw_functions: builder.draw_functions,
+            materials: builder.materials,
         }
     }
 }

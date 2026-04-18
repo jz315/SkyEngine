@@ -1,11 +1,13 @@
 //! Post-processing effects.
 
 pub mod bloom;
+pub mod global_illumination;
+pub mod screen_space_gi;
 pub mod tonemap;
 pub mod vignette;
 
 use crate::gpu::GpuContext;
-use crate::render::core::target::RenderTarget;
+use crate::render::gpu::RenderTarget;
 
 /// Shared trait for post-processing passes.
 pub trait PostFx {
