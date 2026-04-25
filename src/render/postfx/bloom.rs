@@ -12,7 +12,7 @@ struct BloomUniform {
     texel_dir: [f32; 4], // texel_x, texel_y, dir_x, dir_y
 }
 
-const BLOOM_SHADER: &str = include_str!("../shaders/bloom.wgsl");
+const BLOOM_SHADER: &str = include_str!("../shaders/postfx/bloom.wgsl");
 const BLOOM_LEVELS: usize = 4;
 pub(crate) const DRAW_CALLS_PER_APPLY: usize = 4 * BLOOM_LEVELS;
 

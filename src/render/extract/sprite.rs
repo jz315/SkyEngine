@@ -37,16 +37,18 @@ impl Extractor for ExtractSprites {
         view: &SceneView,
         ctx: &mut ExtractContext<'_>,
     ) -> Result<(), ExtractError> {
+        let gpu = ctx.gpu;
+        let asset_server = ctx.asset_server;
+        let render_assets = &mut *ctx.render_assets;
+        let transparent_phase = &mut *ctx.transparent_phase;
         let material_storage = ctx
             .material_registry
             .try_materials_mut::<SpriteMaterial>()
             .ok_or(MaterialError::UnregisteredMaterialType {
                 type_name: std::any::type_name::<SpriteMaterial>(),
             })?;
-        material_storage.clear();
         let mut texture_materials = FxHashMap::default();
 
-        let transparent_phase = &mut *ctx.transparent_phase;
         self.query.for_each_with_entity(
             world,
             |entity, (transform, sprite, sorting_layer, order_in_layer, layer_mask)| {
@@ -60,14 +62,21 @@ impl Extractor for ExtractSprites {
                 }
 
                 let transform = transforms.get(entity).unwrap_or(*transform);
-                let texture_key = sprite.texture.as_ref().map_or(usize::MAX, |texture| {
+                let texture = sprite.texture.and_then(|handle| match asset_server {
+                    Some(server) => render_assets.texture(gpu, server, handle),
+                    None => {
+                        render_assets.mark_texture_missing(handle);
+                        None
+                    }
+                });
+                let texture_key = texture.as_ref().map_or(usize::MAX, |texture| {
                     std::ptr::from_ref(texture.texture()) as usize
                 });
                 let handle = if let Some(handle) = texture_materials.get(&texture_key).copied() {
                     handle
                 } else {
                     let mut material = SpriteMaterial::default();
-                    if let Some(texture) = sprite.texture.clone() {
+                    if let Some(texture) = texture {
                         material = material.texture(texture);
                     }
                     let handle = material_storage.insert(material);

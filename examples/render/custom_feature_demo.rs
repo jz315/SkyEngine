@@ -273,7 +273,7 @@ fn main() {
     world.spawn((
         Transform::default(),
         CameraMarker::new(),
-        Projection::orthographic(960.0, 640.0),
+        Projection::orthographic(640.0),
         MainCamera,
     ));
 

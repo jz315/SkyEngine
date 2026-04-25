@@ -38,7 +38,7 @@ const SCENE_ALBEDO_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm
 const SCENE_MATERIAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const SCENE_EMISSIVE_FORMAT: wgpu::TextureFormat = SCENE_HDR_FORMAT;
 const SCENE_VELOCITY_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
-const SCENE_NORMAL_SHADER: &str = include_str!("../shaders/scene_normal_prepass.wgsl");
+const SCENE_NORMAL_SHADER: &str = include_str!("../shaders/prepass/scene_normal_prepass.wgsl");
 const IDENTITY_MATRIX: [f32; 16] = [
     1.0, 0.0, 0.0, 0.0, //
     0.0, 1.0, 0.0, 0.0, //

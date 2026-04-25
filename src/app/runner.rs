@@ -29,7 +29,10 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::app::config::{AppConfig, RedrawMode};
-use crate::ecs::World;
+use crate::diagnostics::{
+    write_diagnostic_events, DiagnosticConsole, DiagnosticCursor, Diagnostics,
+};
+use crate::ecs::{Time, World};
 use crate::gpu::GpuContext;
 use crate::input::raw::{Input, KeyCode, MouseButton};
 use crate::render::{RenderComposer, RenderPipelineAsset, RenderStats};
@@ -101,6 +104,19 @@ fn update_input_from_window_event(input: &mut Input, event: &WindowEvent, suppre
     }
 }
 
+fn write_new_diagnostics<W: std::io::Write>(
+    world: &World,
+    cursor: &mut DiagnosticCursor,
+    console: DiagnosticConsole,
+    writer: &mut W,
+) -> std::io::Result<usize> {
+    let Some(diagnostics) = world.get_resource::<Diagnostics>() else {
+        return Ok(0);
+    };
+    let events = diagnostics.events_since(cursor);
+    write_diagnostic_events(writer, events.iter(), console)
+}
+
 // ── AppState trait ──────────────────────────────────────────────────────────
 
 /// Structured application lifecycle.
@@ -144,7 +160,7 @@ pub trait AppState: 'static {
     /// Called every frame.
     ///
     /// When `AppConfig::auto_tick` is enabled (the default), the ECS
-    /// schedule has already been advanced via `world.tick_with_delta(dt)`
+    /// schedule has already been advanced from the runner-sampled frame delta
     /// before this is called.
     fn update(&mut self, ctx: &mut FrameContext);
 
@@ -186,7 +202,11 @@ pub struct FrameContext<'a> {
     /// Input state for this frame (keyboard + mouse).
     pub input: &'a Input,
 
-    /// Frame delta time in seconds (clamped by `AppConfig::max_delta`).
+    /// Frame delta time in seconds.
+    ///
+    /// With automatic ticking enabled this is `world.time.frame_delta`, so it
+    /// includes `World::time.time_scale`.  With automatic ticking disabled it
+    /// is the runner-sampled clamped delta; manual ticks update `world.time`.
     pub dt: f32,
 
     // ── Internal ────────────────────────────────────────────────────────
@@ -212,6 +232,18 @@ impl<'a> FrameContext<'a> {
     #[inline]
     pub fn surface_size(&self) -> [u32; 2] {
         self.gpu.surface_size()
+    }
+
+    /// Built-in ECS timing state for the current world.
+    #[inline]
+    pub fn time(&self) -> &Time {
+        &self.world.time
+    }
+
+    /// Frame delta in seconds.
+    #[inline]
+    pub fn dt(&self) -> f32 {
+        self.dt
     }
 
     /// Rendering statistics from the most recent `render()`.
@@ -385,6 +417,7 @@ struct RuntimeState {
     gpu: GpuContext,
     renderer: Option<RenderComposer>,
     input: Input,
+    diagnostic_cursor: DiagnosticCursor,
     last_frame_time: Option<Instant>,
     occluded: bool,
     #[cfg(feature = "egui")]
@@ -484,8 +517,13 @@ impl RunnerHandler {
             }
 
             if auto_tick {
-                world.tick_with_delta(dt);
+                world.tick_with_frame_delta(dt, raw_dt);
             }
+            let frame_dt = if auto_tick {
+                world.time.frame_delta
+            } else {
+                dt
+            };
 
             if exit_on_escape && input_snapshot.key_pressed(KeyCode::Escape) {
                 rt.input.begin_frame();
@@ -500,7 +538,7 @@ impl RunnerHandler {
                             let ctx = &mut FrameContext {
                                 world,
                                 input: &input_snapshot,
-                                dt,
+                                dt: frame_dt,
                                 gpu: &mut rt.gpu,
                                 renderer: rt.renderer.as_mut(),
                                 window: &rt.window,
@@ -543,6 +581,14 @@ impl RunnerHandler {
                         rt.window.pre_present_notify();
                         rt.gpu.end_frame();
                         rt.input.begin_frame();
+                        if let Err(error) = write_new_diagnostics(
+                            world,
+                            &mut rt.diagnostic_cursor,
+                            self.config.diagnostic_console,
+                            &mut std::io::stderr(),
+                        ) {
+                            eprintln!("[SkyEngine] Diagnostic console write failed: {error}");
+                        }
 
                         request_redraw = redraw_requested;
                         should_exit = exit_requested;
@@ -631,6 +677,10 @@ impl ApplicationHandler for RunnerHandler {
         let input = Input::new();
         world.insert_resource(input);
 
+        if !world.contains_resource::<crate::diagnostics::Diagnostics>() {
+            world.insert_resource(crate::diagnostics::Diagnostics::default());
+        }
+
         #[cfg(feature = "asset")]
         if !world.contains_resource::<crate::asset::AssetServer>() {
             let config = crate::asset::AssetConfig::default();
@@ -696,6 +746,7 @@ impl ApplicationHandler for RunnerHandler {
             gpu,
             renderer,
             input,
+            diagnostic_cursor: DiagnosticCursor::new(),
             last_frame_time: None,
             occluded: false,
             #[cfg(feature = "egui")]
@@ -812,6 +863,7 @@ impl ApplicationHandler for RunnerHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diagnostics::{DiagnosticEvent, DiagnosticSubsystem};
 
     #[test]
     fn app_defaults_to_no_installed_pipeline() {
@@ -835,5 +887,53 @@ mod tests {
         let app = App::new(AppConfig::new("test", 64, 64), World::new())
             .with_render_pipeline(RenderPipelineAsset::forward_2d());
         assert!(app.renderer.is_some());
+    }
+
+    #[test]
+    fn diagnostic_console_bridge_writes_new_filtered_events() {
+        let mut world = World::new();
+        world.insert_resource(Diagnostics::default());
+        let diagnostics = world
+            .get_resource::<Diagnostics>()
+            .expect("diagnostics should exist");
+        diagnostics.report(
+            DiagnosticEvent::info("engine.note", DiagnosticSubsystem::engine(), "note")
+                .with_title("Note"),
+        );
+        diagnostics.report(
+            DiagnosticEvent::warning("render.warning", DiagnosticSubsystem::render(), "warning")
+                .with_title("Warning"),
+        );
+        diagnostics.report(
+            DiagnosticEvent::error("asset.error", DiagnosticSubsystem::asset(), "error")
+                .with_title("Error"),
+        );
+
+        let mut cursor = DiagnosticCursor::new();
+        let mut output = Vec::new();
+        let written = write_new_diagnostics(
+            &world,
+            &mut cursor,
+            DiagnosticConsole::WarningsAndErrors,
+            &mut output,
+        )
+        .expect("diagnostics should write to memory");
+
+        let text = String::from_utf8(output).expect("diagnostics should be UTF-8");
+        assert_eq!(written, 2);
+        assert!(!text.contains("[SkyEngine][engine][info]"));
+        assert!(text.contains("[SkyEngine][render][warning] Warning"));
+        assert!(text.contains("[SkyEngine][asset][error] Error"));
+
+        let mut second = Vec::new();
+        let written = write_new_diagnostics(
+            &world,
+            &mut cursor,
+            DiagnosticConsole::WarningsAndErrors,
+            &mut second,
+        )
+        .expect("diagnostics should write to memory");
+        assert_eq!(written, 0);
+        assert!(second.is_empty());
     }
 }

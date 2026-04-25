@@ -5,12 +5,13 @@
 //! ```
 
 use sky_engine::app::{App, AppConfig, AppState, FrameContext};
+use sky_engine::asset::{AssetServer, TextureAsset};
 use sky_engine::ecs::{With, World};
 use sky_engine::gpu::GpuContext;
 use sky_engine::math::Vec2;
 use sky_engine::render::{
     CameraMarker, Color, MainCamera, PointLight, Projection, RenderPipelineAsset, RenderSettings,
-    SpriteRenderer, Texture, Transform,
+    SpriteRenderer, Transform,
 };
 
 const NUM_ORBS: usize = 240;
@@ -79,8 +80,12 @@ impl LightingDemo {
 }
 
 impl AppState for LightingDemo {
-    fn setup(&mut self, world: &mut World, gpu: &mut GpuContext) {
-        let orb_tex = Texture::circle(gpu, 96);
+    fn setup(&mut self, world: &mut World, _gpu: &mut GpuContext) {
+        let asset_server = world
+            .get_resource::<AssetServer>()
+            .expect("App should install AssetServer before setup")
+            .clone();
+        let orb_tex = asset_server.insert_runtime(TextureAsset::circle(96));
         for orb in &self.orbs_data {
             let tint = Color::hsl(orb.hue, 0.72, 0.55);
             world.spawn((
@@ -122,7 +127,7 @@ impl AppState for LightingDemo {
             }
         });
         let mouse = ctx.input.mouse_position();
-        let projection = projection.unwrap_or_else(|| Projection::orthographic(w as f32, h as f32));
+        let projection = projection.unwrap_or_else(|| Projection::orthographic(h as f32));
         let camera_transform = camera_transform.unwrap_or_default();
         let mouse_world = projection.screen_to_world(
             camera_transform,
@@ -208,7 +213,7 @@ fn main() {
     world.spawn((
         Transform::default(),
         CameraMarker::new(),
-        Projection::orthographic(1280.0, 720.0),
+        Projection::orthographic(720.0),
         MainCamera,
     ));
 

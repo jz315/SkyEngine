@@ -1,5 +1,7 @@
 //! Application configuration.
 
+use crate::diagnostics::DiagnosticConsole;
+
 /// Frame scheduling policy for the application runner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RedrawMode {
@@ -33,13 +35,19 @@ pub struct AppConfig {
     ///
     /// Prevents physics explosions caused by debugger breakpoints or OS stalls.
     pub max_delta: f32,
-    /// Automatically call `world.tick_with_delta(dt)` each frame (default: true).
+    /// Automatically advance the ECS schedule each frame (default: true).
     ///
-    /// When enabled the runner feeds wall-clock delta into the ECS schedule
-    /// before calling `AppState::update`.  Disable for manual control.
+    /// When enabled the runner feeds clamped and raw wall-clock deltas into
+    /// the ECS schedule before calling `AppState::update`.  Disable for
+    /// manual control.
     pub auto_tick: bool,
     /// How redraws are scheduled (default: [`RedrawMode::Continuous`]).
     pub redraw_mode: RedrawMode,
+    /// Which diagnostics are mirrored to stderr by the app runner.
+    ///
+    /// Diagnostics remain available as structured [`Diagnostics`](crate::diagnostics::Diagnostics)
+    /// events regardless of this setting.
+    pub diagnostic_console: DiagnosticConsole,
 }
 
 impl AppConfig {
@@ -55,6 +63,7 @@ impl AppConfig {
             max_delta: 0.1,
             auto_tick: true,
             redraw_mode: RedrawMode::Continuous,
+            diagnostic_console: DiagnosticConsole::default(),
         }
     }
 
@@ -98,5 +107,32 @@ impl AppConfig {
     pub fn with_redraw_mode(mut self, redraw_mode: RedrawMode) -> Self {
         self.redraw_mode = redraw_mode;
         self
+    }
+
+    /// Set which diagnostics are mirrored to stderr by the app runner.
+    #[inline]
+    pub fn with_diagnostic_console(mut self, diagnostic_console: DiagnosticConsole) -> Self {
+        self.diagnostic_console = diagnostic_console;
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_config_defaults_to_warning_and_error_diagnostics() {
+        let config = AppConfig::new("test", 64, 64);
+        assert_eq!(
+            config.diagnostic_console,
+            DiagnosticConsole::WarningsAndErrors
+        );
+    }
+
+    #[test]
+    fn app_config_can_disable_diagnostic_console() {
+        let config = AppConfig::new("test", 64, 64).with_diagnostic_console(DiagnosticConsole::Off);
+        assert_eq!(config.diagnostic_console, DiagnosticConsole::Off);
     }
 }

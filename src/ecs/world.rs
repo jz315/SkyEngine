@@ -100,8 +100,10 @@ impl World {
 
     /// Advances the world by one frame using wall-clock time.
     ///
-    /// On the first call, delta is 0.  Subsequent calls measure elapsed
-    /// time since the previous tick, scaled by [`Time::time_scale`].
+    /// On the first call, delta is 0.  Subsequent calls measure elapsed time
+    /// since the previous tick.  The measured delta is stored in
+    /// [`Time::raw_delta`], while [`Time::frame_delta`] is affected by
+    /// [`Time::time_scale`].
     ///
     /// # Panics
     ///
@@ -110,35 +112,53 @@ impl World {
         let mut schedule = self.schedule.take().expect("cannot call tick recursively");
 
         let now = std::time::Instant::now();
-        let real_delta = match schedule.last_tick {
+        let raw_delta = match schedule.last_tick {
             Some(last) => (now - last).as_secs_f32(),
             None => 0.0,
         };
         schedule.last_tick = Some(now);
 
-        let scaled_delta = real_delta * self.time.time_scale;
-        self.run_schedule(&mut schedule, scaled_delta);
+        self.run_schedule(&mut schedule, raw_delta, raw_delta);
 
         self.schedule = Some(schedule);
     }
 
     /// Advances the world by the given delta (in seconds).
     ///
-    /// Useful for deterministic tests and fixed-step simulations.
+    /// Useful for deterministic tests and fixed-step simulations.  The given
+    /// delta is treated as both raw and clamped frame time.
     ///
     /// # Panics
     ///
     /// Panics if called recursively.
     pub fn tick_with_delta(&mut self, delta: f32) {
+        self.tick_with_frame_delta(delta, delta);
+    }
+
+    /// Advances the world by a clamped frame delta and the raw real delta.
+    ///
+    /// App runners should use this when they clamp large frame deltas before
+    /// simulation but still want [`Time::raw_delta`] and
+    /// [`Time::raw_elapsed`] to reflect real elapsed time.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called recursively.
+    pub fn tick_with_frame_delta(&mut self, frame_delta: f32, raw_delta: f32) {
         let mut schedule = self.schedule.take().expect("cannot call tick recursively");
 
-        let scaled_delta = delta * self.time.time_scale;
-        self.run_schedule(&mut schedule, scaled_delta);
+        self.run_schedule(&mut schedule, frame_delta, raw_delta);
 
         self.schedule = Some(schedule);
     }
 
-    fn run_schedule(&mut self, schedule: &mut Schedule, scaled_delta: f32) {
+    fn run_schedule(&mut self, schedule: &mut Schedule, frame_delta: f32, raw_delta: f32) {
+        let raw_delta = raw_delta.max(0.0);
+        let frame_delta = frame_delta.max(0.0);
+        let scaled_delta = frame_delta * self.time.time_scale;
+        self.time.raw_delta = raw_delta;
+        self.time.frame_delta = scaled_delta;
+        self.time.delta = scaled_delta;
         self.time.frame_count += 1;
 
         for group in &mut schedule.groups {
@@ -170,7 +190,9 @@ impl World {
             }
         }
 
+        self.time.delta = self.time.frame_delta;
         self.time.elapsed += scaled_delta;
+        self.time.raw_elapsed += raw_delta;
     }
 
     /// Tears down all initialised systems in reverse order.

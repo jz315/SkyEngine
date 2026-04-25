@@ -301,6 +301,24 @@ mod tests {
         assert_eq!(deltas[0], 0.05);
         assert_eq!(deltas[1], 0.02);
         assert_eq!(deltas[2], 0.02);
+        assert_eq!(world.time.delta, world.time.frame_delta);
+        assert_eq!(world.time.frame_delta, 0.05);
+        assert_eq!(world.time.raw_delta, 0.05);
+    }
+
+    #[test]
+    fn world_time_tracks_raw_and_scaled_frame_delta() {
+        let mut world = World::new();
+        world.time.time_scale = 0.5;
+
+        world.tick_with_frame_delta(0.1, 0.25);
+
+        assert!((world.time.delta - 0.05).abs() < f32::EPSILON);
+        assert!((world.time.frame_delta - 0.05).abs() < f32::EPSILON);
+        assert_eq!(world.time.raw_delta, 0.25);
+        assert!((world.time.elapsed - 0.05).abs() < f32::EPSILON);
+        assert_eq!(world.time.raw_elapsed, 0.25);
+        assert_eq!(world.time.frame_count, 1);
     }
 
     #[test]

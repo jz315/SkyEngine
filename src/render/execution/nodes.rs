@@ -139,6 +139,10 @@ pub trait FrameViewNode: Send {
         true
     }
 
+    fn is_view_enabled(&self, _frame: &PreparedFrame<'_>, _view: &PreparedView<'_>) -> bool {
+        true
+    }
+
     fn setup(
         &mut self,
         graph: &mut RenderGraph,

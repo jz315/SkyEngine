@@ -10,6 +10,27 @@ use super::{
     PreparedView, SceneTextureKind, SetupExecutionContext, ViewExecutionContext,
 };
 
+fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::LowPower,
+        compatible_surface: None,
+        force_fallback_adapter: false,
+    }))
+    .expect("No suitable GPU adapter found for frame pipeline tests");
+
+    pollster::block_on(adapter.request_device(
+        &wgpu::DeviceDescriptor {
+            label: Some("frame_pipeline_test_device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+        },
+        None,
+    ))
+    .expect("Failed to create test GPU device")
+}
+
 #[derive(Clone, Copy)]
 struct FrameToken(u32);
 
@@ -204,6 +225,96 @@ impl FrameFinalizeNode for FinalizeRecorder {
     }
 }
 
+struct CopyUploadNode;
+
+impl FrameSetupNode for CopyUploadNode {
+    fn name(&self) -> &'static str {
+        "copy_upload"
+    }
+
+    fn setup(
+        &mut self,
+        graph: &mut RenderGraph,
+        _state: &mut PhaseState,
+        _frame: &PreparedFrame<'_>,
+    ) {
+        let dst = graph.create_texture(|b| {
+            b.name("copy_upload_target")
+                .size(crate::render::graph::TargetSize::Exact(1, 1))
+                .format(wgpu::TextureFormat::Rgba8Unorm)
+                .persistent();
+        });
+        graph.add_copy_pass("copy_upload", |setup| {
+            setup.upload_to_texture(vec![255, 255, 255, 255], dst, 1, 1, 4);
+        });
+    }
+
+    fn execute(
+        &mut self,
+        _pass: &CompiledPass,
+        _ctx: &mut GpuContext,
+        _resources: &PhysicalResources<'_>,
+        _execution: &SetupExecutionContext<'_>,
+    ) -> Result<(), RenderGraphError> {
+        panic!("copy passes should be executed internally by RenderGraph")
+    }
+}
+
+struct MultiPassDrawCountNode;
+
+impl FrameViewNode for MultiPassDrawCountNode {
+    fn name(&self) -> &'static str {
+        "multi_pass_draw_count"
+    }
+
+    fn setup(
+        &mut self,
+        graph: &mut RenderGraph,
+        _state: &mut PhaseState,
+        _frame: &PreparedFrame<'_>,
+        view: &PreparedView<'_>,
+    ) {
+        let intermediate = graph.create_texture(|b| {
+            b.name("multi_pass_intermediate")
+                .size(crate::render::graph::TargetSize::Exact(
+                    view.target_size()[0],
+                    view.target_size()[1],
+                ))
+                .format(wgpu::TextureFormat::Bgra8Unorm);
+        });
+        let sink = graph.create_texture(|b| {
+            b.name("multi_pass_sink")
+                .size(crate::render::graph::TargetSize::Exact(
+                    view.target_size()[0],
+                    view.target_size()[1],
+                ))
+                .format(wgpu::TextureFormat::Bgra8Unorm)
+                .persistent();
+        });
+        graph.add_render_pass("multi_pass_first", |setup| {
+            setup.write_color(0, intermediate);
+        });
+        graph.add_render_pass("multi_pass_second", |setup| {
+            setup.read(intermediate);
+            setup.write_color(0, sink);
+        });
+    }
+
+    fn execute(
+        &mut self,
+        _pass: &CompiledPass,
+        _ctx: &mut GpuContext,
+        _resources: &PhysicalResources<'_>,
+        _execution: &ViewExecutionContext<'_>,
+    ) -> Result<(), RenderGraphError> {
+        Ok(())
+    }
+
+    fn draw_calls(&self, _execution: &ViewExecutionContext<'_>) -> usize {
+        1
+    }
+}
+
 #[test]
 fn phases_run_in_setup_view_finalize_order_and_views_sort_by_order() {
     let log = Arc::new(Mutex::new(Vec::new()));
@@ -248,6 +359,48 @@ fn phases_run_in_setup_view_finalize_order_and_views_sort_by_order() {
             "finalize",
         ]
     );
+}
+
+#[test]
+fn copy_passes_are_included_in_frame_stats() {
+    let (device, queue) = create_test_device();
+    let mut ctx = GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [1, 1]);
+    let mut pipeline = FramePipeline::new();
+    pipeline.add_setup_node(Box::new(CopyUploadNode));
+
+    let frame = PreparedFrame::new(wgpu::TextureFormat::Bgra8Unorm, false);
+
+    ctx.begin_frame()
+        .expect("headless begin_frame should succeed");
+    let stats = pipeline.execute_frame(&mut ctx, &frame);
+    ctx.end_frame();
+
+    assert_eq!(stats.passes, 1);
+    assert_eq!(stats.draw_calls, 0);
+}
+
+#[test]
+fn multi_pass_nodes_count_draw_calls_once_per_dispatch() {
+    let (device, queue) = create_test_device();
+    let mut ctx = GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [2, 2]);
+    let mut pipeline = FramePipeline::new();
+    pipeline.add_view_node(Box::new(MultiPassDrawCountNode));
+
+    let mut frame = PreparedFrame::new(wgpu::TextureFormat::Bgra8Unorm, false);
+    frame.add_view(PreparedView::new(
+        0,
+        ViewportRect::new(0, 0, 2, 2),
+        [2, 2],
+        true,
+    ));
+
+    ctx.begin_frame()
+        .expect("headless begin_frame should succeed");
+    let stats = pipeline.execute_frame(&mut ctx, &frame);
+    ctx.end_frame();
+
+    assert_eq!(stats.passes, 2);
+    assert_eq!(stats.draw_calls, 1);
 }
 
 #[test]

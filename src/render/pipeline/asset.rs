@@ -223,6 +223,15 @@ impl RenderPipelineAsset {
             .build()
     }
 
+    #[cfg(feature = "live2d")]
+    pub fn live2d_2d() -> Self {
+        Self::builder()
+            .add_feature(super::SpriteFeature::unlit())
+            .add_feature(super::Live2DFeature::new())
+            .add_phase(TransparentPhase::new())
+            .build()
+    }
+
     pub fn forward_3d() -> Self {
         Self::builder()
             .add_feature(super::SpriteFeature::lit_hdr())

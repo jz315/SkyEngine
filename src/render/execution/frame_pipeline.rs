@@ -1,4 +1,4 @@
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::gpu::GpuContext;
 use crate::render::graph::{PassHandle, RenderGraph};
@@ -16,7 +16,7 @@ pub struct FrameExecutionStats {
     pub draw_calls: usize,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum DispatchEntry {
     Setup {
         node_index: usize,
@@ -85,24 +85,34 @@ impl FramePipeline {
     ) -> FrameExecutionStats {
         self.prepare_frame_graph(frame);
 
-        let mut stats = FrameExecutionStats::default();
+        let pass_count = self
+            .graph
+            .compile()
+            .expect("FramePipeline render graph compilation failed")
+            .len();
+        let mut stats = FrameExecutionStats {
+            passes: pass_count,
+            draw_calls: 0,
+        };
         let setup_nodes = &mut self.setup_nodes;
         let view_nodes = &mut self.view_nodes;
         let finalize_nodes = &mut self.finalize_nodes;
         let completed_views = &self.completed_views;
         let pass_dispatch = &self.pass_dispatch;
+        let mut counted_draw_dispatches = FxHashSet::default();
 
         self.graph.execute(ctx, |compiled_pass, ctx, resources| {
             let Some(dispatch) = pass_dispatch.get(&compiled_pass.handle).copied() else {
                 return Ok(());
             };
-
-            stats.passes += 1;
+            let count_draw_calls = counted_draw_dispatches.insert(dispatch);
 
             match dispatch {
                 DispatchEntry::Setup { node_index } => {
                     let execution = SetupExecutionContext { frame };
-                    stats.draw_calls += setup_nodes[node_index].draw_calls(&execution);
+                    if count_draw_calls {
+                        stats.draw_calls += setup_nodes[node_index].draw_calls(&execution);
+                    }
                     setup_nodes[node_index].execute(compiled_pass, ctx, resources, &execution)?;
                 }
                 DispatchEntry::View {
@@ -114,7 +124,9 @@ impl FramePipeline {
                         view: frame.view(view_index),
                         view_index,
                     };
-                    stats.draw_calls += view_nodes[node_index].draw_calls(&execution);
+                    if count_draw_calls {
+                        stats.draw_calls += view_nodes[node_index].draw_calls(&execution);
+                    }
                     view_nodes[node_index].execute(compiled_pass, ctx, resources, &execution)?;
                 }
                 DispatchEntry::Finalize { node_index } => {
@@ -122,7 +134,9 @@ impl FramePipeline {
                         frame,
                         completed_views,
                     };
-                    stats.draw_calls += finalize_nodes[node_index].draw_calls(&execution);
+                    if count_draw_calls {
+                        stats.draw_calls += finalize_nodes[node_index].draw_calls(&execution);
+                    }
                     finalize_nodes[node_index].execute(
                         compiled_pass,
                         ctx,
@@ -173,7 +187,9 @@ impl FramePipeline {
                 setup_scene_gbuffer,
             );
             for node_index in 0..self.view_nodes.len() {
-                if !self.view_nodes[node_index].is_enabled(frame) {
+                if !self.view_nodes[node_index].is_enabled(frame)
+                    || !self.view_nodes[node_index].is_view_enabled(frame, view)
+                {
                     continue;
                 }
 

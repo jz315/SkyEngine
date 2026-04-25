@@ -7,7 +7,7 @@ use rustc_hash::FxHashMap;
 
 use crate::gpu::GpuContext;
 
-const FULLSCREEN_COMMON: &str = include_str!("../shaders/fullscreen.wgsl");
+const FULLSCREEN_COMMON: &str = include_str!("../shaders/common/fullscreen.wgsl");
 
 /// Stateless fullscreen triangle drawer.
 pub struct FullscreenPass;

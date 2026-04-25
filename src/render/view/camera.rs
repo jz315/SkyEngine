@@ -30,7 +30,7 @@ pub trait RenderView {
 /// Unified camera backed by `Transform` + `Projection`.
 ///
 /// 2D is a subset of 3D: use `Transform::from_xy(x, y)` with
-/// `Projection::orthographic(w, h)` for orthographic 2D views,
+/// `Projection::orthographic(height)` for orthographic 2D views,
 /// or a full 3D transform with `Projection::perspective(...)` for 3D.
 #[derive(Debug, Clone, Copy)]
 pub struct Camera {
@@ -47,7 +47,7 @@ impl Camera {
     pub fn new(viewport_width: f32, viewport_height: f32) -> Self {
         Self {
             transform: Transform::default(),
-            projection: Projection::orthographic(viewport_width, viewport_height),
+            projection: Projection::orthographic(viewport_height.max(1.0)),
             viewport_size: [
                 viewport_width.max(1.0) as u32,
                 viewport_height.max(1.0) as u32,
@@ -69,15 +69,6 @@ impl Camera {
     #[inline]
     pub fn set_viewport(&mut self, width: f32, height: f32) {
         self.viewport_size = [width.max(1.0) as u32, height.max(1.0) as u32];
-        if let Projection::Orthographic {
-            viewport_width,
-            viewport_height,
-            ..
-        } = &mut self.projection
-        {
-            *viewport_width = width.max(1.0);
-            *viewport_height = height.max(1.0);
-        }
     }
 
     /// Convert screen coordinates to world coordinates.

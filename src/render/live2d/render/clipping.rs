@@ -164,42 +164,39 @@ impl ClippingManager {
 
     /// Set up the channel and layout bounds for all contexts.
     ///
-    /// Follows SakuraEngine's layout packing strategy:
-    /// - ≤4 contexts → one per RGBA channel, full texture
-    /// - 5–8 → 2 sub-rects per channel
-    /// - 9–16 → 4 sub-rects per channel (2×2 grid)
-    /// - etc.
+    /// Follows Cubism Framework's one-mask-texture packing strategy:
+    /// contexts are assigned per RGBA channel, and each channel gets only as
+    /// many sub-rects as it needs. For example, 5 contexts become
+    /// `[2, 1, 1, 1]`, not four channels all using half-width rects.
     fn setup_layout(&mut self) {
         let count = self.contexts.len();
         if count == 0 {
             return;
         }
 
-        // Determine subdivision level
-        let (div_x, div_y) = if count <= 4 {
-            (1, 1)
-        } else if count <= 8 {
-            (2, 1)
-        } else if count <= 16 {
-            (2, 2)
-        } else {
-            (3, 3) // up to 36 masks
-        };
+        const COLOR_CHANNEL_COUNT: usize = 4;
+        const MAX_RECTS_PER_CHANNEL: usize = 9;
 
-        let rects_per_channel = div_x * div_y;
-        let cell_w = 1.0 / div_x as f32;
-        let cell_h = 1.0 / div_y as f32;
+        debug_assert!(
+            count <= COLOR_CHANNEL_COUNT * MAX_RECTS_PER_CHANNEL,
+            "Live2D supports up to 36 clipping contexts per mask texture"
+        );
 
-        for (i, ctx) in self.contexts.iter_mut().enumerate() {
-            let channel = i % 4;
-            let rect_in_channel = i / 4;
+        let base_count_per_channel = count / COLOR_CHANNEL_COUNT;
+        let extra_channel_count = count % COLOR_CHANNEL_COUNT;
+        let mut context_index = 0;
 
-            ctx.channel_index = channel;
+        for channel_index in 0..COLOR_CHANNEL_COUNT {
+            let layout_count =
+                base_count_per_channel + usize::from(channel_index < extra_channel_count);
 
-            if rect_in_channel < rects_per_channel {
-                let col = rect_in_channel % div_x;
-                let row = rect_in_channel / div_x;
-                ctx.layout_bounds = [col as f32 * cell_w, row as f32 * cell_h, cell_w, cell_h];
+            for rect_index in 0..layout_count.min(MAX_RECTS_PER_CHANNEL) {
+                let Some(ctx) = self.contexts.get_mut(context_index) else {
+                    return;
+                };
+                ctx.channel_index = channel_index;
+                ctx.layout_bounds = layout_bounds_for_channel_rect(layout_count, rect_index);
+                context_index += 1;
             }
         }
     }
@@ -329,9 +326,93 @@ fn identity_matrix() -> [f32; 16] {
     ]
 }
 
+fn layout_bounds_for_channel_rect(layout_count: usize, rect_index: usize) -> [f32; 4] {
+    if layout_count <= 1 {
+        return [0.0, 0.0, 1.0, 1.0];
+    }
+    if layout_count == 2 {
+        let x = (rect_index % 2) as f32 * 0.5;
+        return [x, 0.0, 0.5, 1.0];
+    }
+    if layout_count <= 4 {
+        let x = (rect_index % 2) as f32 * 0.5;
+        let y = (rect_index / 2) as f32 * 0.5;
+        return [x, y, 0.5, 0.5];
+    }
+
+    let x = (rect_index % 3) as f32 / 3.0;
+    let y = (rect_index / 3) as f32 / 3.0;
+    [x, y, 1.0 / 3.0, 1.0 / 3.0]
+}
+
 fn same_mask_set(lhs: &[usize], rhs: &[usize]) -> bool {
     if lhs.len() != rhs.len() {
         return false;
     }
     lhs.iter().all(|mask| rhs.contains(mask))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn manager_with_context_count(count: usize) -> ClippingManager {
+        let contexts = (0..count)
+            .map(|index| ClippingContext::new(vec![index]))
+            .collect();
+        let mut manager = ClippingManager {
+            kind: ClippingObjectKind::Drawable,
+            contexts,
+            drawable_to_context: Vec::new(),
+            offscreen_to_context: Vec::new(),
+            channel_flags: [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+        };
+        manager.setup_layout();
+        manager
+    }
+
+    fn assert_bounds(actual: [f32; 4], expected: [f32; 4]) {
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert!((actual - expected).abs() < 0.0001);
+        }
+    }
+
+    #[test]
+    fn five_clip_contexts_match_cubism_channel_packing() {
+        let manager = manager_with_context_count(5);
+
+        assert_eq!(manager.contexts[0].channel_index, 0);
+        assert_bounds(manager.contexts[0].layout_bounds, [0.0, 0.0, 0.5, 1.0]);
+        assert_eq!(manager.contexts[1].channel_index, 0);
+        assert_bounds(manager.contexts[1].layout_bounds, [0.5, 0.0, 0.5, 1.0]);
+
+        assert_eq!(manager.contexts[2].channel_index, 1);
+        assert_bounds(manager.contexts[2].layout_bounds, [0.0, 0.0, 1.0, 1.0]);
+        assert_eq!(manager.contexts[3].channel_index, 2);
+        assert_bounds(manager.contexts[3].layout_bounds, [0.0, 0.0, 1.0, 1.0]);
+        assert_eq!(manager.contexts[4].channel_index, 3);
+        assert_bounds(manager.contexts[4].layout_bounds, [0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn nine_clip_contexts_give_only_first_channel_a_two_by_two_grid() {
+        let manager = manager_with_context_count(9);
+
+        assert_eq!(manager.contexts[0].channel_index, 0);
+        assert_bounds(manager.contexts[0].layout_bounds, [0.0, 0.0, 0.5, 0.5]);
+        assert_eq!(manager.contexts[1].channel_index, 0);
+        assert_bounds(manager.contexts[1].layout_bounds, [0.5, 0.0, 0.5, 0.5]);
+        assert_eq!(manager.contexts[2].channel_index, 0);
+        assert_bounds(manager.contexts[2].layout_bounds, [0.0, 0.5, 0.5, 0.5]);
+
+        assert_eq!(manager.contexts[3].channel_index, 1);
+        assert_bounds(manager.contexts[3].layout_bounds, [0.0, 0.0, 0.5, 1.0]);
+        assert_eq!(manager.contexts[4].channel_index, 1);
+        assert_bounds(manager.contexts[4].layout_bounds, [0.5, 0.0, 0.5, 1.0]);
+    }
 }

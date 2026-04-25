@@ -11,11 +11,12 @@
 //! ```
 
 use sky_engine::app::{App, AppConfig, AppState, FrameContext};
+use sky_engine::asset::{AssetServer, TextureAsset};
 use sky_engine::ecs::{EntityId, World};
 use sky_engine::gpu::GpuContext;
 use sky_engine::render::{
     CameraMarker, Color, MainCamera, Projection, RenderPipelineAsset, RenderSettings,
-    SpriteFeature, SpriteRenderer, Texture, Transform, TransparentPhase,
+    SpriteFeature, SpriteRenderer, Transform, TransparentPhase,
 };
 
 const NUM_PARTICLES: usize = 3000;
@@ -64,15 +65,24 @@ impl TexturedDemo {
 }
 
 impl AppState for TexturedDemo {
-    fn setup(&mut self, world: &mut World, gpu: &mut GpuContext) {
+    fn setup(&mut self, world: &mut World, _gpu: &mut GpuContext) {
         let mut rng = SimpleRng::new(123);
-        let circle = Texture::circle(gpu, 64);
-        let checker = Texture::checkerboard(gpu, 64, 8, [200, 180, 255, 255], [80, 60, 140, 255]);
+        let asset_server = world
+            .get_resource::<AssetServer>()
+            .expect("App should install AssetServer before setup")
+            .clone();
+        let circle = asset_server.insert_runtime(TextureAsset::circle(64));
+        let checker = asset_server.insert_runtime(TextureAsset::checkerboard(
+            64,
+            8,
+            [200, 180, 255, 255],
+            [80, 60, 140, 255],
+        ));
 
         self.camera = Some(world.spawn((
             Transform::default(),
             CameraMarker::new(),
-            Projection::orthographic(960.0, 640.0),
+            Projection::orthographic(640.0),
             MainCamera,
         )));
 
@@ -145,7 +155,7 @@ impl AppState for TexturedDemo {
         let [w, h] = ctx.surface_size();
         if let Some(camera) = self.camera {
             if let Some(projection) = ctx.world.get_mut::<Projection>(camera) {
-                *projection = Projection::orthographic(w as f32, h as f32);
+                *projection = Projection::orthographic(h as f32);
             }
         }
 

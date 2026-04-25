@@ -1,9 +1,13 @@
+use crate::asset::{AssetConfig, AssetId, AssetServer, Handle, TextureAsset};
+use crate::diagnostics::{
+    DiagnosticSeverity, DiagnosticSubsystem, Diagnostics, EngineDiagnosticKind,
+};
 #[cfg(feature = "live2d")]
 use crate::ecs::EntityId;
 use crate::ecs::World;
 use crate::gpu::GpuContext;
+use crate::render::execution::{PreparedFrame, PreparedView};
 use crate::render::expert::{Mesh, MeshDescriptor, MeshIndexData, RenderGraphError, TargetSize};
-use crate::render::gpu::{Texture, TextureCreateDesc};
 use crate::render::pipeline::{
     ComputePass, PostFxPass, RenderPass, RenderPhase, RenderPhaseExecuteContext,
     RenderPhaseSetupContext,
@@ -63,7 +67,7 @@ fn builder_unlit_pipeline_renders_default_sprite_scene() {
     world.spawn((
         Transform::default(),
         CameraMarker::new(),
-        Projection::orthographic(64.0, 64.0),
+        Projection::orthographic_fixed(64.0, 64.0),
         MainCamera,
     ));
     world.spawn((
@@ -80,6 +84,122 @@ fn builder_unlit_pipeline_renders_default_sprite_scene() {
     assert_eq!(stats.view_count, 1);
     assert!(stats.passes >= 1);
     assert!(stats.step_count >= 1);
+}
+
+#[test]
+fn sprite_texture_asset_handle_uploads_into_render_cache() {
+    let (device, queue) = create_test_device();
+    let mut ctx =
+        GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [64, 64]);
+    let mut renderer = RenderComposer::from_asset(
+        RenderPipelineAsset::builder()
+            .add_feature(crate::render::SpriteFeature::unlit())
+            .add_phase(crate::render::TransparentPhase::new())
+            .build(),
+    );
+    let asset_server = AssetServer::with_empty_manifest(AssetConfig::default());
+    let texture = asset_server.insert_runtime(TextureAsset::checkerboard(
+        2,
+        1,
+        [255, 255, 255, 255],
+        [32, 32, 32, 255],
+    ));
+    let mut world = World::new();
+    world.insert_resource(asset_server.clone());
+    world.spawn((
+        Transform::default(),
+        CameraMarker::new(),
+        Projection::orthographic_fixed(64.0, 64.0),
+        MainCamera,
+    ));
+    world.spawn((
+        Transform::default(),
+        crate::render::SpriteRenderer::new(8.0, 8.0).texture(texture),
+    ));
+
+    ctx.begin_frame()
+        .expect("headless begin_frame should succeed");
+    renderer.render_world(&mut ctx, &world);
+    ctx.end_frame();
+
+    assert!(renderer.runtime.render_assets.contains_texture(texture));
+    let stats = renderer.stats();
+    assert_eq!(stats.resident_render_assets, 1);
+    assert_eq!(stats.uploaded_render_assets, 1);
+    assert_eq!(stats.missing_render_assets, 0);
+    assert_eq!(stats.failed_render_assets, 0);
+
+    asset_server.unload(&texture);
+    asset_server
+        .update()
+        .expect("runtime asset unload should update");
+    ctx.begin_frame()
+        .expect("second headless begin_frame should succeed");
+    renderer.render_world(&mut ctx, &world);
+    ctx.end_frame();
+
+    assert!(!renderer.runtime.render_assets.contains_texture(texture));
+    let stats = renderer.stats();
+    assert_eq!(stats.resident_render_assets, 0);
+    assert_eq!(stats.missing_render_assets, 1);
+}
+
+#[test]
+fn missing_sprite_texture_asset_is_reported_in_render_stats() {
+    let (device, queue) = create_test_device();
+    let mut ctx =
+        GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [64, 64]);
+    let mut renderer = RenderComposer::from_asset(
+        RenderPipelineAsset::builder()
+            .add_feature(crate::render::SpriteFeature::unlit())
+            .add_phase(crate::render::TransparentPhase::new())
+            .build(),
+    );
+    let missing = Handle::<TextureAsset>::new(AssetId::new());
+    let mut world = World::new();
+    world.insert_resource(Diagnostics::default());
+    world.insert_resource(AssetServer::with_empty_manifest(AssetConfig::default()));
+    world.spawn((
+        Transform::default(),
+        CameraMarker::new(),
+        Projection::orthographic_fixed(64.0, 64.0),
+        MainCamera,
+    ));
+    world.spawn((
+        Transform::default(),
+        crate::render::SpriteRenderer::new(8.0, 8.0).texture(missing),
+    ));
+
+    ctx.begin_frame()
+        .expect("headless begin_frame should succeed");
+    renderer.render_world(&mut ctx, &world);
+    ctx.end_frame();
+
+    let stats = renderer.stats();
+    assert_eq!(stats.resident_render_assets, 0);
+    assert_eq!(stats.uploaded_render_assets, 0);
+    assert_eq!(stats.loading_render_assets, 0);
+    assert_eq!(stats.missing_render_assets, 1);
+    assert_eq!(stats.failed_render_assets, 0);
+
+    let diagnostics = world
+        .get_resource::<Diagnostics>()
+        .expect("diagnostics should exist")
+        .entries();
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].id.as_str(), "render.asset.texture.missing");
+    assert_eq!(diagnostics[0].subsystem, DiagnosticSubsystem::render());
+    assert_eq!(diagnostics[0].severity, DiagnosticSeverity::Warning);
+    assert_eq!(diagnostics[0].title, "Texture asset is missing");
+    assert_eq!(
+        diagnostics[0].help.as_deref(),
+        Some(
+            "Check that the texture is registered in the asset manifest or inserted as a runtime \
+             asset before rendering."
+        )
+    );
+    let missing_id = missing.id().to_string();
+    assert_eq!(diagnostics[0].field("asset_id"), Some(missing_id.as_str()));
 }
 
 #[test]
@@ -228,7 +348,7 @@ fn forward_3d_enables_shadow_view_for_orthographic_directional_light() {
     world.spawn((
         Transform::from_xyz(0.0, 0.0, 8.0),
         CameraMarker::new(),
-        Projection::orthographic(12.0, 12.0),
+        Projection::orthographic_fixed(12.0, 12.0),
         MainCamera,
     ));
     world.spawn((
@@ -1007,6 +1127,131 @@ impl RenderPhase for CountingPhase {
     }
 }
 
+#[derive(Clone)]
+struct ViewFilteredPhase {
+    enabled_order: i32,
+    setup_calls: Arc<AtomicUsize>,
+    execute_calls: Arc<AtomicUsize>,
+}
+
+impl RenderPhase for ViewFilteredPhase {
+    fn name(&self) -> &'static str {
+        "view_filtered_phase"
+    }
+
+    fn is_enabled(&self, _frame: &PreparedFrame<'_>, view: &PreparedView<'_>) -> bool {
+        view.order() == self.enabled_order
+    }
+
+    fn setup(&mut self, ctx: &mut RenderPhaseSetupContext<'_, '_>) {
+        assert_eq!(ctx.view().order(), self.enabled_order);
+        self.setup_calls.fetch_add(1, Ordering::Relaxed);
+        let current = ctx
+            .state()
+            .current_color()
+            .expect("scene color should exist before filtered phase");
+        ctx.graph().add_render_pass(self.name(), |setup| {
+            setup.write_color_loaded(0, current.handle());
+        });
+    }
+
+    fn execute(
+        &mut self,
+        ctx: &mut RenderPhaseExecuteContext<'_, '_, '_>,
+    ) -> Result<(), RenderGraphError> {
+        assert_eq!(ctx.view().order(), self.enabled_order);
+        self.execute_calls.fetch_add(1, Ordering::Relaxed);
+        let (gpu, pass, resources, _execution, _, _, _, _) = ctx.split();
+        let output_handle =
+            crate::render::execution::pass_first_write_texture(pass, self.name(), "output");
+        let output = crate::render::execution::require_render_target(
+            resources,
+            output_handle,
+            self.name(),
+            "output",
+        );
+        let color_attachments = [Some(wgpu::RenderPassColorAttachment {
+            view: output.view(),
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            },
+        })];
+        let mut frame = gpu.frame();
+        let _render_pass = frame.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some(self.name()),
+            color_attachments: &color_attachments,
+            depth_stencil_attachment: None,
+            ..Default::default()
+        });
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct ViewFilteredPostFxPass {
+    enabled_order: i32,
+    setup_calls: Arc<AtomicUsize>,
+    execute_calls: Arc<AtomicUsize>,
+}
+
+impl PostFxPass for ViewFilteredPostFxPass {
+    fn name(&self) -> &'static str {
+        "view_filtered_postfx"
+    }
+
+    fn is_enabled(&self, _frame: &PreparedFrame<'_>, view: &PreparedView<'_>) -> bool {
+        view.order() == self.enabled_order
+    }
+
+    fn setup(&mut self, ctx: &mut PostFxPassSetupContext<'_, '_>) {
+        assert_eq!(ctx.view().order(), self.enabled_order);
+        self.setup_calls.fetch_add(1, Ordering::Relaxed);
+        let current = ctx
+            .state()
+            .current_color()
+            .expect("scene color should exist before filtered postfx");
+        ctx.graph().add_render_pass(self.name(), |setup| {
+            setup.read(current.handle());
+            setup.write_color_loaded(0, current.handle());
+        });
+    }
+
+    fn execute(
+        &mut self,
+        ctx: &mut PostFxPassExecuteContext<'_, '_>,
+    ) -> Result<(), RenderGraphError> {
+        assert_eq!(ctx.view().order(), self.enabled_order);
+        self.execute_calls.fetch_add(1, Ordering::Relaxed);
+        let (gpu, pass, resources, _execution) = ctx.split();
+        let output_handle =
+            crate::render::execution::pass_first_write_texture(pass, self.name(), "output");
+        let output = crate::render::execution::require_render_target(
+            resources,
+            output_handle,
+            self.name(),
+            "output",
+        );
+        let color_attachments = [Some(wgpu::RenderPassColorAttachment {
+            view: output.view(),
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            },
+        })];
+        let mut frame = gpu.frame();
+        let _render_pass = frame.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some(self.name()),
+            color_attachments: &color_attachments,
+            depth_stencil_attachment: None,
+            ..Default::default()
+        });
+        Ok(())
+    }
+}
+
 #[test]
 fn custom_pipeline_steps_receive_setup_and_execute_contexts() {
     let (device, queue) = create_test_device();
@@ -1078,6 +1323,57 @@ fn custom_phase_steps_receive_setup_and_execute_contexts() {
 }
 
 #[test]
+fn view_specific_phase_and_postfx_skip_disabled_views() {
+    let (device, queue) = create_test_device();
+    let mut ctx =
+        GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [64, 64]);
+
+    let phase_setup = Arc::new(AtomicUsize::new(0));
+    let phase_execute = Arc::new(AtomicUsize::new(0));
+    let postfx_setup = Arc::new(AtomicUsize::new(0));
+    let postfx_execute = Arc::new(AtomicUsize::new(0));
+
+    let pipeline = RenderPipelineBuilder::new()
+        .add_phase(ViewFilteredPhase {
+            enabled_order: 1,
+            setup_calls: phase_setup.clone(),
+            execute_calls: phase_execute.clone(),
+        })
+        .add_postfx(ViewFilteredPostFxPass {
+            enabled_order: 1,
+            setup_calls: postfx_setup.clone(),
+            execute_calls: postfx_execute.clone(),
+        })
+        .build();
+    let mut renderer = RenderComposer::from_asset(pipeline);
+
+    let mut world = World::new();
+    world.spawn((
+        Transform::default(),
+        CameraMarker::new(),
+        Projection::orthographic_fixed(32.0, 32.0),
+        CameraViewport::new(ViewportRect::new(0, 0, 32, 32)).order(10),
+    ));
+    world.spawn((
+        Transform::default(),
+        CameraMarker::new(),
+        Projection::orthographic_fixed(32.0, 32.0),
+        CameraViewport::new(ViewportRect::new(32, 0, 32, 32)).order(20),
+    ));
+
+    ctx.begin_frame()
+        .expect("headless begin_frame should succeed");
+    renderer.render_world(&mut ctx, &world);
+    ctx.end_frame();
+
+    assert_eq!(renderer.stats().view_count, 2);
+    assert_eq!(phase_setup.load(Ordering::Relaxed), 1);
+    assert_eq!(phase_execute.load(Ordering::Relaxed), 1);
+    assert_eq!(postfx_setup.load(Ordering::Relaxed), 1);
+    assert_eq!(postfx_execute.load(Ordering::Relaxed), 1);
+}
+
+#[test]
 fn register_material_automatically_wires_mesh_draw_and_extract() {
     let (device, queue) = create_test_device();
     let mut ctx =
@@ -1099,7 +1395,7 @@ fn register_material_automatically_wires_mesh_draw_and_extract() {
     world.spawn((
         Transform::default(),
         CameraMarker::new(),
-        Projection::orthographic(64.0, 64.0),
+        Projection::orthographic_fixed(64.0, 64.0),
         MainCamera,
     ));
     world.spawn((
@@ -1130,37 +1426,15 @@ fn transparent_sprite_phase_reports_single_draw_call_for_same_texture_batch() {
             .build(),
     );
 
-    let white = Texture::create(
-        &ctx,
-        TextureCreateDesc::new_2d(1, 1, wgpu::TextureFormat::Rgba8Unorm)
-            .usage(wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST)
-            .label("sprite_batch_white"),
-    );
-    ctx.queue().write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: white.texture(),
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        &[255, 255, 255, 255],
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(4),
-            rows_per_image: Some(1),
-        },
-        wgpu::Extent3d {
-            width: 1,
-            height: 1,
-            depth_or_array_layers: 1,
-        },
-    );
+    let asset_server = AssetServer::with_empty_manifest(AssetConfig::default());
+    let white = asset_server.insert_runtime(TextureAsset::white_pixel());
 
     let mut world = World::new();
+    world.insert_resource(asset_server);
     world.spawn((
         Transform::default(),
         CameraMarker::new(),
-        Projection::orthographic(64.0, 64.0),
+        Projection::orthographic_fixed(64.0, 64.0),
         MainCamera,
     ));
     world.spawn((
@@ -1206,7 +1480,7 @@ fn opaque_mesh_phase_batches_same_mesh_and_material_instances() {
     world.spawn((
         Transform::default(),
         CameraMarker::new(),
-        Projection::orthographic(64.0, 64.0),
+        Projection::orthographic_fixed(64.0, 64.0),
         MainCamera,
     ));
     world.spawn((
@@ -1251,7 +1525,7 @@ fn opaque_mesh_phase_keeps_separate_draws_for_different_material_instances() {
     world.spawn((
         Transform::default(),
         CameraMarker::new(),
-        Projection::orthographic(64.0, 64.0),
+        Projection::orthographic_fixed(64.0, 64.0),
         MainCamera,
     ));
     world.spawn((
@@ -1280,7 +1554,7 @@ fn collect_world_views_uses_camera_projection_viewport_and_layer_mask() {
     world.spawn((
         Transform::from_xyz(12.0, -4.0, 8.0),
         CameraMarker::new(),
-        Projection::orthographic(320.0, 180.0),
+        Projection::orthographic_fixed(320.0, 180.0),
         CameraViewport::new(ViewportRect::new(100, 50, 400, 300))
             .order(7)
             .layer_mask(0b0011),
@@ -1289,7 +1563,7 @@ fn collect_world_views_uses_camera_projection_viewport_and_layer_mask() {
     world.spawn((
         Transform::default(),
         CameraMarker::new().enabled(false),
-        Projection::orthographic(64.0, 64.0),
+        Projection::orthographic_fixed(64.0, 64.0),
         CameraViewport::new(ViewportRect::new(0, 0, 64, 64)).order(99),
     ));
 
@@ -1314,13 +1588,13 @@ fn collect_world_views_prefers_explicit_viewports_over_implicit_main_camera() {
     world.spawn((
         Transform::from_xyz(10.0, 20.0, 30.0),
         CameraMarker::new(),
-        Projection::orthographic(320.0, 180.0),
+        Projection::orthographic_fixed(320.0, 180.0),
         MainCamera,
     ));
     world.spawn((
         Transform::from_xyz(-4.0, 6.0, 8.0),
         CameraMarker::new(),
-        Projection::orthographic(160.0, 90.0),
+        Projection::orthographic_fixed(160.0, 90.0),
         CameraViewport::new(ViewportRect::new(50, 40, 320, 200)).order(5),
     ));
 
@@ -1342,12 +1616,12 @@ fn collect_world_views_uses_main_camera_for_implicit_view_selection() {
     world.spawn((
         Transform::from_xyz(1.0, 2.0, 3.0),
         CameraMarker::new(),
-        Projection::orthographic(320.0, 180.0),
+        Projection::orthographic_fixed(320.0, 180.0),
     ));
     world.spawn((
         Transform::from_xyz(11.0, 12.0, 13.0),
         CameraMarker::new(),
-        Projection::orthographic(640.0, 360.0),
+        Projection::orthographic_fixed(640.0, 360.0),
         MainCamera,
     ));
 
@@ -1361,9 +1635,44 @@ fn collect_world_views_uses_main_camera_for_implicit_view_selection() {
 }
 
 #[test]
+fn collect_world_views_reports_missing_projection_diagnostic() {
+    let mut renderer = RenderComposer::from_asset(RenderPipelineAsset::builder().build());
+    renderer.runtime.surface_size = [800, 600];
+
+    let mut world = World::new();
+    world.insert_resource(Diagnostics::default());
+    let camera = world.spawn((Transform::default(), CameraMarker::new(), MainCamera));
+
+    let resolved = renderer.resolve_scene_transforms(&world);
+    let views = renderer.collect_world_views(&world, &resolved);
+
+    assert_eq!(views.len(), 1);
+    let diagnostics = world
+        .get_resource::<Diagnostics>()
+        .expect("diagnostics should exist")
+        .entries();
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(
+        diagnostics[0].id.as_str(),
+        EngineDiagnosticKind::CAMERA_MISSING_PROJECTION
+    );
+    assert_eq!(diagnostics[0].subsystem, DiagnosticSubsystem::render());
+    assert_eq!(diagnostics[0].severity, DiagnosticSeverity::Warning);
+    assert_eq!(diagnostics[0].entity, Some(camera));
+    assert_eq!(diagnostics[0].title, "Camera is missing a Projection");
+    assert_eq!(
+        diagnostics[0].help.as_deref(),
+        Some(
+            "Add Projection::orthographic(height) for stable world-unit sizing, or \
+             Projection::orthographic_fixed(width, height) for a fixed logical view."
+        )
+    );
+}
+
+#[test]
 fn projection_view_uniforms_stay_finite_for_orthographic_and_perspective() {
     for projection in [
-        Projection::orthographic(1280.0, 720.0),
+        Projection::orthographic_fixed(1280.0, 720.0),
         Projection::perspective(60.0f32.to_radians(), 0.1, 1000.0),
     ] {
         let uniform = projection.view_uniform(Transform::from_xyz(3.0, 4.0, 5.0), [1280, 720]);
@@ -1391,7 +1700,7 @@ fn perspective_screen_to_world_intersects_the_world_z_plane() {
 
 #[test]
 fn orthographic_screen_to_world_respects_camera_rotation() {
-    let projection = Projection::orthographic(100.0, 50.0);
+    let projection = Projection::orthographic_fixed(100.0, 50.0);
     let transform = Transform::from_xy(10.0, 20.0).with_rotation(std::f32::consts::FRAC_PI_2);
 
     let center = projection.screen_to_world(transform, [200.0, 100.0].into(), [100.0, 50.0].into());
@@ -1442,7 +1751,7 @@ fn tilted_orthographic_view_disables_2d_culling() {
     world.spawn((
         Transform::from_xyz(0.0, 0.0, 10.0).with_euler_angles(0.35, 0.0, 0.0),
         CameraMarker::new(),
-        Projection::orthographic(320.0, 180.0),
+        Projection::orthographic_fixed(320.0, 180.0),
         MainCamera,
     ));
 
@@ -1512,7 +1821,7 @@ fn live2d_scene_sort_and_layer_visibility_follow_queue_policy() {
         vec![(2, 0.1), (1, 0.2), (3, 0.8)]
     );
 
-    let projection = Projection::orthographic(64.0, 64.0);
+    let projection = Projection::orthographic_fixed(64.0, 64.0);
     let view = SceneView::new(
         0,
         ViewportRect::new(0, 0, 64, 64),
@@ -1560,7 +1869,7 @@ fn live2d_perspective_sort_uses_view_relative_depth() {
         Transform::from_xyz(0.0, 0.0, 10.0),
         projection,
         projection.view_uniform(Transform::from_xyz(0.0, 0.0, 10.0), [64, 64]),
-        None,
+        false,
     );
 
     sort_live2d_scene_instances(

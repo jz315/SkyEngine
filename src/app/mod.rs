@@ -9,6 +9,7 @@ pub mod runner;
 #[cfg(feature = "egui")]
 pub(crate) mod egui_integration;
 
+pub use crate::diagnostics::DiagnosticConsole;
 pub use config::{AppConfig, RedrawMode};
 pub use runner::{App, AppState, FrameContext};
 

@@ -380,7 +380,7 @@ fn build_shadow_view(
         Some(binding_index),
         view.layer_mask,
         Transform::from_xyz(camera_position[0], camera_position[1], camera_position[2]),
-        Projection::orthographic((max_x - min_x).max(1e-3), (max_y - min_y).max(1e-3)),
+        Projection::orthographic_fixed((max_x - min_x).max(1e-3), (max_y - min_y).max(1e-3)),
         view_uniform,
         false,
     );

@@ -29,14 +29,16 @@ struct ScreenSpaceGiUniform {
     params2: [f32; 4], // spatial_radius_px, spatial_depth_reject, spatial_normal_reject, history_valid
 }
 
-const SCREEN_SPACE_GI_SHADER: &str = include_str!("../shaders/screen_space_gi.wgsl");
+const SCREEN_SPACE_GI_SHADER: &str =
+    include_str!("../shaders/postfx/screen_space_gi/screen_space_gi.wgsl");
 const SCREEN_SPACE_GI_PREPROCESS_SHADER: &str =
-    include_str!("../shaders/screen_space_gi_preprocess.wgsl");
+    include_str!("../shaders/postfx/screen_space_gi/screen_space_gi_preprocess.wgsl");
 const SCREEN_SPACE_GI_DIFFUSE_SHADER: &str =
-    include_str!("../shaders/screen_space_gi_diffuse.wgsl");
-const SCREEN_SPACE_GI_FILTER_SHADER: &str = include_str!("../shaders/screen_space_gi_filter.wgsl");
+    include_str!("../shaders/postfx/screen_space_gi/screen_space_gi_diffuse.wgsl");
+const SCREEN_SPACE_GI_FILTER_SHADER: &str =
+    include_str!("../shaders/postfx/screen_space_gi/screen_space_gi_filter.wgsl");
 const SCREEN_SPACE_GI_UPSAMPLE_SHADER: &str =
-    include_str!("../shaders/screen_space_gi_upsample.wgsl");
+    include_str!("../shaders/postfx/screen_space_gi/screen_space_gi_upsample.wgsl");
 const SCREEN_SPACE_GI_PREPROCESS_WORKGROUP_SIZE: u32 = 8;
 const SCREEN_SPACE_GI_MIP_LEVEL_COUNT: u32 = 4;
 

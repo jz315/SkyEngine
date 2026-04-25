@@ -1,3 +1,4 @@
+use crate::asset::AssetEventCursor;
 use crate::ecs::EntityId;
 use crate::render::component::RenderSettings;
 use crate::render::extract::Extractor;
@@ -8,6 +9,7 @@ use crate::render::lighting::shadow::{
 };
 use crate::render::phase::DrawFunctionRegistry;
 use crate::render::pipeline::{AnyRenderFeature, MaterialRegistration, PipelineStep};
+use crate::render::resources::assets::RenderAssetCache;
 use crate::render::resources::material::MaterialRegistry;
 use crate::render::resources::mesh::MeshRegistry;
 use crate::render::view::RenderStats;
@@ -36,6 +38,8 @@ pub(crate) struct ComposerRuntime {
     pub(crate) view_collector: WorldViewCollector,
     pub(crate) gpu_scene: Option<GpuScene>,
     pub(crate) fallback_texture: Option<Texture>,
+    pub(crate) render_assets: RenderAssetCache,
+    pub(crate) asset_event_cursor: AssetEventCursor,
     pub(crate) previous_model_by_entity: rustc_hash::FxHashMap<EntityId, [f32; 16]>,
 }
 

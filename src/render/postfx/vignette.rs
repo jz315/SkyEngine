@@ -11,7 +11,7 @@ struct VignetteUniform {
     params: [f32; 4], // intensity, smoothness, _, _
 }
 
-const VIGNETTE_SHADER: &str = include_str!("../shaders/vignette.wgsl");
+const VIGNETTE_SHADER: &str = include_str!("../shaders/postfx/vignette.wgsl");
 
 pub struct Vignette {
     pipeline: FullscreenPipeline,

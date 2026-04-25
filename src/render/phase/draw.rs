@@ -1319,7 +1319,9 @@ impl DrawSpriteRuntime {
     fn new(device: &wgpu::Device) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("sprite_phase_shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/sprite_draw.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                include_str!("../shaders/sprite/sprite_draw.wgsl").into(),
+            ),
         });
         let texture_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("sprite_phase_texture_bgl"),

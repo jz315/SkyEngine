@@ -150,7 +150,17 @@ name = "neon_galaxy"
 path = "examples/demo/neon_galaxy.rs"
 required-features = ["app"]
 
+[[example]]
+name = "rimworld"
+path = "examples/demo/rimworld/main.rs"
+required-features = ["app", "asset"]
+
 # ── Live2D (--features live2d) ───────────────────────────────────────────────
+
+[[example]]
+name = "hello_live2d"
+path = "examples/live2d/hello_live2d.rs"
+required-features = ["live2d"]
 
 [[example]]
 name = "live2d_demo"
@@ -212,8 +222,8 @@ path = "examples/compare/boids_bevy_gpu.rs"
 required-features = ["compare-bevy"]
 
 [features]
-# Application framework (window + GPU + input)
-app = ["dep:wgpu", "dep:winit", "dep:pollster", "dep:bytemuck", "dep:gltf"]
+# Application framework (window + GPU + input + assets)
+app = ["asset", "dep:wgpu", "dep:winit", "dep:pollster", "dep:bytemuck", "dep:gltf"]
 # Optional Renderer2D stage timing instrumentation.
 render-timings = []
 # Asset loading

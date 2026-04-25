@@ -7,7 +7,8 @@ use crate::ecs::{EntityId, PreparedQuery, World};
 use crate::gpu::GpuContext;
 #[cfg(feature = "live2d")]
 use crate::render::component::{
-    Live2DModelInstance, OrderInLayer, RenderLayerMask, SortingLayer, Transform,
+    Live2DAnimator, Live2DCommand, Live2DCommands, Live2DModelInstance, OrderInLayer,
+    RenderLayerMask, SortingLayer, Transform,
 };
 #[cfg(feature = "live2d")]
 use crate::render::execution::{PreparedFrame, PreparedView, TextureFormat};
@@ -35,6 +36,7 @@ pub struct Live2DFeature {
         Option<&'static RenderLayerMask>,
         Option<&'static SortingLayer>,
         Option<&'static OrderInLayer>,
+        Option<&'static Live2DAnimator>,
     )>,
     entity_to_index: FxHashMap<EntityId, usize>,
     failed_entities: FxHashMap<EntityId, String>,
@@ -42,6 +44,8 @@ pub struct Live2DFeature {
     sort_policy: RenderQueueSort,
     target_format: TextureFormat,
     phase_views: Vec<PreparedLive2DPhaseView>,
+    pending_commands: Vec<Live2DCommand>,
+    frame_delta: f32,
 }
 
 #[cfg(feature = "live2d")]
@@ -57,6 +61,8 @@ impl Live2DFeature {
             sort_policy: RenderQueueSort::TransparentScene,
             target_format: TextureFormat::Bgra8Unorm,
             phase_views: Vec::new(),
+            pending_commands: Vec::new(),
+            frame_delta: 0.0,
         }
     }
 
@@ -150,7 +156,7 @@ impl Live2DFeature {
         let mut instances = Vec::new();
         self.instance_query.for_each_with_entity(
             world,
-            |entity, (instance, transform, layer_mask, sorting_layer, order_in_layer)| {
+            |entity, (instance, transform, layer_mask, sorting_layer, order_in_layer, animator)| {
                 instances.push(PendingLive2DInstance {
                     entity,
                     instance: instance.clone(),
@@ -161,6 +167,7 @@ impl Live2DFeature {
                     layer_mask: layer_mask.map(|mask| mask.0).unwrap_or(u32::MAX),
                     sorting_layer: sorting_layer.copied().unwrap_or_default(),
                     order_in_layer: order_in_layer.copied().unwrap_or_default(),
+                    animator: animator.copied(),
                 });
             },
         );
@@ -180,6 +187,23 @@ impl Live2DFeature {
             column_major_mul(world_matrix, model_matrix),
         ))
     }
+
+    fn resolve_instance_transform(
+        &self,
+        model_index: usize,
+        instance: &Live2DModelInstance,
+        mut transform: Transform,
+    ) -> Transform {
+        if let Some(height) = instance.height {
+            if let Some(model) = self.backend.model(model_index) {
+                let model_height = model.render_size_units()[1].max(f32::EPSILON);
+                let scale = height / model_height;
+                transform.scale[0] *= scale;
+                transform.scale[1] *= scale;
+            }
+        }
+        transform
+    }
 }
 
 #[cfg(feature = "live2d")]
@@ -191,6 +215,7 @@ struct PendingLive2DInstance {
     layer_mask: u32,
     sorting_layer: SortingLayer,
     order_in_layer: OrderInLayer,
+    animator: Option<Live2DAnimator>,
 }
 
 #[cfg(feature = "live2d")]
@@ -332,6 +357,10 @@ impl Live2DFeature {
         surface_size: [u32; 2],
     ) {
         self.backend.extract(world, surface_size);
+        self.frame_delta = world.time.frame_delta;
+        if let Some(commands) = world.get_resource::<Live2DCommands>() {
+            self.pending_commands.extend(commands.drain());
+        }
         self.pending_instances = self.collect_pending_instances(world, transforms);
         let mut seen = FxHashMap::<EntityId, bool>::default();
         for pending in &self.pending_instances {
@@ -354,21 +383,20 @@ impl Live2DFeature {
         let pending_instances = self.pending_instances.clone();
         let mut scene_instances = Vec::new();
 
-        for pending in pending_instances {
-            let PendingLive2DInstance {
-                entity,
-                instance,
-                transform,
-                layer_mask,
-                sorting_layer,
-                order_in_layer,
-            } = pending;
+        for pending in &pending_instances {
+            let entity = pending.entity;
+            let instance = &pending.instance;
+            let transform = pending.transform;
+            let layer_mask = pending.layer_mask;
+            let sorting_layer = pending.sorting_layer;
+            let order_in_layer = pending.order_in_layer;
             if self.entity_to_index.contains_key(&entity)
                 || self.failed_entities.contains_key(&entity)
             {
                 if let Some(index) = self.entity_to_index.get(&entity).copied() {
                     self.backend.set_visible(index, instance.visible);
                     if instance.visible {
+                        let transform = self.resolve_instance_transform(index, instance, transform);
                         scene_instances.push(Live2DSceneInstance {
                             entity,
                             model_index: index,
@@ -385,6 +413,7 @@ impl Live2DFeature {
                 Ok(index) => {
                     self.backend.set_visible(index, instance.visible);
                     if instance.visible {
+                        let transform = self.resolve_instance_transform(index, instance, transform);
                         scene_instances.push(Live2DSceneInstance {
                             entity,
                             model_index: index,
@@ -404,6 +433,9 @@ impl Live2DFeature {
                 }
             }
         }
+
+        self.apply_pending_commands();
+        self.update_animators(&pending_instances);
 
         self.phase_views.clear();
         self.phase_views.reserve(views.len());
@@ -453,6 +485,85 @@ impl Live2DFeature {
             phase_view.transparent_phase.sort();
             let _ = view_index;
             self.phase_views.push(phase_view);
+        }
+    }
+
+    fn apply_pending_commands(&mut self) {
+        let commands = std::mem::take(&mut self.pending_commands);
+        for command in commands {
+            self.apply_command(command);
+        }
+    }
+
+    fn apply_command(&mut self, command: Live2DCommand) {
+        match command {
+            Live2DCommand::PlayMotion {
+                entity,
+                group_name,
+                index_in_group,
+            } => {
+                if let Some(model) = self.user_model_mut_for_entity(entity) {
+                    let _ = model.set_motion(&group_name, index_in_group);
+                }
+            }
+            Live2DCommand::PlayMotionByIndex { entity, index } => {
+                if let Some(model) = self.user_model_mut_for_entity(entity) {
+                    let _ = model.set_motion_by_index(index);
+                }
+            }
+            Live2DCommand::SetExpression { entity, name } => {
+                if let Some(model) = self.user_model_mut_for_entity(entity) {
+                    let _ = model.set_expression(&name);
+                }
+            }
+            Live2DCommand::SetDrag { entity, x, y } => {
+                if let Some(model) = self.user_model_mut_for_entity(entity) {
+                    let _ = model.set_drag(x, y);
+                }
+            }
+            Live2DCommand::ClearDrag { entity } => {
+                if let Some(model) = self.user_model_mut_for_entity(entity) {
+                    let _ = model.clear_drag();
+                }
+            }
+            Live2DCommand::TapScreen {
+                entity,
+                screen_position,
+                view_size,
+            } => {
+                if let Some(model) = self.user_model_mut_for_entity(entity) {
+                    let _ = model.handle_tap_screen(screen_position, view_size);
+                }
+            }
+            Live2DCommand::TapModel { entity, point } => {
+                if let Some(model) = self.user_model_mut_for_entity(entity) {
+                    let _ = model.handle_tap_model_space(point);
+                }
+            }
+        }
+    }
+
+    fn update_animators(&mut self, pending_instances: &[PendingLive2DInstance]) {
+        if self.frame_delta <= 0.0 {
+            return;
+        }
+
+        for pending in pending_instances {
+            let Some(animator) = pending.animator else {
+                continue;
+            };
+            if !animator.enabled || animator.speed <= 0.0 {
+                continue;
+            }
+            if !pending.instance.visible && !animator.update_when_hidden {
+                continue;
+            }
+            let Some(index) = self.entity_to_index.get(&pending.entity).copied() else {
+                continue;
+            };
+            if let Some(model) = self.backend.user_model_mut(index) {
+                model.update(self.frame_delta * animator.speed);
+            }
         }
     }
 

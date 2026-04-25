@@ -358,10 +358,6 @@ impl Live2DRenderer {
             };
 
             for &mask_idx in &ctx_entry.mask_drawable_indices {
-                if !model.drawable_is_visible(mask_idx) {
-                    continue;
-                }
-
                 let positions = model.drawable_vertex_positions(mask_idx);
                 let uvs = model.drawable_vertex_uvs(mask_idx);
                 let indices = model.drawable_indices(mask_idx);

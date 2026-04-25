@@ -15,7 +15,7 @@ use crate::render::resources::material::{
 use crate::render::resources::mesh::{BoundingSphere, MeshRegistry};
 use crate::render::view::{Color, SceneView};
 
-const GLOBAL_ILLUMINATION_SHADER: &str = include_str!("../shaders/global_illumination.wgsl");
+const GLOBAL_ILLUMINATION_SHADER: &str = include_str!("../shaders/postfx/global_illumination.wgsl");
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]

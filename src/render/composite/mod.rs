@@ -5,7 +5,7 @@ use crate::render::gpu::helpers::BindGroupCache;
 use crate::render::gpu::RenderTarget;
 use crate::render::gpu::{FullscreenPass, FullscreenPipeline};
 
-const COMPOSITE_SHADER: &str = include_str!("../shaders/composite.wgsl");
+const COMPOSITE_SHADER: &str = include_str!("../shaders/composite/composite.wgsl");
 
 /// scene_color * lightmap_color with ambient expected in the lightmap.
 pub struct CompositePass {

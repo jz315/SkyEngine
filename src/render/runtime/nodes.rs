@@ -448,6 +448,10 @@ impl FrameViewNode for PhaseStepNode {
             .any(|view| unsafe { (&*self.phase).is_enabled(frame, view) })
     }
 
+    fn is_view_enabled(&self, frame: &PreparedFrame<'_>, view: &PreparedView<'_>) -> bool {
+        unsafe { (&*self.phase).is_enabled(frame, view) }
+    }
+
     fn setup(
         &mut self,
         graph: &mut RenderGraph,
@@ -468,6 +472,9 @@ impl FrameViewNode for PhaseStepNode {
         resources: &PhysicalResources<'_>,
         execution: &ViewExecutionContext<'_>,
     ) -> Result<(), RenderGraphError> {
+        if !self.is_view_enabled(execution.frame(), execution.view()) {
+            return Ok(());
+        }
         let mut context = RenderPhaseExecuteContext::new(
             ctx,
             pass,
@@ -482,6 +489,9 @@ impl FrameViewNode for PhaseStepNode {
     }
 
     fn draw_calls(&self, execution: &ViewExecutionContext<'_>) -> usize {
+        if !self.is_view_enabled(execution.frame(), execution.view()) {
+            return 0;
+        }
         let name = unsafe { (&*self.phase).name() };
         match name {
             "opaque" => built_in_phase_draw_calls(BuiltInPhaseKind::Opaque, execution, unsafe {
@@ -669,6 +679,16 @@ impl FrameViewNode for PostFxStepNode {
             .any(|view| unsafe { (&*self.fx).is_enabled(frame, view) })
     }
 
+    fn is_view_enabled(&self, frame: &PreparedFrame<'_>, view: &PreparedView<'_>) -> bool {
+        if view
+            .payload::<SceneView>()
+            .is_some_and(|scene_view| !scene_view.presents_to_surface())
+        {
+            return false;
+        }
+        unsafe { (&*self.fx).is_enabled(frame, view) }
+    }
+
     fn setup(
         &mut self,
         graph: &mut RenderGraph,
@@ -676,12 +696,6 @@ impl FrameViewNode for PostFxStepNode {
         frame: &PreparedFrame<'_>,
         view: &PreparedView<'_>,
     ) {
-        if view
-            .payload::<SceneView>()
-            .is_some_and(|scene_view| !scene_view.presents_to_surface())
-        {
-            return;
-        }
         let mut context = PostFxPassSetupContext::new(graph, state, frame, view);
         unsafe {
             (&mut *self.fx).setup(&mut context);
@@ -695,10 +709,7 @@ impl FrameViewNode for PostFxStepNode {
         resources: &PhysicalResources<'_>,
         execution: &ViewExecutionContext<'_>,
     ) -> Result<(), RenderGraphError> {
-        if execution
-            .view_payload::<SceneView>()
-            .is_some_and(|scene_view| !scene_view.presents_to_surface())
-        {
+        if !self.is_view_enabled(execution.frame(), execution.view()) {
             return Ok(());
         }
         let mut context = PostFxPassExecuteContext::new(ctx, pass, resources, execution);
@@ -709,10 +720,7 @@ impl FrameViewNode for PostFxStepNode {
     }
 
     fn draw_calls(&self, execution: &ViewExecutionContext<'_>) -> usize {
-        if execution
-            .view_payload::<SceneView>()
-            .is_some_and(|scene_view| !scene_view.presents_to_surface())
-        {
+        if !self.is_view_enabled(execution.frame(), execution.view()) {
             return 0;
         }
         unsafe { (&*self.fx).draw_calls(execution) }

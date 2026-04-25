@@ -1520,7 +1520,7 @@ impl std::fmt::Debug for SpriteMaterial {
 impl Material for SpriteMaterial {
     fn shader_source(&self) -> ShaderSource {
         ShaderSource::Wgsl(Cow::Borrowed(include_str!(
-            "../shaders/sprite_material.wgsl"
+            "../shaders/sprite/sprite_material.wgsl"
         )))
     }
 
@@ -1750,7 +1750,7 @@ impl std::fmt::Debug for UnlitMaterial {
 impl Material for UnlitMaterial {
     fn shader_source(&self) -> ShaderSource {
         ShaderSource::Wgsl(Cow::Borrowed(include_str!(
-            "../shaders/unlit_material.wgsl"
+            "../shaders/materials/unlit_material.wgsl"
         )))
     }
 
@@ -1810,7 +1810,7 @@ impl Material for UnlitMaterial {
 
     fn scene_prepass_shader_source(&self) -> Option<ShaderSource> {
         Some(ShaderSource::Wgsl(Cow::Borrowed(include_str!(
-            "../shaders/scene_material_unlit_prepass.wgsl"
+            "../shaders/prepass/scene_material_unlit_prepass.wgsl"
         ))))
     }
 
@@ -1870,9 +1870,9 @@ impl std::fmt::Debug for StandardMaterial {
 impl Material for StandardMaterial {
     fn shader_source(&self) -> ShaderSource {
         ShaderSource::Wgsl(Cow::Borrowed(if self.normal_texture.is_some() {
-            include_str!("../shaders/standard_material_normal_mapped.wgsl")
+            include_str!("../shaders/materials/standard_material_normal_mapped.wgsl")
         } else {
-            include_str!("../shaders/standard_material.wgsl")
+            include_str!("../shaders/materials/standard_material.wgsl")
         }))
     }
 
@@ -1956,9 +1956,11 @@ impl Material for StandardMaterial {
     fn scene_prepass_shader_source(&self) -> Option<ShaderSource> {
         Some(ShaderSource::Wgsl(Cow::Borrowed(
             if self.normal_texture.is_some() {
-                include_str!("../shaders/scene_material_standard_normal_mapped_prepass.wgsl")
+                include_str!(
+                    "../shaders/prepass/scene_material_standard_normal_mapped_prepass.wgsl"
+                )
             } else {
-                include_str!("../shaders/scene_material_standard_prepass.wgsl")
+                include_str!("../shaders/prepass/scene_material_standard_prepass.wgsl")
             },
         )))
     }
@@ -2781,7 +2783,7 @@ mod tests {
             .expect("standard material should provide a scene prepass shader");
         assert_eq!(
             plain_shader.wgsl_source(),
-            include_str!("../shaders/scene_material_standard_prepass.wgsl")
+            include_str!("../shaders/prepass/scene_material_standard_prepass.wgsl")
         );
 
         let normal_mapped = StandardMaterial {
@@ -2797,7 +2799,7 @@ mod tests {
             .expect("normal-mapped standard material should provide a scene prepass shader");
         assert_eq!(
             normal_mapped_shader.wgsl_source(),
-            include_str!("../shaders/scene_material_standard_normal_mapped_prepass.wgsl")
+            include_str!("../shaders/prepass/scene_material_standard_normal_mapped_prepass.wgsl")
         );
     }
 }

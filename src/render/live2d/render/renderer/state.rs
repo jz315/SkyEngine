@@ -181,7 +181,7 @@ impl Live2DRenderer {
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("live2d_shader"),
                 source: wgpu::ShaderSource::Wgsl(
-                    include_str!("../../../shaders/live2d.wgsl").into(),
+                    include_str!("../../../shaders/live2d/live2d.wgsl").into(),
                 ),
             });
         let composite_shader = ctx
@@ -189,7 +189,7 @@ impl Live2DRenderer {
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("live2d_offscreen_shader"),
                 source: wgpu::ShaderSource::Wgsl(
-                    include_str!("../../../shaders/live2d_offscreen.wgsl").into(),
+                    include_str!("../../../shaders/live2d/live2d_offscreen.wgsl").into(),
                 ),
             });
         let uniforms = DynamicUniformBuffer::new(

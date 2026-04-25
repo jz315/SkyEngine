@@ -132,7 +132,7 @@ impl SpriteBatch {
                 .create_shader_module(wgpu::ShaderModuleDescriptor {
                     label: Some("sprite_shader"),
                     source: wgpu::ShaderSource::Wgsl(
-                        include_str!("../../shaders/sprite.wgsl").into(),
+                        include_str!("../../shaders/sprite/sprite.wgsl").into(),
                     ),
                 }),
         );

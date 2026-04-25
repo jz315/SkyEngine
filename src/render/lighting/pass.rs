@@ -54,7 +54,9 @@ impl LightPass {
             ctx.device()
                 .create_shader_module(wgpu::ShaderModuleDescriptor {
                     label: Some("light_pass_shader"),
-                    source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/light.wgsl").into()),
+                    source: wgpu::ShaderSource::Wgsl(
+                        include_str!("../shaders/lighting/light.wgsl").into(),
+                    ),
                 }),
         );
 

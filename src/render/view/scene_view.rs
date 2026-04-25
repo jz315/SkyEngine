@@ -161,10 +161,7 @@ impl SceneView {
 pub(crate) fn fallback_scene_view(surface_size: [u32; 2]) -> SceneView {
     build_scene_view(
         Transform::default(),
-        Some(Projection::orthographic(
-            surface_size[0].max(1) as f32,
-            surface_size[1].max(1) as f32,
-        )),
+        Some(Projection::orthographic(surface_size[1].max(1) as f32)),
         Some(CameraViewport::new(ViewportRect::from_surface_size(
             surface_size,
         ))),
@@ -182,12 +179,14 @@ pub(crate) fn build_scene_view(
         .unwrap_or_else(|| CameraViewport::new(ViewportRect::from_surface_size(surface_size)));
     let viewport_rect = viewport_desc.viewport.clamp_to_surface(surface_size);
     let target_size = viewport_rect.size();
-    let projection = projection.unwrap_or_else(|| {
-        Projection::orthographic(target_size[0].max(1) as f32, target_size[1].max(1) as f32)
-    });
+    let projection =
+        projection.unwrap_or_else(|| Projection::orthographic(target_size[1].max(1) as f32));
     let view_uniform = projection.view_uniform(transform, target_size);
-    let is_planar_2d =
-        transform.is_planar_2d() && matches!(projection, Projection::Orthographic { .. });
+    let is_planar_2d = transform.is_planar_2d()
+        && matches!(
+            projection,
+            Projection::Orthographic { .. } | Projection::OrthographicFixed { .. }
+        );
     SceneView::new(
         viewport_desc.order,
         viewport_rect,

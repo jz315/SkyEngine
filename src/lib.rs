@@ -43,6 +43,7 @@ use mimalloc::MiMalloc;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
+pub mod diagnostics;
 pub mod ecs;
 pub mod math;
 pub mod reflect;

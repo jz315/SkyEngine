@@ -363,10 +363,7 @@ fn spawn_views(world: &mut World, views: usize) {
             world.spawn((
                 Transform::default(),
                 CameraMarker::new(),
-                Projection::orthographic(
-                    DEFAULT_SURFACE_SIZE[0] as f32,
-                    DEFAULT_SURFACE_SIZE[1] as f32,
-                ),
+                Projection::orthographic(DEFAULT_SURFACE_SIZE[1] as f32),
                 MainCamera,
             ));
         }
@@ -375,14 +372,14 @@ fn spawn_views(world: &mut World, views: usize) {
             world.spawn((
                 Transform::default(),
                 CameraMarker::new(),
-                Projection::orthographic(half_width as f32, DEFAULT_SURFACE_SIZE[1] as f32),
+                Projection::orthographic(DEFAULT_SURFACE_SIZE[1] as f32),
                 CameraViewport::new(ViewportRect::new(0, 0, half_width, DEFAULT_SURFACE_SIZE[1])),
                 MainCamera,
             ));
             world.spawn((
                 Transform::default(),
                 CameraMarker::new(),
-                Projection::orthographic(half_width as f32, DEFAULT_SURFACE_SIZE[1] as f32),
+                Projection::orthographic(DEFAULT_SURFACE_SIZE[1] as f32),
                 CameraViewport::new(ViewportRect::new(
                     half_width,
                     0,

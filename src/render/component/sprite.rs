@@ -1,4 +1,5 @@
-use crate::render::{Color, Texture};
+use crate::asset::{Handle, TextureAsset};
+use crate::render::Color;
 
 /// Coarse scene ordering layer shared across renderable content.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -15,7 +16,7 @@ pub struct SpriteRenderer {
     pub height: f32,
     pub color: Color,
     pub uv: [f32; 4],
-    pub texture: Option<Texture>,
+    pub texture: Option<Handle<TextureAsset>>,
     pub visible: bool,
     pub layer_mask: u32,
 }
@@ -41,7 +42,7 @@ impl SpriteRenderer {
     }
 
     #[inline]
-    pub fn texture(mut self, texture: Texture) -> Self {
+    pub fn texture(mut self, texture: Handle<TextureAsset>) -> Self {
         self.texture = Some(texture);
         self
     }

@@ -103,6 +103,43 @@ pub enum AssetState {
     Failed,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssetEventKind {
+    ReloadQueued,
+    Installed,
+    Unloaded,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AssetEvent {
+    pub sequence: u64,
+    pub id: AssetId,
+    pub kind: AssetEventKind,
+    pub state: AssetState,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AssetEventCursor {
+    next_sequence: u64,
+}
+
+impl AssetEventCursor {
+    #[must_use]
+    pub(crate) fn new(next_sequence: u64) -> Self {
+        Self { next_sequence }
+    }
+
+    #[must_use]
+    pub(crate) fn next_sequence(self) -> u64 {
+        self.next_sequence
+    }
+
+    pub(crate) fn set_next_sequence(&mut self, next_sequence: u64) {
+        self.next_sequence = next_sequence;
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AssetError {
     InvalidAssetId {

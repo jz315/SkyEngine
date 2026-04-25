@@ -6,7 +6,7 @@ use crate::render::view::{Projection, SceneView};
 use crate::render::{OrderInLayer, SortingLayer, SpriteMaterial, Transform, ViewportRect};
 
 fn make_view() -> SceneView {
-    let projection = Projection::orthographic(64.0, 64.0);
+    let projection = Projection::orthographic_fixed(64.0, 64.0);
     SceneView::new(
         0,
         ViewportRect::from_surface_size([64, 64]),

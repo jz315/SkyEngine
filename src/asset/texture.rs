@@ -64,21 +64,49 @@ impl TextureAsset {
         &self.pixels
     }
 
-    #[cfg(feature = "app")]
-    pub fn to_texture(&self, ctx: &crate::gpu::GpuContext) -> crate::render::Texture {
-        let format = match self.color_space {
-            TextureColorSpace::Linear => wgpu::TextureFormat::Rgba8Unorm,
-            TextureColorSpace::Srgb => wgpu::TextureFormat::Rgba8UnormSrgb,
-        };
-
-        crate::render::Texture::from_rgba8_with_format(
-            ctx,
-            self.width,
-            self.height,
-            self.pixels(),
-            format,
-            "asset_texture",
+    #[must_use]
+    pub fn white_pixel() -> Self {
+        Self::new(
+            1,
+            1,
+            TextureColorSpace::Srgb,
+            Arc::<[u8]>::from([255, 255, 255, 255]),
         )
+    }
+
+    #[must_use]
+    pub fn checkerboard(size: u32, tile_size: u32, color_a: [u8; 4], color_b: [u8; 4]) -> Self {
+        let mut data = vec![0u8; (size * size * 4) as usize];
+        for y in 0..size {
+            for x in 0..size {
+                let is_a = ((x / tile_size) + (y / tile_size)) % 2 == 0;
+                let color = if is_a { color_a } else { color_b };
+                let i = ((y * size + x) * 4) as usize;
+                data[i..i + 4].copy_from_slice(&color);
+            }
+        }
+        Self::new(size, size, TextureColorSpace::Srgb, data)
+    }
+
+    #[must_use]
+    pub fn circle(size: u32) -> Self {
+        let mut data = vec![0u8; (size * size * 4) as usize];
+        let center = size as f32 * 0.5;
+        let radius = center - 1.0;
+        for y in 0..size {
+            for x in 0..size {
+                let dx = x as f32 + 0.5 - center;
+                let dy = y as f32 + 0.5 - center;
+                let dist = (dx * dx + dy * dy).sqrt();
+                let alpha = ((radius - dist).max(0.0).min(1.0) * 255.0) as u8;
+                let i = ((y * size + x) * 4) as usize;
+                data[i] = 255;
+                data[i + 1] = 255;
+                data[i + 2] = 255;
+                data[i + 3] = alpha;
+            }
+        }
+        Self::new(size, size, TextureColorSpace::Srgb, data)
     }
 }
 

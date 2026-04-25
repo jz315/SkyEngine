@@ -55,7 +55,7 @@ pub use view::{
 };
 
 #[cfg(feature = "live2d")]
-pub use component::Live2DModelInstance;
+pub use component::{Live2DAnimator, Live2DCommand, Live2DCommands, Live2DModelInstance};
 #[cfg(feature = "live2d")]
 pub use pipeline::Live2DFeature;
 
@@ -67,7 +67,7 @@ mod tests {
     fn curated_render_exports_are_available() {
         let _camera = Camera::new(16.0, 9.0);
         let _camera_marker = CameraMarker::new();
-        let _projection = Projection::orthographic(16.0, 9.0);
+        let _projection = Projection::orthographic(9.0);
         let _color = Color::WHITE;
         let _pipeline = RenderPipelineAsset::builder()
             .add_feature(SpriteFeature::unlit())

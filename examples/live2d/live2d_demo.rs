@@ -10,97 +10,29 @@
 //! cargo run --example live2d_demo --features "live2d egui" --release -- --no-ui assets/Haru/Haru.model3.json
 //! ```
 
-use std::path::{Path, PathBuf};
+#[path = "live2d_demo/args.rs"]
+mod args;
+#[path = "live2d_demo/benchmark.rs"]
+mod benchmark;
+#[path = "live2d_demo/model.rs"]
+mod model;
+#[path = "live2d_demo/ui.rs"]
+mod ui;
 
-use sky_engine::app::{egui, App, AppConfig, AppState, FrameContext};
+use std::path::PathBuf;
+
+use args::{parse_args, DemoOptions};
+use benchmark::{BenchmarkConfig, BenchmarkState};
+use model::ModelSlot;
+use sky_engine::app::{App, AppConfig, AppState, FrameContext};
 use sky_engine::ecs::{EntityId, World};
 use sky_engine::input::KeyCode;
-use sky_engine::render::expert::live2d::{Live2DLoadError, Live2DUserModel};
+use sky_engine::render::expert::live2d::Live2DLoadError;
 use sky_engine::render::{
-    CameraMarker, Color, Live2DFeature, Live2DModelInstance, MainCamera, Projection,
-    RenderPipelineAsset, RenderSettings, SortingLayer, SpriteFeature, SpriteRenderer, Transform,
+    CameraMarker, Color, Live2DAnimator, Live2DCommands, Live2DFeature, Live2DModelInstance,
+    MainCamera, Projection, RenderPipelineAsset, RenderSettings, SortingLayer, SpriteRenderer,
+    Transform,
 };
-
-const DEFAULT_MODEL_PATH: &str =
-    "CubismSdkForNative/CubismSdkForNative-5-r.5/Samples/Resources/Haru/Haru.model3.json";
-
-struct DemoOptions {
-    model_paths: Vec<PathBuf>,
-    ui_visible: bool,
-}
-
-/// One loaded model slot.
-struct ModelSlot {
-    entity: EntityId,
-    /// Display name (filename stem).
-    name: String,
-    motion_groups: Vec<MotionGroupUi>,
-    expression_names: Vec<String>,
-}
-
-impl ModelSlot {
-    fn from_user_model(entity: EntityId, path: &Path, user_model: &Live2DUserModel) -> Self {
-        Self {
-            entity,
-            name: model_display_name(path),
-            motion_groups: MotionGroupUi::from_user_model(user_model),
-            expression_names: expression_names_from_model(user_model),
-        }
-    }
-}
-
-struct MotionGroupUi {
-    name: String,
-    motions: Vec<MotionUi>,
-}
-
-impl MotionGroupUi {
-    fn from_user_model(user_model: &Live2DUserModel) -> Vec<Self> {
-        user_model
-            .motion_player()
-            .map(|player| {
-                let mut groups = Vec::<Self>::new();
-                for entry in player.motion_entries() {
-                    if groups
-                        .last()
-                        .is_none_or(|group| group.name != entry.group_name)
-                    {
-                        groups.push(Self {
-                            name: entry.group_name.to_string(),
-                            motions: Vec::new(),
-                        });
-                    }
-                    groups
-                        .last_mut()
-                        .expect("motion group should exist")
-                        .motions
-                        .push(MotionUi::new(entry.index_in_group, entry.motion_name));
-                }
-                groups
-            })
-            .unwrap_or_default()
-    }
-}
-
-struct MotionUi {
-    index_in_group: usize,
-    name: String,
-}
-
-impl MotionUi {
-    fn new(index_in_group: usize, name: &str) -> Self {
-        Self {
-            index_in_group,
-            name: name.to_string(),
-        }
-    }
-}
-
-#[derive(Default)]
-struct PendingUiActions {
-    clicked_motion: Option<(String, usize, String)>,
-    clicked_expression: Option<usize>,
-}
 
 #[derive(Default)]
 struct FpsCounter {
@@ -131,23 +63,33 @@ struct Live2DDemoApp {
     active: usize,
     ui_visible: bool,
     fps: FpsCounter,
+    active_dirty: bool,
     last_titled_active: usize,
-    last_titled_fps: f32,
+    last_titled_fps_rounded: i32,
     last_titled_ui_visible: bool,
+    benchmark: Option<BenchmarkState>,
+    pointer_drag_active: bool,
     should_exit: bool,
 }
 
 impl Live2DDemoApp {
-    fn new(model_paths: Vec<PathBuf>, ui_visible: bool) -> Self {
+    fn new(
+        model_paths: Vec<PathBuf>,
+        ui_visible: bool,
+        benchmark: Option<BenchmarkConfig>,
+    ) -> Self {
         Self {
             model_paths,
             slots: Vec::new(),
             active: 0,
             ui_visible,
             fps: FpsCounter::default(),
+            active_dirty: true,
             last_titled_active: usize::MAX,
-            last_titled_fps: -1.0,
+            last_titled_fps_rounded: -1,
             last_titled_ui_visible: !ui_visible,
+            benchmark: benchmark.map(BenchmarkState::new),
+            pointer_drag_active: false,
             should_exit: false,
         }
     }
@@ -166,9 +108,12 @@ impl Live2DDemoApp {
         for path in &model_paths {
             eprintln!("[Live2D] Loading model: {}", path.display());
             let entity = ctx.world.spawn((
-                Transform::default().with_scale(180.0, 180.0),
+                Transform::default(),
                 SortingLayer(1),
-                Live2DModelInstance::new(path.clone()).visible(false),
+                Live2DModelInstance::new(path.clone())
+                    .with_height(360.0)
+                    .visible(false),
+                Live2DAnimator::default(),
             ));
             let instance = ctx
                 .world
@@ -210,7 +155,8 @@ impl Live2DDemoApp {
             return;
         }
 
-        self.apply_active_visibility(ctx);
+        self.active_dirty = true;
+        self.sync_active_model_state(ctx);
         eprintln!(
             "[Live2D] Loaded {} model(s); UI: {} (press U to toggle)",
             self.slots.len(),
@@ -218,12 +164,23 @@ impl Live2DDemoApp {
         );
     }
 
-    fn apply_active_visibility(&self, ctx: &mut FrameContext<'_>) {
+    fn sync_active_model_state(&mut self, ctx: &mut FrameContext<'_>) {
+        if !self.active_dirty {
+            return;
+        }
+
         for (index, slot) in self.slots.iter().enumerate() {
             if let Some(instance) = ctx.world.get_mut::<Live2DModelInstance>(slot.entity) {
                 instance.visible = index == self.active;
             }
         }
+
+        let active = self.active;
+        let _ = ctx.with_feature_mut::<Live2DFeature, _>(|feature, _gpu| {
+            feature.set_active_only(active);
+        });
+
+        self.active_dirty = false;
     }
 
     fn update_fps(&mut self, dt: f32) {
@@ -240,8 +197,8 @@ impl Live2DDemoApp {
         }
     }
 
-    fn draw_ui(&mut self, ctx: &mut FrameContext<'_>) -> PendingUiActions {
-        let mut actions = PendingUiActions::default();
+    fn draw_ui(&mut self, ctx: &mut FrameContext<'_>) -> ui::PendingUiActions {
+        let mut actions = ui::PendingUiActions::default();
         if !self.ui_visible {
             return actions;
         }
@@ -249,77 +206,10 @@ impl Live2DDemoApp {
         let fps_display = self.fps.display();
         let slots = &self.slots;
         let active = &mut self.active;
+        let benchmark = self.benchmark.as_ref().map(BenchmarkState::config);
 
         ctx.egui(|egui_ctx| {
-            egui::SidePanel::left("live2d_panel")
-                .default_width(200.0)
-                .resizable(true)
-                .show(egui_ctx, |ui| {
-                    ui.heading("🎭 Live2D");
-                    ui.separator();
-
-                    ui.label(format!("FPS: {fps_display:.0}"));
-                    ui.label("U: toggle UI / pure render");
-                    ui.separator();
-
-                    ui.label(format!("Loaded: {}", slots.len()));
-                    if slots.len() > 1 {
-                        ui.small("Only the selected model is rendered.");
-                        ui.add_space(4.0);
-                        ui.label("Focus");
-                        for (index, slot) in slots.iter().enumerate() {
-                            ui.radio_value(active, index, &slot.name);
-                        }
-                        ui.separator();
-                    }
-
-                    let active_slot = &slots[*active];
-
-                    ui.strong(&active_slot.name);
-                    ui.add_space(4.0);
-
-                    if !active_slot.motion_groups.is_empty() {
-                        ui.label("Motions");
-                        egui::ScrollArea::vertical()
-                            .max_height(180.0)
-                            .show(ui, |ui| {
-                                for group in &active_slot.motion_groups {
-                                    ui.collapsing(group.name.as_str(), |ui| {
-                                        for motion in &group.motions {
-                                            if ui.button(&motion.name).clicked() {
-                                                actions.clicked_motion = Some((
-                                                    group.name.clone(),
-                                                    motion.index_in_group,
-                                                    motion.name.clone(),
-                                                ));
-                                            }
-                                        }
-                                    });
-                                    ui.add_space(4.0);
-                                }
-                            });
-                        ui.separator();
-                    } else {
-                        ui.weak("(no motions)");
-                        ui.add_space(6.0);
-                    }
-
-                    if !active_slot.expression_names.is_empty() {
-                        ui.label("Expressions");
-                        egui::ScrollArea::vertical()
-                            .max_height(220.0)
-                            .show(ui, |ui| {
-                                for (index, name) in active_slot.expression_names.iter().enumerate()
-                                {
-                                    if ui.button(name).clicked() {
-                                        actions.clicked_expression = Some(index);
-                                    }
-                                }
-                            });
-                    } else {
-                        ui.weak("(no expressions)");
-                    }
-                });
+            actions = ui::draw_live2d_panel(egui_ctx, slots, active, fps_display, benchmark);
         });
 
         actions
@@ -338,36 +228,21 @@ impl Live2DDemoApp {
             let drag_x = mouse_position[0] / surface_size[0].max(1) as f32 * 2.0 - 1.0;
             let drag_y = 1.0 - mouse_position[1] / surface_size[1].max(1) as f32 * 2.0;
             let active = self.active_entity();
-            let tapped = ctx
-                .with_feature_mut::<Live2DFeature, _>(|feature, _gpu| {
-                    let Some(slot) = feature.user_model_mut_for_entity(active) else {
-                        return false;
-                    };
-                    let _ = slot.set_drag(drag_x, drag_y);
-                    ctx.input.mouse_left_released()
-                        && slot.handle_tap_screen(mouse_position, surface_size)
-                })
-                .unwrap_or(false);
+            let tapped = ctx.input.mouse_left_released();
+            let commands = Live2DCommands::resource(ctx.world);
+            commands.set_drag(active, drag_x, drag_y);
             if tapped {
-                eprintln!("[Live2D] Tap action fired");
+                commands.tap_screen(active, mouse_position, surface_size);
             }
-        } else {
+            self.pointer_drag_active = true;
+            if tapped {
+                eprintln!("[Live2D] Tap action requested");
+            }
+        } else if self.pointer_drag_active {
             let active = self.active_entity();
-            let _ = ctx.with_feature_mut::<Live2DFeature, _>(|feature, _gpu| {
-                if let Some(slot) = feature.user_model_mut_for_entity(active) {
-                    let _ = slot.clear_drag();
-                }
-            });
+            Live2DCommands::resource(ctx.world).clear_drag(active);
+            self.pointer_drag_active = false;
         }
-    }
-
-    fn update_active_model(&mut self, ctx: &mut FrameContext<'_>, dt: f32) {
-        let active = self.active_entity();
-        let _ = ctx.with_feature_mut::<Live2DFeature, _>(|feature, _gpu| {
-            if let Some(slot) = feature.user_model_mut_for_entity(active) {
-                slot.update(dt);
-            }
-        });
     }
 
     fn drain_runtime_events(&mut self, ctx: &mut FrameContext<'_>) {
@@ -409,48 +284,29 @@ impl Live2DDemoApp {
     }
 
     fn render_active_model(&mut self, ctx: &mut FrameContext<'_>) {
-        self.apply_active_visibility(ctx);
-        if let Some(settings) = ctx.world.get_resource_mut::<RenderSettings>() {
-            settings.clear_color = Color::new(0.12, 0.12, 0.18, 1.0);
-            settings.bloom.enabled = false;
-            settings.tonemap.enabled = false;
-            settings.vignette.enabled = false;
-        } else {
-            ctx.world.insert_resource(RenderSettings {
-                clear_color: Color::new(0.12, 0.12, 0.18, 1.0),
-                bloom: sky_engine::render::BloomSettings {
-                    enabled: false,
-                    ..Default::default()
-                },
-                tonemap: sky_engine::render::ToneMapSettings {
-                    enabled: false,
-                    ..Default::default()
-                },
-                vignette: sky_engine::render::VignetteSettings {
-                    enabled: false,
-                    ..Default::default()
-                },
-                ..Default::default()
-            });
-        }
+        self.sync_active_model_state(ctx);
         ctx.render();
     }
 
     fn update_window_title(&mut self, ctx: &FrameContext<'_>) {
-        let fps_display = self.fps.display();
+        if self.benchmark.is_some() {
+            return;
+        }
+
+        let fps_rounded = self.fps.display().round() as i32;
         if self.active != self.last_titled_active
-            || fps_display != self.last_titled_fps
+            || fps_rounded != self.last_titled_fps_rounded
             || self.ui_visible != self.last_titled_ui_visible
         {
             ctx.set_title(&format!(
                 "SkyEngine — Live2D | {} model(s) | Focus: {} | {:.0} FPS | {}",
                 self.slots.len(),
                 self.active_slot().name,
-                fps_display,
+                fps_rounded,
                 if self.ui_visible { "UI" } else { "No UI" }
             ));
             self.last_titled_active = self.active;
-            self.last_titled_fps = fps_display;
+            self.last_titled_fps_rounded = fps_rounded;
             self.last_titled_ui_visible = self.ui_visible;
         }
     }
@@ -471,176 +327,60 @@ impl AppState for Live2DDemoApp {
             return;
         }
 
-        self.update_fps(ctx.dt);
+        let dt = ctx.time().frame_delta;
+        self.update_fps(dt);
         self.handle_global_input(ctx);
+        let previous_active = self.active;
         let actions = self.draw_ui(ctx);
-        if let Some((group_name, motion_index, motion_name)) = actions.clicked_motion {
+        if previous_active != self.active {
+            self.active_dirty = true;
+        }
+        if let Some((group_index, motion_index)) = actions.clicked_motion {
+            let active_slot = self.active_slot();
+            let group = &active_slot.motion_groups[group_index];
+            let motion = &group.motions[motion_index];
             let active = self.active_entity();
-            let played = ctx
-                .with_feature_mut::<Live2DFeature, _>(|feature, _gpu| {
-                    feature
-                        .user_model_mut_for_entity(active)
-                        .is_some_and(|slot| slot.set_motion(&group_name, motion_index))
-                })
-                .unwrap_or(false);
-            if played {
-                eprintln!("[Live2D] Motion -> {group_name}/{motion_name}");
-            }
+            Live2DCommands::resource(ctx.world).play_motion(
+                active,
+                group.name.clone(),
+                motion.index_in_group,
+            );
+            eprintln!(
+                "[Live2D] Motion requested -> {}/{}",
+                group.name, motion.name
+            );
         }
         if let Some(expression_index) = actions.clicked_expression {
             let expression_name = self.active_slot().expression_names[expression_index].clone();
             let active = self.active_entity();
-            let played = ctx
-                .with_feature_mut::<Live2DFeature, _>(|feature, _gpu| {
-                    feature
-                        .user_model_mut_for_entity(active)
-                        .is_some_and(|slot| slot.set_expression(&expression_name))
-                })
-                .unwrap_or(false);
-            if played {
-                eprintln!("[Live2D] Expression -> {expression_name}");
-            }
+            Live2DCommands::resource(ctx.world).set_expression(active, expression_name.clone());
+            eprintln!("[Live2D] Expression requested -> {expression_name}");
         }
         self.handle_pointer_interaction(ctx);
-        self.update_active_model(ctx, ctx.dt);
-        self.drain_runtime_events(ctx);
         self.render_active_model(ctx);
+        self.drain_runtime_events(ctx);
         self.update_window_title(ctx);
-    }
-}
-
-fn print_usage() {
-    eprintln!("Usage: live2d_demo [--no-ui] [model-or-folder] [more models/folders ...]");
-    eprintln!("  --no-ui   start in pure render mode for FPS A/B");
-    eprintln!("  --ui      force the control panel on at startup");
-    eprintln!("  U         toggle the control panel while running");
-    eprintln!("  You can pass one or more .model3.json files and/or folders.");
-    eprintln!("  If no path is provided, the demo uses the hardcoded default model:");
-    eprintln!("    {}", DEFAULT_MODEL_PATH);
-    eprintln!("  Folders are scanned recursively for every *.model3.json.");
-    eprintln!("  All matching models are loaded; only the selected model is rendered.");
-    eprintln!(
-        "  e.g. live2d_demo --no-ui CubismSdkForNative\\CubismSdkForNative-5-r.5\\Samples\\Resources"
-    );
-}
-
-fn is_model_json(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.ends_with(".model3.json"))
-}
-
-fn collect_models_under_dir(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    let mut entries: Vec<_> = std::fs::read_dir(dir)?.collect::<Result<_, _>>()?;
-    entries.sort_by_key(|entry| entry.path());
-
-    for entry in entries {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_models_under_dir(&path, out)?;
-        } else if path.is_file() && is_model_json(&path) {
-            out.push(path);
+        if let Some(result) = self
+            .benchmark
+            .as_mut()
+            .and_then(|benchmark| benchmark.record_frame(dt))
+        {
+            eprintln!(
+                "[Live2D][bench] sample_frames={} avg_fps={:.2} avg_frame_ms={:.4}",
+                result.sample_frames,
+                result.fps(),
+                result.frame_ms()
+            );
+            ctx.request_exit();
         }
     }
-
-    Ok(())
-}
-
-fn expand_model_inputs(inputs: Vec<String>) -> Vec<PathBuf> {
-    let mut model_paths = Vec::new();
-
-    for input in inputs {
-        let path = PathBuf::from(&input);
-        if path.is_dir() {
-            if let Err(err) = collect_models_under_dir(&path, &mut model_paths) {
-                eprintln!(
-                    "[Live2D] Failed to scan directory {}: {err}",
-                    path.display()
-                );
-            }
-        } else if path.is_file() {
-            if is_model_json(&path) {
-                model_paths.push(path);
-            } else {
-                eprintln!("[Live2D] Ignoring non-model file: {}", path.display());
-            }
-        } else {
-            eprintln!("[Live2D] Path not found: {}", path.display());
-        }
-    }
-
-    model_paths.sort();
-    model_paths.dedup();
-    model_paths
-}
-
-fn parse_args() -> DemoOptions {
-    let mut inputs = Vec::new();
-    let mut ui_visible = true;
-
-    for arg in std::env::args().skip(1) {
-        match arg.as_str() {
-            "--no-ui" => ui_visible = false,
-            "--ui" => ui_visible = true,
-            "-h" | "--help" => {
-                print_usage();
-                std::process::exit(0);
-            }
-            _ if arg.starts_with('-') => {
-                eprintln!("Unknown option: {arg}");
-                print_usage();
-                std::process::exit(1);
-            }
-            _ => inputs.push(arg),
-        }
-    }
-
-    let model_paths = if inputs.is_empty() {
-        let default_path = PathBuf::from(DEFAULT_MODEL_PATH);
-        eprintln!(
-            "[Live2D] No model path provided; using default: {}",
-            default_path.display()
-        );
-        vec![default_path]
-    } else {
-        let model_paths = expand_model_inputs(inputs);
-        if model_paths.is_empty() {
-            print_usage();
-            std::process::exit(1);
-        }
-        model_paths
-    };
-
-    DemoOptions {
-        model_paths,
-        ui_visible,
-    }
-}
-
-fn expression_names_from_model(user_model: &Live2DUserModel) -> Vec<String> {
-    user_model
-        .expression_player()
-        .map(|player| {
-            player
-                .expression_names()
-                .map(|name| name.to_string())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn model_display_name(path: &Path) -> String {
-    path.file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("Unknown")
-        .trim_end_matches(".model3")
-        .to_string()
 }
 
 fn main() {
     let DemoOptions {
         model_paths,
         ui_visible,
+        benchmark,
     } = parse_args();
 
     let config = AppConfig::new("SkyEngine — Live2D", 1280, 720)
@@ -666,29 +406,27 @@ fn main() {
     world.spawn((
         Transform::default(),
         CameraMarker::new(),
-        Projection::orthographic(1280.0, 720.0),
+        Projection::orthographic(720.0),
         MainCamera,
     ));
-    world.spawn((
-        Transform::from_xyz(0.0, 0.0, -5.0),
-        SpriteRenderer::new(900.0, 540.0).color(Color::new(0.18, 0.2, 0.28, 1.0)),
-    ));
-    world.spawn((
-        Transform::from_xyz(-220.0, 120.0, -4.0),
-        SpriteRenderer::new(180.0, 180.0).color(Color::new(0.3, 0.2, 0.42, 0.35)),
-    ));
-    world.spawn((
-        Transform::from_xyz(240.0, -80.0, -4.0),
-        SpriteRenderer::new(240.0, 240.0).color(Color::new(0.16, 0.4, 0.46, 0.28)),
-    ));
+    if ui_visible && benchmark.is_none() {
+        world.spawn((
+            Transform::from_xyz(0.0, 0.0, -5.0),
+            SpriteRenderer::new(900.0, 540.0).color(Color::new(0.18, 0.2, 0.28, 1.0)),
+        ));
+        world.spawn((
+            Transform::from_xyz(-220.0, 120.0, -4.0),
+            SpriteRenderer::new(180.0, 180.0).color(Color::new(0.3, 0.2, 0.42, 0.35)),
+        ));
+        world.spawn((
+            Transform::from_xyz(240.0, -80.0, -4.0),
+            SpriteRenderer::new(240.0, 240.0).color(Color::new(0.16, 0.4, 0.46, 0.28)),
+        ));
+    }
 
-    let pipeline = RenderPipelineAsset::builder()
-        .add_feature(SpriteFeature::unlit())
-        .add_feature(Live2DFeature::new())
-        .add_phase(sky_engine::render::expert::TransparentPhase::new())
-        .build();
+    let pipeline = RenderPipelineAsset::live2d_2d();
 
     App::new(config, world)
         .with_render_pipeline(pipeline)
-        .run(Live2DDemoApp::new(model_paths, ui_visible));
+        .run(Live2DDemoApp::new(model_paths, ui_visible, benchmark));
 }

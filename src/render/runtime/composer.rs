@@ -52,6 +52,8 @@ impl RenderComposer {
                 view_collector: WorldViewCollector::default(),
                 gpu_scene: None,
                 fallback_texture: None,
+                render_assets: crate::render::resources::assets::RenderAssetCache::new(),
+                asset_event_cursor: crate::asset::AssetEventCursor::default(),
                 previous_model_by_entity: rustc_hash::FxHashMap::default(),
             },
             shadows: ShadowRuntime {

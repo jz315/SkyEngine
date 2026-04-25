@@ -11,7 +11,7 @@ struct ToneMapUniform {
     params: [f32; 4], // exposure, gamma, _, _
 }
 
-const TONEMAP_SHADER: &str = include_str!("../shaders/tonemap.wgsl");
+const TONEMAP_SHADER: &str = include_str!("../shaders/postfx/tonemap.wgsl");
 
 pub struct ToneMap {
     pipeline: FullscreenPipeline,

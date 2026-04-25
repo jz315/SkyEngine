@@ -16,6 +16,13 @@ impl Live2DModel {
         self.render_transform.to_matrix()
     }
 
+    pub fn render_size_units(&self) -> [f32; 2] {
+        [
+            self.canvas_width_units * self.render_transform.scale_x.abs(),
+            self.canvas_height_units * self.render_transform.scale_y.abs(),
+        ]
+    }
+
     pub fn render_matrix_for_view(&self, screen_w: f32, screen_h: f32) -> [f32; 16] {
         let fitted_transform = fit_render_transform_for_view(
             self.render_transform,

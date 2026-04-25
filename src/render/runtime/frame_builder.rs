@@ -1,3 +1,5 @@
+use crate::asset::AssetServer;
+use crate::diagnostics::Diagnostics;
 use crate::ecs::World;
 use crate::gpu::GpuContext;
 use crate::render::component::{DirectionalLight, PointLight, RenderSettings, Transform};
@@ -7,6 +9,7 @@ use crate::render::lighting::shadow::{append_directional_shadow_views, sync_shad
 use crate::render::lighting::Light2D;
 use crate::render::phase::{OpaquePhase, TransparentPhase};
 use crate::render::postfx::global_illumination::build_view_gi_probe_grid_payloads;
+use crate::render::resources::material::SpriteMaterial;
 use crate::render::view::{fallback_scene_view, RenderStats, SceneView};
 use crate::render::{GpuLight, LightTable, ModelMatrixTable};
 use rustc_hash::FxHashMap;
@@ -68,6 +71,14 @@ impl RenderComposer {
             .get_resource::<RenderSettings>()
             .copied()
             .unwrap_or_default();
+        self.runtime.render_assets.begin_frame();
+        if let Some(sprite_materials) = self
+            .resources
+            .material_registry
+            .try_materials_mut::<SpriteMaterial>()
+        {
+            sprite_materials.clear();
+        }
 
         let resolved_transforms = self.resolve_scene_transforms(world);
         let frame_start = timing_start();
@@ -87,6 +98,12 @@ impl RenderComposer {
         }
 
         let quad_mesh_handle = self.resources.mesh_registry.ensure_builtin_quad(gpu);
+        let asset_server = world.get_resource::<AssetServer>().cloned();
+        if let Some(asset_server) = asset_server.as_ref() {
+            for event in asset_server.events_since(&mut self.runtime.asset_event_cursor) {
+                self.runtime.render_assets.handle_asset_event(event);
+            }
+        }
 
         let mut opaque_phases = Vec::with_capacity(views.len());
         let mut transparent_phases = Vec::with_capacity(views.len());
@@ -100,6 +117,9 @@ impl RenderComposer {
                         &resolved_transforms,
                         view,
                         &mut ExtractContext {
+                            gpu,
+                            asset_server: asset_server.as_ref(),
+                            render_assets: &mut self.runtime.render_assets,
                             material_registry: &mut self.resources.material_registry,
                             mesh_registry: &self.resources.mesh_registry,
                             opaque_phase: &mut opaque_phase,
@@ -200,6 +220,10 @@ impl RenderComposer {
         };
 
         let mut pipeline = self.build_runtime_pipeline(gpu);
+        let render_asset_stats = self
+            .runtime
+            .render_assets
+            .finish_frame(world.get_resource::<Diagnostics>());
         let execution = {
             let builder = PreparedFrameBuilder::new(gpu);
             let gpu_scene = self
@@ -262,6 +286,11 @@ impl RenderComposer {
             light_count: lights.len(),
             draw_calls: execution.0.draw_calls,
             passes: execution.0.passes,
+            resident_render_assets: render_asset_stats.resident_assets,
+            uploaded_render_assets: render_asset_stats.uploaded_assets,
+            loading_render_assets: render_asset_stats.loading_assets,
+            missing_render_assets: render_asset_stats.missing_assets,
+            failed_render_assets: render_asset_stats.failed_assets,
             timings: RenderTimingStats {
                 frame_ms: elapsed_ms(frame_start),
                 execute_ms: execution.1,

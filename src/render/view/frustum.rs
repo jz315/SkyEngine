@@ -94,7 +94,7 @@ mod tests {
 
     #[test]
     fn orthographic_frustum_accepts_origin_and_rejects_far_x() {
-        let projection = Projection::orthographic(64.0, 64.0);
+        let projection = Projection::orthographic(64.0);
         let frustum = Frustum::from_view_proj(
             projection
                 .view_uniform(Transform::default(), [64, 64])

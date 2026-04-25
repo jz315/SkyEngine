@@ -7,8 +7,12 @@ use super::{
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Projection {
     Orthographic {
-        viewport_width: f32,
-        viewport_height: f32,
+        height: f32,
+        zoom: f32,
+    },
+    OrthographicFixed {
+        width: f32,
+        height: f32,
         zoom: f32,
     },
     Perspective {
@@ -20,10 +24,15 @@ pub enum Projection {
 
 impl Projection {
     #[inline]
-    pub const fn orthographic(viewport_width: f32, viewport_height: f32) -> Self {
-        Self::Orthographic {
-            viewport_width,
-            viewport_height,
+    pub const fn orthographic(height: f32) -> Self {
+        Self::Orthographic { height, zoom: 1.0 }
+    }
+
+    #[inline]
+    pub const fn orthographic_fixed(width: f32, height: f32) -> Self {
+        Self::OrthographicFixed {
+            width,
+            height,
             zoom: 1.0,
         }
     }
@@ -38,15 +47,39 @@ impl Projection {
     }
 
     #[inline]
-    pub fn projection_matrix(self, viewport_size: Vec2) -> Mat4 {
+    pub fn orthographic_size(self, viewport_size: Vec2) -> Option<Vec2> {
         match self {
-            Projection::Orthographic {
-                viewport_width,
-                viewport_height,
+            Projection::Orthographic { height, zoom } => {
+                let viewport_width = viewport_size.x().max(1.0);
+                let viewport_height = viewport_size.y().max(1.0);
+                let aspect = viewport_width / viewport_height.max(f32::EPSILON);
+                let height = height.max(f32::EPSILON) / zoom.max(f32::EPSILON);
+                Some(Vec2::new(height * aspect, height))
+            }
+            Projection::OrthographicFixed {
+                width,
+                height,
                 zoom,
             } => {
-                let hw = viewport_width.max(f32::EPSILON) * 0.5 / zoom.max(f32::EPSILON);
-                let hh = viewport_height.max(f32::EPSILON) * 0.5 / zoom.max(f32::EPSILON);
+                let zoom = zoom.max(f32::EPSILON);
+                Some(Vec2::new(
+                    width.max(f32::EPSILON) / zoom,
+                    height.max(f32::EPSILON) / zoom,
+                ))
+            }
+            Projection::Perspective { .. } => None,
+        }
+    }
+
+    #[inline]
+    pub fn projection_matrix(self, viewport_size: Vec2) -> Mat4 {
+        match self {
+            Projection::Orthographic { .. } | Projection::OrthographicFixed { .. } => {
+                let size = self
+                    .orthographic_size(viewport_size)
+                    .expect("orthographic projection should resolve a visible size");
+                let hw = size.x() * 0.5;
+                let hh = size.y() * 0.5;
                 Mat4::from_cols_array([
                     hw.recip(),
                     0.0,
@@ -86,7 +119,7 @@ impl Projection {
     #[inline]
     pub fn near_plane(self) -> f32 {
         match self {
-            Projection::Orthographic { .. } => -1.0,
+            Projection::Orthographic { .. } | Projection::OrthographicFixed { .. } => -1.0,
             Projection::Perspective { near, .. } => near,
         }
     }
@@ -94,7 +127,7 @@ impl Projection {
     #[inline]
     pub fn far_plane(self) -> f32 {
         match self {
-            Projection::Orthographic { .. } => 1.0,
+            Projection::Orthographic { .. } | Projection::OrthographicFixed { .. } => 1.0,
             Projection::Perspective { far, .. } => far,
         }
     }
@@ -129,15 +162,14 @@ impl Projection {
 
     fn screen_ray(self, transform: Transform, viewport_size: Vec2, screen: Vec2) -> (Vec3, Vec3) {
         match self {
-            Projection::Orthographic {
-                viewport_width,
-                viewport_height,
-                zoom,
-            } => {
+            Projection::Orthographic { .. } | Projection::OrthographicFixed { .. } => {
                 let width = viewport_size.x().max(1.0);
                 let height = viewport_size.y().max(1.0);
-                let hw = viewport_width.max(f32::EPSILON) * 0.5 / zoom.max(f32::EPSILON);
-                let hh = viewport_height.max(f32::EPSILON) * 0.5 / zoom.max(f32::EPSILON);
+                let size = self
+                    .orthographic_size(viewport_size)
+                    .expect("orthographic projection should resolve a visible size");
+                let hw = size.x() * 0.5;
+                let hh = size.y() * 0.5;
                 let local = Vec3::new(
                     (screen.x() / width - 0.5) * 2.0 * hw,
                     -(screen.y() / height - 0.5) * 2.0 * hh,
@@ -174,7 +206,7 @@ impl Projection {
 
 impl Default for Projection {
     fn default() -> Self {
-        Self::orthographic(1.0, 1.0)
+        Self::orthographic(1.0)
     }
 }
 
@@ -185,7 +217,7 @@ mod tests {
 
     #[test]
     fn view_matrix_uses_full_transform_including_scale() {
-        let projection = Projection::orthographic(32.0, 32.0);
+        let projection = Projection::orthographic(32.0);
         let transform = Transform::from_xyz(10.0, -4.0, 2.0).with_scale3(2.0, 4.0, 1.0);
         let local = projection
             .view_matrix(transform)
@@ -193,5 +225,56 @@ mod tests {
 
         assert!((local.x() - 1.0).abs() <= 1e-5);
         assert!((local.y() - 1.0).abs() <= 1e-5);
+    }
+
+    #[test]
+    fn orthographic_height_resolves_width_from_viewport_aspect() {
+        let projection = Projection::orthographic(720.0);
+        assert_eq!(
+            projection
+                .orthographic_size(crate::math::Vec2::new(1280.0, 720.0))
+                .unwrap()
+                .to_array(),
+            [1280.0, 720.0]
+        );
+        assert_eq!(
+            projection
+                .orthographic_size(crate::math::Vec2::new(1680.0, 720.0))
+                .unwrap()
+                .to_array(),
+            [1680.0, 720.0]
+        );
+    }
+
+    #[test]
+    fn fixed_orthographic_ignores_viewport_aspect() {
+        let projection = Projection::orthographic_fixed(1280.0, 720.0);
+        assert_eq!(
+            projection
+                .orthographic_size(crate::math::Vec2::new(1920.0, 1080.0))
+                .unwrap()
+                .to_array(),
+            [1280.0, 720.0]
+        );
+        assert_eq!(
+            projection
+                .orthographic_size(crate::math::Vec2::new(1080.0, 1920.0))
+                .unwrap()
+                .to_array(),
+            [1280.0, 720.0]
+        );
+    }
+
+    #[test]
+    fn orthographic_screen_to_world_uses_resolved_aspect_size() {
+        let projection = Projection::orthographic(720.0);
+        let world = projection.screen_to_world(
+            Transform::default(),
+            crate::math::Vec2::new(1680.0, 720.0),
+            crate::math::Vec2::new(1680.0, 0.0),
+        );
+
+        assert!((world.x() - 840.0).abs() <= 1e-5);
+        assert!((world.y() - 360.0).abs() <= 1e-5);
     }
 }

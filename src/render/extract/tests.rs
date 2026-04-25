@@ -2,6 +2,7 @@ use std::{fs, sync::mpsc};
 
 use rustc_hash::FxHashMap;
 
+use crate::asset::{AssetConfig, AssetServer, TextureAsset};
 use crate::gpu::GpuContext;
 use crate::render::gpu::{RenderTarget, Texture, TextureCreateDesc};
 use crate::render::lighting::shadow::{
@@ -10,7 +11,7 @@ use crate::render::lighting::shadow::{
 };
 use crate::render::phase::{
     create_model_bind_group_layout, DrawContext, DrawFunctionRegistry, DrawMesh, DrawSprite,
-    OpaquePhase, PhaseItem, TransparentPhase,
+    OpaquePhase, PhaseItem, SpriteDrawData, TransparentPhase,
 };
 use crate::render::view::{Projection, SceneView};
 use crate::render::{
@@ -45,7 +46,7 @@ fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
 }
 
 fn make_view(size: [u32; 2]) -> SceneView {
-    let projection = Projection::orthographic(size[0] as f32, size[1] as f32);
+    let projection = Projection::orthographic_fixed(size[0] as f32, size[1] as f32);
     SceneView::new(
         0,
         ViewportRect::from_surface_size(size),
@@ -285,33 +286,11 @@ fn sprite_extract_schedule_renders_through_transparent_phase() {
     let mut schedule = ExtractSchedule::new();
     schedule.add(ExtractSprites::new(draw_mesh));
 
-    let white = Texture::create(
-        &ctx,
-        TextureCreateDesc::new_2d(1, 1, wgpu::TextureFormat::Rgba8Unorm)
-            .usage(wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST)
-            .label("white"),
-    );
-    ctx.queue().write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: white.texture(),
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        &[255, 255, 255, 255],
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(4),
-            rows_per_image: Some(1),
-        },
-        wgpu::Extent3d {
-            width: 1,
-            height: 1,
-            depth_or_array_layers: 1,
-        },
-    );
+    let asset_server = AssetServer::with_empty_manifest(AssetConfig::default());
+    let white = asset_server.insert_runtime(TextureAsset::white_pixel());
 
     let mut world = crate::ecs::World::new();
+    world.insert_resource(asset_server.clone());
     world.spawn((
         Transform::from_xy(0.0, 0.0),
         SpriteRenderer::new(32.0, 32.0)
@@ -331,6 +310,9 @@ fn sprite_extract_schedule_renders_through_transparent_phase() {
             &transforms,
             &view,
             &mut ExtractContext {
+                gpu: &ctx,
+                asset_server: Some(&asset_server),
+                render_assets: &mut renderer.runtime.render_assets,
                 material_registry: &mut renderer.resources.material_registry,
                 mesh_registry: &mesh_registry,
                 opaque_phase: &mut opaque_phase,
@@ -460,6 +442,78 @@ fn sprite_extract_schedule_renders_through_transparent_phase() {
 }
 
 #[test]
+fn sprite_extract_keeps_material_handles_valid_across_multiple_views() {
+    let (device, queue) = create_test_device();
+    let ctx = GpuContext::new_headless(device, queue, wgpu::TextureFormat::Rgba8Unorm, [64, 64]);
+    let mut renderer = RenderComposer::from_asset(RenderPipelineAsset::builder().build());
+    renderer.register_material::<SpriteMaterial>(&ctx);
+
+    let mut mesh_registry = MeshRegistry::default();
+    let quad_mesh_handle = mesh_registry.ensure_builtin_quad(&ctx);
+    let mut draw_functions = DrawFunctionRegistry::new();
+    let draw_sprite = draw_functions.register(DrawSprite::new());
+    let mut schedule = ExtractSchedule::new();
+    schedule.add(ExtractSprites::new(draw_sprite));
+
+    let mut world = crate::ecs::World::new();
+    world.spawn((
+        Transform::from_xy(0.0, 0.0),
+        SpriteRenderer::new(16.0, 16.0).color(Color::RED),
+    ));
+
+    let transforms = renderer.resolve_scene_transforms(&world);
+    let first_view = make_view([64, 64]);
+    let second_view = make_view([64, 64]);
+    let mut first_opaque = OpaquePhase::new();
+    let mut first_transparent = TransparentPhase::new();
+    schedule
+        .extract(
+            &world,
+            &transforms,
+            &first_view,
+            &mut ExtractContext {
+                gpu: &ctx,
+                asset_server: None,
+                render_assets: &mut renderer.runtime.render_assets,
+                material_registry: &mut renderer.resources.material_registry,
+                mesh_registry: &mesh_registry,
+                opaque_phase: &mut first_opaque,
+                transparent_phase: &mut first_transparent,
+                quad_mesh_handle,
+            },
+        )
+        .expect("first view sprite extraction should succeed");
+    let first_material = first_transparent.items()[0]
+        .data::<SpriteDrawData>()
+        .material_handle();
+
+    let mut second_opaque = OpaquePhase::new();
+    let mut second_transparent = TransparentPhase::new();
+    schedule
+        .extract(
+            &world,
+            &transforms,
+            &second_view,
+            &mut ExtractContext {
+                gpu: &ctx,
+                asset_server: None,
+                render_assets: &mut renderer.runtime.render_assets,
+                material_registry: &mut renderer.resources.material_registry,
+                mesh_registry: &mesh_registry,
+                opaque_phase: &mut second_opaque,
+                transparent_phase: &mut second_transparent,
+                quad_mesh_handle,
+            },
+        )
+        .expect("second view sprite extraction should succeed");
+
+    assert!(renderer
+        .materials::<SpriteMaterial>()
+        .get(first_material)
+        .is_some());
+}
+
+#[test]
 fn mesh_extract_schedule_renders_opaque_phase_with_depth() {
     let (device, queue) = create_test_device();
     let mut ctx =
@@ -530,6 +584,9 @@ fn mesh_extract_schedule_renders_opaque_phase_with_depth() {
             &transforms,
             &view,
             &mut ExtractContext {
+                gpu: &ctx,
+                asset_server: None,
+                render_assets: &mut renderer.runtime.render_assets,
                 material_registry: &mut renderer.resources.material_registry,
                 mesh_registry: &renderer.resources.mesh_registry,
                 opaque_phase: &mut opaque_phase,
@@ -756,6 +813,9 @@ fn gltf_mesh_extract_schedule_renders_submeshes_with_material_slots_and_depth() 
             &transforms,
             &view,
             &mut ExtractContext {
+                gpu: &ctx,
+                asset_server: None,
+                render_assets: &mut renderer.runtime.render_assets,
                 material_registry: &mut renderer.resources.material_registry,
                 mesh_registry: &renderer.resources.mesh_registry,
                 opaque_phase: &mut opaque_phase,

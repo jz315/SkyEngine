@@ -7,9 +7,12 @@ use std::sync::{Arc, Mutex};
 use super::registry::{AssetRuntimeFactory, ErasedAssetFactory, FactoryAdapter, ManifestIndex};
 use super::texture::TextureAssetFactory;
 use super::types::{
-    Asset, AssetConfig, AssetError, AssetId, AssetInstallContext, AssetLoadContext,
-    AssetRegistryManifest, AssetState, Handle, ASSET_SYSTEM_VERSION,
+    Asset, AssetConfig, AssetError, AssetEvent, AssetEventCursor, AssetEventKind, AssetId,
+    AssetInstallContext, AssetLoadContext, AssetRegistryManifest, AssetState, Handle,
+    ASSET_SYSTEM_VERSION,
 };
+
+const ASSET_EVENT_LOG_CAP: usize = 1024;
 
 #[derive(Clone)]
 pub struct AssetServer {
@@ -202,6 +205,29 @@ impl AssetServer {
             .expect("asset server mutex poisoned")
             .lookup_source_asset(path.as_ref())
     }
+
+    #[must_use]
+    pub fn event_cursor(&self) -> AssetEventCursor {
+        self.inner
+            .lock()
+            .expect("asset server mutex poisoned")
+            .event_cursor()
+    }
+
+    pub fn events_since(&self, cursor: &mut AssetEventCursor) -> Vec<AssetEvent> {
+        self.inner
+            .lock()
+            .expect("asset server mutex poisoned")
+            .events_since(cursor)
+    }
+
+    /// Insert an already-built runtime asset that does not come from the cooked manifest.
+    pub fn insert_runtime<T: Asset>(&self, asset: T) -> Handle<T> {
+        let id = AssetId::new();
+        let mut inner = self.inner.lock().expect("asset server mutex poisoned");
+        inner.insert_runtime(id, asset);
+        Handle::new(id)
+    }
 }
 
 struct AssetServerInner {
@@ -214,6 +240,8 @@ struct AssetServerInner {
     load_tx: Sender<CompletedLoad>,
     load_rx: Receiver<CompletedLoad>,
     inflight_loads: HashSet<(AssetId, u64)>,
+    events: VecDeque<AssetEvent>,
+    next_event_sequence: u64,
 }
 
 impl AssetServerInner {
@@ -229,7 +257,39 @@ impl AssetServerInner {
             load_tx,
             load_rx,
             inflight_loads: HashSet::default(),
+            events: VecDeque::new(),
+            next_event_sequence: 0,
         }
+    }
+
+    fn push_event(&mut self, id: AssetId, kind: AssetEventKind, state: AssetState) {
+        let event = AssetEvent {
+            sequence: self.next_event_sequence,
+            id,
+            kind,
+            state,
+        };
+        self.next_event_sequence = self.next_event_sequence.wrapping_add(1);
+        self.events.push_back(event);
+        while self.events.len() > ASSET_EVENT_LOG_CAP {
+            self.events.pop_front();
+        }
+    }
+
+    fn event_cursor(&self) -> AssetEventCursor {
+        AssetEventCursor::new(self.next_event_sequence)
+    }
+
+    fn events_since(&self, cursor: &mut AssetEventCursor) -> Vec<AssetEvent> {
+        let next_sequence = cursor.next_sequence();
+        let events = self
+            .events
+            .iter()
+            .copied()
+            .filter(|event| event.sequence >= next_sequence)
+            .collect();
+        cursor.set_next_sequence(self.next_event_sequence);
+        events
     }
 
     fn set_manifest(&mut self, manifest: AssetRegistryManifest) {
@@ -237,6 +297,10 @@ impl AssetServerInner {
 
         let ids: Vec<_> = self.records.keys().copied().collect();
         for id in ids {
+            if self.records.get(&id).is_some_and(|record| record.runtime) {
+                continue;
+            }
+
             if let Some(entry) = self.manifest.entry(id) {
                 self.records
                     .get_mut(&id)
@@ -252,6 +316,7 @@ impl AssetServerInner {
                 record.error = Some(AssetError::AssetNotFound { id });
                 record.state = AssetState::Failed;
             }
+            self.push_event(id, AssetEventKind::Failed, AssetState::Failed);
             self.schedule_release_if_unused(id);
         }
     }
@@ -295,11 +360,12 @@ impl AssetServerInner {
 
     fn should_track_for_reload(&self, id: AssetId) -> bool {
         self.records.get(&id).is_some_and(|record| {
-            record.direct_request_count > 0
-                || record.dependency_ref_count > 0
-                || record.installed.is_some()
-                || record.loaded.is_some()
-                || record.reload_pending
+            !record.runtime
+                && (record.direct_request_count > 0
+                    || record.dependency_ref_count > 0
+                    || record.installed.is_some()
+                    || record.loaded.is_some()
+                    || record.reload_pending)
         })
     }
 
@@ -481,6 +547,7 @@ impl AssetServerInner {
             return;
         };
 
+        let mut pushed_unloaded = false;
         match record.state {
             AssetState::Installed => record.state = AssetState::Uninstalling,
             AssetState::Loaded
@@ -498,8 +565,12 @@ impl AssetServerInner {
                 record.loaded_cooked_hash = None;
                 record.reload_pending = false;
                 record.state = AssetState::Unloaded;
+                pushed_unloaded = true;
             }
             AssetState::Uninstalling | AssetState::Unloading => {}
+        }
+        if pushed_unloaded {
+            self.push_event(id, AssetEventKind::Unloaded, AssetState::Unloaded);
         }
     }
 
@@ -560,10 +631,12 @@ impl AssetServerInner {
 
         if self.manifest.entry(id).is_some() {
             record.state = AssetState::Loading;
+            self.push_event(id, AssetEventKind::ReloadQueued, AssetState::Loading);
         } else {
             record.error = Some(AssetError::AssetNotFound { id });
             record.state = AssetState::Failed;
             record.reload_pending = false;
+            self.push_event(id, AssetEventKind::Failed, AssetState::Failed);
         }
     }
 
@@ -720,6 +793,7 @@ impl AssetServerInner {
                 record.loaded_cooked_hash = None;
                 record.reload_pending = false;
                 record.state = AssetState::Failed;
+                self.push_event(completion.id, AssetEventKind::Failed, AssetState::Failed);
                 self.schedule_release_if_unused(completion.id);
                 Err(error)
             }
@@ -825,6 +899,7 @@ impl AssetServerInner {
                         record.loaded_cooked_hash = None;
                         record.reload_pending = false;
                         record.state = AssetState::Unloaded;
+                        self.push_event(id, AssetEventKind::Unloaded, AssetState::Unloaded);
                         progressed = true;
                     }
                     AssetState::Unloaded | AssetState::Installed | AssetState::Failed => {}
@@ -841,6 +916,15 @@ impl AssetServerInner {
         }
 
         Ok(())
+    }
+
+    fn insert_runtime<T: Asset>(&mut self, id: AssetId, asset: T) {
+        let installed: Arc<dyn Any + Send + Sync> = Arc::new(asset);
+        self.records.insert(
+            id,
+            AssetRecord::new_runtime(T::TYPE.to_string(), TypeId::of::<T>(), installed),
+        );
+        self.push_event(id, AssetEventKind::Installed, AssetState::Installed);
     }
 
     fn load_record(&mut self, id: AssetId) -> Result<(), AssetError> {
@@ -900,6 +984,7 @@ impl AssetServerInner {
                 record.loaded_cooked_hash = None;
                 record.reload_pending = false;
                 record.state = AssetState::Failed;
+                self.push_event(id, AssetEventKind::Failed, AssetState::Failed);
                 self.schedule_release_if_unused(id);
                 Err(error)
             }
@@ -927,6 +1012,7 @@ impl AssetServerInner {
                 record.installed = None;
                 record.error = Some(error.clone());
                 record.state = AssetState::Failed;
+                self.push_event(id, AssetEventKind::Failed, AssetState::Failed);
                 return Err(error);
             };
 
@@ -954,6 +1040,7 @@ impl AssetServerInner {
                     record.installed = None;
                     record.error = Some(error.clone());
                     record.state = AssetState::Failed;
+                    self.push_event(id, AssetEventKind::Failed, AssetState::Failed);
                     return Err(error);
                 }
                 Some(_) | None => waiting = true,
@@ -968,6 +1055,7 @@ impl AssetServerInner {
             record.installed = None;
             record.error = Some(error.clone());
             record.state = AssetState::Failed;
+            self.push_event(id, AssetEventKind::Failed, AssetState::Failed);
             return Err(error);
         }
 
@@ -1016,6 +1104,7 @@ impl AssetServerInner {
                 record.error = None;
                 record.reload_pending = false;
                 record.state = AssetState::Installed;
+                self.push_event(id, AssetEventKind::Installed, AssetState::Installed);
                 self.schedule_release_if_unused(id);
                 Ok(())
             }
@@ -1029,6 +1118,7 @@ impl AssetServerInner {
                 record.loaded_cooked_hash = None;
                 record.reload_pending = false;
                 record.state = AssetState::Failed;
+                self.push_event(id, AssetEventKind::Failed, AssetState::Failed);
                 self.schedule_release_if_unused(id);
                 Err(error)
             }
@@ -1058,6 +1148,7 @@ struct AssetRecord {
     loaded_cooked_hash: Option<String>,
     reload_pending: bool,
     load_generation: u64,
+    runtime: bool,
 }
 
 impl AssetRecord {
@@ -1077,6 +1168,31 @@ impl AssetRecord {
             loaded_cooked_hash: None,
             reload_pending: false,
             load_generation: 0,
+            runtime: false,
+        }
+    }
+
+    fn new_runtime(
+        asset_type: String,
+        requested_type: TypeId,
+        installed: Arc<dyn Any + Send + Sync>,
+    ) -> Self {
+        Self {
+            asset_type,
+            state: AssetState::Installed,
+            requested_type: Some(requested_type),
+            direct_request_count: 1,
+            dependency_ref_count: 0,
+            dependencies: Vec::new(),
+            held_dependencies: Vec::new(),
+            loaded: Some(installed.clone()),
+            installed: Some(installed),
+            error: None,
+            loaded_entry_fingerprint: None,
+            loaded_cooked_hash: None,
+            reload_pending: false,
+            load_generation: 0,
+            runtime: true,
         }
     }
 }
@@ -1344,6 +1460,37 @@ mod tests {
         entry: AssetManifestEntry,
     ) -> Result<AssetConfig, Box<dyn std::error::Error>> {
         write_manifest_entries(root, vec![entry])
+    }
+
+    #[test]
+    fn runtime_assets_are_installed_immediately_and_survive_manifest_reload(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let config = write_manifest_entries(dir.path(), Vec::new())?;
+        let server = AssetServer::new(config)?;
+        let mut events = server.event_cursor();
+        let handle = server.insert_runtime(DummyAsset("runtime".to_string()));
+        let installed_events = server.events_since(&mut events);
+        assert_eq!(installed_events.len(), 1);
+        assert_eq!(installed_events[0].id, handle.id());
+        assert_eq!(installed_events[0].kind, AssetEventKind::Installed);
+
+        assert_eq!(server.state(&handle), AssetState::Installed);
+        assert_eq!(server.get(&handle)?.0, "runtime");
+
+        server.reload_manifest()?;
+        assert!(server.events_since(&mut events).is_empty());
+        assert_eq!(server.state(&handle), AssetState::Installed);
+        assert_eq!(server.get(&handle)?.0, "runtime");
+
+        server.unload(&handle);
+        server.update()?;
+        let unloaded_events = server.events_since(&mut events);
+        assert!(unloaded_events
+            .iter()
+            .any(|event| { event.id == handle.id() && event.kind == AssetEventKind::Unloaded }));
+        assert_eq!(server.state(&handle), AssetState::Unloaded);
+        Ok(())
     }
 
     #[test]
