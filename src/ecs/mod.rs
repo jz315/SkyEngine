@@ -23,6 +23,10 @@ pub(crate) mod system;
 pub(crate) mod time;
 mod world;
 
+pub use crate::reflect::{
+    component_type, component_type_by_name, component_type_by_rust_type, register_component_type,
+    registered_component_types, ComponentType, TypeInfo as ComponentTypeInfo,
+};
 pub use bundle::Bundle;
 pub use commands::Commands;
 pub use entity::EntityId;

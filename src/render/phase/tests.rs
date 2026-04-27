@@ -3,7 +3,7 @@ use crate::render::phase::{
     TransparentPhase,
 };
 use crate::render::view::{Projection, SceneView};
-use crate::render::{OrderInLayer, SortingLayer, SpriteMaterial, Transform, ViewportRect};
+use crate::render::{SortingLayer, SpriteMaterial, Transform, ViewportRect};
 
 fn make_view() -> SceneView {
     let projection = Projection::orthographic_fixed(64.0, 64.0);
@@ -34,14 +34,14 @@ fn transparent_phase_sorts_by_sort_key_then_batch_then_entity() {
 
     let mut phase = TransparentPhase::new();
     phase.add_item(PhaseItem::new(
-        transparent_sort_key(SortingLayer(0), OrderInLayer(0), 2, near, &view),
+        transparent_sort_key(SortingLayer(0), 2, near, &view),
         DrawFunctionId::from_raw(0),
         entity_a,
         2,
         MeshDrawData::new(mesh, fake_material, 0),
     ));
     phase.add_item(PhaseItem::new(
-        transparent_sort_key(SortingLayer(0), OrderInLayer(0), 1, far, &view),
+        transparent_sort_key(SortingLayer(0), 1, far, &view),
         DrawFunctionId::from_raw(0),
         entity_b,
         1,

@@ -1,9 +1,8 @@
-use sky_engine::{
-    ecs::{
-        raw::{create_archetype, Query, QueryIter, WorldRawExt},
-        World,
+use sky_engine::ecs::{
+    raw::{
+        create_archetype, register_component_type, ComponentType, Query, QueryIter, WorldRawExt,
     },
-    reflect,
+    World,
 };
 pub struct VelocityComponent {
     pub x: f32,
@@ -17,12 +16,12 @@ pub struct PositionComponent {
 #[allow(dead_code)]
 static mut COUNT: usize = 0;
 fn main() {
-    let ty_a = reflect::register(
+    let ty_a = register_component_type(
         "VelocityComponent",
         std::mem::size_of::<VelocityComponent>(),
         std::mem::align_of::<VelocityComponent>(),
     );
-    let ty_b: reflect::Type = reflect::register(
+    let ty_b: ComponentType = register_component_type(
         "PositionComponent",
         std::mem::size_of::<PositionComponent>(),
         std::mem::align_of::<PositionComponent>(),

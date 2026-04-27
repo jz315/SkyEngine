@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md">中文</a> · <a href="#-quick-start">Quick Start</a> · <a href="#-benchmarks">Benchmarks</a> · <a href="docs/api.md">API Docs</a> · <a href="#-examples">Examples</a>
+  <a href="README.md">中文</a> · <a href="#-quick-start">Quick Start</a> · <a href="#-benchmarks">Benchmarks</a> · <a href="docs/api.md">API Docs</a> · <a href="docs/scene.md">Scene Docs</a> · <a href="docs/physics.md">Physics Docs</a> · <a href="#-examples">Examples</a>
 </p>
 
 ---
@@ -49,6 +49,7 @@ SkyEngine takes the **library approach**: no proc macros, no global state, no im
 | **System Scheduling** | Groups + fixed-timestep policy, `world.tick()` drives a complete frame |
 | **Generational Entities** | `EntityId` with generation tracking — stale handles auto-invalidate on slot reuse |
 | **Chunk Iteration** | `for_each_chunk()` yields contiguous slices for manual SIMD vectorization |
+| **Scene / Prefab** | Optional `scene` feature for entity-tree documents, stable IDs, hierarchy, and prefab spawning |
 
 ### 🎨 Rendering Framework (feature = `"app"`)
 
@@ -297,7 +298,7 @@ SkyEngine/
 │   │   ├── system.rs           #   System trait and group scheduling
 │   │   ├── entity.rs           #   Generational EntityId
 │   │   ├── resource.rs         #   Typed singleton resources
-│   │   └── raw.rs              #   Low-level / compatibility API
+│   │   └── raw.rs              #   Low-level tooling API
 │   ├── gpu/                    # 🖥️ GPU context (feature: app)
 │   ├── render/                 # 🎨 2D rendering framework (feature: app)
 │   │   ├── core/               #   Camera2D, Color, Texture, RenderTarget
@@ -316,7 +317,7 @@ SkyEngine/
 │   ├── render/                 #   Render API showcases + Live2D
 │   ├── demo/                   #   Full showcase demos
 │   ├── compare/                #   Cross-engine comparisons
-│   └── legacy/                 #   Historical SkyEngine CPU demos
+│   └── legacy/                 #   CPU-only SkyEngine demos
 ├── benches/                    # 📊 Criterion benchmarks
 ├── docs/                       # 📖 Documentation
 ├── benches/BENCHMARKS.md       # Benchmark methodology and history
@@ -334,7 +335,7 @@ SkyEngine/
 | `asset` | Asset loading (textures, etc.) | image |
 | `demo` | GPU-accelerated demos | app + asset + rand |
 | `live2d` | Live2D Cubism SDK integration | app + asset + cubism-sys + serde_json |
-| `demo-legacy` | Legacy CPU-rendered demos | minifb + rand |
+| `demo-legacy` | CPU-rendered demos | minifb + rand |
 | `compare` | Cross-engine comparison examples | demo-legacy + hecs + bevy_ecs |
 | `compare-bevy` | Full Bevy GPU comparison | bevy |
 
@@ -394,7 +395,12 @@ Contributions are welcome! Please follow this workflow:
 
 | Document | Description |
 |----------|-------------|
-| [API Reference](docs/api.md) | Full ECS API documentation |
+| [Documentation Index](docs/api.md) | Entry point for module docs |
+| [ECS](docs/ecs.md) | World, queries, commands, schedule |
+| [Reflect](docs/reflect.md) | Type layout reflection and derive-based inspector reflection |
+| [Render](docs/render.md) | High-level rendering module guide |
+| [Scene](docs/scene.md) | Scene / prefab / save |
+| [Physics](docs/physics.md) | 2D physics and Tiled physics |
 | [benches/BENCHMARKS.md](benches/BENCHMARKS.md) | Benchmark methodology and history |
 | [src/render/AGENTS.md](src/render/AGENTS.md) | Rendering module architecture guide |
 | [src/render/graph/AGENTS.md](src/render/graph/AGENTS.md) | RenderGraph detailed design docs |

@@ -1,30 +1,53 @@
 /target
 *.json.gz
 *.syms.json
+*.log
+*.tmp
+*.temp
+*.bak
 
 # Editor
 .vscode/
 .idea/
 *.swp
 *.swo
+*.user
+*.code-workspace
 
 # OS
 Thumbs.db
 .DS_Store
+desktop.ini
 
 # Temp benchmark output
 bench_*.txt
+criterion/
 
 # Vendor / third-party SDKs
 CubismSdkForNative/
 tools/
 
+# Local reference checkouts
+_refs/*
+examples/assets/tiled/tiled/
+
 # Subcrate build artifacts
 cubism-sys/target/
 cubism-sys/Cargo.lock
+crates/vendor/**/target/
+crates/vendor/kajiya/**/Cargo.lock
+crates/vendor/gpu-profiler/Cargo.lock
+crates/**/.fingerprint/
+crates/**/incremental/
+
+# Kajiya runtime output
+crates/vendor/kajiya/cache/
+target/sky-kajiya-cache/
+sky-kajiya-cache/
 
 # Test / automation tooling
 .playwright-cli/
 
 # AI agent data
 .gemini/
+.claude/

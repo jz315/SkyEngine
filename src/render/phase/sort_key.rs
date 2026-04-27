@@ -1,5 +1,5 @@
 use crate::ecs::EntityId;
-use crate::render::component::{OrderInLayer, SortingLayer, Transform};
+use crate::render::component::{SortingLayer, Transform};
 use crate::render::view::SceneView;
 
 #[inline]
@@ -9,17 +9,27 @@ pub fn entity_sort_key(entity: EntityId) -> u64 {
 
 pub fn transparent_sort_key(
     sorting_layer: SortingLayer,
-    order_in_layer: OrderInLayer,
     batch_key: u64,
     transform: Transform,
     scene_view: &SceneView,
 ) -> u64 {
-    let layer = biased_i8(sorting_layer.0) as u64;
-    let order = biased_i8(order_in_layer.0) as u64;
+    let layer = biased_i16(sorting_layer.0) as u64;
     let batch = batch_bucket(batch_key) as u64;
     let depth = transparent_depth_key(transform, scene_view);
 
-    (layer << 56) | (order << 48) | (batch << 36) | depth
+    (layer << 48) | (batch << 36) | depth
+}
+
+pub(crate) fn transparent_ordered_2d_sort_key(
+    sorting_layer: SortingLayer,
+    batch_key: u64,
+    local_order: u64,
+) -> u64 {
+    let layer = biased_i16(sorting_layer.0) as u64;
+    let batch = batch_bucket(batch_key) as u64;
+    let order = local_order & ((1u64 << 36) - 1);
+
+    (layer << 48) | (batch << 36) | order
 }
 
 pub fn opaque_sort_key(
@@ -35,9 +45,9 @@ pub fn opaque_sort_key(
     (batch << 52) | (depth << 36) | entity
 }
 
-fn biased_i8(value: i32) -> u8 {
-    let clamped = value.clamp(i8::MIN as i32, i8::MAX as i32) as i8;
-    (clamped as u8) ^ 0x80
+fn biased_i16(value: i32) -> u16 {
+    let clamped = value.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+    (clamped as u16) ^ 0x8000
 }
 
 fn batch_bucket(batch_key: u64) -> u16 {

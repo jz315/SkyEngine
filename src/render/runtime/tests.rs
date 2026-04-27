@@ -15,13 +15,12 @@ use crate::render::pipeline::{
 use crate::render::view::Projection;
 use crate::render::{
     CameraMarker, CameraViewport, Color, ComputePassExecuteContext, ComputePassSetupContext,
-    DirectionalLight, MainCamera, MeshRenderer, PostFxPassExecuteContext, PostFxPassSetupContext,
-    RenderComposer, RenderPassExecuteContext, RenderPassSetupContext, RenderPipelineAsset,
-    RenderPipelineBuilder, RenderSettings, StandardMaterial, Transform, UnlitMaterial,
-    ViewportRect,
+    DirectionalLight, MainCamera, PostFxPassExecuteContext, PostFxPassSetupContext, RenderComposer,
+    RenderPassExecuteContext, RenderPassSetupContext, RenderPipelineAsset, RenderPipelineBuilder,
+    RenderSettings, StandardMaterial, Transform, UnlitMaterial, ViewportRect, WgpuMeshRenderer,
 };
 #[cfg(feature = "live2d")]
-use crate::render::{OrderInLayer, RenderQueueSort, SceneView, SortingLayer};
+use crate::render::{RenderQueueSort, SceneView, SortingLayer};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
@@ -211,6 +210,10 @@ fn forward_3d_descriptor_includes_directional_shadow_phase() {
     )));
     assert!(descriptor.step_names.iter().any(|step| matches!(
         step,
+        crate::render::PipelineStepDescriptor::Compute("ddgi_update")
+    )));
+    assert!(!descriptor.step_names.iter().any(|step| matches!(
+        step,
         crate::render::PipelineStepDescriptor::Phase("scene_material_prepass")
     )));
 }
@@ -277,7 +280,7 @@ fn forward_3d_enables_shadow_view_for_perspective_directional_light() {
     ));
     world.spawn((
         Transform::from_xyz(0.0, 0.0, -3.0),
-        MeshRenderer::new(mesh_handle, material),
+        WgpuMeshRenderer::new(mesh_handle, material),
     ));
     world.spawn((DirectionalLight::new([0.3, -1.0, 0.2]),));
 
@@ -353,7 +356,7 @@ fn forward_3d_enables_shadow_view_for_orthographic_directional_light() {
     ));
     world.spawn((
         Transform::from_xyz(0.0, 0.0, 0.0).with_scale(4.0, 4.0),
-        MeshRenderer::new(mesh_handle, material),
+        WgpuMeshRenderer::new(mesh_handle, material),
     ));
     world.spawn((DirectionalLight::new([0.3, -1.0, 0.2]),));
 
@@ -743,7 +746,7 @@ fn custom_material_registration_renders_mesh_without_engine_changes() {
     ));
     world.spawn((
         Transform::from_xyz(0.0, 0.0, 0.0).with_euler_angles(0.35, 0.0, 0.2),
-        MeshRenderer::new(mesh_handle, material_handle),
+        WgpuMeshRenderer::new(mesh_handle, material_handle),
     ));
 
     ctx.begin_frame()
@@ -822,7 +825,7 @@ fn custom_material_scene_prepass_runs_in_opaque_3d_pipeline() {
     ));
     world.spawn((
         Transform::default(),
-        MeshRenderer::new(mesh_handle, material_handle),
+        WgpuMeshRenderer::new(mesh_handle, material_handle),
     ));
 
     ctx.begin_frame()
@@ -837,7 +840,7 @@ fn custom_material_scene_prepass_runs_in_opaque_3d_pipeline() {
 }
 
 #[test]
-fn forward_3d_global_illumination_executes_with_scene_material_inputs() {
+fn forward_3d_ddgi_executes_with_standard_material_geometry() {
     #[repr(C)]
     #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
     struct Vertex {
@@ -897,11 +900,18 @@ fn forward_3d_global_illumination_executes_with_scene_material_inputs() {
     world.insert_resource(RenderSettings {
         global_illumination: crate::render::GlobalIlluminationSettings {
             enabled: true,
-            intensity: 0.48,
-            detail_strength: 0.2,
-            probe_volume: crate::render::ProbeVolumeGiSettings {
-                counts: [6, 4, 6],
-                spacing: 3.0,
+            ddgi: crate::render::DdgiSettings {
+                volume: crate::render::DdgiVolumeSettings {
+                    origin: [-6.0, -4.0, -6.0],
+                    spacing: 3.0,
+                    counts: [6, 4, 6],
+                    scroll_with_main_camera: false,
+                },
+                rays_per_probe: 8,
+                probes_per_frame: 8,
+                irradiance_resolution: 4,
+                visibility_resolution: 4,
+                max_ray_distance: 16.0,
                 ..Default::default()
             },
             ..crate::render::GlobalIlluminationSettings::default()
@@ -928,7 +938,7 @@ fn forward_3d_global_illumination_executes_with_scene_material_inputs() {
     ));
     world.spawn((
         Transform::default(),
-        MeshRenderer::new(mesh_handle, material_handle),
+        WgpuMeshRenderer::new(mesh_handle, material_handle),
     ));
     world.spawn((
         Transform::from_xyz(0.0, 0.0, 2.0),
@@ -1400,7 +1410,7 @@ fn register_material_automatically_wires_mesh_draw_and_extract() {
     ));
     world.spawn((
         Transform::default(),
-        MeshRenderer::new(mesh_handle, material_handle),
+        WgpuMeshRenderer::new(mesh_handle, material_handle),
     ));
 
     assert_eq!(renderer.plan.extractors.len(), 1);
@@ -1485,11 +1495,11 @@ fn opaque_mesh_phase_batches_same_mesh_and_material_instances() {
     ));
     world.spawn((
         Transform::from_xyz(-8.0, 0.0, 0.2).with_scale(16.0, 16.0),
-        MeshRenderer::new(mesh_handle, material_handle),
+        WgpuMeshRenderer::new(mesh_handle, material_handle),
     ));
     world.spawn((
         Transform::from_xyz(8.0, 0.0, 0.2).with_scale(16.0, 16.0),
-        MeshRenderer::new(mesh_handle, material_handle),
+        WgpuMeshRenderer::new(mesh_handle, material_handle),
     ));
 
     ctx.begin_frame()
@@ -1530,11 +1540,11 @@ fn opaque_mesh_phase_keeps_separate_draws_for_different_material_instances() {
     ));
     world.spawn((
         Transform::from_xyz(-8.0, 0.0, 0.2).with_scale(16.0, 16.0),
-        MeshRenderer::new(mesh_handle, green),
+        WgpuMeshRenderer::new(mesh_handle, green),
     ));
     world.spawn((
         Transform::from_xyz(8.0, 0.0, 0.2).with_scale(16.0, 16.0),
-        MeshRenderer::new(mesh_handle, orange),
+        WgpuMeshRenderer::new(mesh_handle, orange),
     ));
 
     ctx.begin_frame()
@@ -1776,8 +1786,7 @@ fn live2d_scene_sort_and_layer_visibility_follow_queue_policy() {
             model_index: 0,
             transform: Transform::from_xyz(0.0, 0.0, 0.8),
             layer_mask: 0b0001,
-            sorting_layer: SortingLayer(1),
-            order_in_layer: OrderInLayer(0),
+            sorting_layer: SortingLayer(10),
         },
         Live2DSceneInstance {
             entity: EntityId::new(1, 0),
@@ -1785,15 +1794,13 @@ fn live2d_scene_sort_and_layer_visibility_follow_queue_policy() {
             transform: Transform::from_xyz(0.0, 0.0, 0.2),
             layer_mask: 0b0010,
             sorting_layer: SortingLayer(0),
-            order_in_layer: OrderInLayer(5),
         },
         Live2DSceneInstance {
             entity: EntityId::new(2, 0),
             model_index: 2,
             transform: Transform::from_xyz(0.0, 0.0, 0.1),
             layer_mask: 0b0010,
-            sorting_layer: SortingLayer(1),
-            order_in_layer: OrderInLayer(0),
+            sorting_layer: SortingLayer(10),
         },
     ];
 
@@ -1802,13 +1809,9 @@ fn live2d_scene_sort_and_layer_visibility_follow_queue_policy() {
     assert_eq!(
         transparent
             .iter()
-            .map(|item| (
-                item.entity.index(),
-                item.sorting_layer.0,
-                item.order_in_layer.0
-            ))
+            .map(|item| (item.entity.index(), item.sorting_layer.0))
             .collect::<Vec<_>>(),
-        vec![(1, 0, 5), (2, 1, 0), (3, 1, 0)]
+        vec![(1, 0), (2, 10), (3, 10)]
     );
 
     let mut opaque = base.clone();
@@ -1848,7 +1851,6 @@ fn live2d_perspective_sort_uses_view_relative_depth() {
             transform: Transform::from_xyz(0.0, 0.0, 0.0),
             layer_mask: u32::MAX,
             sorting_layer: SortingLayer(0),
-            order_in_layer: OrderInLayer(0),
         },
         Live2DSceneInstance {
             entity: EntityId::new(2, 0),
@@ -1856,7 +1858,6 @@ fn live2d_perspective_sort_uses_view_relative_depth() {
             transform: Transform::from_xyz(0.0, 0.0, 5.0),
             layer_mask: u32::MAX,
             sorting_layer: SortingLayer(0),
-            order_in_layer: OrderInLayer(0),
         },
     ];
     let projection = Projection::perspective(60.0f32.to_radians(), 0.1, 1000.0);

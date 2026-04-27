@@ -4,7 +4,7 @@ use super::*;
 use crate::ecs::entity::{EntityLocation, EntityRecord};
 use crate::ecs::system::{GroupBuilder, Schedule, TickPolicy};
 use crate::ecs::time::Time;
-use crate::reflect::register_rust_type;
+use crate::ecs::{component_type, ComponentType};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use std::cell::Cell;
@@ -380,7 +380,7 @@ impl World {
 
         self.data[location.data_index]
             .archetype
-            .has_component(&register_rust_type::<T>())
+            .has_component(&component_type::<T>())
     }
 
     /// Destroys an entity and drops all its components.
@@ -433,7 +433,7 @@ impl World {
         let chunk = &data.chunks[location.chunk_index];
         let component_index = chunk
             .archetype
-            .query_component_index(&register_rust_type::<T>())?;
+            .query_component_index(&component_type::<T>())?;
 
         Some(unsafe {
             let ptr = chunk
@@ -453,7 +453,7 @@ impl World {
         let chunk = &mut data.chunks[location.chunk_index];
         let component_index = chunk
             .archetype
-            .query_component_index(&register_rust_type::<T>())?;
+            .query_component_index(&component_type::<T>())?;
 
         Some(unsafe {
             let ptr = chunk
@@ -463,7 +463,7 @@ impl World {
         })
     }
 
-    fn archetype_with_component(base: Archetype, component: crate::reflect::Type) -> Archetype {
+    fn archetype_with_component(base: Archetype, component: ComponentType) -> Archetype {
         let mut builder = create_archetype();
         for existing in &base.components {
             builder = builder.add_component(*existing);
@@ -471,10 +471,7 @@ impl World {
         builder.add_component(component).build()
     }
 
-    fn archetype_without_component(
-        base: Archetype,
-        component: crate::reflect::Type,
-    ) -> Option<Archetype> {
+    fn archetype_without_component(base: Archetype, component: ComponentType) -> Option<Archetype> {
         if !base.has_component(&component) {
             return None;
         }
@@ -528,7 +525,7 @@ impl World {
     fn transition_plan(
         &mut self,
         source_data_index: usize,
-        component: crate::reflect::Type,
+        component: ComponentType,
         add: bool,
     ) -> Option<NonNull<TransitionPlan>> {
         let base = self.data[source_data_index].archetype;
@@ -618,7 +615,7 @@ impl World {
             return false;
         };
 
-        let component_ty = register_rust_type::<T>();
+        let component_ty = component_type::<T>();
         let source_archetype = self.data[source_location.data_index].archetype;
 
         // Overwrite path: entity already has this component.
@@ -727,7 +724,7 @@ impl World {
             return false;
         };
 
-        let component_ty = register_rust_type::<T>();
+        let component_ty = component_type::<T>();
         let Some(plan) = self.transition_plan(source_location.data_index, component_ty, false)
         else {
             return false;
@@ -812,7 +809,7 @@ impl World {
     pub(crate) fn insert_dynamic(
         &mut self,
         entity: EntityId,
-        component: crate::reflect::Type,
+        component: ComponentType,
         value: &mut InsertValue,
     ) -> bool {
         let Some(source_location) = self.entity_location(entity) else {
@@ -912,11 +909,7 @@ impl World {
         true
     }
 
-    pub(crate) fn remove_dynamic(
-        &mut self,
-        entity: EntityId,
-        component: crate::reflect::Type,
-    ) -> bool {
+    pub(crate) fn remove_dynamic(&mut self, entity: EntityId, component: ComponentType) -> bool {
         let Some(source_location) = self.entity_location(entity) else {
             return false;
         };

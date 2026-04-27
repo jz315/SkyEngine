@@ -16,7 +16,7 @@
 
 use std::f32::consts::TAU;
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext};
+use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
 use sky_engine::ecs::{EntityId, PreparedQuery, System, World};
 use sky_engine::gpu::GpuContext;
 use sky_engine::input::KeyCode;
@@ -803,7 +803,8 @@ impl SpiritWispsApp {
 }
 
 impl AppState for SpiritWispsApp {
-    fn setup(&mut self, _world: &mut World, gpu: &mut sky_engine::gpu::GpuContext) {
+    fn setup(&mut self, ctx: &mut SetupContext<'_>) {
+        let gpu = ctx.gpu();
         self.init_graph(gpu);
     }
 

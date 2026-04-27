@@ -732,7 +732,6 @@ pub struct Transform { ... }          // 已有，3D ready ✅
 pub struct Camera { ... }             // 已有 ✅
 pub struct Projection { ... }         // 已有, Ortho + Perspective ✅
 pub struct SortingLayer(pub i32);     // 已有 ✅
-pub struct OrderInLayer(pub i32);     // 已有 ✅
 pub struct RenderLayerMask(pub u32);  // 已有 ✅
 
 // Sprite (高级封装，内部自动创建 SpriteMaterial)
@@ -869,8 +868,8 @@ fn extract_sprites(
 ) {
     let draw_fn_id = registry.id::<DrawMesh<SpriteMaterial>>();
 
-    world.query::<(&Transform, &SpriteRenderer, Option<&SortingLayer>, Option<&OrderInLayer>)>()
-        .for_each_with_entity(|entity, (transform, sprite, layer, order)| {
+    world.query::<(&Transform, &SpriteRenderer, Option<&SortingLayer>)>()
+        .for_each_with_entity(|entity, (transform, sprite, layer)| {
             if !sprite.visible { return; }
 
             // 从 SpriteRenderer 字段自动创建/更新 SpriteMaterial
@@ -880,7 +879,7 @@ fn extract_sprites(
                 uv_rect: sprite.uv,
             });
 
-            let sort_key = encode_sort_key(layer, order, sprite.texture_key(), transform.z());
+            let sort_key = encode_sort_key(layer, sprite.texture_key(), transform.z());
 
             phase.add_item(PhaseItem::new(
                 sort_key,

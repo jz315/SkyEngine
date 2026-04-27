@@ -13,8 +13,8 @@ use sky_engine::ecs::World;
 use sky_engine::render::expert::{Mesh, MeshDescriptor, MeshIndexData};
 use sky_engine::render::{
     CameraMarker, Color, MainCamera, Material, MaterialBindContext, MaterialHandle,
-    MaterialRenderState, MeshRenderer, Projection, RenderPipelineAsset, ShaderSource, Transform,
-    TransparentPhase,
+    MaterialRenderState, Projection, RenderPipelineAsset, ShaderSource, Transform,
+    TransparentPhase, WgpuMeshRenderer,
 };
 use std::borrow::Cow;
 use wgpu::util::DeviceExt;
@@ -272,7 +272,7 @@ fn spawn_hologram(
         Transform::from_xyz(x, y, z)
             .with_scale3(1.8, 2.4, 1.0)
             .with_euler_angles(0.55, 0.0, 0.2),
-        MeshRenderer::new(mesh, material),
+        WgpuMeshRenderer::new(mesh, material),
         Spin { speed: spin },
         Bob {
             amplitude: 0.35,

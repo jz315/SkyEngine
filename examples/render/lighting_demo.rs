@@ -4,10 +4,9 @@
 //! cargo run --example lighting_demo --features app --release
 //! ```
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext};
+use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
 use sky_engine::asset::{AssetServer, TextureAsset};
 use sky_engine::ecs::{With, World};
-use sky_engine::gpu::GpuContext;
 use sky_engine::math::Vec2;
 use sky_engine::render::{
     CameraMarker, Color, MainCamera, PointLight, Projection, RenderPipelineAsset, RenderSettings,
@@ -80,7 +79,8 @@ impl LightingDemo {
 }
 
 impl AppState for LightingDemo {
-    fn setup(&mut self, world: &mut World, _gpu: &mut GpuContext) {
+    fn setup(&mut self, ctx: &mut SetupContext<'_>) {
+        let world = &mut *ctx.world;
         let asset_server = world
             .get_resource::<AssetServer>()
             .expect("App should install AssetServer before setup")

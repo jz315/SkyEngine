@@ -1,5 +1,5 @@
 use super::{Bundle, EntityId, World};
-use crate::reflect::{register_rust_type, Type};
+use crate::ecs::{component_type, ComponentType};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use std::any::Any;
@@ -78,7 +78,7 @@ impl InsertValue {
     {
         let len = mem::size_of::<T>();
         let drop_fn: Option<unsafe fn(*mut u8)> = if mem::needs_drop::<T>() {
-            Some(crate::reflect::registry::drop_in_place_erased::<T>)
+            Some(crate::reflect::drop_in_place_erased::<T>)
         } else {
             None
         };
@@ -193,12 +193,12 @@ enum EntityCommand {
     Despawn(EntityId),
     Insert {
         entity: EntityId,
-        component: Type,
+        component: ComponentType,
         value: InsertValue,
     },
     Remove {
         entity: EntityId,
-        component: Type,
+        component: ComponentType,
     },
 }
 
@@ -212,7 +212,7 @@ enum PendingComponentCommand {
 }
 
 struct PendingComponentEntry {
-    component: Type,
+    component: ComponentType,
     command: PendingComponentCommand,
 }
 
@@ -223,7 +223,7 @@ struct PendingEntityCommands {
 }
 
 impl PendingEntityCommands {
-    fn queue_insert(&mut self, component: Type, value: InsertValue) {
+    fn queue_insert(&mut self, component: ComponentType, value: InsertValue) {
         if self.despawn {
             return;
         }
@@ -243,7 +243,7 @@ impl PendingEntityCommands {
         });
     }
 
-    fn queue_remove(&mut self, component: Type) {
+    fn queue_remove(&mut self, component: ComponentType) {
         if self.despawn {
             return;
         }
@@ -439,7 +439,7 @@ impl Commands {
     {
         self.push_entity(EntityCommand::Insert {
             entity,
-            component: register_rust_type::<T>(),
+            component: component_type::<T>(),
             value: InsertValue::from_value(component),
         });
     }
@@ -451,7 +451,7 @@ impl Commands {
     {
         self.push_entity(EntityCommand::Remove {
             entity,
-            component: register_rust_type::<T>(),
+            component: component_type::<T>(),
         });
     }
 

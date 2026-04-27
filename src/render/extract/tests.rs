@@ -4,6 +4,7 @@ use rustc_hash::FxHashMap;
 
 use crate::asset::{AssetConfig, AssetServer, TextureAsset};
 use crate::gpu::GpuContext;
+use crate::render::gi::DdgiRuntime;
 use crate::render::gpu::{RenderTarget, Texture, TextureCreateDesc};
 use crate::render::lighting::shadow::{
     create_shadow_compare_sampler, ShadowPassBindingLayout, ShadowSceneBindingLayout,
@@ -16,9 +17,9 @@ use crate::render::phase::{
 use crate::render::view::{Projection, SceneView};
 use crate::render::{
     expert::{Mesh, MeshRegistry},
-    Color, GpuScene, LightTable, MeshRenderer, ModelMatrixTable, OrderInLayer, RenderComposer,
-    RenderPipelineAsset, SortingLayer, SpriteMaterial, SpriteRenderer, StandardMaterial, Transform,
-    UnlitMaterial, ViewportRect, DEFAULT_DEPTH_FORMAT,
+    Color, GpuScene, LightTable, ModelMatrixTable, RenderComposer, RenderPipelineAsset,
+    SortingLayer, SpriteMaterial, SpriteRenderer, StandardMaterial, Transform, UnlitMaterial,
+    ViewportRect, WgpuMeshRenderer, DEFAULT_DEPTH_FORMAT,
 };
 use wgpu::util::DeviceExt;
 
@@ -297,7 +298,6 @@ fn sprite_extract_schedule_renders_through_transparent_phase() {
             .color(Color::RED)
             .texture(white.clone()),
         SortingLayer(0),
-        OrderInLayer(0),
     ));
 
     let transforms = renderer.resolve_scene_transforms(&world);
@@ -562,11 +562,11 @@ fn mesh_extract_schedule_renders_opaque_phase_with_depth() {
     let mut world = crate::ecs::World::new();
     world.spawn((
         Transform::from_xyz(-16.0, -16.0, 0.2).with_scale(32.0, 32.0),
-        MeshRenderer::new(mesh_handle, red),
+        WgpuMeshRenderer::new(mesh_handle, red),
     ));
     world.spawn((
         Transform::from_xyz(-16.0, -16.0, 0.8).with_scale(32.0, 32.0),
-        MeshRenderer::new(mesh_handle, blue),
+        WgpuMeshRenderer::new(mesh_handle, blue),
     ));
 
     let transforms = renderer.resolve_scene_transforms(&world);
@@ -795,7 +795,7 @@ fn gltf_mesh_extract_schedule_renders_submeshes_with_material_slots_and_depth() 
     let mut world = crate::ecs::World::new();
     world.spawn((
         Transform::from_xyz(16.0, -16.0, 0.0).with_scale(-32.0, 32.0),
-        MeshRenderer::new(mesh_handle, red).materials(vec![red, blue]),
+        WgpuMeshRenderer::new(mesh_handle, red).materials(vec![red, blue]),
     ));
 
     let transforms = renderer.resolve_scene_transforms(&world);
@@ -893,12 +893,14 @@ fn gltf_mesh_extract_schedule_renders_submeshes_with_material_slots_and_depth() 
         .set_all(&ctx, &model_matrices);
     gpu_scene.table_mut::<LightTable>().set_all(&ctx, &[]);
     gpu_scene.upload_all(ctx.queue());
+    let ddgi = DdgiRuntime::new(&ctx);
     let shadow_view = ShadowViewBinding::new(
         &ctx,
         &shadow_layout,
         &shadow_pass_layout,
         &shadow_sampler,
         gpu_scene.table::<LightTable>(),
+        ddgi.scene_resources(),
     );
     ctx.begin_frame()
         .expect("headless frame should begin for gltf mesh rendering");

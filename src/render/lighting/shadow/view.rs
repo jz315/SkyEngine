@@ -3,6 +3,7 @@ use rustc_hash::FxHashMap;
 use crate::ecs::World;
 use crate::gpu::GpuContext;
 use crate::math::{Mat4, Vec3, Vec4};
+use crate::render::gi::DdgiSceneResources;
 use crate::render::gpu::{RenderTarget, RenderTargetDescriptor};
 use crate::render::phase::OpaquePhase;
 use crate::render::view::{Projection, SceneView, SceneViewKind};
@@ -32,6 +33,7 @@ impl ShadowViewBinding {
         pass_layout: &ShadowPassBindingLayout,
         sampler: &wgpu::Sampler,
         light_table: &LightTable,
+        ddgi: DdgiSceneResources<'_>,
     ) -> Self {
         let target = RenderTarget::from_descriptor(
             gpu,
@@ -51,6 +53,7 @@ impl ShadowViewBinding {
             &uniform_buffer,
             target.view(),
             sampler,
+            ddgi,
         );
         let shadow_pass_bind_group = create_shadow_pass_bind_group(
             gpu.device(),
@@ -80,11 +83,28 @@ impl ShadowViewBinding {
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
     }
 
-    fn disable(&mut self, gpu: &GpuContext) {
+    fn disable(
+        &mut self,
+        gpu: &GpuContext,
+        scene_layout: &ShadowSceneBindingLayout,
+        sampler: &wgpu::Sampler,
+        light_table: &LightTable,
+        ddgi: DdgiSceneResources<'_>,
+    ) {
         self.enabled = false;
         self.caster_count = 0;
         self.bias = 0.0;
         self.light_direction = [0.0, -1.0, 0.0];
+        self.scene_bind_group = create_shadow_scene_bind_group(
+            gpu.device(),
+            scene_layout.bind_group_layout(),
+            light_table.buffer(),
+            light_table.meta_buffer(),
+            &self.uniform_buffer,
+            self.target.view(),
+            sampler,
+            ddgi,
+        );
         self.write_disabled(gpu.queue());
     }
 
@@ -95,6 +115,7 @@ impl ShadowViewBinding {
         pass_layout: &ShadowPassBindingLayout,
         sampler: &wgpu::Sampler,
         light_table: &LightTable,
+        ddgi: DdgiSceneResources<'_>,
         update: ShadowViewUpdate,
     ) {
         self.target.resize_with(
@@ -110,6 +131,7 @@ impl ShadowViewBinding {
             &self.uniform_buffer,
             self.target.view(),
             sampler,
+            ddgi,
         );
         self.shadow_pass_bind_group = create_shadow_pass_bind_group(
             gpu.device(),
@@ -128,7 +150,7 @@ impl ShadowViewBinding {
                 update.light_direction[2],
                 0.0,
             ],
-            shadow_params: [update.bias, 0.0, 0.0, 1.0],
+            shadow_params: [update.bias, (update.resolution as f32).recip(), 1.25, 1.0],
         };
         gpu.queue()
             .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
@@ -223,6 +245,7 @@ pub(crate) fn sync_shadow_views(
     pass_layout: &ShadowPassBindingLayout,
     sampler: &wgpu::Sampler,
     light_table: &LightTable,
+    ddgi: DdgiSceneResources<'_>,
 ) {
     let binding_count = views
         .iter()
@@ -236,6 +259,7 @@ pub(crate) fn sync_shadow_views(
             pass_layout,
             sampler,
             light_table,
+            ddgi,
         ));
     }
     if shadow_views.len() > binding_count {
@@ -258,17 +282,17 @@ pub(crate) fn sync_shadow_views(
 
     for (binding_index, shadow_view) in shadow_views.iter_mut().enumerate() {
         let Some(setup) = setup_by_binding.get(&binding_index).copied() else {
-            shadow_view.disable(gpu);
+            shadow_view.disable(gpu, scene_layout, sampler, light_table, ddgi);
             continue;
         };
         let Some((view_index, scene_view)) = shadow_view_by_binding.get(&binding_index).copied()
         else {
-            shadow_view.disable(gpu);
+            shadow_view.disable(gpu, scene_layout, sampler, light_table, ddgi);
             continue;
         };
         let caster_count = opaque_phases.get(view_index).map_or(0, OpaquePhase::len);
         if caster_count == 0 {
-            shadow_view.disable(gpu);
+            shadow_view.disable(gpu, scene_layout, sampler, light_table, ddgi);
             continue;
         }
         let update = ShadowViewUpdate {
@@ -278,7 +302,15 @@ pub(crate) fn sync_shadow_views(
             bias: setup.bias,
             caster_count,
         };
-        shadow_view.update(gpu, scene_layout, pass_layout, sampler, light_table, update);
+        shadow_view.update(
+            gpu,
+            scene_layout,
+            pass_layout,
+            sampler,
+            light_table,
+            ddgi,
+            update,
+        );
     }
 }
 

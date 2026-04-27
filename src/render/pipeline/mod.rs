@@ -7,11 +7,11 @@ mod phases;
 
 pub(crate) use asset::MaterialRegistration;
 pub use asset::{
-    PipelineStep, PipelineStepDescriptor, RenderPipelineAsset, RenderPipelineBuilder,
-    RenderPipelineDescriptor,
+    PipelineStep, PipelineStepDescriptor, RenderBackendKind, RenderPipelineAsset,
+    RenderPipelineBuilder, RenderPipelineDescriptor,
 };
 pub use builtins::{
-    Bloom, GlobalIllumination, SceneMaterialPrepass, SceneNormalPrepass, ToneMap, Vignette,
+    Bloom, DdgiUpdateCompute, SceneMaterialPrepass, SceneNormalPrepass, ToneMap, Vignette,
 };
 pub use contexts::{
     ComputePassExecuteContext, ComputePassSetupContext, PostFxPassExecuteContext,

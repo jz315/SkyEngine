@@ -8,9 +8,19 @@ use crate::render::resources::material::{Material, SpriteMaterial};
 use crate::render::GpuTable;
 
 use super::{
-    AnyRenderFeature, Bloom, ComputePass, GlobalIllumination, PostFxPass, RenderFeature,
-    RenderPass, RenderPhase, SceneMaterialPrepass, SceneNormalPrepass, ToneMap,
+    AnyRenderFeature, Bloom, ComputePass, DdgiUpdateCompute, PostFxPass, RenderFeature, RenderPass,
+    RenderPhase, ToneMap,
 };
+
+/// Rendering backend requested by a [`RenderPipelineAsset`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RenderBackendKind {
+    /// SkyEngine's native `wgpu` renderer.
+    #[default]
+    Wgpu,
+    /// Kajiya-backed high-quality 3D renderer.
+    Kajiya,
+}
 
 pub(crate) struct MaterialRegistration {
     pub(crate) type_id: TypeId,
@@ -36,6 +46,7 @@ pub enum PipelineStepDescriptor {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RenderPipelineDescriptor {
+    pub backend_kind: RenderBackendKind,
     pub feature_names: Vec<&'static str>,
     pub step_names: Vec<PipelineStepDescriptor>,
     pub extractor_names: Vec<&'static str>,
@@ -45,6 +56,7 @@ pub struct RenderPipelineDescriptor {
 }
 
 pub struct RenderPipelineBuilder {
+    backend_kind: RenderBackendKind,
     runtime_features: Vec<Box<dyn AnyRenderFeature>>,
     feature_names: Vec<&'static str>,
     steps: Vec<PipelineStep>,
@@ -103,6 +115,7 @@ impl RenderPipelineBuilder {
 
     pub fn new() -> Self {
         Self {
+            backend_kind: RenderBackendKind::Wgpu,
             runtime_features: Vec::new(),
             feature_names: Vec::new(),
             steps: Vec::new(),
@@ -199,6 +212,7 @@ impl Default for RenderPipelineBuilder {
 }
 
 pub struct RenderPipelineAsset {
+    pub(crate) backend_kind: RenderBackendKind,
     pub(crate) runtime_features: Vec<Box<dyn AnyRenderFeature>>,
     pub(crate) feature_names: Vec<&'static str>,
     pub(crate) steps: Vec<PipelineStep>,
@@ -212,6 +226,11 @@ impl RenderPipelineAsset {
     #[inline]
     pub fn builder() -> RenderPipelineBuilder {
         RenderPipelineBuilder::new()
+    }
+
+    #[inline]
+    pub fn backend_kind(&self) -> RenderBackendKind {
+        self.backend_kind
     }
 
     pub fn forward_2d() -> Self {
@@ -236,18 +255,29 @@ impl RenderPipelineAsset {
         Self::builder()
             .add_feature(super::SpriteFeature::lit_hdr())
             .add_phase(crate::render::lighting::shadow::DirectionalShadowPhase::new())
-            .add_phase(SceneNormalPrepass::default())
-            .add_phase(SceneMaterialPrepass::default())
+            .add_compute(DdgiUpdateCompute::default())
             .add_phase(OpaquePhase::new())
-            .add_postfx(GlobalIllumination::default())
             .add_phase(TransparentPhase::new())
             .add_postfx(Bloom::default())
             .add_postfx(ToneMap::default())
             .build()
     }
 
+    pub fn kajiya_3d() -> Self {
+        let mut asset = Self::builder().build();
+        asset.backend_kind = RenderBackendKind::Kajiya;
+        asset
+    }
+
+    pub fn kajiya_triangle() -> Self {
+        let mut asset = Self::kajiya_3d();
+        asset.feature_names.push("kajiya_triangle");
+        asset
+    }
+
     pub fn descriptor(&self) -> RenderPipelineDescriptor {
         RenderPipelineDescriptor {
+            backend_kind: self.backend_kind,
             feature_names: self.feature_names.clone(),
             step_names: self
                 .steps
@@ -282,6 +312,7 @@ impl RenderPipelineAsset {
 
     fn from_builder(builder: RenderPipelineBuilder) -> Self {
         Self {
+            backend_kind: builder.backend_kind,
             runtime_features: builder.runtime_features,
             feature_names: builder.feature_names,
             steps: builder.steps,

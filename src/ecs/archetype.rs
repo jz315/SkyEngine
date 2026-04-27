@@ -8,7 +8,7 @@ use std::sync::RwLock;
 
 use smallvec::SmallVec;
 
-use crate::reflect::*;
+use crate::ecs::{component_type, ComponentType};
 
 use super::Query;
 
@@ -25,7 +25,7 @@ thread_local! {
 // 定义Archetype结构体，包括组件信息和整体对齐要求
 #[derive(Debug)]
 pub struct InternalArchetype {
-    pub components: SmallVec<[Type; MAX_COMPONENTS]>,
+    pub components: SmallVec<[ComponentType; MAX_COMPONENTS]>,
     pub alignment: usize,
 }
 
@@ -39,7 +39,7 @@ impl InternalArchetype {
     }
 
     // 添加一个Component
-    fn add_component(mut self, ty: Type) -> Self {
+    fn add_component(mut self, ty: ComponentType) -> Self {
         self.alignment = self.alignment.max(ty.align);
         self.components.push(ty);
 
@@ -55,12 +55,12 @@ impl InternalArchetype {
 impl InternalArchetype {
     // 查询Archetype是否包含指定类型的Component
     #[inline(always)]
-    pub fn has_component(&self, ty: &Type) -> bool {
+    pub fn has_component(&self, ty: &ComponentType) -> bool {
         self.query_component_index(ty).is_some()
     }
 
     #[inline(always)]
-    pub fn query_component_index(&self, ty: &Type) -> Option<usize> {
+    pub fn query_component_index(&self, ty: &ComponentType) -> Option<usize> {
         let archetype_id = self as *const InternalArchetype as usize;
         let component_id = ty.id();
 
@@ -131,7 +131,6 @@ impl Archetype {
     }
 }
 
-// Implement Deref to allow `Type` to be treated like `&TypeInfo`
 impl Deref for Archetype {
     type Target = InternalArchetype;
 
@@ -152,13 +151,13 @@ impl ArchetypeBuilder {
         }
     }
 
-    pub fn add_component(mut self, ty: Type) -> Self {
+    pub fn add_component(mut self, ty: ComponentType) -> Self {
         self.internal_archetype = self.internal_archetype.add_component(ty);
         self
     }
 
     pub fn add_rust_component<T: 'static>(self) -> Self {
-        self.add_component(register_rust_type::<T>())
+        self.add_component(component_type::<T>())
     }
 
     pub fn build(self) -> Archetype {

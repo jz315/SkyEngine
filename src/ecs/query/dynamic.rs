@@ -1,19 +1,19 @@
 use super::{PreparedCache, QueryDescriptor, World};
-use crate::reflect::Type;
+use crate::ecs::ComponentType;
 use core::{mem, slice};
 
 const UNROLL: usize = 8;
 
 pub struct Query {
-    pub(crate) types: Vec<Type>,
+    pub(crate) types: Vec<ComponentType>,
 }
 
 impl Query {
-    pub fn new(types: Vec<Type>) -> Self {
+    pub fn new(types: Vec<ComponentType>) -> Self {
         Self { types }
     }
 
-    pub fn types(&self) -> &[Type] {
+    pub fn types(&self) -> &[ComponentType] {
         &self.types
     }
 }
@@ -38,7 +38,7 @@ impl<'a> QueryIter<'a> {
     }
 
     #[inline(always)]
-    fn debug_assert_query_type<T>(ty: &Type) {
+    fn debug_assert_query_type<T>(ty: &ComponentType) {
         debug_assert_eq!(ty.size, mem::size_of::<T>());
         debug_assert_eq!(ty.align, mem::align_of::<T>());
     }
@@ -230,8 +230,8 @@ mod tests {
         });
 
         let typed_types = vec![
-            crate::reflect::register_rust_type::<Position>(),
-            crate::reflect::register_rust_type::<Velocity>(),
+            crate::ecs::component_type::<Position>(),
+            crate::ecs::component_type::<Velocity>(),
         ];
         let query = Query::new(typed_types);
         let mut dynamic = QueryIter::new(&world, &query);
@@ -256,7 +256,7 @@ mod tests {
         let mut world = World::new();
         world.add_entity(archetype);
 
-        let ty = crate::reflect::register_rust_type::<Position>();
+        let ty = crate::ecs::component_type::<Position>();
         let query = Query::new(vec![ty, ty]);
         let _ = QueryIter::new(&world, &query);
     }

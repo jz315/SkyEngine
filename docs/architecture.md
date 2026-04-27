@@ -4,8 +4,10 @@
 
 它的定位是“总览视角”：帮助开发者理解系统如何拼在一起，以及新增功能时应该挂在哪一层。它不替代更细的 API 文档：
 
-- ECS API 细节见 `docs/api.md`
-- GPU / Render 中层 API 细节见 `docs/render_api.md`
+- 文档索引见 `docs/api.md`
+- ECS API 细节见 `docs/ecs.md`
+- Reflect API 细节见 `docs/reflect.md`
+- GPU / Render 中层 API 细节见 `docs/gpu.md`、`docs/render.md`、`docs/render_api.md`
 - Render 模块维护规则见 `src/render/AGENTS.md`
 - RenderGraph 内部规则见 `src/render/graph/AGENTS.md`
 
@@ -114,7 +116,7 @@ crate 根部的 feature-gated 模块关系如下：
 | `live2d` | Live2D feature，并依赖 `app` + `asset` | 启用 Cubism SDK 集成与 `Live2DFeature` |
 | `egui` | egui overlay，并依赖 `app` | 启用 `FrameContext::egui(...)` 与 egui 示例 |
 | `demo` | `app` + `asset` + `rand` | GPU demo 辅助 feature |
-| `demo-legacy` | `minifb` + `rand` | legacy CPU-rendered demos |
+| `demo-legacy` | `minifb` + `rand` | CPU-rendered demos |
 | `compare` / `compare-bevy` | 对比示例依赖 | hecs / Bevy 对比示例 |
 
 ### 推荐入口
@@ -133,7 +135,7 @@ crate 根部的 feature-gated 模块关系如下：
 - `sky_engine::render::expert`
 - `sky_engine::ecs::raw`
 
-这两个 expert / raw namespace 不是普通 gameplay 的默认入口。它们用于底层集成、benchmark、工具链、graph 调试、兼容层或非常明确的性能实验。
+这两个 expert / raw namespace 不是普通 gameplay 的默认入口。它们用于底层集成、benchmark、工具链、graph 调试或非常明确的性能实验。
 
 ### 何时使用哪一层
 
@@ -432,7 +434,7 @@ use sky_engine::ecs::{
 };
 ```
 
-底层兼容 / benchmark 入口：
+底层工具 / benchmark 入口：
 
 ```rust
 use sky_engine::ecs::raw;
@@ -706,7 +708,7 @@ fixed group 中的 `Time::delta` 应反映 fixed step，而不是外部 wall-clo
 
 - 手动创建 archetype。
 - 动态 query。
-- benchmark / compatibility helper。
+- benchmark / tooling helper。
 - 工具链或脚本式 runtime 接入。
 
 它不是普通 gameplay hot path。不要为了“更直接”绕过 typed query，除非目标就是底层测试、工具或 benchmark。
@@ -979,7 +981,7 @@ flowchart LR
 - `RenderPass`
 - `ComputePass`
 - `PostFxPass`
-- built-in markers：`Bloom`、`ToneMap`、`Vignette`、`GlobalIllumination`、`SceneNormalPrepass`、`SceneMaterialPrepass`
+- built-in markers：`Bloom`、`ToneMap`、`Vignette`、`DdgiUpdateCompute`、`SceneNormalPrepass`、`SceneMaterialPrepass`
 
 `RenderPipelineAsset` 与 `RenderComposer` 的区别：
 
@@ -1148,7 +1150,8 @@ RenderGraph::try_execute(ctx, run_pass)
 | Mesh | `src/render/mesh/`, `src/render/resources/mesh.rs` | `MeshRenderer`、`Mesh`、`Material` | mesh prepare / record，material pipelines，scene prepass |
 | Lighting | `src/render/lighting/` | `PointLight`、`DirectionalLight`、light settings | `LightTable`、`LightPass`、`DirectionalShadowPhase` |
 | Composite | `src/render/composite/` | scene color / light target | composite pass |
-| PostFX | `src/render/postfx/` | scene inputs / settings | `Bloom`、`ToneMap`、`Vignette`、GI / SSGI passes |
+| GI | `src/render/gi/`, `src/render/shaders/gi/` | opaque `StandardMaterial` mesh triangles、light table、DDGI settings | `DdgiUpdateCompute`、DDGI irradiance / visibility atlas sampled by forward materials |
+| PostFX | `src/render/postfx/` | scene color / settings | `Bloom`、`ToneMap`、`Vignette` |
 | Live2D | `src/render/live2d/` | `Live2DModelInstance`、Cubism asset/runtime | `Live2DFeature`、transparent phase draw、typed payload |
 
 这些 family 的协作方式不是各自维护一套完整渲染主循环，而是：
@@ -1216,8 +1219,10 @@ AppState::update(...)
   mesh draw preparation / recording。
 - `src/render/composite/`
   scene/light composition pass。
+- `src/render/gi/`
+  DDGI diffuse global illumination runtime。
 - `src/render/postfx/`
-  Bloom、ToneMap、Vignette、GI / SSGI 等效果。
+  Bloom、ToneMap、Vignette 等屏幕后处理效果。
 - `src/render/live2d/`
   Live2D runtime / renderer / feature bridge，受 `live2d` feature 控制。
 - `src/render/shaders/`
@@ -1864,7 +1869,7 @@ World resource AudioCommands
 | ECS 普通逻辑 | `cargo test` |
 | ECS query / chunk / structural transition | `cargo test`，必要时补 benchmark |
 | App / Render public API | `cargo test --features app` |
-| Render examples compatibility | `cargo check --examples --features app` |
+| Render examples build check | `cargo check --examples --features app` |
 | RenderGraph | `cargo test --features app graph` |
 | Graph reorder | `cargo test --features app reorder::tests` |
 | Graph aliasing | `cargo test --features app alias::tests` |
@@ -1927,7 +1932,7 @@ docs-only 修改通常不需要 `cargo test`。但如果文档修改伴随 API�
 2. `src/ecs/mod.rs`
 3. `src/ecs/world.rs`
 4. `src/ecs/query/`
-5. `docs/api.md`
+5. `docs/ecs.md`
 6. `src/app/runner.rs`
 7. `src/render/mod.rs`
 8. `src/render/AGENTS.md`
@@ -1936,7 +1941,7 @@ docs-only 修改通常不需要 `cargo test`。但如果文档修改伴随 API�
 11. `src/render/execution/`
 12. `src/render/graph/AGENTS.md`
 13. `src/asset/mod.rs`
-14. `docs/render_api.md`
+14. `docs/api.md`
 
 ### 15.2 ECS 学习路径
 
@@ -1945,7 +1950,7 @@ docs-only 修改通常不需要 `cargo test`。但如果文档修改伴随 API�
 3. `examples/ecs/commands.rs`
 4. `examples/ecs/systems.rs`
 5. `examples/ecs/tiny_defense.rs`
-6. `docs/api.md`
+6. `docs/ecs.md`
 7. `src/ecs/world.rs`
 8. `src/ecs/query/prepared.rs`
 9. `src/ecs/commands.rs`
@@ -1965,19 +1970,24 @@ docs-only 修改通常不需要 `cargo test`。但如果文档修改伴随 API�
 10. `src/render/pipeline/`
 11. `src/render/execution/`
 12. `src/render/graph/`
-13. `docs/render_api.md`
+13. `docs/render.md`
+14. `docs/render_api.md`
 
 ### 15.4 App / Asset / Audio 学习路径
 
 1. `src/app/config.rs`
 2. `src/app/runner.rs`
-3. `src/input/mod.rs`
-4. `examples/render/egui_demo.rs`
-5. `src/asset/mod.rs`
-6. `examples/asset_cook_smoke.rs`
-7. `src/bin/sky-cook.rs`
-8. `src/audio/mod.rs`
-9. `examples/audio_demo.rs`
+3. `docs/app.md`
+4. `src/input/mod.rs`
+5. `docs/input.md`
+6. `examples/render/egui_demo.rs`
+7. `src/asset/mod.rs`
+8. `docs/asset.md`
+9. `examples/asset_cook_smoke.rs`
+10. `src/bin/sky-cook.rs`
+11. `src/audio/mod.rs`
+12. `docs/audio.md`
+13. `examples/audio_demo.rs`
 
 ### 15.5 Demo 与 benchmark
 

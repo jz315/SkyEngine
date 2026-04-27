@@ -1,5 +1,5 @@
 use super::{create_archetype, Archetype, Chunk, MAX_COMPONENTS};
-use crate::reflect::{register_rust_type, Type};
+use crate::ecs::{component_type, ComponentType};
 use rustc_hash::FxHashMap;
 use smallvec::{smallvec, SmallVec};
 use std::{any::TypeId, cell::RefCell, ptr, sync::RwLock};
@@ -17,7 +17,7 @@ pub(crate) struct BundleMeta {
     pub columns: SmallVec<[(usize, usize); MAX_COMPONENTS]>,
 }
 
-fn assert_unique_types(types: &[Type]) {
+fn assert_unique_types(types: &[ComponentType]) {
     for (index, ty) in types.iter().enumerate() {
         for other in &types[(index + 1)..] {
             if ty.id() == other.id() {
@@ -31,7 +31,7 @@ fn assert_unique_types(types: &[Type]) {
 }
 
 fn bundle_meta<B: 'static>(
-    make_types: impl FnOnce() -> SmallVec<[Type; MAX_COMPONENTS]>,
+    make_types: impl FnOnce() -> SmallVec<[ComponentType; MAX_COMPONENTS]>,
 ) -> &'static BundleMeta {
     let type_id = TypeId::of::<B>();
 
@@ -100,7 +100,7 @@ macro_rules! impl_bundle_tuple {
     ($(($Type:ident, $value:ident, $idx:tt)),+ $(,)?) => {
         impl<$($Type: 'static),+> Bundle for ($($Type,)+) {
             fn cached_meta() -> (Archetype, &'static [(usize, usize)]) {
-                let meta = bundle_meta::<Self>(|| smallvec![$(register_rust_type::<$Type>()),+]);
+                let meta = bundle_meta::<Self>(|| smallvec![$(component_type::<$Type>()),+]);
                 (meta.archetype, &meta.columns)
             }
 

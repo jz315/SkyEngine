@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <a href="README_EN.md">English</a> · <a href="#-快速上手">快速上手</a> · <a href="#-性能基准">性能基准</a> · <a href="docs/api.md">API 文档</a> · <a href="#-示例展示">示例展示</a>
+  <a href="README_EN.md">English</a> · <a href="#-快速上手">快速上手</a> · <a href="#-性能基准">性能基准</a> · <a href="docs/api.md">API 文档</a> · <a href="docs/scene.md">Scene 文档</a> · <a href="docs/physics.md">Physics 文档</a> · <a href="#-示例展示">示例展示</a>
 </p>
 
 ---
@@ -23,6 +23,8 @@
 
 - **ECS 架构**：高性能的实体组件系统
 - **现代渲染**：基于 `RenderPipelineAsset + RenderComposer` 的高层可编程场景管线，以及基于 `wgpu` 的专家级 RenderGraph
+- **Scene / Prefab**：`scene` feature 提供实体树文档、稳定 ID、层级和 prefab spawn
+- **可选 2D 物理**：`physics` feature 提供 top-down/Tiled 2D 物理、事件、查询和 debug draw
 - **数学模块**：提供 engine-owned 的 `sky_engine::math` 公共数学层，当前内部基于 `glam`
 - **简单易用**：用户友好的API，详细的文档
 
@@ -145,6 +147,19 @@ cargo bench --bench fair -- flecs
 
 完整示例索引见 [`examples/README.md`](examples/README.md)。如果你是第一次接触这个仓库，建议按“ECS 入门 → Render API → 完整 Demo”的顺序阅读。
 
+Physics 文档见 [`docs/physics.md`](docs/physics.md)。相关示例：
+
+```bash
+cargo run --example physics_arcade_demo --features "app physics" --release
+cargo run --example tiled_physics_demo --features "app physics" --release
+```
+
+Scene / Prefab 文档见 [`docs/scene.md`](docs/scene.md)：
+
+```bash
+cargo run --example scene_basic --features scene
+```
+
 高层渲染推荐工作流：
 
 - `clear_screen` 这类最小示例直接走 `ctx.gpu()`，不安装高层管线
@@ -184,7 +199,12 @@ cargo bench --bench fair -- flecs
 
 | 文档 | 说明 |
 |------|------|
-| [API 参考](docs/api.md) | ECS 完整 API 文档（中文） |
+| [文档索引](docs/api.md) | 模块文档入口 |
+| [ECS](docs/ecs.md) | World、Query、Commands、Schedule |
+| [Reflect](docs/reflect.md) | Type layout 反射与 derive Inspector 反射 |
+| [Render](docs/render.md) | 高层渲染模块导览 |
+| [Scene](docs/scene.md) | Scene / Prefab / Save |
+| [Physics](docs/physics.md) | 2D physics 和 Tiled physics |
 | [benches/BENCHMARKS_CN.md](benches/BENCHMARKS_CN.md) | 基准测试方法论与历史记录 |
 | [src/render/AGENTS.md](src/render/AGENTS.md) | 渲染模块架构指南 |
 | [src/render/graph/AGENTS.md](src/render/graph/AGENTS.md) | RenderGraph 详细设计文档 |

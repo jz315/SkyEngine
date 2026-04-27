@@ -1,6 +1,6 @@
 use super::resolve_column_ptr;
 use super::{Chunk, QueryComponent, QueryDescriptor};
-use crate::reflect::register_rust_type;
+use crate::ecs::component_type;
 use core::slice;
 use smallvec::SmallVec;
 
@@ -19,7 +19,7 @@ impl<T: 'static> QueryParam for &T {
 
     #[inline(always)]
     fn component() -> QueryComponent {
-        QueryComponent::new(register_rust_type::<T>(), false)
+        QueryComponent::new(component_type::<T>(), false)
     }
 
     #[inline(always)]
@@ -39,7 +39,7 @@ impl<T: 'static> QueryParam for &mut T {
 
     #[inline(always)]
     fn component() -> QueryComponent {
-        QueryComponent::new(register_rust_type::<T>(), true)
+        QueryComponent::new(component_type::<T>(), true)
     }
 
     #[inline(always)]
@@ -59,7 +59,7 @@ impl<T: 'static> QueryParam for Option<&T> {
 
     #[inline(always)]
     fn component() -> QueryComponent {
-        QueryComponent::optional(register_rust_type::<T>(), false)
+        QueryComponent::optional(component_type::<T>(), false)
     }
 
     #[inline(always)]
@@ -87,7 +87,7 @@ impl<T: 'static> QueryParam for Option<&mut T> {
 
     #[inline(always)]
     fn component() -> QueryComponent {
-        QueryComponent::optional(register_rust_type::<T>(), true)
+        QueryComponent::optional(component_type::<T>(), true)
     }
 
     #[inline(always)]

@@ -222,6 +222,56 @@ impl<'ctx, 'pass, 'tex> DrawContext<'ctx, 'pass, 'tex> {
         self.cpu_model_matrices
             .and_then(|matrices| matrices.get(slot as usize))
     }
+
+    #[inline]
+    pub(crate) fn device(&self) -> &wgpu::Device {
+        self.device
+    }
+
+    #[inline]
+    pub(crate) fn sampler_nearest(&self) -> &wgpu::Sampler {
+        self.sampler_nearest
+    }
+
+    #[inline]
+    pub(crate) fn pass(&mut self) -> &mut wgpu::RenderPass<'pass> {
+        self.pass
+    }
+
+    #[inline]
+    pub(crate) fn view_bind_group(&self) -> &wgpu::BindGroup {
+        self.view_bind_group
+    }
+
+    #[inline]
+    pub(crate) fn view_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
+        self.view_bind_group_layout
+    }
+
+    #[inline]
+    pub(crate) fn model_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
+        self.model_bind_group_layout
+    }
+
+    #[inline]
+    pub(crate) fn mesh_registry(&self) -> &MeshRegistry {
+        self.mesh_registry
+    }
+
+    #[inline]
+    pub(crate) fn fallback_texture(&self) -> Option<&Texture> {
+        self.fallback_texture
+    }
+
+    #[inline]
+    pub(crate) fn target_format(&self) -> wgpu::TextureFormat {
+        self.target_format
+    }
+
+    #[inline]
+    pub(crate) fn depth_format(&self) -> Option<wgpu::TextureFormat> {
+        self.depth_format
+    }
 }
 
 #[repr(C)]

@@ -690,7 +690,7 @@ impl Data {
 #[cfg(test)]
 mod tests {
     use super::{Chunk, BACKING_POOL_BUDGET_BYTES, CHUNK_BLOCK_POOL};
-    use crate::{ecs::create_archetype, reflect};
+    use crate::ecs::{create_archetype, register_component_type};
 
     #[repr(align(16))]
     #[allow(dead_code)]
@@ -766,12 +766,12 @@ mod tests {
     fn chunk_columns_respect_component_alignment() {
         let _guard = PoolGuard::new();
 
-        let ty_a = reflect::register(
+        let ty_a = register_component_type(
             "chunk_test_aligned16",
             core::mem::size_of::<Aligned16>(),
             core::mem::align_of::<Aligned16>(),
         );
-        let ty_b = reflect::register(
+        let ty_b = register_component_type(
             "chunk_test_aligned8",
             core::mem::size_of::<Aligned8>(),
             core::mem::align_of::<Aligned8>(),

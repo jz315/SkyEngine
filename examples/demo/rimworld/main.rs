@@ -1,14 +1,13 @@
 mod model;
 mod systems;
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext};
+use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
 use sky_engine::asset::{cook, AssetConfig, AssetServer, TextureAsset};
 use sky_engine::ecs::World;
-use sky_engine::gpu::GpuContext;
 use sky_engine::math::{Projection, Transform, Vec2};
 use sky_engine::render::{
-    CameraMarker, Color, MainCamera, OrderInLayer, RenderPipelineAsset, SortingLayer,
-    SpriteFeature, SpriteRenderer, TransparentPhase,
+    CameraMarker, Color, MainCamera, RenderPipelineAsset, SortingLayer, SpriteFeature,
+    SpriteRenderer, TransparentPhase,
 };
 
 use crate::model::{
@@ -19,7 +18,8 @@ use crate::model::{
 struct RimworldApp;
 
 impl AppState for RimworldApp {
-    fn setup(&mut self, world: &mut World, _gpu: &mut GpuContext) {
+    fn setup(&mut self, ctx: &mut SetupContext<'_>) {
+        let world = &mut *ctx.world;
         let asset_dir = rimworld_asset_dir();
         let asset_server = world
             .get_resource::<AssetServer>()
@@ -148,7 +148,6 @@ fn build_world() -> World {
         )
         .color(Color::rgb(0.075, 0.076, 0.088)),
         SortingLayer(-10),
-        OrderInLayer(0),
     ));
 
     let mut cell_visuals = Vec::with_capacity(GRID_WIDTH * GRID_HEIGHT);
@@ -159,25 +158,21 @@ fn build_world() -> World {
                 Transform::from_xyz(world_pos[0], world_pos[1], 0.02),
                 SpriteRenderer::new(TILE_SIZE - 1.0, TILE_SIZE - 1.0),
                 SortingLayer(0),
-                OrderInLayer(0),
             ));
             let zone = world.spawn((
                 Transform::from_xyz(world_pos[0], world_pos[1], 0.08),
                 SpriteRenderer::new(TILE_SIZE - 7.0, TILE_SIZE - 7.0),
                 SortingLayer(1),
-                OrderInLayer(0),
             ));
             let content = world.spawn((
                 Transform::from_xyz(world_pos[0], world_pos[1], 0.14),
                 SpriteRenderer::new(TILE_SIZE - 8.0, TILE_SIZE - 8.0),
                 SortingLayer(2),
-                OrderInLayer(0),
             ));
             let overlay = world.spawn((
                 Transform::from_xyz(world_pos[0], world_pos[1], 0.20),
                 SpriteRenderer::new(TILE_SIZE - 4.0, TILE_SIZE - 4.0),
                 SortingLayer(3),
-                OrderInLayer(0),
             ));
             cell_visuals.push(CellVisual {
                 ground,
@@ -195,15 +190,13 @@ fn build_world() -> World {
             .color(Color::new(1.0, 1.0, 1.0, 0.14))
             .visible(false),
         SortingLayer(4),
-        OrderInLayer(0),
     ));
     let selection_entity = world.spawn((
         Transform::from_xyz(hover_pos[0], hover_pos[1], 0.30),
         SpriteRenderer::new(TILE_SIZE - 6.0, TILE_SIZE - 6.0)
             .color(Color::new(1.0, 0.92, 0.28, 0.30))
             .visible(false),
-        SortingLayer(4),
-        OrderInLayer(1),
+        SortingLayer(5),
     ));
 
     spawn_pawn(
@@ -252,13 +245,11 @@ fn spawn_pawn(
         SpriteRenderer::new(TILE_SIZE * 0.52, TILE_SIZE * 0.26)
             .color(Color::new(0.0, 0.0, 0.0, 0.25)),
         SortingLayer(4),
-        OrderInLayer(0),
     ));
     let body = world.spawn((
         Transform::from_xyz(pos.x(), pos.y(), 0.40),
         SpriteRenderer::new(TILE_SIZE * 0.82, TILE_SIZE * 0.82).color(tint),
-        SortingLayer(5),
-        OrderInLayer(0),
+        SortingLayer(6),
     ));
     game.pawns.push(PawnState {
         name,

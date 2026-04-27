@@ -11,7 +11,7 @@ pub(crate) mod egui_integration;
 
 pub use crate::diagnostics::DiagnosticConsole;
 pub use config::{AppConfig, RedrawMode};
-pub use runner::{App, AppState, FrameContext};
+pub use runner::{App, AppState, FrameContext, SetupContext};
 
 /// Re-export the egui crate for user convenience.
 ///
@@ -19,4 +19,4 @@ pub use runner::{App, AppState, FrameContext};
 /// use sky_engine::app::egui;
 /// ```
 #[cfg(feature = "egui")]
-pub use ::egui;
+pub use egui;

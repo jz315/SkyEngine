@@ -2767,6 +2767,41 @@ mod tests {
     }
 
     #[test]
+    fn normal_mapped_standard_material_pipeline_compiles_with_tangent_vertex_data() {
+        let (device, queue) = create_test_device();
+        let ctx =
+            GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [16, 16]);
+        let mut registry = MaterialRegistry::new();
+        registry.register_material::<StandardMaterial>(ctx.device());
+
+        let fallback = Texture::white_pixel(&ctx);
+        let mesh_pass = MeshPass::new(&ctx);
+        let model_layout = create_model_bind_group_layout(ctx.device());
+        let shadow_layout =
+            crate::render::lighting::shadow::create_shadow_scene_bind_group_layout(ctx.device());
+        let standard = StandardMaterial {
+            normal_texture: Some(fallback),
+            ..Default::default()
+        };
+
+        let _ = registry
+            .pipeline_cache_mut()
+            .get_or_create::<StandardMaterial>(
+                ctx.device(),
+                &standard,
+                &Mesh::vertex_layout_position_normal_tangent_uv(),
+                &[
+                    (0, mesh_pass.view_layout()),
+                    (2, &model_layout),
+                    (3, &shadow_layout),
+                ],
+                wgpu::TextureFormat::Bgra8Unorm,
+                Some(crate::render::DEFAULT_DEPTH_FORMAT),
+            )
+            .expect("normal-mapped standard-material pipeline should compile");
+    }
+
+    #[test]
     fn standard_material_scene_prepass_matches_normal_mapping_requirements() {
         let (device, queue) = create_test_device();
         let ctx =

@@ -37,85 +37,83 @@ impl Default for BloomSettings {
     }
 }
 
-/// Screen-space diffuse GI controls for the high-level 3D renderer.
-#[derive(Clone, Copy, Debug)]
-pub struct ScreenSpaceGiSettings {
-    pub enabled: bool,
-    pub intensity: f32,
-    pub radius_px: f32,
-    pub depth_reject: f32,
-    pub normal_reject: f32,
-    pub falloff: f32,
+/// Debug visualization mode for DDGI.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GiDebugMode {
+    #[default]
+    Off,
+    Probes,
+    Irradiance,
+    Visibility,
+    RayBudget,
 }
 
-impl Default for ScreenSpaceGiSettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            intensity: 0.22,
-            radius_px: 18.0,
-            depth_reject: 3.0,
-            normal_reject: 8.0,
-            falloff: 0.55,
-        }
-    }
-}
-
-/// World-space probe volume controls for hybrid GI.
+/// World-space DDGI probe volume controls.
 #[derive(Clone, Copy, Debug)]
-pub struct ProbeVolumeGiSettings {
-    pub counts: [u32; 3],
+pub struct DdgiVolumeSettings {
+    pub origin: [f32; 3],
     pub spacing: f32,
-    pub proxy_radius_scale: f32,
-    pub bounce_strength: f32,
-    pub emissive_strength: f32,
-    pub light_injection: f32,
+    pub counts: [u32; 3],
+    pub scroll_with_main_camera: bool,
 }
 
-impl Default for ProbeVolumeGiSettings {
+impl Default for DdgiVolumeSettings {
     fn default() -> Self {
         Self {
-            counts: [10, 6, 10],
-            spacing: 4.0,
-            proxy_radius_scale: 1.4,
-            bounce_strength: 0.65,
-            emissive_strength: 1.5,
-            light_injection: 0.9,
+            origin: [-14.0, -4.0, -14.0],
+            spacing: 1.85,
+            counts: [16, 8, 16],
+            scroll_with_main_camera: true,
         }
     }
 }
 
-/// Unified GI controls for the high-level 3D renderer.
+/// Dynamic diffuse global illumination controls.
+#[derive(Clone, Copy, Debug)]
+pub struct DdgiSettings {
+    pub volume: DdgiVolumeSettings,
+    pub rays_per_probe: u32,
+    pub probes_per_frame: u32,
+    pub hysteresis: f32,
+    pub normal_bias: f32,
+    pub view_bias: f32,
+    pub max_ray_distance: f32,
+    pub irradiance_resolution: u32,
+    pub visibility_resolution: u32,
+    pub bounces: u32,
+}
+
+impl Default for DdgiSettings {
+    fn default() -> Self {
+        Self {
+            volume: DdgiVolumeSettings::default(),
+            rays_per_probe: 64,
+            probes_per_frame: 128,
+            hysteresis: 0.92,
+            normal_bias: 0.08,
+            view_bias: 0.20,
+            max_ray_distance: 40.0,
+            irradiance_resolution: 6,
+            visibility_resolution: 6,
+            bounces: 2,
+        }
+    }
+}
+
+/// Global illumination settings for the high-level 3D renderer.
 #[derive(Clone, Copy, Debug)]
 pub struct GlobalIlluminationSettings {
     pub enabled: bool,
-    pub intensity: f32,
-    pub probe_strength: f32,
-    pub detail_strength: f32,
-    pub occlusion_strength: f32,
-    pub sky_boost: f32,
-    pub probe_volume: ProbeVolumeGiSettings,
-    pub detail: ScreenSpaceGiSettings,
+    pub ddgi: DdgiSettings,
+    pub debug: GiDebugMode,
 }
 
 impl Default for GlobalIlluminationSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            intensity: 0.55,
-            probe_strength: 0.9,
-            detail_strength: 0.3,
-            occlusion_strength: 0.24,
-            sky_boost: 1.1,
-            probe_volume: ProbeVolumeGiSettings::default(),
-            detail: ScreenSpaceGiSettings {
-                enabled: true,
-                intensity: 0.25,
-                radius_px: 18.0,
-                depth_reject: 4.0,
-                normal_reject: 12.0,
-                falloff: 0.6,
-            },
+            ddgi: DdgiSettings::default(),
+            debug: GiDebugMode::Off,
         }
     }
 }

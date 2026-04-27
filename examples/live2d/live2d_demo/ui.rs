@@ -54,6 +54,7 @@ pub fn draw_live2d_panel(
             if !active_slot.motion_groups.is_empty() {
                 ui.label("Motions");
                 egui::ScrollArea::vertical()
+                    .id_salt("live2d_demo_motions")
                     .max_height(180.0)
                     .show(ui, |ui| {
                         for (group_index, group) in active_slot.motion_groups.iter().enumerate() {
@@ -76,6 +77,7 @@ pub fn draw_live2d_panel(
             if !active_slot.expression_names.is_empty() {
                 ui.label("Expressions");
                 egui::ScrollArea::vertical()
+                    .id_salt("live2d_demo_expressions")
                     .max_height(220.0)
                     .show(ui, |ui| {
                         for (index, name) in active_slot.expression_names.iter().enumerate() {

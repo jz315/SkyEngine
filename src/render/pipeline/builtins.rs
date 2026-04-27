@@ -7,18 +7,16 @@ use wgpu::util::DeviceExt;
 use crate::render::component::RenderSettings;
 use crate::render::execution::{
     create_scene_texture, ensure_scene_texture, pass_first_read_texture, pass_first_write_texture,
-    pass_nth_read_texture, pass_nth_write_texture, require_render_target, require_scene_inputs,
-    PreparedFrame, PreparedView, SceneTextureKind, ViewExecutionContext,
+    pass_nth_write_texture, require_render_target, PreparedFrame, PreparedView, SceneTextureKind,
+    ViewExecutionContext,
 };
+use crate::render::gi::{DdgiRuntime, DDGI_SHADER, DDGI_WORKGROUP_SIZE};
 use crate::render::gpu::GpuScene;
-use crate::render::graph::RenderGraphError;
+use crate::render::graph::{PassFlags, RenderGraphError};
 use crate::render::phase::{
     MeshDrawData, OpaquePhase, SceneMaterialPrepassContext, SceneMaterialPrepassPipelineCache,
 };
 use crate::render::postfx::bloom::{Bloom as LowLevelBloom, DRAW_CALLS_PER_APPLY};
-use crate::render::postfx::global_illumination::{
-    GlobalIllumination as LowLevelGlobalIllumination, ViewGiProbeGridPayload,
-};
 use crate::render::postfx::tonemap::ToneMap as LowLevelToneMap;
 use crate::render::postfx::vignette::Vignette as LowLevelVignette;
 use crate::render::resources::mesh::{VertexAttribute, VertexLayout, VertexSemantic};
@@ -27,9 +25,10 @@ use crate::render::view::SCENE_HDR_FORMAT;
 use crate::render::{SceneView, DEFAULT_DEPTH_FORMAT};
 
 use super::contexts::{
-    PostFxPassExecuteContext, PostFxPassSetupContext, RenderPhaseExecuteContext,
-    RenderPhaseSetupContext,
+    ComputePassExecuteContext, ComputePassSetupContext, PostFxPassExecuteContext,
+    PostFxPassSetupContext, RenderPhaseExecuteContext, RenderPhaseSetupContext,
 };
+use super::passes::ComputePass;
 use super::passes::PostFxPass;
 use super::phases::RenderPhase;
 
@@ -881,6 +880,125 @@ impl RenderPhase for SceneMaterialPrepass {
 }
 
 #[derive(Default)]
+pub struct DdgiUpdateCompute {
+    pipeline: Option<wgpu::ComputePipeline>,
+}
+
+impl DdgiUpdateCompute {
+    fn first_lit_view<'frame>(
+        frame: &'frame PreparedFrame<'frame>,
+    ) -> Option<&'frame PreparedView<'frame>> {
+        frame.views().iter().find(|view| {
+            view.payload::<SceneView>()
+                .is_some_and(|scene_view| !scene_view.is_shadow())
+        })
+    }
+
+    fn is_first_lit_view(frame: &PreparedFrame<'_>, view: &PreparedView<'_>) -> bool {
+        Self::first_lit_view(frame).is_some_and(|candidate| std::ptr::eq(candidate, view))
+    }
+
+    fn ensure_pipeline(
+        &mut self,
+        device: &wgpu::Device,
+        ddgi_layout: &wgpu::BindGroupLayout,
+    ) -> &wgpu::ComputePipeline {
+        self.pipeline.get_or_insert_with(|| {
+            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("ddgi_update_shader"),
+                source: wgpu::ShaderSource::Wgsl(DDGI_SHADER.into()),
+            });
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("ddgi_update_pipeline_layout"),
+                bind_group_layouts: &[ddgi_layout],
+                push_constant_ranges: &[],
+            });
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("ddgi_update_pipeline"),
+                layout: Some(&layout),
+                module: &shader,
+                entry_point: Some("cs_main"),
+                cache: None,
+                compilation_options: Default::default(),
+            })
+        })
+    }
+}
+
+impl ComputePass for DdgiUpdateCompute {
+    fn name(&self) -> &'static str {
+        "ddgi_update"
+    }
+
+    fn setup(&mut self, ctx: &mut ComputePassSetupContext<'_, '_>) {
+        let settings = ctx
+            .frame_payload::<RenderSettings>()
+            .copied()
+            .unwrap_or_default();
+        if !settings.global_illumination.enabled
+            || !Self::is_first_lit_view(ctx.frame(), ctx.view())
+        {
+            return;
+        }
+
+        let marker = ctx.graph().create_buffer(|builder| {
+            builder
+                .name("ddgi_update_marker")
+                .size(4)
+                .usage(wgpu::BufferUsages::COPY_DST)
+                .persistent();
+        });
+        ctx.graph().add_compute_pass(self.name(), |setup| {
+            setup.write_buffer(marker);
+            setup.with_flags(PassFlags::PREFER_ASYNC_COMPUTE | PassFlags::COMPUTE_INTENSIVE);
+        });
+    }
+
+    fn execute(
+        &mut self,
+        ctx: &mut ComputePassExecuteContext<'_, '_>,
+    ) -> Result<(), RenderGraphError> {
+        let (gpu, _pass, _resources, execution) = ctx.split();
+        let settings = execution
+            .frame_payload::<RenderSettings>()
+            .copied()
+            .unwrap_or_default();
+        if !settings.global_illumination.enabled
+            || !Self::is_first_lit_view(execution.frame(), execution.view())
+        {
+            return Ok(());
+        }
+
+        let Some(ddgi) = execution.frame_payload::<DdgiRuntime>() else {
+            return Ok(());
+        };
+        let (width, height) = ddgi.dispatch_size();
+        if width == 0 || height == 0 {
+            return Ok(());
+        }
+
+        let bind_group = ddgi.bind_group();
+        let layout = ddgi.bind_group_layout();
+        let device = gpu.device().clone();
+        let pass_label = self.name();
+        let pipeline = self.ensure_pipeline(&device, layout);
+        let mut frame = gpu.frame();
+        let mut pass = frame.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some(pass_label),
+            ..Default::default()
+        });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, bind_group, &[]);
+        pass.dispatch_workgroups(
+            width.div_ceil(DDGI_WORKGROUP_SIZE),
+            height.div_ceil(DDGI_WORKGROUP_SIZE),
+            1,
+        );
+        Ok(())
+    }
+}
+
+#[derive(Default)]
 pub struct Bloom {
     runtime: Option<LowLevelBloom>,
 }
@@ -967,139 +1085,6 @@ impl PostFxPass for Bloom {
             .enabled
         {
             DRAW_CALLS_PER_APPLY
-        } else {
-            0
-        }
-    }
-}
-
-#[derive(Default)]
-pub struct GlobalIllumination {
-    runtime: Option<LowLevelGlobalIllumination>,
-}
-
-impl PostFxPass for GlobalIllumination {
-    fn name(&self) -> &'static str {
-        "global_illumination"
-    }
-
-    fn is_enabled(&self, frame: &PreparedFrame<'_>, view: &PreparedView<'_>) -> bool {
-        frame
-            .payload::<RenderSettings>()
-            .copied()
-            .unwrap_or_default()
-            .global_illumination
-            .enabled
-            && !view
-                .payload::<crate::render::SceneView>()
-                .is_some_and(crate::render::SceneView::is_shadow)
-    }
-
-    fn requires_hdr_input(&self) -> bool {
-        true
-    }
-
-    fn setup(&mut self, ctx: &mut PostFxPassSetupContext<'_, '_>) {
-        let settings = ctx
-            .frame_payload::<RenderSettings>()
-            .copied()
-            .unwrap_or_default();
-        if !settings.global_illumination.enabled {
-            return;
-        }
-
-        let scene = require_scene_inputs(ctx.state(), self.name());
-
-        let target_size = ctx.view().target_size();
-        let gi_out = ctx.graph().create_texture(|builder| {
-            builder
-                .name("global_illumination_out")
-                .size(crate::render::graph::TargetSize::Exact(
-                    target_size[0],
-                    target_size[1],
-                ))
-                .format(scene.color.format());
-        });
-        ctx.graph().add_render_pass(self.name(), |setup| {
-            setup.read(scene.color.handle());
-            setup.read(scene.depth.handle());
-            setup.read(scene.normal.handle());
-            setup.read(scene.albedo.handle());
-            setup.read(scene.material.handle());
-            setup.read(scene.emissive.handle());
-            setup.write_color(0, gi_out);
-        });
-        ctx.state().set_current_color(gi_out, scene.color.format());
-    }
-
-    fn execute(
-        &mut self,
-        ctx: &mut PostFxPassExecuteContext<'_, '_>,
-    ) -> Result<(), RenderGraphError> {
-        let (gpu, pass, resources, execution) = ctx.split();
-        let input_handle = pass_nth_read_texture(pass, 0, self.name(), "input");
-        let depth_handle = pass_nth_read_texture(pass, 1, self.name(), "depth");
-        let normal_handle = pass_nth_read_texture(pass, 2, self.name(), "normal");
-        let albedo_handle = pass_nth_read_texture(pass, 3, self.name(), "albedo");
-        let material_handle = pass_nth_read_texture(pass, 4, self.name(), "material");
-        let emissive_handle = pass_nth_read_texture(pass, 5, self.name(), "emissive");
-        let output_handle = pass_first_write_texture(pass, self.name(), "output");
-        let input_rt = require_render_target(resources, input_handle, self.name(), "input");
-        let depth_rt = require_render_target(resources, depth_handle, self.name(), "depth");
-        let normal_rt = require_render_target(resources, normal_handle, self.name(), "normal");
-        let albedo_rt = require_render_target(resources, albedo_handle, self.name(), "albedo");
-        let material_rt =
-            require_render_target(resources, material_handle, self.name(), "material");
-        let emissive_rt =
-            require_render_target(resources, emissive_handle, self.name(), "emissive");
-        let output_rt = require_render_target(resources, output_handle, self.name(), "output");
-        let frame_settings = execution
-            .frame_payload::<RenderSettings>()
-            .copied()
-            .unwrap_or_default();
-        let Some(scene_view) = execution.view_payload::<crate::render::SceneView>() else {
-            return Ok(());
-        };
-        let probe_payload = execution
-            .view_payload::<ViewGiProbeGridPayload>()
-            .unwrap_or_else(|| {
-                static DISABLED_GI_PAYLOAD: std::sync::OnceLock<ViewGiProbeGridPayload> =
-                    std::sync::OnceLock::new();
-                DISABLED_GI_PAYLOAD.get_or_init(ViewGiProbeGridPayload::disabled)
-            });
-        let runtime = self
-            .runtime
-            .get_or_insert_with(|| LowLevelGlobalIllumination::new(gpu, output_rt.format()));
-        runtime.resize(gpu, output_rt.width(), output_rt.height());
-        runtime.apply_to_target(
-            gpu,
-            input_rt,
-            depth_rt,
-            normal_rt,
-            albedo_rt,
-            material_rt,
-            emissive_rt,
-            output_rt,
-            scene_view,
-            frame_settings.global_illumination,
-            probe_payload,
-            frame_settings.ambient_color,
-        );
-        Ok(())
-    }
-
-    fn draw_calls(&self, execution: &ViewExecutionContext<'_>) -> usize {
-        if execution
-            .frame_payload::<RenderSettings>()
-            .copied()
-            .unwrap_or_default()
-            .global_illumination
-            .enabled
-            && !execution
-                .view_payload::<crate::render::SceneView>()
-                .is_some_and(crate::render::SceneView::is_shadow)
-        {
-            1
         } else {
             0
         }

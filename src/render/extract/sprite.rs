@@ -1,7 +1,5 @@
 use crate::ecs::{PreparedQuery, World};
-use crate::render::component::{
-    OrderInLayer, RenderLayerMask, SortingLayer, SpriteRenderer, Transform,
-};
+use crate::render::component::{RenderLayerMask, SortingLayer, SpriteRenderer, Transform};
 use crate::render::phase::{transparent_sort_key, DrawFunctionId, PhaseItem, SpriteDrawData};
 use crate::render::resources::material::{MaterialError, SpriteMaterial};
 use crate::render::view::{ResolvedSceneTransforms, SceneView};
@@ -15,7 +13,6 @@ pub struct ExtractSprites {
         &'static Transform,
         &'static SpriteRenderer,
         Option<&'static SortingLayer>,
-        Option<&'static OrderInLayer>,
         Option<&'static RenderLayerMask>,
     )>,
 }
@@ -51,7 +48,7 @@ impl Extractor for ExtractSprites {
 
         self.query.for_each_with_entity(
             world,
-            |entity, (transform, sprite, sorting_layer, order_in_layer, layer_mask)| {
+            |entity, (transform, sprite, sorting_layer, layer_mask)| {
                 if !sprite.visible {
                     return;
                 }
@@ -86,7 +83,6 @@ impl Extractor for ExtractSprites {
                 let batch_key = sprite_batch_key_for(self.draw_function_id, handle);
                 let sort_key = transparent_sort_key(
                     sorting_layer.copied().unwrap_or_default(),
-                    order_in_layer.copied().unwrap_or_default(),
                     batch_key,
                     transform,
                     view,

@@ -1,0 +1,226 @@
+use rustc_hash::FxHashMap;
+
+use crate::ecs::EntityId;
+use crate::render::Color;
+
+use super::{UiId, UiInteraction, UiRect};
+
+/// Native UI configuration.
+#[derive(Debug, Clone)]
+pub struct UiConfig {
+    pub load_system_fonts: bool,
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            load_system_fonts: true,
+        }
+    }
+}
+
+/// Runtime theme values used by default widgets.
+#[derive(Debug, Clone)]
+pub struct UiTheme {
+    pub panel_color: Color,
+    pub surface_color: Color,
+    pub accent_color: Color,
+    pub danger_color: Color,
+    pub text_color: Color,
+    pub muted_text_color: Color,
+    pub spacing: f32,
+    pub font_size: f32,
+}
+
+impl Default for UiTheme {
+    fn default() -> Self {
+        Self {
+            panel_color: Color::rgba8(18, 24, 32, 218),
+            surface_color: Color::rgba8(34, 43, 56, 232),
+            accent_color: Color::rgba8(70, 205, 145, 255),
+            danger_color: Color::rgba8(224, 86, 86, 255),
+            text_color: Color::rgba8(244, 248, 252, 255),
+            muted_text_color: Color::rgba8(170, 184, 198, 255),
+            spacing: 10.0,
+            font_size: 18.0,
+        }
+    }
+}
+
+/// Frame-derived UI state.
+#[derive(Debug, Clone)]
+pub struct UiState {
+    surface_size: [f32; 2],
+    pointer_position: Option<[f32; 2]>,
+    hovered: Option<EntityId>,
+    pressed: Option<EntityId>,
+    rects: FxHashMap<EntityId, UiRect>,
+    interactions: FxHashMap<EntityId, UiInteraction>,
+}
+
+impl UiState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn surface_size(&self) -> [f32; 2] {
+        self.surface_size
+    }
+
+    pub fn pointer_position(&self) -> Option<[f32; 2]> {
+        self.pointer_position
+    }
+
+    pub fn hovered(&self) -> Option<EntityId> {
+        self.hovered
+    }
+
+    pub fn pressed(&self) -> Option<EntityId> {
+        self.pressed
+    }
+
+    pub fn rect(&self, entity: EntityId) -> Option<UiRect> {
+        self.rects.get(&entity).copied()
+    }
+
+    pub fn interaction(&self, entity: EntityId) -> UiInteraction {
+        self.interactions
+            .get(&entity)
+            .copied()
+            .unwrap_or(UiInteraction::None)
+    }
+
+    pub fn wants_pointer(&self) -> bool {
+        self.hovered.is_some() || self.pressed.is_some()
+    }
+
+    pub(crate) fn set_layout(
+        &mut self,
+        surface_size: [f32; 2],
+        rects: FxHashMap<EntityId, UiRect>,
+    ) {
+        self.surface_size = surface_size;
+        self.rects = rects;
+    }
+
+    pub(crate) fn set_pointer_position(&mut self, position: Option<[f32; 2]>) {
+        self.pointer_position = position;
+    }
+
+    pub(crate) fn set_hovered(&mut self, hovered: Option<EntityId>) {
+        self.hovered = hovered;
+    }
+
+    pub(crate) fn set_pressed(&mut self, pressed: Option<EntityId>) {
+        self.pressed = pressed;
+    }
+
+    pub(crate) fn rebuild_interactions<I>(&mut self, visible_enabled: I)
+    where
+        I: IntoIterator<Item = (EntityId, bool)>,
+    {
+        self.interactions.clear();
+        for (entity, enabled) in visible_enabled {
+            let interaction = if !enabled {
+                UiInteraction::Disabled
+            } else if self.pressed == Some(entity) {
+                UiInteraction::Pressed
+            } else if self.hovered == Some(entity) {
+                UiInteraction::Hovered
+            } else {
+                UiInteraction::None
+            };
+            self.interactions.insert(entity, interaction);
+        }
+    }
+}
+
+impl Default for UiState {
+    fn default() -> Self {
+        Self {
+            surface_size: [0.0, 0.0],
+            pointer_position: None,
+            hovered: None,
+            pressed: None,
+            rects: FxHashMap::default(),
+            interactions: FxHashMap::default(),
+        }
+    }
+}
+
+/// UI event kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiEventKind {
+    Clicked,
+    Pressed,
+    Released,
+    HoverStarted,
+    HoverEnded,
+    ValueChanged,
+}
+
+/// Drainable UI event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UiEvent {
+    pub kind: UiEventKind,
+    pub entity: EntityId,
+    pub id: Option<UiId>,
+}
+
+impl UiEvent {
+    pub fn new(kind: UiEventKind, entity: EntityId, id: Option<UiId>) -> Self {
+        Self { kind, entity, id }
+    }
+
+    pub fn clicked(entity: EntityId, id: Option<UiId>) -> Self {
+        Self::new(UiEventKind::Clicked, entity, id)
+    }
+
+    pub fn pressed(entity: EntityId, id: Option<UiId>) -> Self {
+        Self::new(UiEventKind::Pressed, entity, id)
+    }
+
+    pub fn released(entity: EntityId, id: Option<UiId>) -> Self {
+        Self::new(UiEventKind::Released, entity, id)
+    }
+
+    pub fn value_changed(entity: EntityId, id: Option<UiId>) -> Self {
+        Self::new(UiEventKind::ValueChanged, entity, id)
+    }
+}
+
+/// Queue of UI events generated by `update_ui`.
+#[derive(Debug, Clone, Default)]
+pub struct UiEvents {
+    events: Vec<UiEvent>,
+}
+
+impl UiEvents {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push(&mut self, event: UiEvent) {
+        self.events.push(event);
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &UiEvent> {
+        self.events.iter()
+    }
+
+    pub fn drain(&mut self) -> impl Iterator<Item = UiEvent> + '_ {
+        self.events.drain(..)
+    }
+
+    pub fn clear(&mut self) {
+        self.events.clear();
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.events.len()
+    }
+}

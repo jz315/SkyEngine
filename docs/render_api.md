@@ -300,7 +300,7 @@ batch.flush_to_surface(&mut ctx, &camera, Some(clear));
 - `Mesh::from_vertices_indices(...)` for indexed geometry via `MeshIndexData::U16` / `MeshIndexData::U32`
 - `Mesh::from_gltf(...)` expands triangle primitives into sub-meshes and uploads tangent-capable vertex data
 - vertex and index buffers are created with `COPY_DST`, so the resource shape is future-proof for dynamic updates
-- high-level material pipelines resolve vertex inputs by semantic against the actual mesh layout, so compatible superset layouts are accepted
+- high-level material pipelines resolve vertex inputs by semantic against the actual mesh layout, so valid superset layouts are accepted
 
 `MeshPass` is the runtime renderer for those meshes:
 
@@ -310,12 +310,18 @@ For the high-level programmable renderer:
 - `StandardMaterial` requires `Position + Normal + UV0`
 - `StandardMaterial` with `normal_texture` requires `Position + Normal + Tangent + UV0`
 - glTF meshes loaded through `Mesh::from_gltf(...)` provide tangent data for `StandardMaterial` normal mapping
-- `RenderPipelineAsset::forward_3d()` now includes a directional-shadow phase; perspective views with visible shadow-casting `DirectionalLight`s produce a per-view shadow map consumed by `StandardMaterial`
+- `RenderPipelineAsset::forward_3d()` now runs `DirectionalShadowPhase -> DdgiUpdateCompute -> OpaquePhase -> TransparentPhase -> Bloom -> ToneMap`
+- perspective views with visible shadow-casting `DirectionalLight`s produce a per-view shadow map consumed by `StandardMaterial`; forward shading uses a small PCF kernel for smoother direct-shadow edges
+- meshes with a Float32x3 `Position` attribute also keep CPU ray geometry for DDGI tracing; meshes without positions still render, but do not contribute to GI
+- `GlobalIlluminationSettings` now controls dynamic diffuse DDGI through `DdgiSettings` and `DdgiVolumeSettings`
+- `DdgiSettings::irradiance_resolution` and `visibility_resolution` allocate independent bordered atlases; both histories are retained between partial probe updates and force-refreshed when the probe volume changes
+- `GiDebugMode` is consumed by `StandardMaterial` to visualize probes, raw irradiance, visibility confidence, and the per-frame ray/update budget
+- DDGI V1 supports opaque triangle meshes, dynamic mesh transforms, dynamic point/directional lights, and opaque emissive `StandardMaterial`; specular GI, transparent GI, hardware ray tracing, cascaded volumes, and skinned mesh GI are intentionally out of scope
 
 - shader contract reserves bind group `0` for the shared `ViewUniform`
 - `create_pipeline_cache(...)` builds a `MaterialPipelineCache` with that reserved view slot
 - `MeshDraw` configures the mesh, optional material, draw ranges, base vertex, and instance range
-- `render_to_target_with_depth(...)` validates color/depth sample-count and format compatibility before encoding draw calls
+- `render_to_target_with_depth(...)` validates color/depth sample-count and format match before encoding draw calls
 - `render_to_surface(...)` currently supports single-sample, depthless surface rendering
 
 Typical flow:

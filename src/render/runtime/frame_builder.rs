@@ -5,10 +5,10 @@ use crate::gpu::GpuContext;
 use crate::render::component::{DirectionalLight, PointLight, RenderSettings, Transform};
 use crate::render::execution::{PreparedFrame, PreparedView};
 use crate::render::extract::ExtractContext;
+use crate::render::gi::DdgiRuntime;
 use crate::render::lighting::shadow::{append_directional_shadow_views, sync_shadow_views};
 use crate::render::lighting::Light2D;
 use crate::render::phase::{OpaquePhase, TransparentPhase};
-use crate::render::postfx::global_illumination::build_view_gi_probe_grid_payloads;
 use crate::render::resources::material::SpriteMaterial;
 use crate::render::view::{fallback_scene_view, RenderStats, SceneView};
 use crate::render::{GpuLight, LightTable, ModelMatrixTable};
@@ -178,6 +178,30 @@ impl RenderComposer {
             gpu_scene.table_mut::<LightTable>().set_all(gpu, &lights);
             gpu_scene.upload_all(gpu.queue());
         }
+        {
+            let ddgi = self
+                .runtime
+                .ddgi
+                .get_or_insert_with(|| DdgiRuntime::new(gpu));
+            ddgi.prepare(
+                gpu,
+                self.runtime.frame_settings.global_illumination,
+                &views,
+                &opaque_phases,
+                &self.resources.draw_functions,
+                &model_matrices,
+                &lights,
+                &self.resources.material_registry,
+                &self.resources.mesh_registry,
+                self.runtime.frame_settings.ambient_color,
+            );
+        }
+        let ddgi_resources = self
+            .runtime
+            .ddgi
+            .as_ref()
+            .expect("DDGI runtime should be initialized before shadow bindings")
+            .scene_resources();
         sync_shadow_views(
             &mut self.shadows.views,
             gpu,
@@ -201,23 +225,8 @@ impl RenderComposer {
                 .as_ref()
                 .expect("phase runtime should initialize a GpuScene")
                 .table::<LightTable>(),
+            ddgi_resources,
         );
-
-        let gi_payloads = if self.runtime.frame_settings.global_illumination.enabled {
-            Some(build_view_gi_probe_grid_payloads(
-                &views,
-                &opaque_phases,
-                &self.resources.draw_functions,
-                &model_matrices,
-                &lights,
-                &self.resources.material_registry,
-                &self.resources.mesh_registry,
-                self.runtime.frame_settings.global_illumination,
-                self.runtime.frame_settings.ambient_color,
-            ))
-        } else {
-            None
-        };
 
         let mut pipeline = self.build_runtime_pipeline(gpu);
         let render_asset_stats = self
@@ -236,6 +245,12 @@ impl RenderComposer {
             let _ = frame.insert_payload(gpu_scene);
             let _ = frame.insert_payload(&model_matrices);
             let _ = frame.insert_payload(&previous_model_matrices);
+            let _ = frame.insert_payload(
+                self.runtime
+                    .ddgi
+                    .as_ref()
+                    .expect("DDGI runtime should be initialized before frame build"),
+            );
             let _ = frame.insert_payload(
                 self.shadows
                     .layout
@@ -264,9 +279,6 @@ impl RenderComposer {
                 let _ = prepared_view.insert_payload(&transparent_phases[view_index]);
                 if let Some(binding_index) = view.shadow_binding() {
                     let _ = prepared_view.insert_payload(&self.shadows.views[binding_index]);
-                }
-                if let Some(gi_payloads) = gi_payloads.as_ref() {
-                    let _ = prepared_view.insert_payload(&gi_payloads[view_index]);
                 }
                 for feature in &self.plan.runtime_features {
                     feature.insert_view_payloads(view_index, view, &mut prepared_view);

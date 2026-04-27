@@ -11,11 +11,14 @@ If you're new to the project, read and run examples in this order:
 3. `commands` — deferred structural changes via `Commands`
 4. `systems` — grouped scheduling and frame updates
 5. `tiny_defense` — a complete ECS-only game loop
-6. `clear_screen` → `sprite_demo` → `textured_demo` → `lighting_demo`
-7. `render_graph_showcase` → `perf_test` → `renderer_probe`
-8. `custom_feature_demo` — a public zero-engine-modification `RenderFeature` extension example
-9. `custom_material_demo` — a public user-defined `Material` + `MeshRenderer` example
-10. `boids` / `boids_classic` / `cosmic_jellyfish` / `neon_galaxy`
+6. `scene_basic` — optional scene/prefab entity-tree spawning
+7. `clear_screen` → `sprite_demo` → `textured_demo` → `lighting_demo`
+8. `render_graph_showcase` → `perf_test` → `renderer_probe`
+9. `custom_feature_demo` — a public zero-engine-modification `RenderFeature` extension example
+10. `custom_material_demo` — a public user-defined `Material` + `MeshRenderer` example
+11. `hud_menu` — native retained UI for HUD/menu/buttons/text/progress
+12. `physics_arcade_demo` / `tiled_physics_demo` — optional `app + physics` demos
+13. `boids` / `boids_classic` / `cosmic_jellyfish` / `neon_galaxy`
 
 ## Render Learning Path
 
@@ -83,6 +86,14 @@ cargo run --example systems
 cargo run --example tiny_defense
 ```
 
+### `examples/scene/`
+
+Optional scene/prefab tutorial. No GPU feature flags required.
+
+```bash
+cargo run --example scene_basic --features scene
+```
+
 ### `examples/render/`
 
 Focused rendering API showcases built on the `app` feature.
@@ -119,6 +130,40 @@ Suggested study order inside `render/`:
 cargo run --example live2d_demo --features "live2d egui" --release -- <path-to-model3.json>
 cargo run --example live2d_demo --features "live2d egui" --release -- --no-ui <path-to-model3.json>
 ```
+
+### `examples/physics/`
+
+Optional 2D physics demos. See [`docs/physics.md`](../docs/physics.md) for the API guide.
+
+```bash
+cargo run --example physics_arcade_demo --features "app physics" --release
+cargo run --example tiled_physics_demo --features "app physics" --release
+```
+
+- `physics_arcade_demo` — dynamic toys, gravity switching, triggers, contacts, and `F` debug collider overlay.
+- `tiled_physics_demo` — render a Tiled map and spawn a separate physics instance from `solid=true` / `trigger=true` properties.
+
+### `examples/ui/`
+
+Native retained game UI demos. See [`docs/ui.md`](../docs/ui.md) for the API guide.
+
+```bash
+cargo run --example hud_menu --features ui --release
+```
+
+- `hud_menu` — screen-space overlay UI with a title/menu panel, clickable buttons, HUD text, progress bars, hover/press/click events, and glyphon text.
+
+### `examples/game/`
+
+Playable vertical slices that combine multiple engine modules into a small game loop.
+
+```bash
+cargo run --example neon_dungeon_game --features "app physics" --release
+cargo run --example lawn_defense_game --features ui --release
+```
+
+- `neon_dungeon_game` — top-down arena action game with menu/gameover/victory states, player movement, auto-fire, enemies, pickups, a locked exit portal, physics walls, and event-driven hits.
+- `lawn_defense_game` — lane-defense garden game with plant cards, sun economy, rows, projectiles, blockers, advancing enemies, mowers, waves, victory/game-over states, and native UI HUD/menu.
 
 ### `examples/demo/`
 

@@ -1,13 +1,11 @@
 use crate::asset::{Handle, TextureAsset};
 use crate::render::Color;
 
-/// Coarse scene ordering layer shared across renderable content.
+/// Scene ordering value shared across renderable content.
+///
+/// Lower values are drawn earlier, higher values are drawn later.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SortingLayer(pub i32);
-
-/// Stable order within a [`SortingLayer`].
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub struct OrderInLayer(pub i32);
 
 /// High-level sprite component consumed by the default scene renderer.
 #[derive(Clone)]

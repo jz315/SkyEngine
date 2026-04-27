@@ -30,17 +30,33 @@ gltf = { version = "1", optional = true }
 # Application framework (feature-gated)
 winit = { version = "0.30", optional = true }
 pollster = { version = "0.4", optional = true }
+exr = { version = "=1.4.2", optional = true }
+half = { version = "=1.8.2", optional = true }
+intel-tex-2 = { package = "intel_tex_2", version = "=0.2.0", optional = true }
+kajiya = { path = "crates/vendor/kajiya/crates/lib/kajiya", optional = true }
+kajiya-rust-shaders-shared = { package = "rust-shaders-shared", path = "crates/vendor/kajiya/crates/lib/rust-shaders-shared", optional = true }
+gpu-profiler = { path = "crates/vendor/gpu-profiler", optional = true }
+puffin = { version = "=0.11.0", optional = true }
+raw-window-handle-03 = { package = "raw-window-handle", version = "0.3", optional = true }
+shader-prepper = { version = "=0.3.0-pre.1", optional = true }
+turbosloth = { git = "https://github.com/h3r2tic/turbosloth.git", rev = "92030af", optional = true }
 
 # Asset loading (feature-gated)
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 serde_json = { version = "1", optional = true, features = ["preserve_order"] }
+roxmltree = { version = "0.20", optional = true }
+base64 = { version = "0.13", optional = true }
+flate2 = { version = "1", optional = true }
 cubism-sys = { package = "live2d-cubism-core-sys", version = "0.1", path = "cubism-sys", optional = true }
 kira = { version = "0.12", optional = true }
+rapier2d = { version = "0.32.0", optional = true }
+sky_engine_reflect_derive = { path = "crates/sky_engine_reflect_derive" }
 
 # egui immediate-mode UI (feature-gated)
 egui = { version = "0.31", optional = true }
 egui-wgpu = { version = "0.31", optional = true }
 egui-winit = { version = "0.31", optional = true }
+glyphon = { version = "0.8", optional = true }
 
 # Existing optionals
 minifb = { version = "0.28.0", optional = true }
@@ -70,6 +86,13 @@ path = "examples/ecs/systems.rs"
 [[example]]
 name = "tiny_defense"
 path = "examples/ecs/tiny_defense.rs"
+
+# ── Scene/prefab tutorials (--features scene) ────────────────────────────────
+
+[[example]]
+name = "scene_basic"
+path = "examples/scene/basic.rs"
+required-features = ["scene"]
 
 # ── Render API showcases (GPU, --features app) ───────────────────────────────
 
@@ -128,6 +151,60 @@ name = "three_d_demo"
 path = "examples/render/three_d_demo.rs"
 required-features = ["app"]
 
+[[example]]
+name = "kajiya_3d"
+path = "examples/render/kajiya_3d.rs"
+required-features = ["app", "kajiya-renderer"]
+
+[[example]]
+name = "tilemap_demo"
+path = "examples/render/tilemap_demo.rs"
+required-features = ["app"]
+
+[[example]]
+name = "tiled_import_demo"
+path = "examples/render/tiled_import_demo.rs"
+required-features = ["app"]
+
+[[example]]
+name = "tiled_browser_demo"
+path = "examples/render/tiled_browser_demo/main.rs"
+required-features = ["app"]
+
+# ── Physics showcases (--features app physics) ──────────────────────────────
+
+[[example]]
+name = "tiled_physics_demo"
+path = "examples/physics/tiled_topdown.rs"
+required-features = ["app", "physics"]
+
+[[example]]
+name = "physics_arcade_demo"
+path = "examples/physics/arcade.rs"
+required-features = ["app", "physics"]
+
+[[example]]
+name = "physics_headless_probe"
+path = "examples/physics/headless_probe.rs"
+required-features = ["physics"]
+
+# ── Playable game vertical slices (--features app physics) ──────────────────
+
+[[example]]
+name = "neon_dungeon_game"
+path = "examples/game/neon_dungeon.rs"
+required-features = ["app", "physics"]
+
+[[example]]
+name = "lawn_defense_game"
+path = "examples/game/lawn_defense.rs"
+required-features = ["ui"]
+
+[[example]]
+name = "kenney_platformer_game"
+path = "examples/game/kenney_platformer.rs"
+required-features = ["ui"]
+
 # ── Full demo showcases (GPU, --features app) ────────────────────────────────
 
 [[example]]
@@ -178,6 +255,16 @@ path = "examples/render/egui_demo.rs"
 required-features = ["egui"]
 
 [[example]]
+name = "hud_menu"
+path = "examples/ui/hud_menu.rs"
+required-features = ["ui"]
+
+[[example]]
+name = "weird_ui_lab"
+path = "examples/ui/weird_ui_lab.rs"
+required-features = ["ui"]
+
+[[example]]
 name = "asset_cook_smoke"
 path = "examples/asset_cook_smoke.rs"
 required-features = ["asset"]
@@ -226,16 +313,45 @@ required-features = ["compare-bevy"]
 app = ["asset", "dep:wgpu", "dep:winit", "dep:pollster", "dep:bytemuck", "dep:gltf"]
 # Optional Renderer2D stage timing instrumentation.
 render-timings = []
+# Experimental Kajiya Vulkan renderer backend.
+kajiya-renderer = [
+    "dep:exr",
+    "dep:half",
+    "dep:intel-tex-2",
+    "dep:kajiya",
+    "dep:kajiya-rust-shaders-shared",
+    "dep:gpu-profiler",
+    "dep:puffin",
+    "dep:raw-window-handle-03",
+    "dep:shader-prepper",
+    "dep:turbosloth",
+]
 # Asset loading
-asset = ["dep:image", "dep:serde", "dep:serde_json", "dep:uuid"]
+asset = [
+    "dep:image",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:uuid",
+    "dep:roxmltree",
+    "dep:base64",
+    "dep:flate2",
+]
 # Audio runtime
 audio = ["asset", "dep:kira", "dep:mint"]
+# Scene and prefab documents/spawning.
+scene = ["dep:serde", "dep:serde_json"]
+# Serde support for reflected values.
+reflect-serde = ["dep:serde"]
+# 2D physics runtime backed by Rapier.
+physics = ["dep:rapier2d"]
 # GPU-accelerated demos (future)
 demo = ["app", "asset", "dep:rand"]
 # Live2D Cubism SDK integration
 live2d = ["app", "asset", "dep:cubism-sys", "dep:serde_json"]
 # egui immediate-mode UI overlay
 egui = ["app", "dep:egui", "dep:egui-wgpu", "dep:egui-winit"]
+# Native retained-mode game UI overlay
+ui = ["app", "dep:glyphon"]
 # Legacy CPU-rendered demos (existing minifb demos)
 demo-legacy = ["dep:minifb", "dep:rand"]
 # Comparison benchmarks
@@ -262,6 +378,15 @@ harness = false
 
 [profile.release]
 debug = true
+
+[patch.crates-io]
+# Kajiya's shader reflection path relies on the ray-tracing extensions from this
+# rspirv branch. Keep this patch scoped to builds that pull Kajiya in.
+rspirv = { git = "https://github.com/gfx-rs/rspirv.git", rev = "dae552c" }
+spirv_headers = { git = "https://github.com/gfx-rs/rspirv.git", rev = "dae552c" }
+
+[patch."https://github.com/h3r2tic/gpu-profiler.git"]
+gpu-profiler = { path = "crates/vendor/gpu-profiler" }
 
 [[bin]]
 name = "sky-cook"

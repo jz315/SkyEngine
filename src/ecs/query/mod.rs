@@ -5,7 +5,7 @@ mod param;
 mod prepared;
 
 use super::{Chunk, EntityId, World};
-use crate::reflect::Type;
+use crate::ecs::ComponentType;
 use core::ptr;
 use smallvec::SmallVec;
 
@@ -19,13 +19,13 @@ const OPTIONAL_SENTINEL: u8 = u8::MAX;
 
 #[derive(Clone, Copy)]
 pub struct QueryComponent {
-    pub(crate) ty: Type,
+    pub(crate) ty: ComponentType,
     pub(crate) mutable: bool,
     pub(crate) optional: bool,
 }
 
 impl QueryComponent {
-    pub(crate) fn new(ty: Type, mutable: bool) -> Self {
+    pub(crate) fn new(ty: ComponentType, mutable: bool) -> Self {
         Self {
             ty,
             mutable,
@@ -33,7 +33,7 @@ impl QueryComponent {
         }
     }
 
-    pub(crate) fn optional(ty: Type, mutable: bool) -> Self {
+    pub(crate) fn optional(ty: ComponentType, mutable: bool) -> Self {
         Self {
             ty,
             mutable,
@@ -67,7 +67,7 @@ impl QueryDescriptor {
         Self { components }
     }
 
-    pub(crate) fn from_dynamic_types(types: &[Type]) -> Self {
+    pub(crate) fn from_dynamic_types(types: &[ComponentType]) -> Self {
         let mut components = SmallVec::with_capacity(types.len());
         for ty in types {
             components.push(QueryComponent::new(*ty, false));

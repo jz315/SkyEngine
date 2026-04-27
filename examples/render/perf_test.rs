@@ -7,9 +7,8 @@
 //! cargo run --example perf_test --features app --release
 //! ```
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext};
+use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
 use sky_engine::ecs::World;
-use sky_engine::gpu::GpuContext;
 use sky_engine::render::expert::SpriteBatch;
 use sky_engine::render::{Camera, Color, Sprite, Texture};
 
@@ -67,7 +66,8 @@ impl PerfTest {
 }
 
 impl AppState for PerfTest {
-    fn setup(&mut self, _world: &mut World, gpu: &mut GpuContext) {
+    fn setup(&mut self, ctx: &mut SetupContext<'_>) {
+        let gpu = ctx.gpu();
         self.batch = Some(SpriteBatch::new(gpu));
         self.circle_tex = Some(Texture::circle(gpu, 32));
     }

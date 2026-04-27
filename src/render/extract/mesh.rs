@@ -1,9 +1,7 @@
 use std::hash::{Hash, Hasher};
 
 use crate::ecs::{PreparedQuery, World};
-use crate::render::component::{
-    MeshRenderer, OrderInLayer, RenderLayerMask, SortingLayer, Transform,
-};
+use crate::render::component::{RenderLayerMask, SortingLayer, Transform, WgpuMeshRenderer};
 use crate::render::phase::{
     opaque_sort_key, transparent_sort_key, DrawFunctionId, MeshDrawData, PhaseItem,
 };
@@ -19,9 +17,8 @@ pub struct ExtractMeshes<M> {
     draw_function_id: DrawFunctionId,
     query: PreparedQuery<(
         &'static Transform,
-        &'static MeshRenderer,
+        &'static WgpuMeshRenderer,
         Option<&'static SortingLayer>,
-        Option<&'static OrderInLayer>,
         Option<&'static RenderLayerMask>,
     )>,
     marker: std::marker::PhantomData<fn() -> M>,
@@ -59,7 +56,7 @@ where
 
         self.query.for_each_with_entity(
             world,
-            |entity, (transform, mesh_renderer, sorting_layer, order_in_layer, layer_mask)| {
+            |entity, (transform, mesh_renderer, sorting_layer, layer_mask)| {
                 if !mesh_renderer.visible {
                     return;
                 }
@@ -109,7 +106,6 @@ where
                         if material.is_transparent() {
                             transparent_sort_key(
                                 sorting_layer.copied().unwrap_or_default(),
-                                order_in_layer.copied().unwrap_or_default(),
                                 batch_key,
                                 transform,
                                 view,
@@ -141,7 +137,7 @@ where
 }
 
 fn resolve_sub_mesh_material(
-    mesh_renderer: &MeshRenderer,
+    mesh_renderer: &WgpuMeshRenderer,
     material_index: u32,
 ) -> Option<MaterialHandle> {
     mesh_renderer

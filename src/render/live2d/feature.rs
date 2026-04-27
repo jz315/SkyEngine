@@ -7,8 +7,8 @@ use crate::ecs::{EntityId, PreparedQuery, World};
 use crate::gpu::GpuContext;
 #[cfg(feature = "live2d")]
 use crate::render::component::{
-    Live2DAnimator, Live2DCommand, Live2DCommands, Live2DModelInstance, OrderInLayer,
-    RenderLayerMask, SortingLayer, Transform,
+    Live2DAnimator, Live2DCommand, Live2DCommands, Live2DModelInstance, RenderLayerMask,
+    SortingLayer, Transform,
 };
 #[cfg(feature = "live2d")]
 use crate::render::execution::{PreparedFrame, PreparedView, TextureFormat};
@@ -35,7 +35,6 @@ pub struct Live2DFeature {
         Option<&'static Transform>,
         Option<&'static RenderLayerMask>,
         Option<&'static SortingLayer>,
-        Option<&'static OrderInLayer>,
         Option<&'static Live2DAnimator>,
     )>,
     entity_to_index: FxHashMap<EntityId, usize>,
@@ -156,7 +155,7 @@ impl Live2DFeature {
         let mut instances = Vec::new();
         self.instance_query.for_each_with_entity(
             world,
-            |entity, (instance, transform, layer_mask, sorting_layer, order_in_layer, animator)| {
+            |entity, (instance, transform, layer_mask, sorting_layer, animator)| {
                 instances.push(PendingLive2DInstance {
                     entity,
                     instance: instance.clone(),
@@ -166,7 +165,6 @@ impl Live2DFeature {
                         .unwrap_or_default(),
                     layer_mask: layer_mask.map(|mask| mask.0).unwrap_or(u32::MAX),
                     sorting_layer: sorting_layer.copied().unwrap_or_default(),
-                    order_in_layer: order_in_layer.copied().unwrap_or_default(),
                     animator: animator.copied(),
                 });
             },
@@ -214,7 +212,6 @@ struct PendingLive2DInstance {
     transform: Transform,
     layer_mask: u32,
     sorting_layer: SortingLayer,
-    order_in_layer: OrderInLayer,
     animator: Option<Live2DAnimator>,
 }
 
@@ -254,7 +251,6 @@ pub(crate) struct Live2DSceneInstance {
     pub(crate) transform: Transform,
     pub(crate) layer_mask: u32,
     pub(crate) sorting_layer: SortingLayer,
-    pub(crate) order_in_layer: OrderInLayer,
 }
 
 #[cfg(feature = "live2d")]
@@ -272,7 +268,6 @@ pub(crate) fn sort_live2d_scene_instances(
         RenderQueueSort::TransparentScene => lhs
             .sorting_layer
             .cmp(&rhs.sorting_layer)
-            .then_with(|| lhs.order_in_layer.cmp(&rhs.order_in_layer))
             .then_with(|| transparent_scene_depth_cmp(lhs.transform, rhs.transform, scene_view))
             .then_with(|| {
                 live2d_scene_entity_key(lhs.entity).cmp(&live2d_scene_entity_key(rhs.entity))
@@ -282,13 +277,11 @@ pub(crate) fn sort_live2d_scene_instances(
                 live2d_scene_entity_key(lhs.entity).cmp(&live2d_scene_entity_key(rhs.entity))
             })
         }
-        RenderQueueSort::OverlayStable => lhs
-            .sorting_layer
-            .cmp(&rhs.sorting_layer)
-            .then_with(|| lhs.order_in_layer.cmp(&rhs.order_in_layer))
-            .then_with(|| {
+        RenderQueueSort::OverlayStable => {
+            lhs.sorting_layer.cmp(&rhs.sorting_layer).then_with(|| {
                 live2d_scene_entity_key(lhs.entity).cmp(&live2d_scene_entity_key(rhs.entity))
-            }),
+            })
+        }
     });
 }
 
@@ -389,7 +382,6 @@ impl Live2DFeature {
             let transform = pending.transform;
             let layer_mask = pending.layer_mask;
             let sorting_layer = pending.sorting_layer;
-            let order_in_layer = pending.order_in_layer;
             if self.entity_to_index.contains_key(&entity)
                 || self.failed_entities.contains_key(&entity)
             {
@@ -403,7 +395,6 @@ impl Live2DFeature {
                             transform,
                             layer_mask,
                             sorting_layer,
-                            order_in_layer,
                         });
                     }
                 }
@@ -420,7 +411,6 @@ impl Live2DFeature {
                             transform,
                             layer_mask,
                             sorting_layer,
-                            order_in_layer,
                         });
                     }
                 }
@@ -469,7 +459,6 @@ impl Live2DFeature {
                     PhaseItem::new(
                         transparent_sort_key(
                             instance.sorting_layer,
-                            instance.order_in_layer,
                             batch_key,
                             instance.transform,
                             view,

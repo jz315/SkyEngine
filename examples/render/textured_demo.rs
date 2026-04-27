@@ -10,10 +10,9 @@
 //! cargo run --example textured_demo --features app --release
 //! ```
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext};
+use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
 use sky_engine::asset::{AssetServer, TextureAsset};
 use sky_engine::ecs::{EntityId, World};
-use sky_engine::gpu::GpuContext;
 use sky_engine::render::{
     CameraMarker, Color, MainCamera, Projection, RenderPipelineAsset, RenderSettings,
     SpriteFeature, SpriteRenderer, Transform, TransparentPhase,
@@ -65,7 +64,8 @@ impl TexturedDemo {
 }
 
 impl AppState for TexturedDemo {
-    fn setup(&mut self, world: &mut World, _gpu: &mut GpuContext) {
+    fn setup(&mut self, ctx: &mut SetupContext<'_>) {
+        let world = &mut *ctx.world;
         let mut rng = SimpleRng::new(123);
         let asset_server = world
             .get_resource::<AssetServer>()

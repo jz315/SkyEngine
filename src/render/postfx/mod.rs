@@ -1,8 +1,6 @@
 //! Post-processing effects.
 
 pub mod bloom;
-pub mod global_illumination;
-pub mod screen_space_gi;
 pub mod tonemap;
 pub mod vignette;
 

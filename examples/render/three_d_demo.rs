@@ -12,6 +12,7 @@
 //! - up / down: tilt camera
 //! - `W` / `S` or mouse wheel: zoom
 //! - `Space`: toggle auto orbit
+//! - `0`-`4`: GI debug off / probes / irradiance / visibility / ray budget
 //!
 //! ```bash
 //! cargo run --example three_d_demo --features app --release
@@ -24,10 +25,10 @@ use sky_engine::input::KeyCode;
 use sky_engine::math::{Quat, Vec3};
 use sky_engine::render::expert::{BoundingSphere, Mesh, MeshDescriptor, MeshHandle, MeshIndexData};
 use sky_engine::render::{
-    BloomSettings, CameraMarker, Color, DirectionalLight, GlobalIlluminationSettings, MainCamera,
-    MaterialHandle, MeshRenderer, PointLight, ProbeVolumeGiSettings, Projection,
-    RenderPipelineAsset, RenderSettings, ScreenSpaceGiSettings, StandardMaterial, Texture,
-    ToneMapSettings, Transform,
+    BloomSettings, CameraMarker, Color, DdgiSettings, DdgiVolumeSettings, DirectionalLight,
+    GiDebugMode, GlobalIlluminationSettings, MainCamera, MaterialHandle, PointLight, Projection,
+    RenderPipelineAsset, RenderSettings, StandardMaterial, Texture, ToneMapSettings, Transform,
+    WgpuMeshRenderer,
 };
 
 const GROUND_Y: f32 = -1.25;
@@ -67,6 +68,7 @@ struct ThreeDDemo {
     camera_yaw: f32,
     camera_pitch: f32,
     camera_distance: f32,
+    gi_debug: GiDebugMode,
 }
 
 impl Default for ThreeDDemo {
@@ -80,6 +82,7 @@ impl Default for ThreeDDemo {
             camera_yaw: 0.0,
             camera_pitch: -0.18,
             camera_distance: 13.0,
+            gi_debug: GiDebugMode::Off,
         }
     }
 }
@@ -95,6 +98,12 @@ impl AppState for ThreeDDemo {
 
         if ctx.input.key_pressed(KeyCode::Space) {
             self.auto_orbit = !self.auto_orbit;
+        }
+        if let Some(debug_mode) = gi_debug_mode_from_input(ctx) {
+            self.gi_debug = debug_mode;
+            if let Some(settings) = ctx.world.get_resource_mut::<RenderSettings>() {
+                settings.global_illumination.debug = debug_mode;
+            }
         }
 
         let orbit_speed = 0.85;
@@ -154,10 +163,39 @@ impl AppState for ThreeDDemo {
             let stats = ctx.render_stats();
             let orbit_mode = if self.auto_orbit { "auto" } else { "manual" };
             ctx.set_title(&format!(
-                "SkyEngine — 3D Demo | {:.0} FPS | {} draws | {} lights | camera {orbit_mode}",
-                self.fps_smooth, stats.draw_calls, stats.light_count
+                "SkyEngine — 3D Demo | {:.0} FPS | {} draws | {} lights | camera {orbit_mode} | GI {}",
+                self.fps_smooth,
+                stats.draw_calls,
+                stats.light_count,
+                gi_debug_name(self.gi_debug)
             ));
         }
+    }
+}
+
+fn gi_debug_mode_from_input(ctx: &FrameContext) -> Option<GiDebugMode> {
+    if ctx.input.key_pressed(KeyCode::Digit0) {
+        Some(GiDebugMode::Off)
+    } else if ctx.input.key_pressed(KeyCode::Digit1) {
+        Some(GiDebugMode::Probes)
+    } else if ctx.input.key_pressed(KeyCode::Digit2) {
+        Some(GiDebugMode::Irradiance)
+    } else if ctx.input.key_pressed(KeyCode::Digit3) {
+        Some(GiDebugMode::Visibility)
+    } else if ctx.input.key_pressed(KeyCode::Digit4) {
+        Some(GiDebugMode::RayBudget)
+    } else {
+        None
+    }
+}
+
+fn gi_debug_name(mode: GiDebugMode) -> &'static str {
+    match mode {
+        GiDebugMode::Off => "off",
+        GiDebugMode::Probes => "probes",
+        GiDebugMode::Irradiance => "irradiance",
+        GiDebugMode::Visibility => "visibility",
+        GiDebugMode::RayBudget => "ray budget",
     }
 }
 
@@ -283,7 +321,7 @@ fn initialize_scene(ctx: &mut FrameContext) {
 
     ctx.world.spawn((
         Transform::from_xyz(0.0, GROUND_Y, -0.8).with_scale3(14.5, 1.0, 20.0),
-        MeshRenderer::new(assets.plane_mesh, assets.floor),
+        WgpuMeshRenderer::new(assets.plane_mesh, assets.floor),
     ));
 
     spawn_static_box(
@@ -417,7 +455,7 @@ fn initialize_scene(ctx: &mut FrameContext) {
     );
     ctx.world.spawn((
         Transform::from_xyz(-4.1, GROUND_Y + 3.75, -5.4).with_scale3(0.35, 0.35, 0.35),
-        MeshRenderer::new(assets.cube_mesh, assets.teal_emissive),
+        WgpuMeshRenderer::new(assets.cube_mesh, assets.teal_emissive),
         PointLight::new(7.0)
             .intensity(0.62)
             .color(Color::rgb(0.28, 0.92, 1.0))
@@ -425,7 +463,7 @@ fn initialize_scene(ctx: &mut FrameContext) {
     ));
     ctx.world.spawn((
         Transform::from_xyz(3.8, GROUND_Y + 3.45, -3.7).with_scale3(0.35, 0.35, 0.35),
-        MeshRenderer::new(assets.cube_mesh, assets.amber_emissive),
+        WgpuMeshRenderer::new(assets.cube_mesh, assets.amber_emissive),
         PointLight::new(7.0)
             .intensity(0.58)
             .color(Color::rgb(1.0, 0.76, 0.28))
@@ -433,7 +471,7 @@ fn initialize_scene(ctx: &mut FrameContext) {
     ));
     ctx.world.spawn((
         Transform::from_xyz(0.0, GROUND_Y + 4.45, 2.6).with_scale3(0.28, 0.28, 0.28),
-        MeshRenderer::new(assets.cube_mesh, assets.plaster),
+        WgpuMeshRenderer::new(assets.cube_mesh, assets.plaster),
         PointLight::new(9.0)
             .intensity(0.16)
             .color(Color::rgb(1.0, 0.97, 0.90))
@@ -503,6 +541,7 @@ fn animate_lights(ctx: &mut FrameContext, time: f32) {
     });
 }
 
+#[allow(dead_code)]
 fn spawn_showcase_block(
     world: &mut World,
     mesh: MeshHandle,
@@ -516,7 +555,7 @@ fn spawn_showcase_block(
             block.base_position[2],
         )
         .with_scale3(block.scale[0], block.scale[1], block.scale[2]),
-        MeshRenderer::new(mesh, material),
+        WgpuMeshRenderer::new(mesh, material),
         block,
     ));
 }
@@ -533,10 +572,11 @@ fn spawn_static_box(
         Transform::from_xyz(position[0], position[1], position[2])
             .with_scale3(scale[0], scale[1], scale[2])
             .with_euler_angles(euler_angles[0], euler_angles[1], euler_angles[2]),
-        MeshRenderer::new(mesh, material),
+        WgpuMeshRenderer::new(mesh, material),
     ));
 }
 
+#[allow(dead_code)]
 fn spawn_orbit_light(
     world: &mut World,
     mesh: MeshHandle,
@@ -546,7 +586,7 @@ fn spawn_orbit_light(
 ) {
     world.spawn((
         Transform::from_xyz(orbit.radius, orbit.height, 0.0).with_scale3(0.35, 0.35, 0.35),
-        MeshRenderer::new(mesh, material),
+        WgpuMeshRenderer::new(mesh, material),
         light,
         orbit,
     ));
@@ -938,27 +978,24 @@ fn main() {
         ambient_color: Color::rgb(0.007, 0.009, 0.012),
         global_illumination: GlobalIlluminationSettings {
             enabled: true,
-            intensity: 0.68,
-            probe_strength: 0.88,
-            detail_strength: 0.12,
-            occlusion_strength: 0.68,
-            sky_boost: 0.55,
-            probe_volume: ProbeVolumeGiSettings {
-                counts: [14, 8, 18],
-                spacing: 1.85,
-                proxy_radius_scale: 1.30,
-                bounce_strength: 0.58,
-                emissive_strength: 1.25,
-                light_injection: 0.34,
+            ddgi: DdgiSettings {
+                volume: DdgiVolumeSettings {
+                    origin: [-12.0, -1.25, -14.0],
+                    spacing: 1.85,
+                    counts: [14, 8, 18],
+                    scroll_with_main_camera: true,
+                },
+                rays_per_probe: 64,
+                probes_per_frame: 128,
+                hysteresis: 0.92,
+                normal_bias: 0.08,
+                view_bias: 0.20,
+                max_ray_distance: 42.0,
+                irradiance_resolution: 6,
+                visibility_resolution: 6,
+                bounces: 2,
             },
-            detail: ScreenSpaceGiSettings {
-                enabled: true,
-                intensity: 0.12,
-                radius_px: 10.0,
-                depth_reject: 5.5,
-                normal_reject: 20.0,
-                falloff: 0.48,
-            },
+            debug: GiDebugMode::Off,
         },
         bloom: BloomSettings {
             enabled: true,

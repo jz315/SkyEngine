@@ -1,4 +1,4 @@
-use crate::reflect::register_rust_type;
+use crate::ecs::component_type;
 use core::marker::PhantomData;
 
 /// Trait for compile-time archetype filters applied to queries.
@@ -29,14 +29,14 @@ pub struct Without<T>(PhantomData<T>);
 impl<T: 'static> QueryFilter for With<T> {
     #[inline(always)]
     fn matches_archetype(archetype: &super::super::InternalArchetype) -> bool {
-        archetype.has_component(&register_rust_type::<T>())
+        archetype.has_component(&component_type::<T>())
     }
 }
 
 impl<T: 'static> QueryFilter for Without<T> {
     #[inline(always)]
     fn matches_archetype(archetype: &super::super::InternalArchetype) -> bool {
-        !archetype.has_component(&register_rust_type::<T>())
+        !archetype.has_component(&component_type::<T>())
     }
 }
 

@@ -51,6 +51,7 @@ impl RenderComposer {
                 frame_settings: RenderSettings::default(),
                 view_collector: WorldViewCollector::default(),
                 gpu_scene: None,
+                ddgi: None,
                 fallback_texture: None,
                 render_assets: crate::render::resources::assets::RenderAssetCache::new(),
                 asset_event_cursor: crate::asset::AssetEventCursor::default(),
@@ -192,5 +193,10 @@ impl RenderComposer {
     #[inline]
     pub fn mesh_mut(&mut self, handle: MeshHandle) -> Option<&mut Mesh> {
         self.resources.mesh_registry.get_mut(handle)
+    }
+
+    #[inline]
+    pub fn remove_mesh(&mut self, handle: MeshHandle) -> Option<Mesh> {
+        self.resources.mesh_registry.remove(handle)
     }
 }

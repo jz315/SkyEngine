@@ -16,4 +16,5 @@ pub(crate) use draw::{SceneMaterialPrepassContext, SceneMaterialPrepassPipelineC
 #[cfg(feature = "live2d")]
 pub use item::Live2DDrawData;
 pub use item::{MeshDrawData, PhaseItem, SpriteDrawData};
+pub(crate) use sort_key::transparent_ordered_2d_sort_key;
 pub use sort_key::{entity_sort_key, opaque_sort_key, transparent_sort_key};

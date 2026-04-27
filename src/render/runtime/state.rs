@@ -2,6 +2,7 @@ use crate::asset::AssetEventCursor;
 use crate::ecs::EntityId;
 use crate::render::component::RenderSettings;
 use crate::render::extract::Extractor;
+use crate::render::gi::DdgiRuntime;
 use crate::render::gpu::GpuScene;
 use crate::render::gpu::Texture;
 use crate::render::lighting::shadow::{
@@ -37,6 +38,7 @@ pub(crate) struct ComposerRuntime {
     pub(crate) frame_settings: RenderSettings,
     pub(crate) view_collector: WorldViewCollector,
     pub(crate) gpu_scene: Option<GpuScene>,
+    pub(crate) ddgi: Option<DdgiRuntime>,
     pub(crate) fallback_texture: Option<Texture>,
     pub(crate) render_assets: RenderAssetCache,
     pub(crate) asset_event_cursor: AssetEventCursor,

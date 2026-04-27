@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::render::gpu::RenderTarget;
 use crate::render::graph::{
     CompiledPass, PhysicalResources, RenderGraph, ResourceRef, TargetSize, TextureHandle,

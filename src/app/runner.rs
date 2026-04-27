@@ -35,9 +35,18 @@ use crate::diagnostics::{
 use crate::ecs::{Time, World};
 use crate::gpu::GpuContext;
 use crate::input::raw::{Input, KeyCode, MouseButton};
-use crate::render::{RenderComposer, RenderPipelineAsset, RenderStats};
+use crate::render::backend::{create_scene_renderer, SceneRendererError};
+use crate::render::{
+    RenderAssets, RenderBackendKind, RenderComposer, RenderPipelineAsset, RenderStats,
+    SceneRenderer,
+};
 
-fn update_input_from_window_event(input: &mut Input, event: &WindowEvent, suppressed: bool) {
+fn update_input_from_window_event(
+    input: &mut Input,
+    event: &WindowEvent,
+    suppressed: bool,
+    scale_factor: f32,
+) {
     match event {
         WindowEvent::KeyboardInput { event, .. } => {
             if let winit::keyboard::PhysicalKey::Code(code) = event.physical_key {
@@ -61,10 +70,11 @@ fn update_input_from_window_event(input: &mut Input, event: &WindowEvent, suppre
             input.set_cursor_in_window(false);
         }
         WindowEvent::CursorMoved { position, .. } => {
+            let [x, y] = physical_cursor_to_logical(*position, scale_factor);
             if suppressed {
-                input.set_mouse_position_suppressed(position.x as f32, position.y as f32);
+                input.set_mouse_position_suppressed(x, y);
             } else {
-                input.set_mouse_position(position.x as f32, position.y as f32);
+                input.set_mouse_position(x, y);
             }
         }
         WindowEvent::MouseInput {
@@ -104,6 +114,14 @@ fn update_input_from_window_event(input: &mut Input, event: &WindowEvent, suppre
     }
 }
 
+fn physical_cursor_to_logical(
+    position: winit::dpi::PhysicalPosition<f64>,
+    scale_factor: f32,
+) -> [f32; 2] {
+    let scale = scale_factor.max(0.0001) as f64;
+    [(position.x / scale) as f32, (position.y / scale) as f32]
+}
+
 fn write_new_diagnostics<W: std::io::Write>(
     world: &World,
     cursor: &mut DiagnosticCursor,
@@ -128,15 +146,14 @@ fn write_new_diagnostics<W: std::io::Write>(
 /// # Example
 ///
 /// ```rust,no_run
-/// use sky_engine::app::{App, AppConfig, AppState, FrameContext};
+/// use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
 /// use sky_engine::ecs::World;
-/// use sky_engine::gpu::GpuContext;
 /// use sky_engine::render::{RenderPipelineAsset, SpriteFeature, TransparentPhase};
 ///
 /// struct MyGame;
 ///
 /// impl AppState for MyGame {
-///     fn setup(&mut self, _world: &mut World, _gpu: &mut GpuContext) {
+///     fn setup(&mut self, ctx: &mut SetupContext) {
 ///         // Load textures, spawn initial entities, etc.
 ///     }
 ///
@@ -151,11 +168,12 @@ fn write_new_diagnostics<W: std::io::Write>(
 ///     .run(MyGame);
 /// ```
 pub trait AppState: 'static {
-    /// Called once after the GPU is ready and `Input` resource exists.
+    /// Called once after the window and render backend are ready.
     ///
-    /// Use this for texture creation, asset loading, and initial entity
-    /// spawns that depend on the GPU.
-    fn setup(&mut self, _world: &mut World, _gpu: &mut GpuContext) {}
+    /// Use this for backend-neutral asset creation, asset loading, and initial
+    /// entity spawns.  Backend-specific GPU setup is still available through
+    /// [`SetupContext::gpu`] for wgpu-only applications.
+    fn setup(&mut self, _ctx: &mut SetupContext<'_>) {}
 
     /// Called every frame.
     ///
@@ -177,6 +195,71 @@ where
 {
     fn update(&mut self, ctx: &mut FrameContext) {
         self(ctx);
+    }
+}
+
+// ── SetupContext ────────────────────────────────────────────────────────────
+
+/// One-time application setup context.
+///
+/// This is intentionally backend-neutral: prefer [`render_assets_mut`](Self::render_assets_mut)
+/// for meshes, textures, and materials.  The raw wgpu accessors exist only for
+/// applications that explicitly choose the wgpu backend.
+pub struct SetupContext<'a> {
+    /// The ECS world. Spawn initial entities and install resources here.
+    pub world: &'a mut World,
+
+    renderer: &'a mut dyn SceneRenderer,
+    window: &'a Window,
+}
+
+impl<'a> SetupContext<'a> {
+    /// Backend requested by the active render pipeline.
+    #[inline]
+    pub fn backend_kind(&self) -> RenderBackendKind {
+        self.renderer.backend_kind()
+    }
+
+    /// Create or resolve backend-neutral render assets.
+    #[inline]
+    pub fn render_assets_mut(&mut self) -> RenderAssets<'_> {
+        RenderAssets::new(self.world)
+    }
+
+    /// Current surface size in physical pixels `[width, height]`.
+    #[inline]
+    pub fn surface_size(&self) -> [u32; 2] {
+        self.renderer.surface_size()
+    }
+
+    /// Window scale factor used to convert physical pixels to logical pixels.
+    #[inline]
+    pub fn scale_factor(&self) -> f32 {
+        self.window.scale_factor() as f32
+    }
+
+    /// Direct access to the wgpu backend when the active renderer is wgpu.
+    #[inline]
+    pub fn wgpu(&mut self) -> Option<&mut GpuContext> {
+        self.renderer.wgpu_mut()
+    }
+
+    /// Direct access to the wgpu backend.
+    ///
+    /// Panics with a clear message when the active renderer is not wgpu.
+    #[inline]
+    pub fn gpu(&mut self) -> &mut GpuContext {
+        self.wgpu()
+            .expect("SetupContext::gpu is only available for the wgpu render backend")
+    }
+
+    /// Mutably access the installed wgpu [`RenderComposer`] and GPU together.
+    pub fn with_renderer_mut<R>(
+        &mut self,
+        f: impl FnOnce(&mut RenderComposer, &mut GpuContext) -> R,
+    ) -> Option<R> {
+        let (renderer, gpu) = self.renderer.wgpu_parts_mut()?;
+        Some(f(renderer, gpu))
     }
 }
 
@@ -210,28 +293,38 @@ pub struct FrameContext<'a> {
     pub dt: f32,
 
     // ── Internal ────────────────────────────────────────────────────────
-    gpu: &'a mut GpuContext,
-    renderer: Option<&'a mut RenderComposer>,
+    renderer: &'a mut dyn SceneRenderer,
     window: &'a Window,
     exit_requested: &'a mut bool,
     redraw_requested: &'a mut bool,
     #[cfg(feature = "egui")]
-    egui: &'a mut crate::app::egui_integration::EguiIntegration,
+    egui: &'a mut Option<crate::app::egui_integration::EguiIntegration>,
 }
 
 impl<'a> FrameContext<'a> {
     /// Execute the installed render pipeline.
     pub fn render(&mut self) {
-        self.renderer
-            .as_deref_mut()
-            .expect("FrameContext::render requires App::with_render_pipeline(...)")
-            .render_world(self.gpu, self.world);
+        self.renderer.render_world(self.world);
     }
 
     /// Current surface size in physical pixels `[width, height]`.
     #[inline]
     pub fn surface_size(&self) -> [u32; 2] {
-        self.gpu.surface_size()
+        self.renderer.surface_size()
+    }
+
+    /// Window scale factor used to convert physical pixels to logical pixels.
+    #[inline]
+    pub fn scale_factor(&self) -> f32 {
+        self.window.scale_factor() as f32
+    }
+
+    /// Current surface size in logical pixels `[width, height]`.
+    #[inline]
+    pub fn logical_surface_size(&self) -> [f32; 2] {
+        let scale = self.scale_factor().max(0.0001);
+        let [width, height] = self.renderer.surface_size();
+        [width as f32 / scale, height as f32 / scale]
     }
 
     /// Built-in ECS timing state for the current world.
@@ -249,10 +342,13 @@ impl<'a> FrameContext<'a> {
     /// Rendering statistics from the most recent `render()`.
     #[inline]
     pub fn render_stats(&self) -> RenderStats {
-        self.renderer
-            .as_deref()
-            .map(RenderComposer::stats)
-            .unwrap_or_default()
+        self.renderer.stats()
+    }
+
+    /// Create or resolve backend-neutral render assets.
+    #[inline]
+    pub fn render_assets_mut(&mut self) -> RenderAssets<'_> {
+        RenderAssets::new(self.world)
     }
 
     /// Update the window title bar.
@@ -266,12 +362,14 @@ impl<'a> FrameContext<'a> {
     /// anything that requires the raw wgpu device and queue.
     #[inline]
     pub fn gpu(&mut self) -> &mut GpuContext {
-        self.gpu
+        self.renderer
+            .wgpu_mut()
+            .expect("FrameContext::gpu is only available for the wgpu render backend")
     }
 
     /// Mutably access a registered render feature by concrete type.
     pub fn feature_mut<T: 'static>(&mut self) -> Option<&mut T> {
-        self.renderer.as_deref_mut()?.feature_mut::<T>()
+        self.renderer.wgpu_composer_mut()?.feature_mut::<T>()
     }
 
     /// Mutably access a render feature and the GPU at the same time.
@@ -279,9 +377,9 @@ impl<'a> FrameContext<'a> {
         &mut self,
         f: impl FnOnce(&mut T, &mut GpuContext) -> R,
     ) -> Option<R> {
-        let renderer = self.renderer.as_deref_mut()?;
+        let (renderer, gpu) = self.renderer.wgpu_parts_mut()?;
         let feature = renderer.feature_mut::<T>()?;
-        Some(f(feature, self.gpu))
+        Some(f(feature, gpu))
     }
 
     /// Mutably access the installed [`RenderComposer`] and the GPU together.
@@ -292,8 +390,37 @@ impl<'a> FrameContext<'a> {
         &mut self,
         f: impl FnOnce(&mut RenderComposer, &mut GpuContext) -> R,
     ) -> Option<R> {
-        let renderer = self.renderer.as_deref_mut()?;
-        Some(f(renderer, self.gpu))
+        let (renderer, gpu) = self.renderer.wgpu_parts_mut()?;
+        Some(f(renderer, gpu))
+    }
+
+    /// Update native retained UI layout and interaction state.
+    ///
+    /// Requires `--features ui`.
+    #[cfg(feature = "ui")]
+    pub fn update_ui(&mut self) {
+        crate::ui::update_ui(self.world, self.input, self.logical_surface_size());
+    }
+
+    /// Render native retained UI on top of the current surface frame.
+    ///
+    /// Call this after `ctx.render()` for the common scene + overlay order.
+    /// Requires `--features ui`.
+    #[cfg(feature = "ui")]
+    pub fn render_ui(&mut self) {
+        let gpu = self
+            .renderer
+            .wgpu_mut()
+            .expect("FrameContext::render_ui is only available for the wgpu render backend");
+        crate::ui::render_ui(self.world, gpu);
+    }
+
+    /// Access native UI state if it has been installed.
+    ///
+    /// Requires `--features ui`.
+    #[cfg(feature = "ui")]
+    pub fn ui_state(&self) -> Option<&crate::ui::UiState> {
+        self.world.get_resource::<crate::ui::UiState>()
     }
 
     /// Request the application to exit after this frame.
@@ -329,7 +456,10 @@ impl<'a> FrameContext<'a> {
     /// Requires `--features egui`.
     #[cfg(feature = "egui")]
     pub fn egui(&mut self, ui_fn: impl FnMut(&egui::Context)) {
-        self.egui.run(self.window, ui_fn);
+        self.egui
+            .as_mut()
+            .expect("FrameContext::egui is only available for the wgpu render backend")
+            .run(self.window, ui_fn);
     }
 }
 
@@ -367,7 +497,7 @@ impl<'a> FrameContext<'a> {
 pub struct App {
     config: AppConfig,
     world: World,
-    renderer: Option<RenderComposer>,
+    pipeline: Option<RenderPipelineAsset>,
 }
 
 impl App {
@@ -376,15 +506,22 @@ impl App {
     /// The [`World`] is the centre of your application — spawn entities,
     /// register systems, and insert resources before calling `.run()`.
     pub fn new(config: AppConfig, world: World) -> Self {
+        #[cfg(feature = "ui")]
+        let world = {
+            let mut world = world;
+            world.insert_resource(config.ui.clone());
+            world
+        };
+
         Self {
             config,
             world,
-            renderer: None,
+            pipeline: None,
         }
     }
 
     pub fn with_render_pipeline(mut self, pipeline: RenderPipelineAsset) -> Self {
-        self.renderer = Some(RenderComposer::from_asset(pipeline));
+        self.pipeline = Some(pipeline);
         self
     }
 
@@ -399,10 +536,11 @@ impl App {
         let mut handler = RunnerHandler {
             config: self.config,
             world: Some(self.world),
-            renderer: self.renderer,
+            pipeline: self.pipeline,
             app_state: Box::new(state),
             runtime: None,
             pending_redraw: false,
+            kajiya_debug_frames: 0,
             did_shutdown: false,
         };
 
@@ -414,23 +552,23 @@ impl App {
 
 struct RuntimeState {
     window: Arc<Window>,
-    gpu: GpuContext,
-    renderer: Option<RenderComposer>,
+    renderer: Box<dyn SceneRenderer>,
     input: Input,
     diagnostic_cursor: DiagnosticCursor,
     last_frame_time: Option<Instant>,
     occluded: bool,
     #[cfg(feature = "egui")]
-    egui: crate::app::egui_integration::EguiIntegration,
+    egui: Option<crate::app::egui_integration::EguiIntegration>,
 }
 
 struct RunnerHandler {
     config: AppConfig,
     world: Option<World>,
-    renderer: Option<RenderComposer>,
+    pipeline: Option<RenderPipelineAsset>,
     app_state: Box<dyn AppState>,
     runtime: Option<RuntimeState>,
     pending_redraw: bool,
+    kajiya_debug_frames: u64,
     did_shutdown: bool,
 }
 
@@ -478,6 +616,17 @@ impl RunnerHandler {
     fn run_frame(&mut self, event_loop: &ActiveEventLoop) {
         if !self.can_draw() {
             return;
+        }
+        let trace_kajiya = self
+            .runtime
+            .as_ref()
+            .is_some_and(|rt| rt.renderer.backend_kind() == RenderBackendKind::Kajiya);
+        let trace_frame = self.kajiya_debug_frames;
+        if trace_kajiya && should_trace_kajiya_runner_frame(trace_frame) {
+            eprintln!(
+                "[SkyEngine][App] run_frame begin frame={} pending_redraw={}",
+                trace_frame, self.pending_redraw
+            );
         }
 
         let now = Instant::now();
@@ -529,7 +678,7 @@ impl RunnerHandler {
                 rt.input.begin_frame();
                 should_exit = true;
             } else {
-                match rt.gpu.begin_frame() {
+                match rt.renderer.begin_frame() {
                     Ok(()) => {
                         let mut exit_requested = false;
                         let mut redraw_requested = false;
@@ -539,7 +688,6 @@ impl RunnerHandler {
                                 world,
                                 input: &input_snapshot,
                                 dt: frame_dt,
-                                gpu: &mut rt.gpu,
                                 renderer: rt.renderer.as_mut(),
                                 window: &rt.window,
                                 exit_requested: &mut exit_requested,
@@ -566,20 +714,24 @@ impl RunnerHandler {
 
                         #[cfg(feature = "egui")]
                         {
-                            let surface_view = rt.gpu.surface_view().clone();
-                            let device = rt.gpu.device().clone();
-                            let queue = rt.gpu.queue().clone();
-                            rt.egui.end_frame(
-                                &device,
-                                &queue,
-                                rt.gpu.encoder(),
-                                &surface_view,
-                                &rt.window,
-                            );
+                            if let (Some(egui), Some(gpu)) =
+                                (rt.egui.as_mut(), rt.renderer.wgpu_mut())
+                            {
+                                let surface_view = gpu.surface_view().clone();
+                                let device = gpu.device().clone();
+                                let queue = gpu.queue().clone();
+                                egui.end_frame(
+                                    &device,
+                                    &queue,
+                                    gpu.encoder(),
+                                    &surface_view,
+                                    &rt.window,
+                                );
+                            }
                         }
 
                         rt.window.pre_present_notify();
-                        rt.gpu.end_frame();
+                        rt.renderer.end_frame();
                         rt.input.begin_frame();
                         if let Err(error) = write_new_diagnostics(
                             world,
@@ -593,27 +745,22 @@ impl RunnerHandler {
                         request_redraw = redraw_requested;
                         should_exit = exit_requested;
                     }
-                    Err(crate::gpu::GpuError::SurfaceLost) => {
-                        if let Some(renderer) = rt.renderer.as_mut() {
-                            renderer.surface_lost();
-                        }
+                    Err(SceneRendererError::Wgpu(crate::gpu::GpuError::SurfaceLost)) => {
+                        rt.renderer.surface_lost();
                         let size = rt.window.inner_size();
-                        rt.gpu.resize_surface(size.width, size.height);
-                        if let Some(renderer) = rt.renderer.as_mut() {
-                            renderer.resize(&rt.gpu, size.width, size.height);
-                        }
+                        rt.renderer.resize(size.width, size.height);
                         rt.last_frame_time = None;
                         request_redraw = true;
                     }
-                    Err(crate::gpu::GpuError::Timeout) => {
+                    Err(SceneRendererError::Wgpu(crate::gpu::GpuError::Timeout)) => {
                         rt.last_frame_time = None;
                         request_redraw = true;
                     }
-                    Err(crate::gpu::GpuError::OutOfMemory) => {
+                    Err(SceneRendererError::Wgpu(crate::gpu::GpuError::OutOfMemory)) => {
                         should_exit = true;
                     }
                     Err(e) => {
-                        eprintln!("[SkyEngine] GPU error: {e}");
+                        eprintln!("[SkyEngine] Renderer error: {e}");
                         rt.last_frame_time = None;
                     }
                 }
@@ -622,6 +769,15 @@ impl RunnerHandler {
 
         if request_redraw {
             self.request_redraw();
+        }
+        if trace_kajiya && should_trace_kajiya_runner_frame(trace_frame) {
+            eprintln!(
+                "[SkyEngine][App] run_frame end frame={} request_redraw={} should_exit={}",
+                trace_frame, request_redraw, should_exit
+            );
+        }
+        if trace_kajiya {
+            self.kajiya_debug_frames = self.kajiya_debug_frames.wrapping_add(1);
         }
         if should_exit {
             self.shutdown_and_exit(event_loop);
@@ -653,10 +809,12 @@ impl ApplicationHandler for RunnerHandler {
                 .expect("Failed to create window"),
         );
 
-        let mut gpu = match GpuContext::try_new(window.clone(), self.config.vsync) {
-            Ok(gpu) => gpu,
+        let pipeline = self.pipeline.take();
+        let mut renderer = match create_scene_renderer(window.clone(), self.config.vsync, pipeline)
+        {
+            Ok(renderer) => renderer,
             Err(err) => {
-                eprintln!("[SkyEngine] GPU initialization failed: {err}");
+                eprintln!("[SkyEngine] Renderer initialization failed: {err}");
                 event_loop.exit();
                 return;
             }
@@ -665,13 +823,12 @@ impl ApplicationHandler for RunnerHandler {
         let title = format!(
             "{} | {} ({})",
             self.config.title,
-            gpu.adapter_name(),
-            gpu.backend_name()
+            renderer.adapter_name(),
+            renderer.backend_name()
         );
         window.set_title(&title);
 
         let world = self.world.as_mut().expect("world must be present");
-        let renderer = self.renderer.take();
 
         // Insert Input resource into the World (updated in-place each frame).
         let input = Input::new();
@@ -732,18 +889,26 @@ impl ApplicationHandler for RunnerHandler {
         }
 
         // Run one-time setup.
-        self.app_state.setup(world, &mut gpu);
+        {
+            let mut setup_ctx = SetupContext {
+                world,
+                renderer: renderer.as_mut(),
+                window: &window,
+            };
+            self.app_state.setup(&mut setup_ctx);
+        }
 
         #[cfg(feature = "egui")]
-        let egui = crate::app::egui_integration::EguiIntegration::new(
-            &window,
-            gpu.device(),
-            gpu.surface_format(),
-        );
+        let egui = renderer.wgpu().map(|gpu| {
+            crate::app::egui_integration::EguiIntegration::new(
+                &window,
+                gpu.device(),
+                gpu.surface_format(),
+            )
+        });
 
         self.runtime = Some(RuntimeState {
             window,
-            gpu,
             renderer,
             input,
             diagnostic_cursor: DiagnosticCursor::new(),
@@ -752,6 +917,15 @@ impl ApplicationHandler for RunnerHandler {
             #[cfg(feature = "egui")]
             egui,
         });
+        if let Some(rt) = self.runtime.as_ref() {
+            if rt.renderer.backend_kind() == RenderBackendKind::Kajiya && kajiya_trace_enabled() {
+                eprintln!(
+                    "[SkyEngine][App] resumed Kajiya backend surface={}x{}",
+                    rt.renderer.surface_size()[0],
+                    rt.renderer.surface_size()[1]
+                );
+            }
+        }
         self.request_redraw();
     }
 
@@ -768,6 +942,14 @@ impl ApplicationHandler for RunnerHandler {
 
         if should_request {
             if let Some(rt) = self.runtime.as_ref() {
+                if rt.renderer.backend_kind() == RenderBackendKind::Kajiya
+                    && should_trace_kajiya_runner_frame(self.kajiya_debug_frames)
+                {
+                    eprintln!(
+                        "[SkyEngine][App] request_redraw frame={} mode={:?}",
+                        self.kajiya_debug_frames, self.config.redraw_mode
+                    );
+                }
                 rt.window.request_redraw();
             }
             self.pending_redraw = false;
@@ -794,7 +976,10 @@ impl ApplicationHandler for RunnerHandler {
         };
 
         #[cfg(feature = "egui")]
-        let egui_consumed = rt.egui.on_window_event(&rt.window, &event);
+        let egui_consumed = rt
+            .egui
+            .as_mut()
+            .is_some_and(|egui| egui.on_window_event(&rt.window, &event));
 
         match event {
             WindowEvent::CloseRequested => {
@@ -802,10 +987,7 @@ impl ApplicationHandler for RunnerHandler {
             }
 
             WindowEvent::Resized(size) => {
-                rt.gpu.resize_surface(size.width, size.height);
-                if let Some(renderer) = rt.renderer.as_mut() {
-                    renderer.resize(&rt.gpu, size.width, size.height);
-                }
+                rt.renderer.resize(size.width, size.height);
                 if size.width == 0 || size.height == 0 {
                     rt.last_frame_time = None;
                 }
@@ -843,11 +1025,20 @@ impl ApplicationHandler for RunnerHandler {
                 #[cfg(not(feature = "egui"))]
                 let suppressed = false;
 
-                update_input_from_window_event(&mut rt.input, &event, suppressed);
+                let scale_factor = rt.window.scale_factor() as f32;
+                update_input_from_window_event(&mut rt.input, &event, suppressed, scale_factor);
                 self.request_redraw();
             }
 
             WindowEvent::RedrawRequested => {
+                if rt.renderer.backend_kind() == RenderBackendKind::Kajiya
+                    && should_trace_kajiya_runner_frame(self.kajiya_debug_frames)
+                {
+                    eprintln!(
+                        "[SkyEngine][App] RedrawRequested frame={}",
+                        self.kajiya_debug_frames
+                    );
+                }
                 self.run_frame(event_loop);
             }
 
@@ -860,6 +1051,17 @@ impl ApplicationHandler for RunnerHandler {
     }
 }
 
+fn should_trace_kajiya_runner_frame(frame_index: u64) -> bool {
+    kajiya_trace_enabled() && (frame_index < 8 || frame_index % 120 == 0)
+}
+
+fn kajiya_trace_enabled() -> bool {
+    std::env::var_os("SKY_KAJIYA_TRACE").is_some_and(|value| {
+        let value = value.to_string_lossy();
+        !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -868,7 +1070,7 @@ mod tests {
     #[test]
     fn app_defaults_to_no_installed_pipeline() {
         let app = App::new(AppConfig::new("test", 64, 64), World::new());
-        assert!(app.renderer.is_none());
+        assert!(app.pipeline.is_none());
     }
 
     #[test]
@@ -879,14 +1081,55 @@ mod tests {
                 .add_phase(crate::render::TransparentPhase::new())
                 .build(),
         );
-        assert!(app.renderer.is_some());
+        assert!(app.pipeline.is_some());
     }
 
     #[test]
     fn with_render_pipeline_accepts_the_default_forward_2d_pipeline() {
         let app = App::new(AppConfig::new("test", 64, 64), World::new())
             .with_render_pipeline(RenderPipelineAsset::forward_2d());
-        assert!(app.renderer.is_some());
+        assert!(app.pipeline.is_some());
+    }
+
+    #[cfg(feature = "ui")]
+    #[test]
+    fn app_new_installs_ui_config_from_app_config() {
+        let app = App::new(
+            AppConfig::new("test", 64, 64).with_ui_config(crate::ui::UiConfig {
+                load_system_fonts: false,
+            }),
+            World::new(),
+        );
+
+        assert!(
+            !app.world
+                .get_resource::<crate::ui::UiConfig>()
+                .unwrap()
+                .load_system_fonts
+        );
+    }
+
+    #[test]
+    fn render_pipeline_assets_advertise_backend_kind() {
+        assert_eq!(
+            RenderPipelineAsset::forward_2d().backend_kind(),
+            crate::render::RenderBackendKind::Wgpu
+        );
+        assert_eq!(
+            RenderPipelineAsset::forward_3d().backend_kind(),
+            crate::render::RenderBackendKind::Wgpu
+        );
+        assert_eq!(
+            RenderPipelineAsset::kajiya_3d().backend_kind(),
+            crate::render::RenderBackendKind::Kajiya
+        );
+    }
+
+    #[test]
+    fn cursor_position_is_converted_to_logical_pixels() {
+        let logical =
+            physical_cursor_to_logical(winit::dpi::PhysicalPosition::new(300.0, 150.0), 1.5);
+        assert_eq!(logical, [200.0, 100.0]);
     }
 
     #[test]

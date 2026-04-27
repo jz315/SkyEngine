@@ -36,10 +36,7 @@ pub use super::phase::{
     DrawFunctionId, DrawFunctionRegistry, DrawMesh, DrawSprite, OpaquePhase, PhaseItem,
     TransparentPhase,
 };
-pub use super::postfx::{
-    bloom::Bloom, global_illumination::GlobalIllumination, screen_space_gi::ScreenSpaceGi,
-    tonemap::ToneMap, vignette::Vignette, PostFx,
-};
+pub use super::postfx::{bloom::Bloom, tonemap::ToneMap, vignette::Vignette, PostFx};
 pub use super::resources::{
     atlas::{AtlasError, AtlasPacker, TextureAtlas, UvRect},
     blackboard::Blackboard,

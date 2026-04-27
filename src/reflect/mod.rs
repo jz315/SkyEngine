@@ -1,8 +1,13 @@
-//! Runtime type registry for the ECS.
+//! Foundational runtime reflection plus inspector metadata.
 //!
-//! Every component type used in the ECS is registered here.  The registry
-//! assigns each type a stable [`Type`] handle that carries layout, name,
-//! and (for non-`Copy` types) a type-erased destructor.
+//! ECS uses the thin [`Type`] layout layer for component storage and drop
+//! semantics. Tools can opt into the higher-level [`Reflect`] derive,
+//! [`ReflectRegistry`], and [`ReflectField`] metadata for inspector-style
+//! editing.
 
-pub(crate) mod registry;
+mod registry;
+mod value;
+
 pub use registry::*;
+pub use sky_engine_reflect_derive::Reflect;
+pub use value::*;

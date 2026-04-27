@@ -40,6 +40,8 @@
 
 use mimalloc::MiMalloc;
 
+extern crate self as sky_engine;
+
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
@@ -47,6 +49,12 @@ pub mod diagnostics;
 pub mod ecs;
 pub mod math;
 pub mod reflect;
+
+#[cfg(feature = "scene")]
+pub mod scene;
+
+#[cfg(feature = "physics")]
+pub mod physics;
 
 #[cfg(feature = "asset")]
 pub mod asset;
@@ -62,6 +70,9 @@ pub mod input;
 
 #[cfg(feature = "app")]
 pub mod app;
+
+#[cfg(feature = "ui")]
+pub mod ui;
 
 #[cfg(feature = "audio")]
 pub mod audio;
