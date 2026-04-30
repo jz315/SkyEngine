@@ -3,8 +3,9 @@ use crate::render::execution::{PreparedFrame, PreparedView, ViewExecutionContext
 use crate::render::graph::RenderGraphError;
 
 use super::contexts::{
-    ComputePassExecuteContext, ComputePassSetupContext, PostFxPassExecuteContext,
-    PostFxPassSetupContext, RenderPassExecuteContext, RenderPassSetupContext,
+    ComputePassExecuteContext, ComputePassSetupContext, GraphPassExecuteContext,
+    GraphPassSetupContext, PostFxPassExecuteContext, PostFxPassSetupContext,
+    RenderPassExecuteContext, RenderPassSetupContext,
 };
 
 pub trait ComputePass: Send + 'static {
@@ -18,6 +19,29 @@ pub trait ComputePass: Send + 'static {
     ) -> Result<(), RenderGraphError> {
         Ok(())
     }
+}
+
+pub trait GraphPass: Send + 'static {
+    fn name(&self) -> &'static str;
+
+    fn is_enabled(&self, _frame: &PreparedFrame<'_>, _view: &PreparedView<'_>) -> bool {
+        true
+    }
+
+    fn setup(&mut self, _ctx: &mut GraphPassSetupContext<'_, '_>) {}
+
+    fn execute(
+        &mut self,
+        _ctx: &mut GraphPassExecuteContext<'_, '_>,
+    ) -> Result<(), RenderGraphError> {
+        Ok(())
+    }
+
+    fn draw_calls(&self, _execution: &ViewExecutionContext<'_>) -> usize {
+        0
+    }
+
+    fn resize(&mut self, _ctx: &GpuContext, _width: u32, _height: u32) {}
 }
 
 pub trait RenderPass: Send + 'static {

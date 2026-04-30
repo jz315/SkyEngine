@@ -1,5 +1,7 @@
 //! Dynamic diffuse global illumination built around DDGI probe volumes.
 
+mod ssgi;
+
 use std::borrow::Cow;
 
 use crate::gpu::GpuContext;
@@ -7,10 +9,13 @@ use crate::math::{Mat4, Vec3};
 use crate::render::component::{DdgiSettings, GiDebugMode, GlobalIlluminationSettings};
 use crate::render::gpu::{RenderTarget, RenderTargetDescriptor};
 use crate::render::phase::{DrawFunctionRegistry, MeshDrawData, OpaquePhase};
-use crate::render::resources::material::{AlphaMode, MaterialRegistry, StandardMaterial};
+use crate::render::resources::material::{MaterialRegistry, StandardMaterial};
 use crate::render::resources::mesh::{Mesh, MeshRegistry, RayTriangle};
 use crate::render::view::{Color, SceneView};
 use crate::render::GpuLight;
+
+pub(crate) use ssgi::{SsgiComputeGraphResources, SSGI_COMPUTE_RESOURCES_BLACKBOARD};
+pub use ssgi::{SsgiComputeTextureLayout, SsgiPass, SsgiResources};
 
 pub(crate) const DDGI_IRRADIANCE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 pub(crate) const DDGI_VISIBILITY_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
@@ -376,7 +381,7 @@ impl DdgiRuntime {
             self.write_disabled(gpu);
             return;
         };
-        if !settings.enabled {
+        if !settings.uses_ddgi() {
             self.write_disabled(gpu);
             return;
         }
@@ -746,7 +751,7 @@ fn collect_gi_triangles(
             let Some(material) = materials.get(draw.material_handle::<StandardMaterial>()) else {
                 continue;
             };
-            if material.alpha_mode != AlphaMode::Opaque {
+            if material.alpha_mode.is_transparent() {
                 continue;
             }
             let model = Mat4::from_cols_array(

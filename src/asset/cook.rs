@@ -2,7 +2,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use super::texture::{encode_texture_cooked, TextureAsset, TextureColorSpace};
+use super::texture::{decode_texture_source_bytes, encode_texture_cooked, TextureColorSpace};
 use super::types::{
     normalize_source_key, AssetConfig, AssetError, AssetId, AssetManifestEntry, AssetMeta,
     AssetRegistryManifest, ASSET_SYSTEM_VERSION,
@@ -243,12 +243,16 @@ fn cook_meta(
     source: &Path,
     meta: &AssetMeta,
 ) -> Result<AssetManifestEntry, AssetError> {
-    let cooked_relative = cooked_relative_path(meta);
+    let mut updated_meta = meta.clone();
+    if asset_kind(&updated_meta)? == AssetKind::VideoClip {
+        update_video_clip_dependencies(config, source, &mut updated_meta)?;
+    }
+
+    let cooked_relative = cooked_relative_path(&updated_meta);
     let cooked_path = config.cooked_root().join(&cooked_relative);
     let meta_path = meta_path_for(source);
-    let mut updated_meta = meta.clone();
 
-    if !cooked_path.exists() || is_asset_dirty(source, &meta_path, &cooked_path, meta)? {
+    if !cooked_path.exists() || is_asset_dirty(source, &meta_path, &cooked_path, &updated_meta)? {
         if let Some(parent) = cooked_path.parent() {
             std::fs::create_dir_all(parent).map_err(|error| AssetError::Io {
                 path: parent.to_path_buf(),
@@ -256,9 +260,10 @@ fn cook_meta(
             })?;
         }
 
-        match asset_kind(meta)? {
-            AssetKind::Texture => cook_texture(source, meta, &cooked_path)?,
+        match asset_kind(&updated_meta)? {
+            AssetKind::Texture => cook_texture(source, &updated_meta, &cooked_path)?,
             AssetKind::SoundClip | AssetKind::MusicTrack => cook_audio(source, &cooked_path)?,
+            AssetKind::VideoClip => cook_video_clip(config, source, &cooked_path)?,
         }
     }
 
@@ -272,13 +277,10 @@ fn cook_meta(
 }
 
 fn cook_texture(source: &Path, meta: &AssetMeta, cooked_path: &Path) -> Result<(), AssetError> {
-    let image = image::open(source)
-        .map_err(|error| AssetError::Io {
-            path: source.to_path_buf(),
-            message: error.to_string(),
-        })?
-        .to_rgba8();
-    let (width, height) = image.dimensions();
+    let bytes = std::fs::read(source).map_err(|error| AssetError::Io {
+        path: source.to_path_buf(),
+        message: error.to_string(),
+    })?;
     let srgb = meta
         .import_settings
         .get("srgb")
@@ -289,7 +291,7 @@ fn cook_texture(source: &Path, meta: &AssetMeta, cooked_path: &Path) -> Result<(
     } else {
         TextureColorSpace::Linear
     };
-    let asset = TextureAsset::new(width, height, color_space, image.into_raw());
+    let asset = decode_texture_source_bytes(source, &bytes, color_space)?;
     let bytes = encode_texture_cooked(&asset);
     std::fs::write(cooked_path, bytes).map_err(|error| AssetError::Io {
         path: cooked_path.to_path_buf(),
@@ -304,6 +306,214 @@ fn cook_audio(source: &Path, cooked_path: &Path) -> Result<(), AssetError> {
             message: error.to_string(),
         })
         .map(|_| ())
+}
+
+fn cook_video_clip(
+    config: &AssetConfig,
+    source: &Path,
+    cooked_path: &Path,
+) -> Result<(), AssetError> {
+    let descriptor = load_video_clip_descriptor(config, source)?;
+    let bytes = serde_json::to_vec_pretty(&descriptor).map_err(|error| AssetError::Json {
+        path: cooked_path.to_path_buf(),
+        message: error.to_string(),
+    })?;
+    std::fs::write(cooked_path, bytes).map_err(|error| AssetError::Io {
+        path: cooked_path.to_path_buf(),
+        message: error.to_string(),
+    })
+}
+
+fn update_video_clip_dependencies(
+    config: &AssetConfig,
+    source: &Path,
+    meta: &mut AssetMeta,
+) -> Result<(), AssetError> {
+    let descriptor = load_video_clip_descriptor(config, source)?;
+    meta.dependencies = normalize_dependencies(
+        descriptor
+            .frames
+            .iter()
+            .map(|frame| frame.texture)
+            .collect(),
+    );
+    Ok(())
+}
+
+fn load_video_clip_descriptor(
+    config: &AssetConfig,
+    source: &Path,
+) -> Result<CookedVideoClipDescriptor, AssetError> {
+    let bytes = std::fs::read(source).map_err(|error| AssetError::Io {
+        path: source.to_path_buf(),
+        message: error.to_string(),
+    })?;
+    let source_descriptor: SourceVideoClipDescriptor =
+        serde_json::from_slice(&bytes).map_err(|error| AssetError::Json {
+            path: source.to_path_buf(),
+            message: error.to_string(),
+        })?;
+
+    if source_descriptor.width == 0 || source_descriptor.height == 0 {
+        return Err(AssetError::InvalidCookedAsset {
+            id: None,
+            message: format!(
+                "video descriptor {:?} must use non-zero width and height",
+                source
+            ),
+        });
+    }
+    if source_descriptor.frames.is_empty() {
+        return Err(AssetError::InvalidCookedAsset {
+            id: None,
+            message: format!(
+                "video descriptor {:?} must contain at least one frame",
+                source
+            ),
+        });
+    }
+    if let Some(fps) = source_descriptor.fps {
+        validate_positive_finite(fps, "fps", source)?;
+    }
+
+    let default_duration = source_descriptor
+        .fps
+        .map(|fps| 1.0 / fps)
+        .unwrap_or(1.0 / 30.0);
+    let mut frames = Vec::with_capacity(source_descriptor.frames.len());
+    for frame in source_descriptor.frames {
+        let texture_ref = frame.texture_ref();
+        let texture = resolve_video_texture_dependency(config, source, texture_ref)?;
+        let duration_seconds = frame.duration_seconds().unwrap_or(default_duration);
+        validate_positive_finite(duration_seconds, "frame duration", source)?;
+        frames.push(CookedVideoFrameDescriptor {
+            texture,
+            duration_ms: None,
+            duration_seconds: Some(duration_seconds),
+        });
+    }
+
+    Ok(CookedVideoClipDescriptor {
+        width: source_descriptor.width,
+        height: source_descriptor.height,
+        frames,
+    })
+}
+
+fn resolve_video_texture_dependency(
+    config: &AssetConfig,
+    video_source: &Path,
+    texture_ref: &str,
+) -> Result<AssetId, AssetError> {
+    if let Ok(asset_id) = AssetId::parse_str(texture_ref) {
+        return Ok(asset_id);
+    }
+
+    let texture_path = Path::new(texture_ref);
+    let candidate = if texture_path.is_absolute() {
+        texture_path.to_path_buf()
+    } else {
+        video_source
+            .parent()
+            .unwrap_or(&config.asset_root)
+            .join(texture_path)
+    };
+    let source = if candidate.exists() {
+        candidate
+    } else {
+        config.asset_root.join(texture_path)
+    };
+
+    if source_asset_kind(&source) != Some(AssetKind::Texture) {
+        return Err(AssetError::Unsupported {
+            message: format!(
+                "video frame {:?} must reference a supported texture asset",
+                texture_ref
+            ),
+        });
+    }
+
+    let meta = import_path(&config.asset_root, source)?;
+    Ok(meta.asset_id)
+}
+
+fn validate_positive_finite(value: f64, label: &str, source: &Path) -> Result<(), AssetError> {
+    if value.is_finite() && value > 0.0 {
+        Ok(())
+    } else {
+        Err(AssetError::InvalidCookedAsset {
+            id: None,
+            message: format!("video descriptor {:?} has invalid {label}: {value}", source),
+        })
+    }
+}
+
+fn normalize_dependencies(dependencies: Vec<AssetId>) -> Vec<AssetId> {
+    let mut unique = Vec::with_capacity(dependencies.len());
+    for dependency in dependencies {
+        if !unique.contains(&dependency) {
+            unique.push(dependency);
+        }
+    }
+    unique
+}
+
+#[derive(serde::Serialize)]
+struct CookedVideoClipDescriptor {
+    width: u32,
+    height: u32,
+    frames: Vec<CookedVideoFrameDescriptor>,
+}
+
+#[derive(serde::Serialize)]
+struct CookedVideoFrameDescriptor {
+    texture: AssetId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    duration_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    duration_seconds: Option<f64>,
+}
+
+#[derive(serde::Deserialize)]
+struct SourceVideoClipDescriptor {
+    width: u32,
+    height: u32,
+    #[serde(default)]
+    fps: Option<f64>,
+    frames: Vec<SourceVideoFrameDescriptor>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum SourceVideoFrameDescriptor {
+    Path(String),
+    Object {
+        texture: String,
+        #[serde(default)]
+        duration_ms: Option<f64>,
+        #[serde(default)]
+        duration_seconds: Option<f64>,
+    },
+}
+
+impl SourceVideoFrameDescriptor {
+    fn texture_ref(&self) -> &str {
+        match self {
+            Self::Path(path) => path,
+            Self::Object { texture, .. } => texture,
+        }
+    }
+
+    fn duration_seconds(&self) -> Option<f64> {
+        match self {
+            Self::Path(_) => None,
+            Self::Object {
+                duration_ms,
+                duration_seconds,
+                ..
+            } => duration_seconds.or_else(|| duration_ms.map(|ms| ms / 1000.0)),
+        }
+    }
 }
 
 fn build_manifest_entry(meta: &AssetMeta) -> AssetManifestEntry {
@@ -537,6 +747,11 @@ fn normalize_meta_for_source(source_key: &str, meta: &mut AssetMeta) {
             meta.cooker = "audio.copy".to_string();
             set_import_setting_bool(&mut meta.import_settings, "stream", stream);
         }
+        Some(AssetKind::VideoClip) => {
+            meta.asset_type = "video_clip".to_string();
+            meta.importer = "video.frame_sequence".to_string();
+            meta.cooker = "video.clip_json".to_string();
+        }
         Some(AssetKind::MusicTrack) | None => {}
     }
 }
@@ -596,6 +811,19 @@ fn default_meta_for_source(source_key: &str) -> AssetMeta {
                 import_settings: serde_json::json!({ "stream": stream }),
             }
         }
+        AssetKind::VideoClip => AssetMeta {
+            asset_id: AssetId::new(),
+            asset_type: "video_clip".to_string(),
+            importer: "video.frame_sequence".to_string(),
+            cooker: "video.clip_json".to_string(),
+            version: 1,
+            source_path: source_key.to_string(),
+            source_hash: None,
+            meta_hash: None,
+            cooked_hash: None,
+            dependencies: Vec::new(),
+            import_settings: serde_json::json!({}),
+        },
         AssetKind::MusicTrack => unreachable!("source files never map directly to music_track"),
     }
 }
@@ -603,8 +831,9 @@ fn default_meta_for_source(source_key: &str) -> AssetMeta {
 fn source_asset_kind(path: &Path) -> Option<AssetKind> {
     let extension = path.extension()?.to_str()?.to_ascii_lowercase();
     match extension.as_str() {
-        "png" => Some(AssetKind::Texture),
+        "png" | "jpg" | "jpeg" => Some(AssetKind::Texture),
         "wav" | "ogg" | "mp3" => Some(AssetKind::SoundClip),
+        "skyvideo" => Some(AssetKind::VideoClip),
         _ => None,
     }
 }
@@ -614,6 +843,7 @@ fn asset_kind(meta: &AssetMeta) -> Result<AssetKind, AssetError> {
         "texture" => Ok(AssetKind::Texture),
         "sound_clip" => Ok(AssetKind::SoundClip),
         "music_track" => Ok(AssetKind::MusicTrack),
+        "video_clip" => Ok(AssetKind::VideoClip),
         other => Err(AssetError::Unsupported {
             message: format!("unsupported asset type `{other}`"),
         }),
@@ -624,6 +854,7 @@ fn cooked_relative_path(meta: &AssetMeta) -> String {
     match meta.asset_type.as_str() {
         "texture" => format!("texture/{}.skytx", meta.asset_id),
         "sound_clip" | "music_track" => format!("audio/{}.skyaudio", meta.asset_id),
+        "video_clip" => format!("video/{}.skyvideo", meta.asset_id),
         _ => format!("misc/{}.skyasset", meta.asset_id),
     }
 }
@@ -751,6 +982,7 @@ enum AssetKind {
     Texture,
     SoundClip,
     MusicTrack,
+    VideoClip,
 }
 
 fn dependency_cycles(metas: &[(PathBuf, AssetMeta)]) -> Vec<Vec<AssetId>> {
@@ -846,6 +1078,12 @@ mod tests {
         Ok(())
     }
 
+    fn write_jpeg(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let image = image::RgbImage::from_raw(1, 1, vec![64, 128, 255]).unwrap();
+        image.save(path)?;
+        Ok(())
+    }
+
     fn write_audio_placeholder(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         std::fs::write(path, b"placeholder audio")?;
         Ok(())
@@ -878,6 +1116,66 @@ mod tests {
         let cooked = config.cooked_root().join(&manifest.assets[0].cooked_path);
         assert!(cooked.exists());
         assert!(config.manifest_path().exists());
+        Ok(())
+    }
+
+    #[test]
+    fn cook_all_writes_jpeg_texture_output() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let source = dir.path().join("hero.jpeg");
+        write_jpeg(&source)?;
+
+        let config = AssetConfig::new(dir.path(), "native");
+        let manifest = cook_all(&config)?;
+
+        assert_eq!(manifest.assets.len(), 1);
+        assert_eq!(manifest.assets[0].asset_type, "texture");
+        assert!(config
+            .cooked_root()
+            .join(&manifest.assets[0].cooked_path)
+            .exists());
+        Ok(())
+    }
+
+    #[test]
+    fn cook_all_writes_video_clip_with_texture_dependencies(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let scene_dir = dir.path().join("scene");
+        let frames_dir = scene_dir.join("frames");
+        std::fs::create_dir_all(&frames_dir)?;
+        write_png(&frames_dir.join("0001.png"))?;
+        write_png(&frames_dir.join("0002.png"))?;
+        let video = scene_dir.join("opening.skyvideo");
+        std::fs::write(
+            &video,
+            r#"{
+  "width": 1,
+  "height": 1,
+  "fps": 24,
+  "frames": [
+    "frames/0001.png",
+    { "texture": "frames/0002.png", "duration_ms": 80 }
+  ]
+}"#,
+        )?;
+
+        let config = AssetConfig::new(dir.path(), "native");
+        let manifest = cook_all(&config)?;
+        let entry = manifest
+            .assets
+            .iter()
+            .find(|entry| entry.asset_type == "video_clip")
+            .expect("video clip should be in manifest");
+
+        assert_eq!(entry.dependencies.len(), 2);
+        assert!(entry.cooked_path.starts_with("video/"));
+        let cooked = std::fs::read_to_string(config.cooked_root().join(&entry.cooked_path))?;
+        let cooked: serde_json::Value = serde_json::from_str(&cooked)?;
+        assert_eq!(cooked["width"], 1);
+        assert_eq!(cooked["height"], 1);
+        assert!(cooked["frames"][0]["texture"].as_str().is_some());
+        assert_eq!(cooked["frames"][1]["duration_seconds"], 0.08);
         Ok(())
     }
 

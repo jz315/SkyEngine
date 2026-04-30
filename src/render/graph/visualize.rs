@@ -23,6 +23,28 @@ impl RenderGraph {
                 .replace('<', "\\<")
                 .replace('>', "\\>")
         }
+        fn resource_node_id(resource: &ResourceRef) -> String {
+            match resource {
+                ResourceRef::Texture(handle) => format!("res_tex_{}", handle.0),
+                ResourceRef::TextureSubresource(subresource) => {
+                    format!("res_tex_{}", subresource.texture.0)
+                }
+                ResourceRef::Buffer(handle) => format!("res_buf_{}", handle.0),
+                ResourceRef::Surface => "res_surface".to_string(),
+            }
+        }
+        fn subresource_label(resource: &ResourceRef) -> Option<String> {
+            match resource {
+                ResourceRef::TextureSubresource(subresource) => Some(format!(
+                    "m{}+{} l{}+{}",
+                    subresource.base_mip_level,
+                    subresource.mip_level_count,
+                    subresource.base_array_layer,
+                    subresource.array_layer_count
+                )),
+                _ => None,
+            }
+        }
 
         let mut dot = String::with_capacity(2048);
         writeln!(dot, "digraph RenderGraph {{").unwrap();
@@ -103,28 +125,38 @@ impl RenderGraph {
         writeln!(dot, "    // Edges").unwrap();
         for (i, pass) in self.passes.iter().enumerate() {
             for r in &pass.reads {
-                let res_id = match r {
-                    ResourceRef::Texture(h) => format!("res_tex_{}", h.0),
-                    ResourceRef::Buffer(h) => format!("res_buf_{}", h.0),
-                    ResourceRef::Surface => "res_surface".to_string(),
-                };
-                writeln!(
-                    dot,
-                    "    {res_id} -> pass_{i} [style=solid, color=\"#7fb3d8\"];",
-                )
-                .unwrap();
+                let res_id = resource_node_id(r);
+                if let Some(label) = subresource_label(r) {
+                    writeln!(
+                        dot,
+                        "    {res_id} -> pass_{i} [style=solid, color=\"#7fb3d8\", \
+                         label=\"{label}\"];",
+                    )
+                    .unwrap();
+                } else {
+                    writeln!(
+                        dot,
+                        "    {res_id} -> pass_{i} [style=solid, color=\"#7fb3d8\"];",
+                    )
+                    .unwrap();
+                }
             }
             for w in &pass.writes {
-                let res_id = match w {
-                    ResourceRef::Texture(h) => format!("res_tex_{}", h.0),
-                    ResourceRef::Buffer(h) => format!("res_buf_{}", h.0),
-                    ResourceRef::Surface => "res_surface".to_string(),
-                };
-                writeln!(
-                    dot,
-                    "    pass_{i} -> {res_id} [style=bold, color=\"#e8a87c\"];",
-                )
-                .unwrap();
+                let res_id = resource_node_id(w);
+                if let Some(label) = subresource_label(w) {
+                    writeln!(
+                        dot,
+                        "    pass_{i} -> {res_id} [style=bold, color=\"#e8a87c\", \
+                         label=\"{label}\"];",
+                    )
+                    .unwrap();
+                } else {
+                    writeln!(
+                        dot,
+                        "    pass_{i} -> {res_id} [style=bold, color=\"#e8a87c\"];",
+                    )
+                    .unwrap();
+                }
             }
         }
 

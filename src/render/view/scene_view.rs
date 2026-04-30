@@ -12,15 +12,41 @@ pub enum SceneViewKind {
     DirectionalShadow,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TemporalViewState {
+    pub current_view_proj: [f32; 16],
+    pub previous_view_proj: [f32; 16],
+    pub jitter: [f32; 2],
+    pub previous_jitter: [f32; 2],
+    pub history_reset: bool,
+    pub frame_index: u64,
+}
+
+impl TemporalViewState {
+    #[inline]
+    pub const fn from_current_view_proj(current_view_proj: [f32; 16]) -> Self {
+        Self {
+            current_view_proj,
+            previous_view_proj: current_view_proj,
+            jitter: [0.0, 0.0],
+            previous_jitter: [0.0, 0.0],
+            history_reset: true,
+            frame_index: 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct SceneView {
     pub order: i32,
     execution_order: i32,
+    history_key: u64,
     pub viewport: ViewportRect,
     pub target_size: [u32; 2],
     pub clear_surface: bool,
     pub kind: SceneViewKind,
     shadow_binding: Option<usize>,
+    shadow_cascade: u32,
     pub layer_mask: u32,
     pub camera_transform: Transform,
     pub projection: Projection,
@@ -33,6 +59,7 @@ pub struct SceneView {
     pub time: f32,
     pub delta_time: f32,
     pub view_uniform: ViewUniform,
+    pub temporal: TemporalViewState,
     pub frustum: Frustum,
     pub is_planar_2d: bool,
 }
@@ -83,11 +110,13 @@ impl SceneView {
         Self {
             order,
             execution_order: order,
+            history_key: 0,
             viewport,
             target_size,
             clear_surface,
             kind,
             shadow_binding,
+            shadow_cascade: 0,
             layer_mask,
             camera_transform,
             projection,
@@ -104,6 +133,7 @@ impl SceneView {
             time: view_uniform.near_far_time_delta[2],
             delta_time: view_uniform.near_far_time_delta[3],
             view_uniform,
+            temporal: TemporalViewState::from_current_view_proj(view_uniform.view_proj),
             frustum,
             is_planar_2d,
         }
@@ -137,13 +167,68 @@ impl SceneView {
     }
 
     #[inline]
+    pub fn history_key(&self) -> u64 {
+        self.history_key
+    }
+
+    #[inline]
+    pub fn set_history_key(&mut self, history_key: u64) {
+        self.history_key = history_key;
+    }
+
+    #[inline]
+    pub fn with_history_key(mut self, history_key: u64) -> Self {
+        self.history_key = history_key;
+        self
+    }
+
+    #[inline]
+    pub fn set_temporal_state(&mut self, temporal: TemporalViewState) {
+        self.temporal = temporal;
+    }
+
+    #[inline]
+    pub(crate) fn set_view_uniform(&mut self, view_uniform: ViewUniform) {
+        self.view_matrix = view_uniform.view;
+        self.projection_matrix = view_uniform.projection;
+        self.inverse_view = view_uniform.inverse_view;
+        self.camera_position = [
+            view_uniform.camera_position[0],
+            view_uniform.camera_position[1],
+            view_uniform.camera_position[2],
+        ];
+        self.near = view_uniform.near_far_time_delta[0];
+        self.far = view_uniform.near_far_time_delta[1];
+        self.time = view_uniform.near_far_time_delta[2];
+        self.delta_time = view_uniform.near_far_time_delta[3];
+        self.frustum = Frustum::from_view_proj(view_uniform.view_proj);
+        self.view_uniform = view_uniform;
+    }
+
+    #[inline]
     pub fn shadow_binding(&self) -> Option<usize> {
         self.shadow_binding
     }
 
     #[inline]
+    pub fn shadow_cascade(&self) -> u32 {
+        self.shadow_cascade
+    }
+
+    #[inline]
     pub fn with_shadow_binding(mut self, shadow_binding: usize) -> Self {
         self.shadow_binding = Some(shadow_binding);
+        self
+    }
+
+    #[inline]
+    pub fn with_shadow_binding_and_cascade(
+        mut self,
+        shadow_binding: usize,
+        shadow_cascade: u32,
+    ) -> Self {
+        self.shadow_binding = Some(shadow_binding);
+        self.shadow_cascade = shadow_cascade;
         self
     }
 

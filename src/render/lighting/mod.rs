@@ -4,6 +4,9 @@ mod pass;
 pub mod shadow;
 
 pub use data::{color_temperature, Light2D};
-pub use gpu_table::{GpuLight, LightTable};
+pub use gpu_table::{GpuLight, GpuLightKind, LightTable, SceneLightingResources};
 pub use pass::LightPass;
-pub use shadow::DirectionalShadowPhase;
+#[allow(unused_imports)]
+pub use shadow::{
+    DirectionalShadowPhase, SceneShadowResources, ShadowDebugResources, ShadowResourceKind,
+};

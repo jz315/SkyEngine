@@ -9,6 +9,7 @@ use crate::render::view::RenderStats;
 pub enum SceneRendererInitError {
     Wgpu(GpuInitError),
     KajiyaUnavailable(String),
+    RenderlingUnavailable(String),
     Other(String),
 }
 
@@ -17,6 +18,7 @@ impl std::fmt::Display for SceneRendererInitError {
         match self {
             Self::Wgpu(error) => write!(f, "{error}"),
             Self::KajiyaUnavailable(message) => write!(f, "{message}"),
+            Self::RenderlingUnavailable(message) => write!(f, "{message}"),
             Self::Other(message) => write!(f, "{message}"),
         }
     }

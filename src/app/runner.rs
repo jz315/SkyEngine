@@ -506,13 +506,6 @@ impl App {
     /// The [`World`] is the centre of your application — spawn entities,
     /// register systems, and insert resources before calling `.run()`.
     pub fn new(config: AppConfig, world: World) -> Self {
-        #[cfg(feature = "ui")]
-        let world = {
-            let mut world = world;
-            world.insert_resource(config.ui.clone());
-            world
-        };
-
         Self {
             config,
             world,
@@ -673,6 +666,17 @@ impl RunnerHandler {
             } else {
                 dt
             };
+
+            #[cfg(feature = "video")]
+            if let Some(video_server) = world.get_resource::<crate::video::VideoServer>().cloned() {
+                if let Err(error) = video_server.apply_commands() {
+                    eprintln!("[SkyEngine] Video command application failed: {error}");
+                }
+                video_server.update(frame_dt);
+                if let Err(error) = video_server.sync_world(world) {
+                    eprintln!("[SkyEngine] Video world sync failed: {error}");
+                }
+            }
 
             if exit_on_escape && input_snapshot.key_pressed(KeyCode::Escape) {
                 rt.input.begin_frame();
@@ -888,6 +892,40 @@ impl ApplicationHandler for RunnerHandler {
             }
         }
 
+        #[cfg(feature = "video")]
+        {
+            let asset_server =
+                if let Some(server) = world.get_resource::<crate::asset::AssetServer>().cloned() {
+                    server
+                } else {
+                    let config = crate::asset::AssetConfig::default();
+                    let server = match crate::asset::AssetServer::new(config.clone()) {
+                        Ok(server) => server,
+                        Err(error) => {
+                            eprintln!("[SkyEngine] Asset server initialization failed: {error}");
+                            crate::asset::AssetServer::with_empty_manifest(config)
+                        }
+                    };
+                    world.insert_resource(server.clone());
+                    server
+                };
+
+            if !world.contains_resource::<crate::video::VideoServer>() {
+                let video_server = crate::video::VideoServer::new(asset_server);
+                let video_commands = video_server.commands();
+                world.insert_resource(video_server);
+                if !world.contains_resource::<crate::video::VideoCommands>() {
+                    world.insert_resource(video_commands);
+                }
+            } else if !world.contains_resource::<crate::video::VideoCommands>() {
+                if let Some(video_server) =
+                    world.get_resource::<crate::video::VideoServer>().cloned()
+                {
+                    world.insert_resource(video_server.commands());
+                }
+            }
+        }
+
         // Run one-time setup.
         {
             let mut setup_ctx = SetupContext {
@@ -1091,24 +1129,6 @@ mod tests {
         assert!(app.pipeline.is_some());
     }
 
-    #[cfg(feature = "ui")]
-    #[test]
-    fn app_new_installs_ui_config_from_app_config() {
-        let app = App::new(
-            AppConfig::new("test", 64, 64).with_ui_config(crate::ui::UiConfig {
-                load_system_fonts: false,
-            }),
-            World::new(),
-        );
-
-        assert!(
-            !app.world
-                .get_resource::<crate::ui::UiConfig>()
-                .unwrap()
-                .load_system_fonts
-        );
-    }
-
     #[test]
     fn render_pipeline_assets_advertise_backend_kind() {
         assert_eq!(
@@ -1122,6 +1142,10 @@ mod tests {
         assert_eq!(
             RenderPipelineAsset::kajiya_3d().backend_kind(),
             crate::render::RenderBackendKind::Kajiya
+        );
+        assert_eq!(
+            RenderPipelineAsset::renderling_3d().backend_kind(),
+            crate::render::RenderBackendKind::Renderling
         );
     }
 

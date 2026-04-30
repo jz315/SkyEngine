@@ -12,6 +12,8 @@ struct StandardUniform {
     albedo: vec4<f32>,
     emissive: vec4<f32>,
     params: vec4<f32>,
+    // x: receive shadows flag, y: alpha cutoff, z: alpha-test flag.
+    shadow: vec4<f32>,
 };
 
 @group(1) @binding(0)
@@ -77,15 +79,18 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 @fragment
 fn fs_main(input: VertexOutput) -> FragmentOutput {
     let base = textureSample(t_albedo, s_albedo, input.uv) * material.albedo;
+    if (material.shadow.z > 0.5 && base.a < material.shadow.y) {
+        discard;
+    }
     let emissive_sample = textureSample(t_emissive, s_albedo, input.uv).rgb;
     let emissive = emissive_sample * material.emissive.rgb;
 
     var output: FragmentOutput;
     output.albedo = vec4<f32>(base.rgb, base.a);
     output.material = vec4<f32>(
-        clamp(material.params.x, 0.0, 1.0),
         clamp(material.params.y, 0.0, 1.0),
-        0.0,
+        clamp(material.params.x, 0.0, 1.0),
+        1.0,
         base.a,
     );
     output.emissive = vec4<f32>(emissive, base.a);

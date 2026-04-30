@@ -600,7 +600,7 @@ pub const MAX_COLOR_ATTACHMENTS: usize = 8;
 pub struct FramebufferCacheKey {
     pub dims: [u32; 2],
     pub attachments:
-        ArrayVec<[(vk::ImageUsageFlags, vk::ImageCreateFlags); MAX_COLOR_ATTACHMENTS + 1]>,
+        ArrayVec<(vk::ImageUsageFlags, vk::ImageCreateFlags), { MAX_COLOR_ATTACHMENTS + 1 }>,
 }
 
 impl FramebufferCacheKey {
@@ -625,7 +625,7 @@ impl FramebufferCacheKey {
 // TODO: nuke when resizing
 pub struct FramebufferCache {
     entries: Mutex<HashMap<FramebufferCacheKey, vk::Framebuffer>>,
-    attachment_desc: ArrayVec<[RenderPassAttachmentDesc; MAX_COLOR_ATTACHMENTS + 1]>,
+    attachment_desc: ArrayVec<RenderPassAttachmentDesc, { MAX_COLOR_ATTACHMENTS + 1 }>,
     render_pass: vk::RenderPass,
     color_attachment_count: usize,
 }
@@ -682,7 +682,7 @@ impl FramebufferCache {
                             .usage(*usage)
                             .build()
                     })
-                    .collect::<ArrayVec<[_; MAX_COLOR_ATTACHMENTS + 1]>>();
+                    .collect::<ArrayVec<_, { MAX_COLOR_ATTACHMENTS + 1 }>>();
 
                 let mut imageless_desc = vk::FramebufferAttachmentsCreateInfoKHR::builder()
                     .attachment_image_infos(&attachments);

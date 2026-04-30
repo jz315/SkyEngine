@@ -11,7 +11,7 @@ use crate::render::execution::{PreparedFrame, PreparedView};
 use crate::render::gpu::GpuScene;
 use crate::render::gpu::RenderTarget;
 use crate::render::gpu::Texture;
-use crate::render::lighting::shadow::{ShadowSceneBindingLayout, ShadowViewBinding};
+use crate::render::lighting::shadow::SceneShadowResources;
 use crate::render::resources::material::{
     Material, MaterialError, MaterialRegistry, SceneBindingKind,
 };
@@ -163,8 +163,7 @@ pub struct DrawContext<'ctx, 'pass, 'tex> {
     model_bind_group_layout: &'ctx wgpu::BindGroupLayout,
     cpu_model_matrices: Option<&'ctx [[f32; 16]]>,
     gpu_scene: Option<&'ctx GpuScene>,
-    shadow_layout: Option<&'ctx ShadowSceneBindingLayout>,
-    shadow_view: Option<&'ctx ShadowViewBinding>,
+    scene_shadows: Option<SceneShadowResources>,
     material_registry: &'ctx mut MaterialRegistry,
     mesh_registry: &'ctx MeshRegistry,
     fallback_texture: Option<&'tex Texture>,
@@ -184,8 +183,7 @@ impl<'ctx, 'pass, 'tex> DrawContext<'ctx, 'pass, 'tex> {
         model_bind_group_layout: &'ctx wgpu::BindGroupLayout,
         cpu_model_matrices: Option<&'ctx [[f32; 16]]>,
         gpu_scene: Option<&'ctx GpuScene>,
-        shadow_layout: Option<&'ctx ShadowSceneBindingLayout>,
-        shadow_view: Option<&'ctx ShadowViewBinding>,
+        scene_shadows: Option<SceneShadowResources>,
         material_registry: &'ctx mut MaterialRegistry,
         mesh_registry: &'ctx MeshRegistry,
         fallback_texture: Option<&'tex Texture>,
@@ -202,8 +200,7 @@ impl<'ctx, 'pass, 'tex> DrawContext<'ctx, 'pass, 'tex> {
             model_bind_group_layout,
             cpu_model_matrices,
             gpu_scene,
-            shadow_layout,
-            shadow_view,
+            scene_shadows,
             material_registry,
             mesh_registry,
             fallback_texture,
@@ -1149,13 +1146,19 @@ where
                             fixed_layouts.push((binding.slot, table.bind_group_layout()));
                         }
                         SceneBindingKind::ShadowView => {
-                            let Some(shadow_layout) = ctx.shadow_layout else {
+                            let Some(scene_shadows) = ctx.scene_shadows.as_ref() else {
                                 return Err(DrawError::MissingSceneBinding {
                                     type_name: std::any::type_name::<M>(),
                                     kind: binding.kind,
                                 });
                             };
-                            fixed_layouts.push((binding.slot, shadow_layout.bind_group_layout()));
+                            let Some(layout) = scene_shadows.bind_group_layout() else {
+                                return Err(DrawError::MissingSceneBinding {
+                                    type_name: std::any::type_name::<M>(),
+                                    kind: binding.kind,
+                                });
+                            };
+                            fixed_layouts.push((binding.slot, layout));
                         }
                     }
                 }
@@ -1216,14 +1219,19 @@ where
                                 .set_bind_group(binding.slot, table.bind_group(), &[]);
                         }
                         SceneBindingKind::ShadowView => {
-                            let Some(shadow_view) = ctx.shadow_view else {
+                            let Some(scene_shadows) = ctx.scene_shadows.as_ref() else {
                                 return Err(DrawError::MissingSceneBinding {
                                     type_name: std::any::type_name::<M>(),
                                     kind: binding.kind,
                                 });
                             };
-                            ctx.pass
-                                .set_bind_group(binding.slot, shadow_view.bind_group(), &[]);
+                            let Some(bind_group) = scene_shadows.bind_group() else {
+                                return Err(DrawError::MissingSceneBinding {
+                                    type_name: std::any::type_name::<M>(),
+                                    kind: binding.kind,
+                                });
+                            };
+                            ctx.pass.set_bind_group(binding.slot, bind_group, &[]);
                         }
                     }
                 }

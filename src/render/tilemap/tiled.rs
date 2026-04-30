@@ -239,7 +239,7 @@ fn load_tiled_tileset_texture(tileset: &TiledTileset) -> Result<TextureAsset, Ti
     })?;
     let mut image = image.to_rgba8();
     if let Some([r, g, b]) = tileset.transparent_color {
-        for pixel in image.as_mut().chunks_exact_mut(4) {
+        for pixel in image.as_flat_samples_mut().samples.chunks_exact_mut(4) {
             if pixel[0] == r && pixel[1] == g && pixel[2] == b {
                 pixel[3] = 0;
             }

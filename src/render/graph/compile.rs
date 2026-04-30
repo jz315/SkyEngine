@@ -47,8 +47,8 @@ impl RenderGraph {
         let mut indegree = vec![0usize; n];
         let mut reverse_edges = vec![Vec::<usize>::new(); n];
         let mut edge_set: FxHashSet<(usize, usize)> = FxHashSet::default();
-        let mut last_writer_for: FxHashMap<ResourceRef, usize> = FxHashMap::default();
-        let mut readers_since_write: FxHashMap<ResourceRef, Vec<usize>> = FxHashMap::default();
+        let mut last_writers: Vec<(ResourceRef, usize)> = Vec::new();
+        let mut readers_since_write: Vec<(ResourceRef, usize)> = Vec::new();
 
         let mut add_edge = |from: usize, to: usize| {
             if from == to || !edge_set.insert((from, to)) {
@@ -62,10 +62,21 @@ impl RenderGraph {
         for (idx, pass) in self.passes.iter().enumerate() {
             for &resource in &pass.reads {
                 self.validate_pass_resource(&pass.name, resource)?;
-                if let Some(&writer) = last_writer_for.get(&resource) {
+                let mut has_writer = false;
+                for &(written_resource, writer) in &last_writers {
+                    if !resource_refs_overlap(resource, written_resource) {
+                        continue;
+                    }
                     add_edge(writer, idx);
-                } else if !self.resource_has_external_source(resource)
-                    && !pass.writes.contains(&resource)
+                    has_writer = true;
+                }
+                if !has_writer
+                    && !self.resource_has_external_source(resource)
+                    && !pass
+                        .writes
+                        .iter()
+                        .copied()
+                        .any(|written_resource| resource_refs_overlap(resource, written_resource))
                 {
                     return Err(RenderGraphError::ReadBeforeWrite {
                         pass: pass.name.clone(),
@@ -73,26 +84,34 @@ impl RenderGraph {
                     });
                 }
 
-                let readers = readers_since_write.entry(resource).or_default();
-                if readers.last().copied() != Some(idx) {
-                    readers.push(idx);
+                if !readers_since_write
+                    .iter()
+                    .any(|&(read_resource, reader)| read_resource == resource && reader == idx)
+                {
+                    readers_since_write.push((resource, idx));
                 }
             }
 
             for &resource in &pass.writes {
                 self.validate_pass_resource(&pass.name, resource)?;
-                if let Some(&writer) = last_writer_for.get(&resource) {
-                    add_edge(writer, idx);
+                for &(written_resource, writer) in &last_writers {
+                    if resource_refs_overlap(resource, written_resource) {
+                        add_edge(writer, idx);
+                    }
                 }
 
-                if let Some(readers) = readers_since_write.get_mut(&resource) {
-                    for &reader in readers.iter() {
+                for &(read_resource, reader) in &readers_since_write {
+                    if resource_refs_overlap(resource, read_resource) {
                         add_edge(reader, idx);
                     }
-                    readers.clear();
                 }
+                readers_since_write
+                    .retain(|&(read_resource, _)| !resource_refs_overlap(resource, read_resource));
 
-                last_writer_for.insert(resource, idx);
+                last_writers.retain(|&(written_resource, _)| {
+                    !resource_refs_overlap(resource, written_resource)
+                });
+                last_writers.push((resource, idx));
             }
         }
 
@@ -190,11 +209,22 @@ impl RenderGraph {
 
         // ── Phase 3: Resource lifetime analysis ─────────────────────────
         let mut lifetimes: FxHashMap<ResourceRef, ResourceLifetime> = FxHashMap::default();
-        for (exec_order, &pass_idx) in order.iter().enumerate() {
-            let pass = &self.passes[pass_idx];
-            for resource in pass.reads.iter().chain(pass.writes.iter()) {
+        let record_lifetime = |lifetimes: &mut FxHashMap<ResourceRef, ResourceLifetime>,
+                               resource: ResourceRef,
+                               exec_order: usize| {
+            lifetimes
+                .entry(resource)
+                .and_modify(|lt| {
+                    lt.last_use = exec_order;
+                })
+                .or_insert(ResourceLifetime {
+                    first_use: exec_order,
+                    last_use: exec_order,
+                });
+
+            if let ResourceRef::TextureSubresource(subresource) = resource {
                 lifetimes
-                    .entry(*resource)
+                    .entry(ResourceRef::Texture(subresource.texture))
                     .and_modify(|lt| {
                         lt.last_use = exec_order;
                     })
@@ -202,6 +232,12 @@ impl RenderGraph {
                         first_use: exec_order,
                         last_use: exec_order,
                     });
+            }
+        };
+        for (exec_order, &pass_idx) in order.iter().enumerate() {
+            let pass = &self.passes[pass_idx];
+            for resource in pass.reads.iter().chain(pass.writes.iter()) {
+                record_lifetime(&mut lifetimes, *resource, exec_order);
             }
         }
 

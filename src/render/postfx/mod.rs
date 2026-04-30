@@ -1,6 +1,9 @@
 //! Post-processing effects.
 
 pub mod bloom;
+pub mod debug_view;
+pub mod sharpen;
+pub mod taa;
 pub mod tonemap;
 pub mod vignette;
 

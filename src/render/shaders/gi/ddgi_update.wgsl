@@ -26,6 +26,7 @@ struct LightRecord {
     pos_radius: vec4<f32>,
     color: vec4<f32>,
     falloff: vec4<f32>,
+    dir_shadow: vec4<f32>,
 };
 
 struct LightMeta {
@@ -59,6 +60,8 @@ var visibility_prev: texture_2d<f32>;
 const PI: f32 = 3.14159265359;
 const GOLDEN: f32 = 2.39996322973;
 const DDGI_ATLAS_BORDER: u32 = 1u;
+const LIGHT_KIND_DIRECTIONAL: u32 = 1u;
+const LIGHT_KIND_SPOT: u32 = 2u;
 
 fn saturate(v: f32) -> f32 {
     return clamp(v, 0.0, 1.0);
@@ -343,7 +346,8 @@ fn direct_lighting(hit_pos: vec3<f32>, normal: vec3<f32>, albedo: vec3<f32>) -> 
     let max_lights = min(light_meta.count, arrayLength(&lights));
     for (var i = 0u; i < max_lights; i = i + 1u) {
         let light = lights[i];
-        if (light.falloff.y > 0.5) {
+        let light_kind = u32(round(light.falloff.y));
+        if (light_kind == LIGHT_KIND_DIRECTIONAL) {
             let light_dir = safe_normalize(-light.pos_radius.xyz);
             let ndotl = max(dot(normal, light_dir), 0.0);
             if (ndotl <= 0.0001) {
@@ -368,9 +372,20 @@ fn direct_lighting(hit_pos: vec3<f32>, normal: vec3<f32>, albedo: vec3<f32>) -> 
             continue;
         }
         let attenuation = pow(max(1.0 - dist / radius, 0.0), max(light.falloff.x, 0.001));
+        var spot_term = 1.0;
+        if (light_kind == LIGHT_KIND_SPOT) {
+            let cone_cos = dot(safe_normalize(light.dir_shadow.xyz), -light_dir);
+            let inner_cos = light.falloff.z;
+            let outer_cos = light.falloff.w;
+            spot_term = clamp((cone_cos - outer_cos) / max(inner_cos - outer_cos, 0.0001), 0.0, 1.0);
+            if (spot_term <= 0.0001) {
+                continue;
+            }
+            spot_term = spot_term * spot_term;
+        }
         let shadow_origin = hit_pos + normal * ddgi.trace_params.z + light_dir * 0.015;
         if (!occluded(shadow_origin, light_dir, dist - 0.03)) {
-            result += albedo * light.color.rgb * ndotl * attenuation / PI;
+            result += albedo * light.color.rgb * ndotl * attenuation * spot_term / PI;
         }
     }
     return result;

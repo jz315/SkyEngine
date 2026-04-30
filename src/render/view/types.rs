@@ -7,6 +7,18 @@ pub struct RenderStats {
     pub sprite_count: usize,
     pub light_count: usize,
     pub draw_calls: usize,
+    pub shadow_cascade_count: usize,
+    pub shadow_caster_count: usize,
+    pub shadow_caster_count_by_cascade:
+        [usize; crate::render::component::MAX_DIRECTIONAL_SHADOW_CASCADES],
+    pub shadow_draw_calls: usize,
+    pub shadow_draw_calls_by_cascade:
+        [usize; crate::render::component::MAX_DIRECTIONAL_SHADOW_CASCADES],
+    pub shadow_atlas_width: u32,
+    pub shadow_atlas_height: u32,
+    pub shadow_atlas_rect_count: usize,
+    pub shadow_atlas_used_pixel_ratio: f32,
+    pub shadow_atlas_guard_band_texels: f32,
     pub passes: usize,
     pub resident_render_assets: usize,
     pub uploaded_render_assets: usize,

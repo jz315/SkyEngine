@@ -1,7 +1,7 @@
 use std::cell::UnsafeCell;
 
 struct TempListInner<T> {
-    payload: arrayvec::ArrayVec<[T; 8]>,
+    payload: arrayvec::ArrayVec<T, 8>,
     next: Option<TempList<T>>,
 }
 

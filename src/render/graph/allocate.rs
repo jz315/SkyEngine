@@ -165,10 +165,12 @@ impl RenderGraph {
             // Acquire ONE shared RenderTarget from the pool.
             let key = PoolKey {
                 format: group.format,
+                usage: group.usage,
                 width: max_w,
                 height: max_h,
                 sample_count: group.sample_count,
                 mip_level_count: group.mip_level_count,
+                array_layer_count: group.array_layer_count,
             };
             let shared_label: Cow<'static, str> = {
                 let first_name = &self.textures[group.members[0]].name;
@@ -196,9 +198,11 @@ impl RenderGraph {
         for tex_idx in 0..self.textures.len() {
             let (
                 desc_format,
+                desc_usage,
                 desc_size,
                 desc_sample_count,
                 desc_mip_level_count,
+                desc_array_layer_count,
                 desc_transient,
                 desc_imported,
                 desc_name,
@@ -206,9 +210,11 @@ impl RenderGraph {
                 let desc = &self.textures[tex_idx];
                 (
                     desc.format,
+                    desc.usage,
                     desc.size,
                     desc.sample_count,
                     desc.mip_level_count,
+                    desc.array_layer_count,
                     desc.transient,
                     desc.imported.is_some(),
                     desc.name.clone(),
@@ -226,10 +232,12 @@ impl RenderGraph {
                         self.transient_pool.release(
                             PoolKey {
                                 format: target.format(),
+                                usage: target.usage(),
                                 width: target.width(),
                                 height: target.height(),
                                 sample_count: target.sample_count(),
                                 mip_level_count: target.mip_level_count(),
+                                array_layer_count: target.array_layer_count(),
                             },
                             target,
                         );
@@ -245,10 +253,12 @@ impl RenderGraph {
             let [w, h] = resolve_target_size(surface_size, desc_size);
             let key = PoolKey {
                 format: desc_format,
+                usage: desc_usage,
                 width: w,
                 height: h,
                 sample_count: desc_sample_count,
                 mip_level_count: desc_mip_level_count,
+                array_layer_count: desc_array_layer_count,
             };
 
             if desc_transient {
@@ -258,8 +268,10 @@ impl RenderGraph {
                 }
             } else {
                 let descriptor = RenderTargetDescriptor::new(w, h, desc_format)
+                    .usage(desc_usage)
                     .sample_count(desc_sample_count)
                     .mip_level_count(desc_mip_level_count)
+                    .array_layer_count(desc_array_layer_count)
                     .label(desc_name.clone());
 
                 if self.physical_textures[tex_idx].is_none() {
@@ -359,10 +371,12 @@ impl RenderGraph {
                 if let Some(target) = self.physical_textures[tex_idx].take() {
                     let key = PoolKey {
                         format: target.format(),
+                        usage: target.usage(),
                         width: target.width(),
                         height: target.height(),
                         sample_count: target.sample_count(),
                         mip_level_count: target.mip_level_count(),
+                        array_layer_count: target.array_layer_count(),
                     };
                     self.transient_pool.release(key, target);
                 }

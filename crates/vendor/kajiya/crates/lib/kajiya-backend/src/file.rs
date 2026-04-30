@@ -127,7 +127,7 @@ impl LazyWorker for LoadFile {
         FILE_WATCHER
             .lock()
             .watch(self.path.clone(), move |event| {
-                if matches!(event, hotwatch::Event::Write(_)) {
+                if matches!(event.kind, hotwatch::EventKind::Modify(_)) {
                     invalidation_trigger();
                 }
             })

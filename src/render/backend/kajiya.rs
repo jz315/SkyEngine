@@ -37,7 +37,7 @@ impl KajiyaSceneRenderer {
         let size = window.inner_size();
         let surface_size = [size.width.max(1), size.height.max(1)];
         let triangle_only = pipeline.feature_names.contains(&"kajiya_triangle");
-        let config = KajiyaRendererConfig::from_env();
+        let config = KajiyaRendererConfig::from_settings(pipeline.kajiya_settings());
         if config.trace_enabled() {
             eprintln!(
                 "[SkyEngine][Kajiya] create renderer surface={}x{} vsync={} triangle_only={}",
@@ -46,7 +46,7 @@ impl KajiyaSceneRenderer {
         }
         let runtime =
             NativeKajiyaRuntime::try_new(&window, &config, vsync, surface_size, triangle_only)
-                .map_err(SceneRendererInitError::Other)?;
+                .map_err(|error| SceneRendererInitError::Other(error.to_string()))?;
         Ok(Self {
             window: Some(window),
             config,
@@ -66,7 +66,7 @@ impl KajiyaSceneRenderer {
     fn new_with_size(surface_size: [u32; 2]) -> Self {
         Self {
             window: None,
-            config: KajiyaRendererConfig::from_env(),
+            config: KajiyaRendererConfig::from_settings(Default::default()),
             vsync: false,
             surface_size,
             triangle_only: false,
@@ -99,7 +99,7 @@ impl KajiyaSceneRenderer {
             .extract_into(world, &mut self.snapshot);
         let stats = self.snapshot.stats();
         self.stats.view_count = stats.cameras;
-        self.stats.light_count = stats.directional_lights;
+        self.stats.light_count = stats.directional_lights + stats.spot_lights;
         self.stats.draw_calls = stats.mesh_instances;
         self.stats.resident_render_assets = stats.mesh_instances;
     }

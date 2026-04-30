@@ -2,7 +2,7 @@ use crate::gpu::GpuContext;
 use crate::render::execution::{
     bind_current_as_scene_color, ensure_scene_texture, pass_first_write_texture,
     require_current_color, require_render_target, FinalizeExecutionContext, FinalizePhaseState,
-    FrameFinalizeNode, FrameViewNode, PhaseState, PreparedFrame, PreparedView, SceneTextureKind,
+    FrameFinalizeNode, FrameViewNode, PhaseState, PreparedFrame, PreparedView, SceneTexture,
     ViewExecutionContext,
 };
 use crate::render::gpu::GpuScene;
@@ -10,20 +10,23 @@ use crate::render::gpu::Texture;
 use crate::render::graph::{
     CompiledPass, LoadOp, PhysicalResources, RenderGraph, RenderGraphError, TargetSize,
 };
-use crate::render::lighting::shadow::{ShadowSceneBindingLayout, ShadowViewBinding};
+use crate::render::lighting::shadow::{
+    SceneShadowResources, ShadowSceneBindingLayout, ShadowViewBinding,
+};
 use crate::render::phase::{
     DrawContext, DrawFunctionRegistry, OpaquePhase, StandaloneDrawContext, TransparentPhase,
 };
 use crate::render::pipeline::{
-    ComputePass, PostFxPass, RenderPass, RenderPhase, RenderPhaseExecuteContext,
+    ComputePass, GraphPass, PostFxPass, RenderPass, RenderPhase, RenderPhaseExecuteContext,
     RenderPhaseSetupContext,
 };
 use crate::render::resources::material::MaterialRegistry;
 use crate::render::resources::mesh::MeshRegistry;
 use crate::render::view::SceneView;
 use crate::render::{
-    ComputePassExecuteContext, ComputePassSetupContext, PostFxPassExecuteContext,
-    PostFxPassSetupContext, RenderPassExecuteContext, RenderPassSetupContext,
+    ComputePassExecuteContext, ComputePassSetupContext, GraphPassExecuteContext,
+    GraphPassSetupContext, PostFxPassExecuteContext, PostFxPassSetupContext,
+    RenderPassExecuteContext, RenderPassSetupContext,
 };
 use crate::render::{RenderSettings, DEFAULT_DEPTH_FORMAT};
 
@@ -184,7 +187,7 @@ fn built_in_phase_setup(kind: BuiltInPhaseKind, ctx: &mut RenderPhaseSetupContex
                 graph,
                 state,
                 target_size,
-                SceneTextureKind::Depth,
+                SceneTexture::Depth,
                 DEFAULT_DEPTH_FORMAT,
                 "scene_depth",
             )
@@ -348,6 +351,18 @@ fn built_in_phase_execute(
                 depth_stencil_attachment: depth_attachment.clone(),
                 ..Default::default()
             });
+            let scene_shadows =
+                execution.view_state().scene_shadows().cloned().or_else(|| {
+                    match (
+                        execution.frame_payload::<ShadowSceneBindingLayout>(),
+                        execution.view_payload::<ShadowViewBinding>(),
+                    ) {
+                        (Some(layout), Some(shadow_view)) => Some(
+                            SceneShadowResources::from_directional_shadow(layout, shadow_view),
+                        ),
+                        _ => None,
+                    }
+                });
             let mut draw_ctx = DrawContext::new(
                 &device,
                 &sampler_linear,
@@ -360,8 +375,7 @@ fn built_in_phase_execute(
                     .frame_payload::<Vec<[f32; 16]>>()
                     .map(std::vec::Vec::as_slice),
                 Some(gpu_scene),
-                execution.frame_payload::<ShadowSceneBindingLayout>(),
-                execution.view_payload::<ShadowViewBinding>(),
+                scene_shadows,
                 material_registry,
                 mesh_registry,
                 Some(fallback_texture),
@@ -651,6 +665,79 @@ impl FrameViewNode for ComputeStepNode {
             (&mut *self.compute).execute(&mut context)?;
         }
         Ok(())
+    }
+}
+
+pub(crate) struct GraphPassStepNode {
+    pass: *mut dyn GraphPass,
+}
+
+impl GraphPassStepNode {
+    #[inline]
+    pub(crate) fn new(pass: &mut dyn GraphPass) -> Self {
+        Self { pass }
+    }
+}
+
+unsafe impl Send for GraphPassStepNode {}
+
+impl FrameViewNode for GraphPassStepNode {
+    fn name(&self) -> &'static str {
+        unsafe { (&*self.pass).name() }
+    }
+
+    fn is_enabled(&self, frame: &PreparedFrame<'_>) -> bool {
+        frame
+            .views()
+            .iter()
+            .any(|view| unsafe { (&*self.pass).is_enabled(frame, view) })
+    }
+
+    fn is_view_enabled(&self, frame: &PreparedFrame<'_>, view: &PreparedView<'_>) -> bool {
+        unsafe { (&*self.pass).is_enabled(frame, view) }
+    }
+
+    fn setup(
+        &mut self,
+        graph: &mut RenderGraph,
+        state: &mut PhaseState,
+        frame: &PreparedFrame<'_>,
+        view: &PreparedView<'_>,
+    ) {
+        let mut context = GraphPassSetupContext::new(graph, state, frame, view);
+        unsafe {
+            (&mut *self.pass).setup(&mut context);
+        }
+    }
+
+    fn execute(
+        &mut self,
+        pass: &CompiledPass,
+        ctx: &mut GpuContext,
+        resources: &PhysicalResources<'_>,
+        execution: &ViewExecutionContext<'_>,
+    ) -> Result<(), RenderGraphError> {
+        if !self.is_view_enabled(execution.frame(), execution.view()) {
+            return Ok(());
+        }
+        let mut context = GraphPassExecuteContext::new(ctx, pass, resources, execution);
+        unsafe {
+            (&mut *self.pass).execute(&mut context)?;
+        }
+        Ok(())
+    }
+
+    fn draw_calls(&self, execution: &ViewExecutionContext<'_>) -> usize {
+        if !self.is_view_enabled(execution.frame(), execution.view()) {
+            return 0;
+        }
+        unsafe { (&*self.pass).draw_calls(execution) }
+    }
+
+    fn resize(&mut self, ctx: &GpuContext, width: u32, height: u32) {
+        unsafe {
+            (&mut *self.pass).resize(ctx, width, height);
+        }
     }
 }
 

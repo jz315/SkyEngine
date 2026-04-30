@@ -23,6 +23,8 @@
 - [Physics](physics.md)：2D physics、Rapier 后端封装、Tiled physics、debug draw。
 - [Asset](asset.md)：asset id、manifest、cooked files、`AssetServer`、runtime asset。
 - [Audio](audio.md)：audio assets、`AudioServer`、commands、ECS emitter/listener。
+- [Video](video.md)：`VideoClip`、`VideoFrameQueue`、`GpuVideoFrameBuffer`、`FfmpegVideoPlayer`、ECS `VideoPlayer2D`。
+- [VN / Galgame](vn.md)：Yarn-compatible script loading、branching runtime、dialogue/scene state。
 
 ## 架构文档
 
@@ -36,7 +38,9 @@ cargo test --features scene
 cargo test --features physics
 cargo test --features reflect-serde
 cargo test --features ui ui
+cargo test --features vn vn
 cargo check --features "app scene physics"
+cargo run --example vn_minimal --features vn
 cargo check --example hud_menu --features ui
 cargo check --examples --features app
 ```
@@ -46,5 +50,5 @@ cargo check --examples --features app
 - ECS 热路径优先：typed query、chunk iteration、archetype transition 不被工具层拖慢。
 - Reflect 是基础设施：ECS 使用 layout 反射，Inspector 使用 derive 字段反射，Scene 不依赖 reflect 保存。
 - UI 是游戏运行时模块：原生 retained UI 负责 HUD/Menu，egui 保持 tool/debug overlay 定位。
-- 模块边界清晰：scene/save、physics、render、asset、audio 都通过自己的 public API 暴露能力，不塞进一个中心 schema。
+- 模块边界清晰：scene/save、physics、render、asset、audio、video 都通过自己的 public API 暴露能力，不塞进一个中心 schema。
 - API 以人和 AI 都好用为目标：显式入口、稳定名字、少手写注册、文档按模块拆开。

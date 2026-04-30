@@ -1,4 +1,4 @@
-use std::{fs, sync::mpsc};
+use std::{borrow::Cow, fs, sync::mpsc};
 
 use rustc_hash::FxHashMap;
 
@@ -7,17 +7,18 @@ use crate::gpu::GpuContext;
 use crate::render::gi::DdgiRuntime;
 use crate::render::gpu::{RenderTarget, Texture, TextureCreateDesc};
 use crate::render::lighting::shadow::{
-    create_shadow_compare_sampler, ShadowPassBindingLayout, ShadowSceneBindingLayout,
-    ShadowViewBinding,
+    create_shadow_compare_sampler, SceneShadowResources, ShadowPassBindingLayout,
+    ShadowSceneBindingLayout, ShadowViewBinding,
 };
 use crate::render::phase::{
     create_model_bind_group_layout, DrawContext, DrawFunctionRegistry, DrawMesh, DrawSprite,
-    OpaquePhase, PhaseItem, SpriteDrawData, TransparentPhase,
+    MeshDrawData, OpaquePhase, PhaseItem, SpriteDrawData, TransparentPhase,
 };
-use crate::render::view::{Projection, SceneView};
+use crate::render::view::{Projection, SceneView, SceneViewKind};
 use crate::render::{
     expert::{Mesh, MeshRegistry},
-    Color, GpuScene, LightTable, ModelMatrixTable, RenderComposer, RenderPipelineAsset,
+    Color, GpuScene, LightTable, Material, MaterialBindContext, MaterialRenderState,
+    ModelMatrixTable, RenderComposer, RenderPipelineAsset, SceneBindingDesc, ShaderSource,
     SortingLayer, SpriteMaterial, SpriteRenderer, StandardMaterial, Transform, UnlitMaterial,
     ViewportRect, WgpuMeshRenderer, DEFAULT_DEPTH_FORMAT,
 };
@@ -399,7 +400,6 @@ fn sprite_extract_schedule_renders_through_transparent_phase() {
             Some(&model_matrices),
             None,
             None,
-            None,
             &mut renderer.resources.material_registry,
             &mesh_registry,
             Some(&fallback),
@@ -692,7 +692,6 @@ fn mesh_extract_schedule_renders_opaque_phase_with_depth() {
             Some(&model_matrices),
             None,
             None,
-            None,
             &mut renderer.resources.material_registry,
             &renderer.resources.mesh_registry,
             Some(&fallback),
@@ -732,6 +731,406 @@ fn mesh_extract_schedule_renders_opaque_phase_with_depth() {
         "near red mesh should occlude far blue mesh, got pixel {pixel:?}"
     );
     assert!(pixel[3] > 0, "opaque mesh should contribute alpha");
+}
+
+#[test]
+fn shadow_view_extract_skips_mesh_renderers_that_do_not_cast_shadows() {
+    let (device, queue) = create_test_device();
+    let ctx = GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [32, 32]);
+    let mut renderer = RenderComposer::from_asset(RenderPipelineAsset::builder().build());
+    renderer.register_material::<UnlitMaterial>(&ctx);
+    let material = renderer
+        .materials_mut::<UnlitMaterial>()
+        .insert(UnlitMaterial::default().color(Color::WHITE));
+    let mesh_handle = renderer.insert_mesh(Mesh::builtin_quad(&ctx));
+
+    let mut world = crate::ecs::World::new();
+    world.spawn((
+        Transform::default(),
+        WgpuMeshRenderer::new(mesh_handle, material).casts_shadows(false),
+    ));
+
+    let transforms = renderer.resolve_scene_transforms(&world);
+    let main_view = make_view([32, 32]);
+    let shadow_view = SceneView::from_parts(
+        1,
+        main_view.viewport,
+        main_view.target_size,
+        false,
+        SceneViewKind::DirectionalShadow,
+        Some(0),
+        main_view.layer_mask,
+        main_view.camera_transform,
+        main_view.projection,
+        main_view.view_uniform,
+        false,
+    );
+    let mut opaque_phase = OpaquePhase::new();
+    let mut transparent_phase = TransparentPhase::new();
+    let quad_mesh_handle = renderer.resources.mesh_registry.ensure_builtin_quad(&ctx);
+    let mut schedule = ExtractSchedule::new();
+    let mut draw_functions = DrawFunctionRegistry::new();
+    let draw_mesh = draw_functions.register(DrawMesh::<UnlitMaterial>::new());
+    schedule.add(ExtractMeshes::<UnlitMaterial>::new(draw_mesh));
+
+    schedule
+        .extract(
+            &world,
+            &transforms,
+            &shadow_view,
+            &mut ExtractContext {
+                gpu: &ctx,
+                asset_server: None,
+                render_assets: &mut renderer.runtime.render_assets,
+                material_registry: &mut renderer.resources.material_registry,
+                mesh_registry: &renderer.resources.mesh_registry,
+                opaque_phase: &mut opaque_phase,
+                transparent_phase: &mut transparent_phase,
+                quad_mesh_handle,
+            },
+        )
+        .expect("shadow-view mesh extraction should succeed");
+
+    assert!(opaque_phase.is_empty());
+    assert!(transparent_phase.is_empty());
+}
+
+#[test]
+fn shadow_view_extract_respects_shadow_lod_cascade_mask() {
+    let (device, queue) = create_test_device();
+    let ctx = GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [32, 32]);
+    let mut renderer = RenderComposer::from_asset(RenderPipelineAsset::builder().build());
+    renderer.register_material::<UnlitMaterial>(&ctx);
+    let material = renderer
+        .materials_mut::<UnlitMaterial>()
+        .insert(UnlitMaterial::default().color(Color::WHITE));
+    let mesh_handle = renderer.insert_mesh(Mesh::builtin_quad(&ctx));
+
+    let mut world = crate::ecs::World::new();
+    world.spawn((
+        Transform::default(),
+        WgpuMeshRenderer::new(mesh_handle, material).shadow_lod_cascades(2),
+    ));
+
+    let transforms = renderer.resolve_scene_transforms(&world);
+    let main_view = make_view([32, 32]);
+    let shadow_view_cascade_1 = SceneView::from_parts(
+        1,
+        main_view.viewport,
+        main_view.target_size,
+        false,
+        SceneViewKind::DirectionalShadow,
+        Some(0),
+        main_view.layer_mask,
+        main_view.camera_transform,
+        main_view.projection,
+        main_view.view_uniform,
+        false,
+    )
+    .with_shadow_binding_and_cascade(0, 1);
+    let shadow_view_cascade_2 = shadow_view_cascade_1.with_shadow_binding_and_cascade(0, 2);
+
+    let quad_mesh_handle = renderer.resources.mesh_registry.ensure_builtin_quad(&ctx);
+    let mut schedule = ExtractSchedule::new();
+    let mut draw_functions = DrawFunctionRegistry::new();
+    let draw_mesh = draw_functions.register(DrawMesh::<UnlitMaterial>::new());
+    schedule.add(ExtractMeshes::<UnlitMaterial>::new(draw_mesh));
+
+    let mut near_opaque_phase = OpaquePhase::new();
+    let mut near_transparent_phase = TransparentPhase::new();
+    schedule
+        .extract(
+            &world,
+            &transforms,
+            &shadow_view_cascade_1,
+            &mut ExtractContext {
+                gpu: &ctx,
+                asset_server: None,
+                render_assets: &mut renderer.runtime.render_assets,
+                material_registry: &mut renderer.resources.material_registry,
+                mesh_registry: &renderer.resources.mesh_registry,
+                opaque_phase: &mut near_opaque_phase,
+                transparent_phase: &mut near_transparent_phase,
+                quad_mesh_handle,
+            },
+        )
+        .expect("near shadow cascade mesh extraction should succeed");
+
+    let mut far_opaque_phase = OpaquePhase::new();
+    let mut far_transparent_phase = TransparentPhase::new();
+    schedule
+        .extract(
+            &world,
+            &transforms,
+            &shadow_view_cascade_2,
+            &mut ExtractContext {
+                gpu: &ctx,
+                asset_server: None,
+                render_assets: &mut renderer.runtime.render_assets,
+                material_registry: &mut renderer.resources.material_registry,
+                mesh_registry: &renderer.resources.mesh_registry,
+                opaque_phase: &mut far_opaque_phase,
+                transparent_phase: &mut far_transparent_phase,
+                quad_mesh_handle,
+            },
+        )
+        .expect("far shadow cascade mesh extraction should succeed");
+
+    assert_eq!(near_opaque_phase.len(), 1);
+    assert!(near_transparent_phase.is_empty());
+    assert!(far_opaque_phase.is_empty());
+    assert!(far_transparent_phase.is_empty());
+}
+
+#[derive(Clone)]
+struct ShadowBindingTestMaterial;
+
+impl Material for ShadowBindingTestMaterial {
+    fn shader_source(&self) -> ShaderSource {
+        ShaderSource::Wgsl(Cow::Borrowed(
+            r#"
+struct ViewUniform {
+    view_proj: mat4x4<f32>,
+    camera: vec4<f32>,
+    viewport: vec4<f32>,
+};
+
+@group(0) @binding(0)
+var<uniform> camera: ViewUniform;
+
+@group(2) @binding(0)
+var<uniform> custom_shadow: vec4<f32>;
+
+struct VertexInput {
+    @location(0) position: vec3<f32>,
+    @location(1) uv: vec2<f32>,
+    @location(8) model_col0: vec4<f32>,
+    @location(9) model_col1: vec4<f32>,
+    @location(10) model_col2: vec4<f32>,
+    @location(11) model_col3: vec4<f32>,
+};
+
+struct VertexOutput {
+    @builtin(position) clip_position: vec4<f32>,
+};
+
+@vertex
+fn vs_main(input: VertexInput) -> VertexOutput {
+    var output: VertexOutput;
+    let model = mat4x4<f32>(
+        input.model_col0,
+        input.model_col1,
+        input.model_col2,
+        input.model_col3,
+    );
+    output.clip_position = camera.view_proj * model * vec4<f32>(input.position, 1.0);
+    return output;
+}
+
+@fragment
+fn fs_main(_input: VertexOutput) -> @location(0) vec4<f32> {
+    return custom_shadow;
+}
+"#,
+        ))
+    }
+
+    fn vertex_layout(&self) -> crate::render::expert::VertexLayout {
+        Mesh::vertex_layout_position_uv()
+    }
+
+    fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout
+    where
+        Self: Sized,
+    {
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("shadow_binding_test_material_bgl"),
+            entries: &[],
+        })
+    }
+
+    fn create_bind_group(&self, ctx: &MaterialBindContext<'_>) -> wgpu::BindGroup {
+        ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("shadow_binding_test_material_bg"),
+            layout: ctx.layout(),
+            entries: &[],
+        })
+    }
+
+    fn render_state(&self) -> MaterialRenderState {
+        MaterialRenderState::opaque()
+    }
+
+    fn scene_bindings(&self) -> Vec<SceneBindingDesc> {
+        vec![SceneBindingDesc::shadow_view(2)]
+    }
+}
+
+#[test]
+fn custom_material_draw_binds_published_shadow_resource() {
+    let (device, queue) = create_test_device();
+    let mut ctx =
+        GpuContext::new_headless(device, queue, wgpu::TextureFormat::Rgba8Unorm, [32, 32]);
+    let mut material_registry = crate::render::resources::material::MaterialRegistry::new();
+    material_registry.register_material::<ShadowBindingTestMaterial>(ctx.device());
+    let material_handle = material_registry
+        .materials_mut::<ShadowBindingTestMaterial>()
+        .insert(ShadowBindingTestMaterial);
+    let mut mesh_registry = MeshRegistry::new();
+    let mesh_handle = mesh_registry.ensure_builtin_quad(&ctx);
+    let mut gpu_scene = GpuScene::new(&ctx);
+    gpu_scene.upload_all(ctx.queue());
+
+    let mut draw_functions = DrawFunctionRegistry::new();
+    let draw_mesh = draw_functions.register(DrawMesh::<ShadowBindingTestMaterial>::new());
+    let mut opaque_phase = OpaquePhase::new();
+    opaque_phase.add_item(PhaseItem::new(
+        0,
+        draw_mesh,
+        crate::ecs::EntityId::new(0, 0),
+        0,
+        MeshDrawData::new(mesh_handle, material_handle, 0),
+    ));
+
+    let view = make_view([32, 32]);
+    let view_layout = ctx
+        .device()
+        .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("custom_shadow_material_view_bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: Some(
+                        std::num::NonZeroU64::new(std::mem::size_of::<
+                            crate::render::view::ViewUniform,
+                        >() as u64)
+                        .expect("ViewUniform has non-zero size"),
+                    ),
+                },
+                count: None,
+            }],
+        });
+    let view_buffer = ctx
+        .device()
+        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("custom_shadow_material_view_uniform"),
+            contents: bytemuck::bytes_of(&view.view_uniform),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+    let view_bind_group = ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("custom_shadow_material_view_bg"),
+        layout: &view_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: view_buffer.as_entire_binding(),
+        }],
+    });
+    let shadow_layout = ctx
+        .device()
+        .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("custom_shadow_material_resource_bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: Some(
+                        std::num::NonZeroU64::new(std::mem::size_of::<[f32; 4]>() as u64)
+                            .expect("shadow test uniform has non-zero size"),
+                    ),
+                },
+                count: None,
+            }],
+        });
+    let shadow_uniform = ctx
+        .device()
+        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("custom_shadow_material_resource_uniform"),
+            contents: bytemuck::bytes_of(&[0.25f32, 0.5, 0.75, 1.0]),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+    let shadow_bind_group = ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("custom_shadow_material_resource_bg"),
+        layout: &shadow_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: shadow_uniform.as_entire_binding(),
+        }],
+    });
+    let scene_shadows = SceneShadowResources::from_bind_group(
+        crate::render::lighting::ShadowResourceKind::DirectionalCascades,
+        &shadow_layout,
+        &shadow_bind_group,
+    );
+    let target = RenderTarget::new(
+        &ctx,
+        32,
+        32,
+        wgpu::TextureFormat::Rgba8Unorm,
+        "custom_shadow_material_target",
+    );
+    let depth_target = RenderTarget::new_depth(&ctx, 32, 32);
+    let fallback = Texture::white_pixel(&ctx);
+    let device = ctx.device().clone();
+    let sampler_linear = ctx.sampler_linear().clone();
+    let sampler_nearest = ctx.sampler_nearest().clone();
+    let model_layout = create_model_bind_group_layout(ctx.device());
+    let model_matrices = [[
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ]];
+
+    ctx.begin_frame()
+        .expect("headless frame should begin for custom shadow material rendering");
+    {
+        let mut frame = ctx.frame();
+        let color_attachment = [Some(wgpu::RenderPassColorAttachment {
+            view: target.view(),
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                store: wgpu::StoreOp::Store,
+            },
+        })];
+        let depth_attachment = wgpu::RenderPassDepthStencilAttachment {
+            view: depth_target.view(),
+            depth_ops: Some(wgpu::Operations {
+                load: wgpu::LoadOp::Clear(1.0),
+                store: wgpu::StoreOp::Store,
+            }),
+            stencil_ops: None,
+        };
+        let mut pass = frame.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("custom_shadow_material_phase"),
+            color_attachments: &color_attachment,
+            depth_stencil_attachment: Some(depth_attachment),
+            ..Default::default()
+        });
+        let mut draw_ctx = DrawContext::new(
+            &device,
+            &sampler_linear,
+            &sampler_nearest,
+            &mut pass,
+            &view_bind_group,
+            &view_layout,
+            &model_layout,
+            Some(&model_matrices),
+            Some(&gpu_scene),
+            Some(scene_shadows),
+            &mut material_registry,
+            &mesh_registry,
+            Some(&fallback),
+            target.format(),
+            Some(DEFAULT_DEPTH_FORMAT),
+        );
+        opaque_phase
+            .render(&mut draw_functions, &mut draw_ctx)
+            .expect("custom material should bind the published shadow resource");
+    }
+    ctx.end_frame();
 }
 
 #[test]
@@ -902,6 +1301,7 @@ fn gltf_mesh_extract_schedule_renders_submeshes_with_material_slots_and_depth() 
         gpu_scene.table::<LightTable>(),
         ddgi.scene_resources(),
     );
+    let scene_shadows = SceneShadowResources::from_directional_shadow(&shadow_layout, &shadow_view);
     ctx.begin_frame()
         .expect("headless frame should begin for gltf mesh rendering");
     {
@@ -938,8 +1338,7 @@ fn gltf_mesh_extract_schedule_renders_submeshes_with_material_slots_and_depth() 
             &model_layout,
             Some(&model_matrices),
             Some(&gpu_scene),
-            Some(&shadow_layout),
-            Some(&shadow_view),
+            Some(scene_shadows),
             &mut renderer.resources.material_registry,
             &renderer.resources.mesh_registry,
             Some(&fallback),

@@ -10,8 +10,10 @@ pub struct TextureBuilder {
     pub(crate) name: Cow<'static, str>,
     pub(crate) size: TargetSize,
     pub(crate) format: TextureFormat,
+    pub(crate) usage: wgpu::TextureUsages,
     pub(crate) sample_count: u32,
     pub(crate) mip_level_count: u32,
+    pub(crate) array_layer_count: u32,
     pub(crate) transient: bool,
     pub(crate) imported: Option<ImportedTexture>,
 }
@@ -22,8 +24,10 @@ impl TextureBuilder {
             name: Cow::Borrowed("unnamed_texture"),
             size: TargetSize::Surface,
             format: TextureFormat::Rgba8Unorm,
+            usage: DEFAULT_TEXTURE_USAGE,
             sample_count: 1,
             mip_level_count: 1,
+            array_layer_count: 1,
             transient: true,
             imported: None,
         }
@@ -44,6 +48,36 @@ impl TextureBuilder {
         self
     }
 
+    pub fn usage(&mut self, usage: wgpu::TextureUsages) -> &mut Self {
+        self.usage = usage;
+        self
+    }
+
+    pub fn add_usage(&mut self, usage: wgpu::TextureUsages) -> &mut Self {
+        self.usage |= usage;
+        self
+    }
+
+    pub fn storage_binding(&mut self) -> &mut Self {
+        self.add_usage(wgpu::TextureUsages::STORAGE_BINDING)
+    }
+
+    pub fn sampled(&mut self) -> &mut Self {
+        self.add_usage(wgpu::TextureUsages::TEXTURE_BINDING)
+    }
+
+    pub fn render_attachment(&mut self) -> &mut Self {
+        self.add_usage(wgpu::TextureUsages::RENDER_ATTACHMENT)
+    }
+
+    pub fn copy_src(&mut self) -> &mut Self {
+        self.add_usage(wgpu::TextureUsages::COPY_SRC)
+    }
+
+    pub fn copy_dst(&mut self) -> &mut Self {
+        self.add_usage(wgpu::TextureUsages::COPY_DST)
+    }
+
     pub fn sample_count(&mut self, sample_count: u32) -> &mut Self {
         self.sample_count = sample_count.max(1);
         self
@@ -51,6 +85,11 @@ impl TextureBuilder {
 
     pub fn mip_level_count(&mut self, mip_level_count: u32) -> &mut Self {
         self.mip_level_count = mip_level_count.max(1);
+        self
+    }
+
+    pub fn array_layer_count(&mut self, array_layer_count: u32) -> &mut Self {
+        self.array_layer_count = array_layer_count.max(1);
         self
     }
 
@@ -68,15 +107,19 @@ impl TextureBuilder {
         let format = texture.format();
         self.size = TargetSize::Exact(size.width, size.height);
         self.format = format;
+        self.usage = texture.usage();
         self.sample_count = texture.sample_count();
         self.mip_level_count = texture.mip_level_count();
+        self.array_layer_count = texture.size().depth_or_array_layers;
         self.imported = Some(ImportedTexture {
             texture,
             view,
             size: [size.width, size.height],
             format,
+            usage: self.usage,
             sample_count: self.sample_count,
             mip_level_count: self.mip_level_count,
+            array_layer_count: self.array_layer_count,
         });
         self.transient = false;
         self
@@ -85,8 +128,10 @@ impl TextureBuilder {
     pub fn import_external(&mut self, tex: ImportedTexture) -> &mut Self {
         self.size = TargetSize::Exact(tex.size[0], tex.size[1]);
         self.format = tex.format;
+        self.usage = tex.usage;
         self.sample_count = tex.sample_count;
         self.mip_level_count = tex.mip_level_count;
+        self.array_layer_count = tex.array_layer_count;
         self.imported = Some(tex);
         self.transient = false;
         self
@@ -179,12 +224,28 @@ impl PassSetup {
         self.push_read(ResourceRef::Texture(handle));
     }
 
+    pub fn read_texture(&mut self, handle: TextureHandle) {
+        self.read(handle);
+    }
+
+    pub fn read_subresource(&mut self, subresource: TextureSubresource) {
+        self.push_read(ResourceRef::TextureSubresource(subresource));
+    }
+
     pub fn read_buffer(&mut self, handle: BufferHandle) {
         self.push_read(ResourceRef::Buffer(handle));
     }
 
     pub fn write(&mut self, handle: TextureHandle) {
         self.push_write(ResourceRef::Texture(handle));
+    }
+
+    pub fn write_texture(&mut self, handle: TextureHandle) {
+        self.write(handle);
+    }
+
+    pub fn write_subresource(&mut self, subresource: TextureSubresource) {
+        self.push_write(ResourceRef::TextureSubresource(subresource));
     }
 
     pub fn write_buffer(&mut self, handle: BufferHandle) {
@@ -194,6 +255,11 @@ impl PassSetup {
     pub fn readwrite(&mut self, handle: TextureHandle) {
         self.push_read(ResourceRef::Texture(handle));
         self.push_write(ResourceRef::Texture(handle));
+    }
+
+    pub fn readwrite_subresource(&mut self, subresource: TextureSubresource) {
+        self.push_read(ResourceRef::TextureSubresource(subresource));
+        self.push_write(ResourceRef::TextureSubresource(subresource));
     }
 
     pub fn readwrite_buffer(&mut self, handle: BufferHandle) {

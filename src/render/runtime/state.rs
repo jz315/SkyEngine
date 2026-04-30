@@ -16,7 +16,7 @@ use crate::render::resources::mesh::MeshRegistry;
 use crate::render::view::RenderStats;
 use crate::render::GpuTable;
 
-use super::WorldViewCollector;
+use super::{HistoryTextureStore, TemporalViewTracker, WorldViewCollector};
 
 pub(crate) struct ComposerPlan {
     pub(crate) runtime_features: Vec<Box<dyn AnyRenderFeature>>,
@@ -37,9 +37,11 @@ pub(crate) struct ComposerRuntime {
     pub(crate) surface_size: [u32; 2],
     pub(crate) frame_settings: RenderSettings,
     pub(crate) view_collector: WorldViewCollector,
+    pub(crate) temporal: TemporalViewTracker,
     pub(crate) gpu_scene: Option<GpuScene>,
     pub(crate) ddgi: Option<DdgiRuntime>,
     pub(crate) fallback_texture: Option<Texture>,
+    pub(crate) history: HistoryTextureStore,
     pub(crate) render_assets: RenderAssetCache,
     pub(crate) asset_event_cursor: AssetEventCursor,
     pub(crate) previous_model_by_entity: rustc_hash::FxHashMap<EntityId, [f32; 16]>,

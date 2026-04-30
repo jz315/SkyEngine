@@ -5,15 +5,17 @@ use glyphon::{
     Attrs, Buffer, Cache, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache, TextArea,
     TextAtlas, TextBounds, TextRenderer, Viewport,
 };
+use glyphon::cosmic_text::Align as TextAlign;
 use rustc_hash::FxHashMap;
 
+use crate::asset::{AssetId, AssetServer, Handle, TextureAsset};
 use crate::ecs::{EntityId, World};
 use crate::gpu::GpuContext;
-use crate::render::Color as SkyColor;
+use crate::render::{Color as SkyColor, Texture};
 
 use super::{
-    preferred_text_size, resolve_world_layout, UiAlign, UiButton, UiFontBook, UiFontSource,
-    UiInteraction, UiNode, UiPanel, UiProgressBar, UiScroll, UiSlider, UiState, UiText, UiToggle,
+    resolve_world_layout, UiAlign, UiButton, UiFontBook, UiFontSource, UiImage, UiInteraction,
+    UiNode, UiPanel, UiProgressBar, UiScroll, UiSlider, UiState, UiText, UiToggle,
 };
 
 const UI_SHADER: &str = r#"
@@ -51,10 +53,61 @@ fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
 }
 "#;
 
+const UI_IMAGE_SHADER: &str = r#"
+struct Screen {
+    size: vec2<f32>,
+    _pad: vec2<f32>,
+};
+
+@group(0) @binding(0)
+var<uniform> screen: Screen;
+
+@group(1) @binding(0)
+var t_diffuse: texture_2d<f32>;
+@group(1) @binding(1)
+var s_diffuse: sampler;
+
+struct VsIn {
+    @location(0) position: vec2<f32>,
+    @location(1) uv: vec2<f32>,
+    @location(2) color: vec4<f32>,
+};
+
+struct VsOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) color: vec4<f32>,
+};
+
+@vertex
+fn vs_main(input: VsIn) -> VsOut {
+    var out: VsOut;
+    let x = input.position.x / max(screen.size.x, 1.0) * 2.0 - 1.0;
+    let y = 1.0 - input.position.y / max(screen.size.y, 1.0) * 2.0;
+    out.position = vec4<f32>(x, y, 0.0, 1.0);
+    out.uv = input.uv;
+    out.color = input.color;
+    return out;
+}
+
+@fragment
+fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
+    return textureSample(t_diffuse, s_diffuse, input.uv) * input.color;
+}
+"#;
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct UiVertex {
     position: [f32; 2],
+    color: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct UiImageVertex {
+    position: [f32; 2],
+    uv: [f32; 2],
     color: [f32; 4],
 }
 
@@ -75,9 +128,22 @@ struct TextItem {
     align: UiAlign,
 }
 
+#[derive(Clone, Copy)]
+struct ImageItem {
+    texture: Handle<TextureAsset>,
+    vertices: [UiImageVertex; 6],
+}
+
+#[derive(Clone, Copy)]
+enum DrawOp {
+    Color { start: u32, count: u32 },
+    Image { index: usize },
+}
+
 #[derive(Default)]
 struct WidgetSnapshot {
     panel: Option<UiPanel>,
+    image: Option<UiImage>,
     button: Option<UiButton>,
     progress: Option<UiProgressBar>,
     slider: Option<UiSlider>,
@@ -89,8 +155,12 @@ struct WidgetSnapshot {
 pub(crate) struct UiRenderer {
     format: wgpu::TextureFormat,
     pipeline: wgpu::RenderPipeline,
+    image_pipeline: wgpu::RenderPipeline,
     screen_buffer: wgpu::Buffer,
     screen_bind_group: wgpu::BindGroup,
+    image_texture_layout: wgpu::BindGroupLayout,
+    image_textures: FxHashMap<AssetId, CachedUiTexture>,
+    image_bind_groups: FxHashMap<AssetId, wgpu::BindGroup>,
     font_revision: u64,
     font_system: FontSystem,
     swash_cache: SwashCache,
@@ -99,6 +169,11 @@ pub(crate) struct UiRenderer {
     atlas: TextAtlas,
     text_renderer: TextRenderer,
     text_buffers: Vec<Buffer>,
+}
+
+struct CachedUiTexture {
+    source: std::sync::Arc<TextureAsset>,
+    _texture: Texture,
 }
 
 impl UiRenderer {
@@ -187,6 +262,86 @@ impl UiRenderer {
             multiview: None,
             cache: None,
         });
+        let image_texture_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("sky_ui_image_texture_bgl"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+        let image_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("sky_ui_image_shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(UI_IMAGE_SHADER)),
+        });
+        let image_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("sky_ui_image_pipeline_layout"),
+                bind_group_layouts: &[&screen_bind_group_layout, &image_texture_layout],
+                push_constant_ranges: &[],
+            });
+        let image_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("sky_ui_image_pipeline"),
+            layout: Some(&image_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &image_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<UiImageVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: std::mem::size_of::<[f32; 2]>() as u64,
+                            shader_location: 1,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: (std::mem::size_of::<[f32; 2]>() * 2) as u64,
+                            shader_location: 2,
+                        },
+                    ],
+                }],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &image_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
 
         let (font_system, font_revision) = create_font_system(font_book);
         let swash_cache = SwashCache::new();
@@ -199,8 +354,12 @@ impl UiRenderer {
         Self {
             format,
             pipeline,
+            image_pipeline,
             screen_buffer,
             screen_bind_group,
+            image_texture_layout,
+            image_textures: FxHashMap::default(),
+            image_bind_groups: FxHashMap::default(),
             font_revision,
             font_system,
             swash_cache,
@@ -268,6 +427,10 @@ impl UiRenderer {
                 Attrs::new().family(Family::SansSerif),
                 Shaping::Advanced,
             );
+            let align = text_align(item.align);
+            for line in &mut buffer.lines {
+                line.set_align(Some(align));
+            }
             buffer.shape_until_scroll(&mut self.font_system, false);
             self.text_buffers.push(buffer);
         }
@@ -277,15 +440,12 @@ impl UiRenderer {
             .iter()
             .zip(text_items.iter())
             .map(|(buffer, item)| {
-                let preferred = preferred_text_size(&item.text, item.font_size);
-                let x_offset = match item.align {
-                    UiAlign::Start | UiAlign::Stretch => 0.0,
-                    UiAlign::Center => ((item.rect.width - preferred[0]) * 0.5).max(0.0),
-                    UiAlign::End => (item.rect.width - preferred[0]).max(0.0),
-                };
-                let y_offset = ((item.rect.height - preferred[1]) * 0.5).max(0.0);
-                let left = (item.rect.x + x_offset) * scale_x;
-                let top = (item.rect.y + y_offset) * scale_y;
+                let text_height = laid_out_text_height(buffer)
+                    .unwrap_or(item.font_size * text_scale * 1.25);
+                let rect_height = item.rect.height * scale_y;
+                let y_offset = ((rect_height - text_height) * 0.5).max(0.0);
+                let left = item.rect.x * scale_x;
+                let top = item.rect.y * scale_y + y_offset;
                 TextArea {
                     buffer,
                     left,
@@ -319,6 +479,59 @@ impl UiRenderer {
             }
         }
     }
+
+    fn image_bind_group(
+        &mut self,
+        gpu: &GpuContext,
+        assets: Option<&AssetServer>,
+        handle: Handle<TextureAsset>,
+    ) -> Option<wgpu::BindGroup> {
+        let id = handle.id();
+        let source = assets.and_then(|assets| assets.try_get(&handle))?;
+        let cached_is_current = self
+            .image_textures
+            .get(&id)
+            .is_some_and(|cached| std::sync::Arc::ptr_eq(&cached.source, &source));
+
+        if !cached_is_current {
+            let format = match source.color_space() {
+                crate::asset::TextureColorSpace::Linear => wgpu::TextureFormat::Rgba8Unorm,
+                crate::asset::TextureColorSpace::Srgb => wgpu::TextureFormat::Rgba8UnormSrgb,
+            };
+            let texture = Texture::from_rgba8_with_format(
+                gpu,
+                source.width(),
+                source.height(),
+                source.pixels(),
+                format,
+                "ui_image_texture",
+            );
+            let bind_group = gpu.device().create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("sky_ui_image_texture_bg"),
+                layout: &self.image_texture_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(texture.view()),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(gpu.sampler_linear()),
+                    },
+                ],
+            });
+            self.image_textures.insert(
+                id,
+                CachedUiTexture {
+                    source,
+                    _texture: texture,
+                },
+            );
+            self.image_bind_groups.insert(id, bind_group);
+        }
+
+        self.image_bind_groups.get(&id).cloned()
+    }
 }
 
 /// Render UI as an overlay on the active surface frame.
@@ -342,6 +555,8 @@ pub fn render_ui(world: &mut World, gpu: &mut GpuContext) {
     let resolved = resolve_world_layout(world, logical_size);
     let widgets = collect_widgets(world);
     let mut vertices = Vec::new();
+    let mut images = Vec::new();
+    let mut draw_ops = Vec::new();
     let mut text_items = Vec::new();
     let mut scrollbars = Vec::new();
 
@@ -353,7 +568,16 @@ pub fn render_ui(world: &mut World, gpu: &mut GpuContext) {
             continue;
         };
         if let Some(panel) = widget.panel {
-            push_clipped_quad(&mut vertices, node.rect, node.clip_rect, panel.color);
+            push_clipped_quad(
+                &mut vertices,
+                &mut draw_ops,
+                node.rect,
+                node.clip_rect,
+                panel.color,
+            );
+        }
+        if let Some(image) = widget.image {
+            push_image_item(&mut images, &mut draw_ops, node.rect, node.clip_rect, image);
         }
         if let Some(button) = widget.button.as_ref() {
             let color = match state.interaction(node.entity) {
@@ -362,7 +586,13 @@ pub fn render_ui(world: &mut World, gpu: &mut GpuContext) {
                 UiInteraction::Disabled => button.disabled_color,
                 UiInteraction::None => button.normal_color,
             };
-            push_clipped_quad(&mut vertices, node.rect, node.clip_rect, color);
+            push_clipped_quad(
+                &mut vertices,
+                &mut draw_ops,
+                node.rect,
+                node.clip_rect,
+                color,
+            );
             if !button.label.is_empty() {
                 push_text_item(
                     &mut text_items,
@@ -378,6 +608,7 @@ pub fn render_ui(world: &mut World, gpu: &mut GpuContext) {
         if let Some(progress) = widget.progress {
             push_clipped_quad(
                 &mut vertices,
+                &mut draw_ops,
                 node.rect,
                 node.clip_rect,
                 progress.background_color,
@@ -388,11 +619,18 @@ pub fn render_ui(world: &mut World, gpu: &mut GpuContext) {
                 node.rect.width * progress.fraction(),
                 node.rect.height,
             );
-            push_clipped_quad(&mut vertices, fill, node.clip_rect, progress.fill_color);
+            push_clipped_quad(
+                &mut vertices,
+                &mut draw_ops,
+                fill,
+                node.clip_rect,
+                progress.fill_color,
+            );
         }
         if let Some(slider) = widget.slider {
             push_slider(
                 &mut vertices,
+                &mut draw_ops,
                 node.rect,
                 node.clip_rect,
                 slider,
@@ -402,6 +640,7 @@ pub fn render_ui(world: &mut World, gpu: &mut GpuContext) {
         if let Some(toggle) = widget.toggle.as_ref() {
             if let Some(text_item) = push_toggle(
                 &mut vertices,
+                &mut draw_ops,
                 node.rect,
                 node.clip_rect,
                 toggle,
@@ -428,14 +667,15 @@ pub fn render_ui(world: &mut World, gpu: &mut GpuContext) {
         }
     }
     for (rect, clip, scroll) in scrollbars {
-        push_scrollbars(&mut vertices, rect, clip, scroll);
+        push_scrollbars(&mut vertices, &mut draw_ops, rect, clip, scroll);
     }
 
-    if vertices.is_empty() && text_items.is_empty() {
+    if vertices.is_empty() && images.is_empty() && text_items.is_empty() {
         return;
     }
 
     let font_book = world.get_resource::<UiFontBook>().cloned();
+    let asset_server = world.get_resource::<AssetServer>().cloned();
     let mut renderer = world
         .remove_resource::<UiRenderer>()
         .filter(|renderer| renderer.matches_surface(gpu.surface_format()))
@@ -453,16 +693,59 @@ pub fn render_ui(world: &mut World, gpu: &mut GpuContext) {
     } else {
         Some(gpu.upload_vertices(&vertices))
     };
+    let image_vertices: Vec<_> = images
+        .iter()
+        .flat_map(|item| item.vertices.into_iter())
+        .collect();
+    let image_upload = if image_vertices.is_empty() {
+        None
+    } else {
+        Some(gpu.upload_vertices(&image_vertices))
+    };
     let text_ready = renderer.prepare_text(gpu, &text_items, logical_size);
+    let image_bind_groups: Vec<_> = images
+        .iter()
+        .map(|image| renderer.image_bind_group(gpu, asset_server.as_ref(), image.texture))
+        .collect();
 
     {
         let mut frame = gpu.frame();
         let mut pass = frame.begin_surface_pass_loaded("sky_ui_overlay");
-        if let Some(upload) = vertex_upload {
-            pass.set_pipeline(&renderer.pipeline);
-            pass.set_bind_group(0, &renderer.screen_bind_group, &[]);
-            pass.set_vertex_buffer(0, upload.slice());
-            pass.draw(0..vertices.len() as u32, 0..1);
+        let mut color_pipeline_bound = false;
+        let mut image_pipeline_bound = false;
+        for op in &draw_ops {
+            match *op {
+                DrawOp::Color { start, count } => {
+                    let Some(upload) = vertex_upload.as_ref() else {
+                        continue;
+                    };
+                    if !color_pipeline_bound {
+                        pass.set_pipeline(&renderer.pipeline);
+                        pass.set_bind_group(0, &renderer.screen_bind_group, &[]);
+                        pass.set_vertex_buffer(0, upload.slice());
+                        color_pipeline_bound = true;
+                        image_pipeline_bound = false;
+                    }
+                    pass.draw(start..start + count, 0..1);
+                }
+                DrawOp::Image { index } => {
+                    let (Some(upload), Some(Some(bind_group))) =
+                        (image_upload.as_ref(), image_bind_groups.get(index))
+                    else {
+                        continue;
+                    };
+                    if !image_pipeline_bound {
+                        pass.set_pipeline(&renderer.image_pipeline);
+                        pass.set_bind_group(0, &renderer.screen_bind_group, &[]);
+                        pass.set_vertex_buffer(0, upload.slice());
+                        image_pipeline_bound = true;
+                        color_pipeline_bound = false;
+                    }
+                    pass.set_bind_group(1, bind_group, &[]);
+                    let start = index as u32 * 6;
+                    pass.draw(start..start + 6, 0..1);
+                }
+            }
         }
         if text_ready {
             if let Err(error) =
@@ -483,36 +766,129 @@ fn collect_widgets(world: &World) -> FxHashMap<EntityId, WidgetSnapshot> {
     let mut query = world.query::<(
         &UiNode,
         Option<&UiPanel>,
+        Option<&UiImage>,
         Option<&UiButton>,
         Option<&UiProgressBar>,
         Option<&UiSlider>,
         Option<&UiToggle>,
-        Option<&UiText>,
-        Option<&UiScroll>,
     )>();
     let mut widgets = FxHashMap::default();
     query.for_each_with_entity(
         world,
-        |entity, (_node, panel, button, progress, slider, toggle, text, scroll)| {
+        |entity, (_node, panel, image, button, progress, slider, toggle)| {
             widgets.insert(
                 entity,
                 WidgetSnapshot {
                     panel: panel.copied(),
+                    image: image.copied(),
                     button: button.cloned(),
                     progress: progress.copied(),
                     slider: slider.copied(),
                     toggle: toggle.cloned(),
-                    text: text.cloned(),
-                    scroll: scroll.copied(),
+                    text: None,
+                    scroll: None,
                 },
             );
         },
     );
+    let mut text_query = world.query::<(&UiNode, Option<&UiText>, Option<&UiScroll>)>();
+    text_query.for_each_with_entity(world, |entity, (_node, text, scroll)| {
+        let widget = widgets.entry(entity).or_default();
+        widget.text = text.cloned();
+        widget.scroll = scroll.copied();
+    });
     widgets
+}
+
+fn push_image_item(
+    images: &mut Vec<ImageItem>,
+    draw_ops: &mut Vec<DrawOp>,
+    rect: super::UiRect,
+    clip: super::UiRect,
+    image: UiImage,
+) {
+    if rect.width <= 0.0 || rect.height <= 0.0 || image.color.a <= 0.0 {
+        return;
+    }
+    let Some((rect, uv_rect)) = clipped_image_rect(rect, clip, image.uv_rect) else {
+        return;
+    };
+    if rect.width <= 0.0 || rect.height <= 0.0 {
+        return;
+    }
+
+    let c = image.color.to_array();
+    let x0 = rect.x;
+    let y0 = rect.y;
+    let x1 = rect.right();
+    let y1 = rect.bottom();
+    let [u0, v0, u1, v1] = uv_rect;
+    let index = images.len();
+    images.push(ImageItem {
+        texture: image.texture,
+        vertices: [
+            UiImageVertex {
+                position: [x0, y0],
+                uv: [u0, v0],
+                color: c,
+            },
+            UiImageVertex {
+                position: [x1, y0],
+                uv: [u1, v0],
+                color: c,
+            },
+            UiImageVertex {
+                position: [x1, y1],
+                uv: [u1, v1],
+                color: c,
+            },
+            UiImageVertex {
+                position: [x0, y0],
+                uv: [u0, v0],
+                color: c,
+            },
+            UiImageVertex {
+                position: [x1, y1],
+                uv: [u1, v1],
+                color: c,
+            },
+            UiImageVertex {
+                position: [x0, y1],
+                uv: [u0, v1],
+                color: c,
+            },
+        ],
+    });
+    draw_ops.push(DrawOp::Image { index });
+}
+
+fn clipped_image_rect(
+    rect: super::UiRect,
+    clip: super::UiRect,
+    uv: [f32; 4],
+) -> Option<(super::UiRect, [f32; 4])> {
+    let clipped = rect.intersection(clip)?;
+    let left = ((clipped.x - rect.x) / rect.width).clamp(0.0, 1.0);
+    let top = ((clipped.y - rect.y) / rect.height).clamp(0.0, 1.0);
+    let right = ((clipped.right() - rect.x) / rect.width).clamp(0.0, 1.0);
+    let bottom = ((clipped.bottom() - rect.y) / rect.height).clamp(0.0, 1.0);
+    let [u0, v0, u1, v1] = uv;
+    let du = u1 - u0;
+    let dv = v1 - v0;
+    Some((
+        clipped,
+        [
+            u0 + du * left,
+            v0 + dv * top,
+            u0 + du * right,
+            v0 + dv * bottom,
+        ],
+    ))
 }
 
 fn push_slider(
     vertices: &mut Vec<UiVertex>,
+    draw_ops: &mut Vec<DrawOp>,
     rect: super::UiRect,
     clip: super::UiRect,
     slider: UiSlider,
@@ -529,12 +905,13 @@ fn push_slider(
         track_height,
     );
     let disabled = interaction == UiInteraction::Disabled;
-    push_clipped_quad(vertices, track, clip, slider.background_color);
+    push_clipped_quad(vertices, draw_ops, track, clip, slider.background_color);
 
     let fraction = slider.fraction();
     let fill = super::UiRect::new(track.x, track.y, track.width * fraction, track.height);
     push_clipped_quad(
         vertices,
+        draw_ops,
         fill,
         clip,
         if disabled {
@@ -560,11 +937,12 @@ fn push_slider(
         UiInteraction::Disabled => slider.disabled_color,
         UiInteraction::None => slider.thumb_color,
     };
-    push_clipped_quad(vertices, thumb, clip, thumb_color);
+    push_clipped_quad(vertices, draw_ops, thumb, clip, thumb_color);
 }
 
 fn push_toggle(
     vertices: &mut Vec<UiVertex>,
+    draw_ops: &mut Vec<DrawOp>,
     rect: super::UiRect,
     clip: super::UiRect,
     toggle: &UiToggle,
@@ -607,7 +985,7 @@ fn push_toggle(
             }
         }
     };
-    push_clipped_quad(vertices, track, clip, track_color);
+    push_clipped_quad(vertices, draw_ops, track, clip, track_color);
 
     let padding = toggle.knob_padding.max(0.0).min(track_height * 0.4);
     let knob_size = (track_height - padding * 2.0).max(1.0);
@@ -617,7 +995,7 @@ fn push_toggle(
         track.x + padding
     };
     let knob = super::UiRect::new(knob_x, track.y + padding, knob_size, knob_size);
-    push_clipped_quad(vertices, knob, clip, toggle.knob_color);
+    push_clipped_quad(vertices, draw_ops, knob, clip, toggle.knob_color);
 
     if toggle.label.is_empty() {
         return None;
@@ -662,6 +1040,7 @@ fn push_text_item(
 
 fn push_scrollbars(
     vertices: &mut Vec<UiVertex>,
+    draw_ops: &mut Vec<DrawOp>,
     rect: super::UiRect,
     clip: super::UiRect,
     scroll: UiScroll,
@@ -675,9 +1054,16 @@ fn push_scrollbars(
                 .clamp(min_thumb, track.height);
             let travel = (track.height - thumb_h).max(0.0);
             let y = track.y + travel * (scroll.offset[1] / max_offset[1]);
-            push_clipped_quad(vertices, track, clip, SkyColor::rgba8(12, 18, 24, 170));
             push_clipped_quad(
                 vertices,
+                draw_ops,
+                track,
+                clip,
+                SkyColor::rgba8(12, 18, 24, 170),
+            );
+            push_clipped_quad(
+                vertices,
+                draw_ops,
                 super::UiRect::new(track.x, y, track.width, thumb_h),
                 clip,
                 SkyColor::rgba8(210, 230, 245, 190),
@@ -692,9 +1078,16 @@ fn push_scrollbars(
                 .clamp(min_thumb, track.width);
             let travel = (track.width - thumb_w).max(0.0);
             let x = track.x + travel * (scroll.offset[0] / max_offset[0]);
-            push_clipped_quad(vertices, track, clip, SkyColor::rgba8(12, 18, 24, 170));
             push_clipped_quad(
                 vertices,
+                draw_ops,
+                track,
+                clip,
+                SkyColor::rgba8(12, 18, 24, 170),
+            );
+            push_clipped_quad(
+                vertices,
+                draw_ops,
                 super::UiRect::new(x, track.y, thumb_w, track.height),
                 clip,
                 SkyColor::rgba8(210, 230, 245, 190),
@@ -705,19 +1098,26 @@ fn push_scrollbars(
 
 fn push_clipped_quad(
     vertices: &mut Vec<UiVertex>,
+    draw_ops: &mut Vec<DrawOp>,
     rect: super::UiRect,
     clip: super::UiRect,
     color: SkyColor,
 ) {
     if let Some(rect) = rect.intersection(clip) {
-        push_quad(vertices, rect, color);
+        push_quad(vertices, draw_ops, rect, color);
     }
 }
 
-fn push_quad(vertices: &mut Vec<UiVertex>, rect: super::UiRect, color: SkyColor) {
+fn push_quad(
+    vertices: &mut Vec<UiVertex>,
+    draw_ops: &mut Vec<DrawOp>,
+    rect: super::UiRect,
+    color: SkyColor,
+) {
     if rect.width <= 0.0 || rect.height <= 0.0 || color.a <= 0.0 {
         return;
     }
+    let start = vertices.len() as u32;
     let c = color.to_array();
     let x0 = rect.x;
     let y0 = rect.y;
@@ -749,6 +1149,7 @@ fn push_quad(vertices: &mut Vec<UiVertex>, rect: super::UiRect, color: SkyColor)
             color: c,
         },
     ]);
+    draw_ops.push(DrawOp::Color { start, count: 6 });
 }
 
 fn glyph_color(color: SkyColor) -> glyphon::Color {
@@ -762,6 +1163,21 @@ fn glyph_color(color: SkyColor) -> glyphon::Color {
 
 fn channel(value: f32) -> u8 {
     (value.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+fn text_align(align: UiAlign) -> TextAlign {
+    match align {
+        UiAlign::Start | UiAlign::Stretch => TextAlign::Left,
+        UiAlign::Center => TextAlign::Center,
+        UiAlign::End => TextAlign::End,
+    }
+}
+
+fn laid_out_text_height(buffer: &Buffer) -> Option<f32> {
+    buffer
+        .layout_runs()
+        .map(|run| run.line_top + run.line_height)
+        .reduce(f32::max)
 }
 
 fn create_font_system(font_book: Option<&UiFontBook>) -> (FontSystem, u64) {
@@ -796,4 +1212,38 @@ fn apply_font_book(font_system: &mut FontSystem, font_book: Option<&UiFontBook>)
         }
     }
     font_book.revision()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clipped_image_rect_preserves_uv_scale_when_clipped() {
+        let rect = super::super::UiRect::new(100.0, 50.0, 200.0, 100.0);
+        let clip = super::super::UiRect::new(150.0, 75.0, 100.0, 50.0);
+
+        let (clipped, uv) =
+            clipped_image_rect(rect, clip, [0.2, 0.1, 0.8, 0.9]).expect("rect should overlap");
+
+        assert_eq!(clipped, clip);
+        assert_slice_near(uv, [0.35, 0.3, 0.65, 0.7]);
+    }
+
+    #[test]
+    fn clipped_image_rect_returns_none_without_overlap() {
+        let rect = super::super::UiRect::new(0.0, 0.0, 10.0, 10.0);
+        let clip = super::super::UiRect::new(20.0, 20.0, 5.0, 5.0);
+
+        assert!(clipped_image_rect(rect, clip, [0.0, 0.0, 1.0, 1.0]).is_none());
+    }
+
+    fn assert_slice_near(actual: [f32; 4], expected: [f32; 4]) {
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert!(
+                (actual - expected).abs() < 0.001,
+                "expected {expected}, got {actual}"
+            );
+        }
+    }
 }

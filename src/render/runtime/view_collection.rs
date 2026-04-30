@@ -45,20 +45,18 @@ impl WorldViewCollector {
                 let projection = projection.copied();
 
                 if let Some(viewport) = viewport.copied() {
-                    views.push(build_scene_view(
-                        transform,
-                        projection,
-                        Some(viewport),
-                        surface_size,
-                    ));
+                    views.push(
+                        build_scene_view(transform, projection, Some(viewport), surface_size)
+                            .with_history_key(camera_history_key(entity)),
+                    );
                     return;
                 }
 
                 if first_camera.is_none() {
-                    first_camera = Some((transform, projection));
+                    first_camera = Some((camera_history_key(entity), transform, projection));
                 }
                 if main_camera.is_some() && first_main_camera.is_none() {
-                    first_main_camera = Some((transform, projection));
+                    first_main_camera = Some((camera_history_key(entity), transform, projection));
                 }
             },
         );
@@ -68,8 +66,11 @@ impl WorldViewCollector {
         }
 
         if views.is_empty() {
-            if let Some((transform, projection)) = first_main_camera.or(first_camera) {
-                views.push(build_scene_view(transform, projection, None, surface_size));
+            if let Some((history_key, transform, projection)) = first_main_camera.or(first_camera) {
+                views.push(
+                    build_scene_view(transform, projection, None, surface_size)
+                        .with_history_key(history_key),
+                );
             }
         }
 
@@ -81,6 +82,17 @@ impl WorldViewCollector {
         if let Some(diagnostics) = world.get_resource::<Diagnostics>() {
             let _ = diagnostics.report_once(kind);
         }
+    }
+}
+
+#[inline]
+fn camera_history_key(entity: EntityId) -> u64 {
+    let key =
+        0x5100_0000_0000_0000u64 ^ ((entity.index() as u64) << 16) ^ entity.generation() as u64;
+    if key == 0 {
+        1
+    } else {
+        key
     }
 }
 

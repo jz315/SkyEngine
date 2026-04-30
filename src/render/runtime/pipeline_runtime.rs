@@ -6,8 +6,8 @@ use crate::render::view::SCENE_HDR_FORMAT;
 
 use super::composer::RenderComposer;
 use super::nodes::{
-    ComputeStepNode, HeadlessKeepAliveNode, PhaseStepNode, PostFxStepNode, RenderPassStepNode,
-    SceneColorSeedNode,
+    ComputeStepNode, GraphPassStepNode, HeadlessKeepAliveNode, PhaseStepNode, PostFxStepNode,
+    RenderPassStepNode, SceneColorSeedNode,
 };
 
 pub(crate) fn build_runtime_pipeline(
@@ -47,6 +47,9 @@ pub(crate) fn build_runtime_pipeline(
             }
             PipelineStep::Compute(compute) => {
                 pipeline.add_view_node(Box::new(ComputeStepNode::new(compute.as_mut())));
+            }
+            PipelineStep::Graph(pass) => {
+                pipeline.add_view_node(Box::new(GraphPassStepNode::new(pass.as_mut())));
             }
             PipelineStep::Pass(pass) => {
                 pipeline.add_finalize_node(Box::new(RenderPassStepNode::new(pass.as_mut())));

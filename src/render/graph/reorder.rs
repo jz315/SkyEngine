@@ -20,7 +20,7 @@
 
 use rustc_hash::FxHashSet;
 
-use super::types::{PassEntry, ResourceRef};
+use super::types::{resource_refs_overlap, PassEntry, ResourceRef};
 
 // ── Configuration ───────────────────────────────────────────────────────────
 
@@ -282,10 +282,10 @@ fn calculate_resource_affinity(pass_a: usize, pass_b: usize, passes: &[PassEntry
     let a = &passes[pass_a];
     let b = &passes[pass_b];
 
-    let set_a: FxHashSet<ResourceRef> = a.reads.iter().chain(a.writes.iter()).copied().collect();
-    let set_b: FxHashSet<ResourceRef> = b.reads.iter().chain(b.writes.iter()).copied().collect();
+    let set_a = pass_resource_set(a);
+    let set_b = pass_resource_set(b);
 
-    let shared = set_a.intersection(&set_b).count() as u32;
+    let shared = shared_resource_count(pass_a, pass_b, passes) as u32;
     let total = (set_a.len() + set_b.len()) as u32;
 
     if total == 0 || shared == 0 {
@@ -308,10 +308,33 @@ fn shared_resource_count(pass_a: usize, pass_b: usize, passes: &[PassEntry]) -> 
     let a = &passes[pass_a];
     let b = &passes[pass_b];
 
-    let set_a: FxHashSet<ResourceRef> = a.reads.iter().chain(a.writes.iter()).copied().collect();
-    let set_b: FxHashSet<ResourceRef> = b.reads.iter().chain(b.writes.iter()).copied().collect();
+    let set_a = pass_resource_set(a);
+    let set_b = pass_resource_set(b);
 
-    set_a.intersection(&set_b).count()
+    let mut used_b = vec![false; set_b.len()];
+    let mut shared = 0usize;
+    for &left in &set_a {
+        if let Some((idx, _)) = set_b
+            .iter()
+            .copied()
+            .enumerate()
+            .find(|(idx, right)| !used_b[*idx] && resource_refs_overlap(left, *right))
+        {
+            used_b[idx] = true;
+            shared += 1;
+        }
+    }
+    shared
+}
+
+fn pass_resource_set(pass: &PassEntry) -> Vec<ResourceRef> {
+    let mut resources = Vec::new();
+    for resource in pass.reads.iter().chain(pass.writes.iter()).copied() {
+        if !resources.contains(&resource) {
+            resources.push(resource);
+        }
+    }
+    resources
 }
 
 // ── Move helper ─────────────────────────────────────────────────────────────
@@ -385,6 +408,16 @@ mod tests {
 
     fn tex(idx: usize) -> ResourceRef {
         ResourceRef::Texture(TextureHandle(idx, 1))
+    }
+
+    fn sub(idx: usize, mip: u32, layer: u32) -> ResourceRef {
+        ResourceRef::TextureSubresource(TextureSubresource::new(
+            TextureHandle(idx, 1),
+            mip,
+            1,
+            layer,
+            1,
+        ))
     }
 
     fn buf(idx: usize) -> ResourceRef {
@@ -692,6 +725,17 @@ mod tests {
             affinity > 0.0,
             "buffer sharing should produce nonzero affinity"
         );
+    }
+
+    #[test]
+    fn jaccard_counts_overlapping_texture_subresources() {
+        let passes = vec![
+            make_pass(&[], &[sub(0, 2, 7)]),
+            make_pass(&[tex(0)], &[tex(1)]),
+        ];
+        let affinity = calculate_resource_affinity(0, 1, &passes);
+        assert!(affinity > 0.0);
+        assert_eq!(shared_resource_count(0, 1, &passes), 1);
     }
 
     #[test]

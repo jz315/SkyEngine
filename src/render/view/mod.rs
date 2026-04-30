@@ -13,7 +13,7 @@ mod viewport;
 pub use camera::{Camera, RenderView, ViewUniform};
 pub use color::Color;
 pub use frustum::Frustum;
-pub use scene_view::{SceneView, SceneViewKind};
+pub use scene_view::{SceneView, SceneViewKind, TemporalViewState};
 pub use types::{RenderQueueSort, RenderStats};
 pub use viewport::ViewportRect;
 

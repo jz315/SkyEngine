@@ -358,6 +358,7 @@ impl RenderGraph {
                 texture_descs: &self.textures,
                 buffer_descs: &self.buffers,
                 alias_redirects: &self.alias_redirects,
+                blackboard: &self.blackboard,
             };
 
             let mut err = None;
@@ -431,6 +432,7 @@ impl RenderGraph {
                 texture_descs: &self.textures,
                 buffer_descs: &self.buffers,
                 alias_redirects: &self.alias_redirects,
+                blackboard: &self.blackboard,
             };
 
             let mut err = None;

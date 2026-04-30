@@ -60,6 +60,11 @@ where
                 if !mesh_renderer.visible {
                     return;
                 }
+                if view.is_shadow()
+                    && !mesh_renderer.casts_shadows_in_cascade(view.shadow_cascade())
+                {
+                    return;
+                }
 
                 let effective_layer_mask =
                     layer_mask.map_or(mesh_renderer.layer_mask, |mask| mask.0);

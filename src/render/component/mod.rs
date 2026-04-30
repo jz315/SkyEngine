@@ -14,13 +14,17 @@ mod live2d;
 pub use crate::math::Transform;
 pub use camera::{Camera, CameraViewport, MainCamera};
 pub use hierarchy::Parent;
-pub use light::{DirectionalLight, PointLight};
+pub use light::{
+    DirectionalLight, PointLight, ShadowSamplingMode, ShadowUpdatePolicy, SpotLight,
+    MAX_DIRECTIONAL_SHADOW_CASCADES,
+};
 #[cfg(feature = "live2d")]
 pub use live2d::{Live2DAnimator, Live2DCommand, Live2DCommands, Live2DModelInstance};
-pub use mesh::{MeshRenderer, WgpuMeshRenderer};
+pub use mesh::{MeshRenderer, WgpuMeshRenderer, ALL_SHADOW_CASCADE_MASK};
 pub use settings::{
-    BloomSettings, DdgiSettings, DdgiVolumeSettings, GiDebugMode, GlobalIlluminationSettings,
-    RenderLayerMask, RenderSettings, ToneMapSettings, VignetteSettings,
+    BloomSettings, DdgiSettings, DdgiVolumeSettings, GiDebugMode, GlobalIlluminationMode,
+    GlobalIlluminationSettings, RenderDebugView, RenderLayerMask, RenderSettings, SharpenSettings,
+    SsgiSettings, TemporalAntiAliasingSettings, ToneMapSettings, VignetteSettings,
 };
 pub use sprite::{SortingLayer, SpriteRenderer};
 pub use tilemap::{

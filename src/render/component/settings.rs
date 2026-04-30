@@ -48,6 +48,41 @@ pub enum GiDebugMode {
     RayBudget,
 }
 
+/// Runtime GI algorithm selected by the high-level 3D renderer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GlobalIlluminationMode {
+    #[default]
+    Off,
+    Ssgi,
+    Ddgi,
+}
+
+/// Screen-space GI controls for the Wicked-inspired modern 3D pipeline.
+#[derive(Clone, Copy, Debug)]
+pub struct SsgiSettings {
+    /// Final composite strength. Wicked applies SSGI as a separate indirect term;
+    /// `1.0` preserves that energy in SkyEngine's current post-composite path.
+    pub intensity: f32,
+    /// Public radius hint. The current WGSL pass maps `8.0` to Wicked's narrow
+    /// `range = 2, spread = 2` SSGI sampling pass.
+    pub radius_pixels: f32,
+    /// Wicked's SSGI depth rejection distance; the shader uses its reciprocal.
+    pub depth_rejection: f32,
+    /// Wicked's bilateral normal threshold for SSGI upsample-style rejection.
+    pub normal_power: f32,
+}
+
+impl Default for SsgiSettings {
+    fn default() -> Self {
+        Self {
+            intensity: 1.0,
+            radius_pixels: 8.0,
+            depth_rejection: 8.0,
+            normal_power: 64.0,
+        }
+    }
+}
+
 /// World-space DDGI probe volume controls.
 #[derive(Clone, Copy, Debug)]
 pub struct DdgiVolumeSettings {
@@ -104,6 +139,8 @@ impl Default for DdgiSettings {
 #[derive(Clone, Copy, Debug)]
 pub struct GlobalIlluminationSettings {
     pub enabled: bool,
+    pub mode: GlobalIlluminationMode,
+    pub ssgi: SsgiSettings,
     pub ddgi: DdgiSettings,
     pub debug: GiDebugMode,
 }
@@ -112,9 +149,37 @@ impl Default for GlobalIlluminationSettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            mode: GlobalIlluminationMode::Off,
+            ssgi: SsgiSettings::default(),
             ddgi: DdgiSettings::default(),
             debug: GiDebugMode::Off,
         }
+    }
+}
+
+impl GlobalIlluminationSettings {
+    #[inline]
+    pub fn effective_mode(self) -> GlobalIlluminationMode {
+        if !self.enabled {
+            return GlobalIlluminationMode::Off;
+        }
+
+        match self.mode {
+            // Compatibility: older callers only toggled `enabled`; keep that
+            // path using the existing DDGI implementation.
+            GlobalIlluminationMode::Off => GlobalIlluminationMode::Ddgi,
+            mode => mode,
+        }
+    }
+
+    #[inline]
+    pub fn uses_ssgi(self) -> bool {
+        self.effective_mode() == GlobalIlluminationMode::Ssgi
+    }
+
+    #[inline]
+    pub fn uses_ddgi(self) -> bool {
+        self.effective_mode() == GlobalIlluminationMode::Ddgi
     }
 }
 
@@ -133,6 +198,78 @@ impl Default for ToneMapSettings {
             exposure: 1.35,
             gamma: 2.2,
         }
+    }
+}
+
+/// Image sharpening controls for the high-level renderer.
+#[derive(Clone, Copy, Debug)]
+pub struct SharpenSettings {
+    pub enabled: bool,
+    pub strength: f32,
+    pub clamp: f32,
+}
+
+impl Default for SharpenSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            strength: 0.25,
+            clamp: 0.08,
+        }
+    }
+}
+
+/// Temporal anti-aliasing controls for the Wicked-inspired modern 3D pipeline.
+#[derive(Clone, Copy, Debug)]
+pub struct TemporalAntiAliasingSettings {
+    pub enabled: bool,
+    pub feedback: f32,
+    pub jitter_scale: f32,
+    pub history_clamp: f32,
+    pub sharpen_amount: f32,
+}
+
+impl Default for TemporalAntiAliasingSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            feedback: 0.05,
+            jitter_scale: 1.0,
+            history_clamp: 0.0,
+            sharpen_amount: 0.0,
+        }
+    }
+}
+
+/// Renderer intermediate-buffer debug view.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RenderDebugView {
+    #[default]
+    None,
+    SceneColor,
+    SceneDepth,
+    SceneNormal,
+    Albedo,
+    Roughness,
+    Metallic,
+    Emissive,
+    Velocity,
+    Light,
+    IndirectDiffuse,
+    DirectionalShadowMap,
+    DirectionalShadowCascade(u32),
+    DirectionalShadowCoverage,
+    SsgiDiffuseMip(u32),
+    SsgiAtlasLayer {
+        mip: u32,
+        layer: u32,
+    },
+}
+
+impl RenderDebugView {
+    #[inline]
+    pub const fn is_enabled(self) -> bool {
+        !matches!(self, Self::None)
     }
 }
 
@@ -162,6 +299,9 @@ pub struct RenderSettings {
     pub global_illumination: GlobalIlluminationSettings,
     pub bloom: BloomSettings,
     pub tonemap: ToneMapSettings,
+    pub temporal_aa: TemporalAntiAliasingSettings,
+    pub sharpen: SharpenSettings,
+    pub debug_view: RenderDebugView,
     pub vignette: VignetteSettings,
 }
 
@@ -173,7 +313,48 @@ impl Default for RenderSettings {
             global_illumination: GlobalIlluminationSettings::default(),
             bloom: BloomSettings::default(),
             tonemap: ToneMapSettings::default(),
+            temporal_aa: TemporalAntiAliasingSettings::default(),
+            sharpen: SharpenSettings::default(),
+            debug_view: RenderDebugView::default(),
             vignette: VignetteSettings::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ssgi_defaults_match_wicked_depth_rejection_path() {
+        let settings = SsgiSettings::default();
+
+        assert_eq!(settings.intensity, 1.0);
+        assert_eq!(settings.radius_pixels, 8.0);
+        assert_eq!(settings.depth_rejection, 8.0);
+        assert_eq!(settings.normal_power, 64.0);
+    }
+
+    #[test]
+    fn taa_settings_default_disabled() {
+        let settings = TemporalAntiAliasingSettings::default();
+
+        assert!(!settings.enabled);
+        assert_eq!(settings.feedback, 0.05);
+        assert_eq!(settings.jitter_scale, 1.0);
+        assert_eq!(settings.history_clamp, 0.0);
+        assert_eq!(settings.sharpen_amount, 0.0);
+    }
+
+    #[test]
+    fn render_debug_view_default_disabled() {
+        let settings = RenderSettings::default();
+
+        assert_eq!(settings.debug_view, RenderDebugView::None);
+        assert!(!settings.debug_view.is_enabled());
+        assert!(RenderDebugView::SceneDepth.is_enabled());
+        assert!(RenderDebugView::DirectionalShadowMap.is_enabled());
+        assert!(RenderDebugView::DirectionalShadowCascade(1).is_enabled());
+        assert!(RenderDebugView::DirectionalShadowCoverage.is_enabled());
     }
 }

@@ -48,12 +48,6 @@ pub struct AppConfig {
     /// Diagnostics remain available as structured [`Diagnostics`](crate::diagnostics::Diagnostics)
     /// events regardless of this setting.
     pub diagnostic_console: DiagnosticConsole,
-    /// Native retained UI configuration.
-    ///
-    /// This is used by `FrameContext::update_ui` / `render_ui` when the UI
-    /// runtime installs its resources lazily.
-    #[cfg(feature = "ui")]
-    pub ui: crate::ui::UiConfig,
 }
 
 impl AppConfig {
@@ -70,8 +64,6 @@ impl AppConfig {
             auto_tick: true,
             redraw_mode: RedrawMode::Continuous,
             diagnostic_console: DiagnosticConsole::default(),
-            #[cfg(feature = "ui")]
-            ui: crate::ui::UiConfig::default(),
         }
     }
 
@@ -123,16 +115,6 @@ impl AppConfig {
         self.diagnostic_console = diagnostic_console;
         self
     }
-
-    /// Set the native retained UI configuration.
-    ///
-    /// Requires `--features ui`.
-    #[cfg(feature = "ui")]
-    #[inline]
-    pub fn with_ui_config(mut self, ui: crate::ui::UiConfig) -> Self {
-        self.ui = ui;
-        self
-    }
 }
 
 #[cfg(test)]
@@ -152,15 +134,5 @@ mod tests {
     fn app_config_can_disable_diagnostic_console() {
         let config = AppConfig::new("test", 64, 64).with_diagnostic_console(DiagnosticConsole::Off);
         assert_eq!(config.diagnostic_console, DiagnosticConsole::Off);
-    }
-
-    #[cfg(feature = "ui")]
-    #[test]
-    fn app_config_can_customize_ui_config() {
-        let config = AppConfig::new("test", 64, 64).with_ui_config(crate::ui::UiConfig {
-            load_system_fonts: false,
-        });
-
-        assert!(!config.ui.load_system_fonts);
     }
 }

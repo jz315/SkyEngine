@@ -98,6 +98,10 @@ impl FramePipeline {
         let view_nodes = &mut self.view_nodes;
         let finalize_nodes = &mut self.finalize_nodes;
         let completed_views = &self.completed_views;
+        let mut completed_view_lookup = vec![None; frame.view_count()];
+        for (completed_index, completed_view) in completed_views.iter().enumerate() {
+            completed_view_lookup[completed_view.view_index()] = Some(completed_index);
+        }
         let pass_dispatch = &self.pass_dispatch;
         let mut counted_draw_dispatches = FxHashSet::default();
 
@@ -119,9 +123,15 @@ impl FramePipeline {
                     node_index,
                     view_index,
                 } => {
+                    let view_state = completed_view_lookup
+                        .get(view_index)
+                        .and_then(|index| *index)
+                        .and_then(|index| completed_views.get(index))
+                        .expect("view dispatch should have completed setup state");
                     let execution = ViewExecutionContext {
                         frame,
                         view: frame.view(view_index),
+                        view_state,
                         view_index,
                     };
                     if count_draw_calls {
@@ -171,6 +181,7 @@ impl FramePipeline {
             self.register_passes(&new_passes, DispatchEntry::Setup { node_index });
         }
         let setup_scene_gbuffer = *setup_state.scene_gbuffer();
+        let setup_scene_shadows = setup_state.scene_shadows().cloned();
         let mut frame_slots = setup_state.into_slots();
         let mut frame_scene_gbuffer = setup_scene_gbuffer;
 
@@ -185,6 +196,7 @@ impl FramePipeline {
                 frame.has_surface(),
                 frame_slots.clone(),
                 setup_scene_gbuffer,
+                setup_scene_shadows.clone(),
             );
             for node_index in 0..self.view_nodes.len() {
                 if !self.view_nodes[node_index].is_enabled(frame)
@@ -207,12 +219,13 @@ impl FramePipeline {
                     },
                 );
             }
-            let (slots, scene_gbuffer) = state.into_parts();
+            let (slots, scene_gbuffer, scene_shadows) = state.into_parts();
             self.completed_views.push(CompletedViewState::new(
                 view_index,
                 view,
                 slots,
                 scene_gbuffer,
+                scene_shadows,
             ));
         }
 

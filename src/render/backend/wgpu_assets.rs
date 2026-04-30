@@ -108,6 +108,8 @@ impl WgpuRenderAssetCache {
                 .emissive_texture
                 .and_then(|texture| self.sync_texture(gpu, assets, texture)),
             alpha_mode: source.alpha_mode,
+            alpha_cutoff: source.alpha_cutoff,
+            receive_shadows: source.receive_shadows,
         };
         let material_handle = composer
             .materials_mut::<StandardMaterial>()

@@ -70,6 +70,7 @@ impl<'a> ViewPayloadStore<'a> {
 
 pub struct PreparedView<'a> {
     order: i32,
+    history_key: u64,
     viewport: ViewportRect,
     target_size: [u32; 2],
     clear_surface: bool,
@@ -86,6 +87,7 @@ impl<'a> PreparedView<'a> {
     ) -> Self {
         Self {
             order,
+            history_key: 0,
             viewport,
             target_size: [target_size[0].max(1), target_size[1].max(1)],
             clear_surface,
@@ -96,6 +98,22 @@ impl<'a> PreparedView<'a> {
     #[inline]
     pub fn order(&self) -> i32 {
         self.order
+    }
+
+    #[inline]
+    pub fn history_key(&self) -> u64 {
+        self.history_key
+    }
+
+    #[inline]
+    pub fn set_history_key(&mut self, history_key: u64) {
+        self.history_key = history_key;
+    }
+
+    #[inline]
+    pub fn with_history_key(mut self, history_key: u64) -> Self {
+        self.history_key = history_key;
+        self
     }
 
     #[inline]

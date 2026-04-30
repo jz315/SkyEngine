@@ -11,6 +11,7 @@ struct LightRecord {
     pos_radius: vec4<f32>,
     color: vec4<f32>,
     falloff: vec4<f32>,
+    dir_shadow: vec4<f32>,
 };
 
 @group(1) @binding(0)

@@ -158,6 +158,32 @@ impl RenderGraph {
         handle.1 == self.handle_token && handle.0 < self.textures.len()
     }
 
+    fn texture_subresource_is_valid(&self, subresource: TextureSubresource) -> bool {
+        if !self.texture_handle_is_valid(subresource.texture) {
+            return false;
+        }
+        let desc = &self.textures[subresource.texture.0];
+        if subresource.mip_level_count == 0 || subresource.array_layer_count == 0 {
+            return false;
+        }
+        let Some(mip_end) = subresource
+            .base_mip_level
+            .checked_add(subresource.mip_level_count)
+        else {
+            return false;
+        };
+        let Some(layer_end) = subresource
+            .base_array_layer
+            .checked_add(subresource.array_layer_count)
+        else {
+            return false;
+        };
+        subresource.base_mip_level < desc.mip_level_count
+            && mip_end <= desc.mip_level_count
+            && subresource.base_array_layer < desc.array_layer_count
+            && layer_end <= desc.array_layer_count
+    }
+
     fn buffer_handle_is_valid(&self, handle: BufferHandle) -> bool {
         handle.1 == self.handle_token && handle.0 < self.buffers.len()
     }
@@ -166,6 +192,9 @@ impl RenderGraph {
         match resource {
             ResourceRef::Surface => true,
             ResourceRef::Texture(handle) => self.texture_handle_is_valid(handle),
+            ResourceRef::TextureSubresource(subresource) => {
+                self.texture_subresource_is_valid(subresource)
+            }
             ResourceRef::Buffer(handle) => self.buffer_handle_is_valid(handle),
         }
     }
@@ -180,6 +209,10 @@ impl RenderGraph {
             ResourceRef::Texture(handle) => self
                 .textures
                 .get(handle.0)
+                .is_some_and(|desc| desc.imported.is_some() || !desc.transient),
+            ResourceRef::TextureSubresource(subresource) => self
+                .textures
+                .get(subresource.texture.0)
                 .is_some_and(|desc| desc.imported.is_some() || !desc.transient),
             ResourceRef::Buffer(handle) => self
                 .buffers
@@ -203,6 +236,10 @@ impl RenderGraph {
                 .textures
                 .get(handle.0)
                 .is_some_and(|desc| desc.imported.is_some() || !desc.transient),
+            ResourceRef::TextureSubresource(subresource) => self
+                .textures
+                .get(subresource.texture.0)
+                .is_some_and(|desc| desc.imported.is_some() || !desc.transient),
             ResourceRef::Buffer(handle) => self
                 .buffers
                 .get(handle.0)
@@ -211,7 +248,10 @@ impl RenderGraph {
     }
 
     fn resource_is_live(&self, resource: ResourceRef) -> bool {
-        self.lifetimes.contains_key(&resource)
+        self.lifetimes
+            .keys()
+            .copied()
+            .any(|live| resource_refs_overlap(live, resource))
     }
 
     fn validate_pass_resource(
@@ -322,8 +362,10 @@ impl RenderGraph {
             name: builder.name,
             size: builder.size,
             format: builder.format,
+            usage: builder.usage,
             sample_count: builder.sample_count,
             mip_level_count: builder.mip_level_count,
+            array_layer_count: builder.array_layer_count,
             transient: builder.transient,
             imported: builder.imported,
         });
@@ -525,10 +567,12 @@ impl RenderGraph {
                     self.transient_pool.release(
                         PoolKey {
                             format: target.format(),
+                            usage: target.usage(),
                             width: target.width(),
                             height: target.height(),
                             sample_count: target.sample_count(),
                             mip_level_count: target.mip_level_count(),
+                            array_layer_count: target.array_layer_count(),
                         },
                         target,
                     );

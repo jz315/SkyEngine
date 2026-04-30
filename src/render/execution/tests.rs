@@ -7,7 +7,7 @@ use crate::render::view::ViewportRect;
 use super::{
     create_scene_texture, ensure_scene_texture, FinalizeExecutionContext, FinalizePhaseState,
     FrameFinalizeNode, FramePipeline, FrameSetupNode, FrameViewNode, PhaseState, PreparedFrame,
-    PreparedView, SceneTextureKind, SetupExecutionContext, ViewExecutionContext,
+    PreparedView, SceneTexture, SetupExecutionContext, ViewExecutionContext,
 };
 
 fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
@@ -36,6 +36,66 @@ struct FrameToken(u32);
 
 #[derive(Clone, Copy)]
 struct ViewToken(u32);
+
+#[test]
+fn modern_3d_scene_texture_contract_formats_are_stable() {
+    assert_eq!(
+        SceneTexture::ALL,
+        [
+            SceneTexture::Color,
+            SceneTexture::Depth,
+            SceneTexture::Normal,
+            SceneTexture::Velocity,
+            SceneTexture::Albedo,
+            SceneTexture::Material,
+            SceneTexture::Emissive,
+            SceneTexture::Light,
+            SceneTexture::IndirectDiffuse,
+        ]
+    );
+    assert_eq!(
+        SceneTexture::Color.modern_3d_format(),
+        wgpu::TextureFormat::Rgba16Float
+    );
+    assert_eq!(
+        SceneTexture::Depth.modern_3d_format(),
+        wgpu::TextureFormat::Depth32Float
+    );
+    assert_eq!(
+        SceneTexture::Normal.modern_3d_format(),
+        wgpu::TextureFormat::Rgba8Unorm
+    );
+    assert_eq!(
+        SceneTexture::Velocity.modern_3d_format(),
+        wgpu::TextureFormat::Rgba16Float
+    );
+    assert_eq!(
+        SceneTexture::Albedo.modern_3d_format(),
+        wgpu::TextureFormat::Rgba8Unorm
+    );
+    assert_eq!(
+        SceneTexture::Material.modern_3d_format(),
+        wgpu::TextureFormat::Rgba8Unorm
+    );
+    assert_eq!(
+        SceneTexture::Emissive.modern_3d_format(),
+        wgpu::TextureFormat::Rgba16Float
+    );
+    assert_eq!(
+        SceneTexture::Light.modern_3d_format(),
+        wgpu::TextureFormat::Rgba16Float
+    );
+    assert_eq!(
+        SceneTexture::IndirectDiffuse.modern_3d_format(),
+        wgpu::TextureFormat::Rgba16Float
+    );
+    assert_eq!(SceneTexture::MATERIAL_ROUGHNESS_CHANNEL, 0);
+    assert_eq!(SceneTexture::MATERIAL_METALLIC_CHANNEL, 1);
+    assert_eq!(SceneTexture::MATERIAL_AO_CHANNEL, 2);
+    assert_eq!(SceneTexture::MATERIAL_FLAGS_CHANNEL, 3);
+    assert!(SceneTexture::Material.is_modern_3d_gbuffer());
+    assert!(!SceneTexture::Light.is_modern_3d_gbuffer());
+}
 
 struct SetupRecorder {
     log: Arc<Mutex<Vec<String>>>,
@@ -436,7 +496,7 @@ fn scene_texture_allocator_reuses_persistent_slots_and_replaces_transient_ones()
         &mut graph,
         &mut state,
         [8, 8],
-        SceneTextureKind::Depth,
+        SceneTexture::Depth,
         wgpu::TextureFormat::Depth32Float,
         "scene_depth",
     );
@@ -444,7 +504,7 @@ fn scene_texture_allocator_reuses_persistent_slots_and_replaces_transient_ones()
         &mut graph,
         &mut state,
         [8, 8],
-        SceneTextureKind::Depth,
+        SceneTexture::Depth,
         wgpu::TextureFormat::Depth32Float,
         "scene_depth",
     );
@@ -452,7 +512,7 @@ fn scene_texture_allocator_reuses_persistent_slots_and_replaces_transient_ones()
         &mut graph,
         &mut state,
         [8, 8],
-        SceneTextureKind::Normal,
+        SceneTexture::Normal,
         wgpu::TextureFormat::Rgba8Unorm,
         "scene_normal",
     );
@@ -460,7 +520,7 @@ fn scene_texture_allocator_reuses_persistent_slots_and_replaces_transient_ones()
         &mut graph,
         &mut state,
         [8, 8],
-        SceneTextureKind::Normal,
+        SceneTexture::Normal,
         wgpu::TextureFormat::Rgba8Unorm,
         "scene_normal",
     );

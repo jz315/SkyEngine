@@ -14,10 +14,12 @@ use super::types::TextureFormat;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct PoolKey {
     pub format: TextureFormat,
+    pub usage: wgpu::TextureUsages,
     pub width: u32,
     pub height: u32,
     pub sample_count: u32,
     pub mip_level_count: u32,
+    pub array_layer_count: u32,
 }
 
 pub(crate) struct TransientPool {
@@ -45,8 +47,10 @@ impl TransientPool {
         RenderTarget::from_descriptor(
             ctx,
             RenderTargetDescriptor::new(key.width, key.height, key.format)
+                .usage(key.usage)
                 .sample_count(key.sample_count)
                 .mip_level_count(key.mip_level_count)
+                .array_layer_count(key.array_layer_count)
                 .label(label),
         )
     }

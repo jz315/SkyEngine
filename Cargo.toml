@@ -15,13 +15,16 @@ mimalloc = "0.1.48"
 rustc-hash = "2.1.2"
 bitflags = "2"
 rayon = "1.10"
-glam = "0.29"
+glam = "0.32.1"
 serde = { version = "1", features = ["derive"], optional = true }
+toml = { version = "0.8", optional = true }
+yarnspinner = { version = "0.8", default-features = false, optional = true }
 uuid = { version = "1", features = ["v4", "serde"], optional = true }
 mint = { version = "0.5", optional = true }
 
 # GPU abstraction (feature-gated)
 bytemuck = { version = "1", features = ["derive"], optional = true }
+bytes = { version = "1", optional = true }
 
 # wgpu backend (feature-gated)
 wgpu = { version = "24", optional = true }
@@ -30,19 +33,20 @@ gltf = { version = "1", optional = true }
 # Application framework (feature-gated)
 winit = { version = "0.30", optional = true }
 pollster = { version = "0.4", optional = true }
-exr = { version = "=1.4.2", optional = true }
-half = { version = "=1.8.2", optional = true }
-intel-tex-2 = { package = "intel_tex_2", version = "=0.2.0", optional = true }
+exr = { version = "1.74", optional = true }
+half = { version = "2.7", features = ["bytemuck"], optional = true }
+intel-tex-2 = { package = "intel_tex_2", version = "=0.2.2", optional = true }
 kajiya = { path = "crates/vendor/kajiya/crates/lib/kajiya", optional = true }
 kajiya-rust-shaders-shared = { package = "rust-shaders-shared", path = "crates/vendor/kajiya/crates/lib/rust-shaders-shared", optional = true }
+renderling = { version = "0.4.9", default-features = false, features = ["shaders"], optional = true }
 gpu-profiler = { path = "crates/vendor/gpu-profiler", optional = true }
-puffin = { version = "=0.11.0", optional = true }
+puffin = { version = "0.20", optional = true }
 raw-window-handle-03 = { package = "raw-window-handle", version = "0.3", optional = true }
-shader-prepper = { version = "=0.3.0-pre.1", optional = true }
+shader-prepper = { version = "=0.3.0-pre.3", optional = true }
 turbosloth = { git = "https://github.com/h3r2tic/turbosloth.git", rev = "92030af", optional = true }
 
 # Asset loading (feature-gated)
-image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"], optional = true }
 serde_json = { version = "1", optional = true, features = ["preserve_order"] }
 roxmltree = { version = "0.20", optional = true }
 base64 = { version = "0.13", optional = true }
@@ -50,6 +54,7 @@ flate2 = { version = "1", optional = true }
 cubism-sys = { package = "live2d-cubism-core-sys", version = "0.1", path = "cubism-sys", optional = true }
 kira = { version = "0.12", optional = true }
 rapier2d = { version = "0.32.0", optional = true }
+ffmpeg-next = { version = "8.1.0", optional = true }
 sky_engine_reflect_derive = { path = "crates/sky_engine_reflect_derive" }
 
 # egui immediate-mode UI (feature-gated)
@@ -86,6 +91,23 @@ path = "examples/ecs/systems.rs"
 [[example]]
 name = "tiny_defense"
 path = "examples/ecs/tiny_defense.rs"
+
+# ── Visual novel tutorials (--features vn) ──────────────────────────────────
+
+[[example]]
+name = "vn_minimal"
+path = "examples/vn/minimal.rs"
+required-features = ["vn"]
+
+[[example]]
+name = "vn_sprite_demo"
+path = "examples/vn/sprite_demo.rs"
+required-features = ["vn", "app"]
+
+[[example]]
+name = "vn_ui_demo"
+path = "examples/vn/ui_demo.rs"
+required-features = ["vn-ui"]
 
 # ── Scene/prefab tutorials (--features scene) ────────────────────────────────
 
@@ -155,6 +177,11 @@ required-features = ["app"]
 name = "kajiya_3d"
 path = "examples/render/kajiya_3d.rs"
 required-features = ["app", "kajiya-renderer"]
+
+[[example]]
+name = "renderling_3d"
+path = "examples/render/renderling_3d.rs"
+required-features = ["app", "renderling-renderer"]
 
 [[example]]
 name = "tilemap_demo"
@@ -274,6 +301,16 @@ name = "audio_demo"
 path = "examples/audio_demo.rs"
 required-features = ["app", "audio"]
 
+[[example]]
+name = "video_demo"
+path = "examples/video_demo.rs"
+required-features = ["video"]
+
+[[example]]
+name = "mp4_video_demo"
+path = "examples/mp4_video_demo.rs"
+required-features = ["video-ffmpeg"]
+
 # ── Legacy CPU-rendered (minifb, --features demo-legacy) ─────────────────────
 
 [[example]]
@@ -321,11 +358,14 @@ kajiya-renderer = [
     "dep:kajiya",
     "dep:kajiya-rust-shaders-shared",
     "dep:gpu-profiler",
+    "dep:bytes",
     "dep:puffin",
     "dep:raw-window-handle-03",
     "dep:shader-prepper",
     "dep:turbosloth",
 ]
+# Experimental Renderling wgpu renderer backend.
+renderling-renderer = ["dep:renderling"]
 # Asset loading
 asset = [
     "dep:image",
@@ -338,12 +378,22 @@ asset = [
 ]
 # Audio runtime
 audio = ["asset", "dep:kira", "dep:mint"]
+# Video runtime with playback clocks, frame queues, and stable streamed-frame buffers.
+video = ["app"]
+# Native video decoding backend. Requires system FFmpeg development libraries.
+video-ffmpeg = ["video", "dep:ffmpeg-next"]
 # Scene and prefab documents/spawning.
 scene = ["dep:serde", "dep:serde_json"]
 # Serde support for reflected values.
 reflect-serde = ["dep:serde"]
 # 2D physics runtime backed by Rapier.
 physics = ["dep:rapier2d"]
+# Visual novel / Galgame script and runtime core.
+vn = ["dep:serde", "dep:toml", "dep:yarnspinner"]
+vn-ui = ["vn", "ui"]
+vn-audio = ["vn", "audio"]
+vn-live2d = ["vn", "live2d"]
+vn-tools = ["vn"]
 # GPU-accelerated demos (future)
 demo = ["app", "asset", "dep:rand"]
 # Live2D Cubism SDK integration
@@ -378,6 +428,24 @@ harness = false
 
 [profile.release]
 debug = true
+
+[profile.dev.package.image]
+opt-level = 3
+
+[profile.dev.package.png]
+opt-level = 3
+
+[profile.dev.package.fdeflate]
+opt-level = 3
+
+[profile.dev.package.flate2]
+opt-level = 3
+
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+
+[profile.dev.package.zune-jpeg]
+opt-level = 3
 
 [patch.crates-io]
 # Kajiya's shader reflection path relies on the ray-tracing extensions from this

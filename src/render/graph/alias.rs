@@ -45,10 +45,14 @@ pub(crate) struct AliasGroup {
     pub members: Vec<usize>,
     /// The shared format (all members must match exactly).
     pub format: TextureFormat,
+    /// The shared usage flags (all members must match exactly).
+    pub usage: wgpu::TextureUsages,
     /// The shared sample count (all members must match exactly).
     pub sample_count: u32,
     /// The shared mip count (all members must match exactly).
     pub mip_level_count: u32,
+    /// The shared array layer count (all members must match exactly).
+    pub array_layer_count: u32,
     /// Maximum width needed across all members.
     pub width: u32,
     /// Maximum height needed across all members.
@@ -153,8 +157,10 @@ pub(crate) fn compute_texture_aliases(
             if !can_fit_in_group(
                 tex_idx,
                 desc.format,
+                desc.usage,
                 desc.sample_count,
                 desc.mip_level_count,
+                desc.array_layer_count,
                 lifetime,
                 group,
                 textures,
@@ -183,8 +189,10 @@ pub(crate) fn compute_texture_aliases(
             groups.push(AliasGroup {
                 members: vec![tex_idx],
                 format: desc.format,
+                usage: desc.usage,
                 sample_count: desc.sample_count,
                 mip_level_count: desc.mip_level_count,
+                array_layer_count: desc.array_layer_count,
                 width: w,
                 height: h,
             });
@@ -225,8 +233,10 @@ pub(crate) fn compute_texture_aliases(
 fn can_fit_in_group(
     candidate_idx: usize,
     candidate_format: TextureFormat,
+    candidate_usage: wgpu::TextureUsages,
     candidate_sample_count: u32,
     candidate_mip_level_count: u32,
+    candidate_array_layer_count: u32,
     candidate_lifetime: &ResourceLifetime,
     group: &AliasGroup,
     textures: &[TextureDesc],
@@ -237,10 +247,16 @@ fn can_fit_in_group(
     if candidate_format != group.format {
         return false;
     }
+    if candidate_usage != group.usage {
+        return false;
+    }
     if candidate_sample_count != group.sample_count {
         return false;
     }
     if candidate_mip_level_count != group.mip_level_count {
+        return false;
+    }
+    if candidate_array_layer_count != group.array_layer_count {
         return false;
     }
 
@@ -264,7 +280,7 @@ fn can_fit_in_group(
         }
     }
 
-    let _ = textures; // used for potential future checks (e.g., usage flags)
+    let _ = textures; // used for potential future checks
     true
 }
 
@@ -314,8 +330,29 @@ mod tests {
         AliasGroup {
             members,
             format,
+            usage: DEFAULT_TEXTURE_USAGE,
             sample_count: 1,
             mip_level_count: 1,
+            array_layer_count: 1,
+            width,
+            height,
+        }
+    }
+
+    fn make_group_with_layers(
+        members: Vec<usize>,
+        format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+        array_layer_count: u32,
+    ) -> AliasGroup {
+        AliasGroup {
+            members,
+            format,
+            usage: DEFAULT_TEXTURE_USAGE,
+            sample_count: 1,
+            mip_level_count: 1,
+            array_layer_count,
             width,
             height,
         }
@@ -326,8 +363,10 @@ mod tests {
             name: Cow::Borrowed(name),
             size: TargetSize::Exact(256, 256),
             format,
+            usage: DEFAULT_TEXTURE_USAGE,
             sample_count: 1,
             mip_level_count: 1,
+            array_layer_count: 1,
             transient,
             imported: None,
         }
@@ -338,8 +377,10 @@ mod tests {
             name: Cow::Borrowed(name),
             size: TargetSize::Exact(w, h),
             format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: DEFAULT_TEXTURE_USAGE,
             sample_count: 1,
             mip_level_count: 1,
+            array_layer_count: 1,
             transient: true,
             imported: None,
         }
@@ -354,8 +395,10 @@ mod tests {
             name: Cow::Borrowed(name),
             size,
             format,
+            usage: DEFAULT_TEXTURE_USAGE,
             sample_count: 1,
             mip_level_count: 1,
+            array_layer_count: 1,
             transient: true,
             imported: None,
         }
@@ -1071,6 +1114,8 @@ mod tests {
         let result = can_fit_in_group(
             0,
             wgpu::TextureFormat::Rgba8Unorm,
+            DEFAULT_TEXTURE_USAGE,
+            1,
             1,
             1,
             &lt,
@@ -1097,6 +1142,8 @@ mod tests {
         let result = can_fit_in_group(
             1,
             wgpu::TextureFormat::Rgba16Float,
+            DEFAULT_TEXTURE_USAGE,
+            1,
             1,
             1,
             &lt,
@@ -1123,6 +1170,8 @@ mod tests {
         let result = can_fit_in_group(
             1,
             wgpu::TextureFormat::Rgba8Unorm,
+            DEFAULT_TEXTURE_USAGE,
+            1,
             1,
             1,
             &lt,
@@ -1150,6 +1199,8 @@ mod tests {
         let result = can_fit_in_group(
             1,
             wgpu::TextureFormat::Rgba8Unorm,
+            DEFAULT_TEXTURE_USAGE,
+            1,
             1,
             1,
             &lt,
@@ -1179,6 +1230,8 @@ mod tests {
         let result = can_fit_in_group(
             2,
             wgpu::TextureFormat::Rgba8Unorm,
+            DEFAULT_TEXTURE_USAGE,
+            1,
             1,
             1,
             &lt,
@@ -1211,6 +1264,8 @@ mod tests {
         let result = can_fit_in_group(
             2,
             wgpu::TextureFormat::Rgba8Unorm,
+            DEFAULT_TEXTURE_USAGE,
+            1,
             1,
             1,
             &lt,
@@ -1237,7 +1292,9 @@ mod tests {
         let result = can_fit_in_group(
             1,
             wgpu::TextureFormat::Rgba8Unorm,
+            DEFAULT_TEXTURE_USAGE,
             4,
+            1,
             1,
             &lt,
             &group,
@@ -1246,5 +1303,62 @@ mod tests {
             TOKEN,
         );
         assert!(!result, "sample-count mismatch should prevent fitting");
+    }
+
+    #[test]
+    fn cant_fit_mismatched_array_layer_count() {
+        let group = make_group_with_layers(vec![0], wgpu::TextureFormat::Rgba8Unorm, 256, 256, 4);
+        let textures = vec![
+            make_tex("a", wgpu::TextureFormat::Rgba8Unorm, true),
+            make_tex("b", wgpu::TextureFormat::Rgba8Unorm, true),
+        ];
+        let mut lifetimes = FxHashMap::default();
+        insert_lifetime(&mut lifetimes, 0, 0, 1);
+        insert_lifetime(&mut lifetimes, 1, 2, 3);
+        let lt = make_lifetime(2, 3);
+
+        let result = can_fit_in_group(
+            1,
+            wgpu::TextureFormat::Rgba8Unorm,
+            DEFAULT_TEXTURE_USAGE,
+            1,
+            1,
+            1,
+            &lt,
+            &group,
+            &textures,
+            &lifetimes,
+            TOKEN,
+        );
+        assert!(!result, "array-layer-count mismatch should prevent fitting");
+    }
+
+    #[test]
+    fn alias_rejects_mismatched_texture_usage() {
+        let mut group = make_group(vec![0], wgpu::TextureFormat::Rgba8Unorm, 256, 256);
+        group.usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+        let textures = vec![
+            make_tex("a", wgpu::TextureFormat::Rgba8Unorm, true),
+            make_tex("b", wgpu::TextureFormat::Rgba8Unorm, true),
+        ];
+        let mut lifetimes = FxHashMap::default();
+        insert_lifetime(&mut lifetimes, 0, 0, 1);
+        insert_lifetime(&mut lifetimes, 1, 2, 3);
+        let lt = make_lifetime(2, 3);
+
+        let result = can_fit_in_group(
+            1,
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            1,
+            1,
+            1,
+            &lt,
+            &group,
+            &textures,
+            &lifetimes,
+            TOKEN,
+        );
+        assert!(!result, "texture usage mismatch should prevent fitting");
     }
 }

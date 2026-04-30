@@ -11,6 +11,8 @@ use super::{
 /// Update layout and pointer interaction for the retained UI tree.
 pub fn update_ui(world: &mut World, input: &Input, surface_size: [f32; 2]) {
     super::ensure_ui_resources(world);
+    #[cfg(feature = "vn-ui")]
+    crate::vn::ui_binding::sync_runtime_ui_to_world_with_surface(world, surface_size);
 
     let mut resolved = resolve_world_layout(world, surface_size);
     let mut rects = rect_map(&resolved);

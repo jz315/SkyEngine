@@ -34,29 +34,39 @@ pub use assets::{
 };
 #[cfg(feature = "kajiya-renderer")]
 pub use backend::{KajiyaSceneRenderer, KajiyaSceneSyncStats};
-pub use backend::{SceneRenderer, SceneRendererError, SceneRendererInitError, WgpuSceneRenderer};
+#[cfg(feature = "renderling-renderer")]
+pub use backend::{RenderlingSceneRenderer, RenderlingSceneSyncStats};
+pub use backend::{
+    SceneRenderer, SceneRendererError, SceneRendererInitError, SceneSpotLight, WgpuSceneRenderer,
+};
 pub use component::{
     BloomSettings, Camera as CameraMarker, CameraViewport, DdgiSettings, DdgiVolumeSettings,
-    DirectionalLight, GiDebugMode, GlobalIlluminationSettings, MainCamera, MeshRenderer, Parent,
-    PointLight, RenderLayerMask, RenderSettings, SortingLayer, SpriteRenderer, TileAnimation,
-    TileAnimationFrame, TilemapDepthSort, TilemapOrientation, TilemapRenderOrder, TilemapRenderer,
-    TilemapStaggerAxis, TilemapStaggerIndex, TilesetGrid, TilesetTileRect, ToneMapSettings,
-    VignetteSettings, WgpuMeshRenderer,
+    DirectionalLight, GiDebugMode, GlobalIlluminationMode, GlobalIlluminationSettings, MainCamera,
+    MeshRenderer, Parent, PointLight, RenderDebugView, RenderLayerMask, RenderSettings,
+    ShadowSamplingMode, ShadowUpdatePolicy, SharpenSettings, SortingLayer, SpotLight,
+    SpriteRenderer, SsgiSettings, TemporalAntiAliasingSettings, TileAnimation, TileAnimationFrame,
+    TilemapDepthSort, TilemapOrientation, TilemapRenderOrder, TilemapRenderer, TilemapStaggerAxis,
+    TilemapStaggerIndex, TilesetGrid, TilesetTileRect, ToneMapSettings, VignetteSettings,
+    WgpuMeshRenderer, ALL_SHADOW_CASCADE_MASK, MAX_DIRECTIONAL_SHADOW_CASCADES,
 };
+pub use execution::SceneTexture;
+pub use gi::{SsgiComputeTextureLayout, SsgiPass, SsgiResources};
 pub use gpu::{
     is_depth_format, GpuScene, GpuTable, GpuTableManager, ModelMatrixTable, Texture,
     DEFAULT_DEPTH_FORMAT,
 };
 pub use lighting::DirectionalShadowPhase;
-pub use lighting::{GpuLight, Light2D, LightTable};
+pub use lighting::{GpuLight, GpuLightKind, Light2D, LightTable, SceneLightingResources};
 pub use phase::{OpaquePhase, TransparentPhase};
 pub use pipeline::{
     Bloom, ComputePass, ComputePassExecuteContext, ComputePassSetupContext, DdgiUpdateCompute,
-    PipelineStepDescriptor, PostFxPass, PostFxPassExecuteContext, PostFxPassSetupContext,
-    RenderBackendKind, RenderFeature, RenderPass, RenderPassExecuteContext, RenderPassSetupContext,
-    RenderPhase, RenderPhaseExecuteContext, RenderPhaseSetupContext, RenderPipelineAsset,
-    RenderPipelineBuilder, RenderPipelineDescriptor, SceneMaterialPrepass, SceneNormalPrepass,
-    SpriteFeature, ToneMap, Vignette,
+    DebugView, GraphPass, GraphPassExecuteContext, GraphPassSetupContext, KajiyaDpiMode,
+    KajiyaRendererSettings, PipelineStepDescriptor, PostFxPass, PostFxPassExecuteContext,
+    PostFxPassSetupContext, RenderBackendKind, RenderFeature, RenderPass, RenderPassExecuteContext,
+    RenderPassSetupContext, RenderPhase, RenderPhaseExecuteContext, RenderPhaseSetupContext,
+    RenderPipelineAsset, RenderPipelineBuilder, RenderPipelineDescriptor, SceneMaterialPrepass,
+    SceneNormalPrepass, Sharpen, SpriteFeature, TemporalAntiAliasing, TextureSpec, ToneMap,
+    Vignette,
 };
 pub use resources::material::{
     AlphaMode, Material, MaterialBindContext, MaterialHandle, MaterialRenderState, MaterialStorage,
@@ -65,6 +75,7 @@ pub use resources::material::{
 };
 pub use runtime::RenderComposer;
 pub use runtime::RenderTimingStats;
+pub use runtime::{HistoryTexture, HistoryTextureRequest, HistoryTextureSize};
 pub use sprite::Sprite;
 pub use tilemap::{
     Tile, TileChunkBounds, TileFlags, TileId, TiledImport, TiledImportError, TiledLayer,
@@ -76,7 +87,8 @@ pub use tilemap::{
 #[cfg(feature = "physics")]
 pub use tilemap::{TiledPhysicsError, TiledPhysicsInstance, TiledPhysicsOptions};
 pub use view::{
-    Camera, Color, Frustum, RenderQueueSort, RenderStats, SceneView, SceneViewKind, ViewportRect,
+    Camera, Color, Frustum, RenderQueueSort, RenderStats, SceneView, SceneViewKind,
+    TemporalViewState, ViewportRect,
 };
 
 #[cfg(feature = "live2d")]
@@ -108,6 +120,7 @@ mod tests {
         let _animate_sprites: fn(&mut crate::ecs::World) = animate_sprites;
         let _stats = RenderStats::default();
         let _timings = RenderTimingStats::default();
+        let _texture_spec = TextureSpec::rgba16f("curated_texture_spec").half_res();
         let _view = CameraViewport::default();
         let _viewport = ViewportRect::default();
         let _transform = Transform::default();
@@ -121,6 +134,9 @@ mod tests {
             expert::Mesh::QUAD,
             expert::MaterialHandle::new::<SpriteMaterial>(0, 0),
         );
+        let _gpu_light_kind = GpuLightKind::Point;
+        let _scene_lighting: Option<SceneLightingResources<'_>> = None;
+        let _ssgi_layout: Option<SsgiComputeTextureLayout> = None;
         let _sprite_renderer = SpriteRenderer::new(8.0, 8.0);
         let _tile = Tile::new(TileId(0));
         let _tilemap_storage = TilemapStorage::new();
@@ -146,6 +162,7 @@ mod tests {
         let _tiled_spawn_options = TiledSpawnOptions::centered();
         let _tiled_spawn_origin = TiledSpawnOrigin::Centered;
         let _light = PointLight::new(64.0);
+        let _spot = SpotLight::new(32.0);
         let _composer = RenderComposer::from_asset(RenderPipelineAsset::builder().build());
         let _feature = SpriteFeature::unlit();
         let _main_camera = MainCamera;
@@ -156,9 +173,12 @@ mod tests {
     #[test]
     fn expert_namespace_exposes_low_level_render_api() {
         let _graph = expert::RenderGraph::new();
+        let _spec = expert::TextureSpec::r32f("expert_texture_spec").storage();
         let _target: Option<expert::RenderTarget> = None;
         let _batch: Option<expert::SpriteBatch> = None;
         let _light: Option<expert::LightPass> = None;
+        let _light_kind = expert::GpuLightKind::Directional;
+        let _scene_lighting: Option<expert::SceneLightingResources<'_>> = None;
         let _composite: Option<expert::CompositePass> = None;
         let _bloom: Option<expert::Bloom> = None;
         let _tonemap: Option<expert::ToneMap> = None;

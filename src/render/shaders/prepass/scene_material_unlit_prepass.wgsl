@@ -61,7 +61,7 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
 
     var output: FragmentOutput;
     output.albedo = vec4<f32>(base.rgb, base.a);
-    output.material = vec4<f32>(0.0, 1.0, 1.0, base.a);
+    output.material = vec4<f32>(1.0, 0.0, 1.0, base.a);
     output.emissive = vec4<f32>(base.rgb, base.a);
     output.encoded_normal = vec4<f32>(0.5, 0.5, 1.0, 1.0);
     return output;

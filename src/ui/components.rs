@@ -1,3 +1,4 @@
+use crate::asset::{Handle, TextureAsset};
 use crate::ecs::EntityId;
 use crate::render::Color;
 
@@ -299,6 +300,34 @@ pub struct UiPanel {
 impl UiPanel {
     pub const fn new(color: Color) -> Self {
         Self { color }
+    }
+}
+
+/// Textured rectangular UI surface.
+#[derive(Debug, Clone, Copy)]
+pub struct UiImage {
+    pub texture: Handle<TextureAsset>,
+    pub color: Color,
+    pub uv_rect: [f32; 4],
+}
+
+impl UiImage {
+    pub const fn new(texture: Handle<TextureAsset>) -> Self {
+        Self {
+            texture,
+            color: Color::WHITE,
+            uv_rect: [0.0, 0.0, 1.0, 1.0],
+        }
+    }
+
+    pub const fn color(mut self, color: Color) -> Self {
+        self.color = color;
+        self
+    }
+
+    pub const fn uv(mut self, u_min: f32, v_min: f32, u_max: f32, v_max: f32) -> Self {
+        self.uv_rect = [u_min, v_min, u_max, v_max];
+        self
     }
 }
 

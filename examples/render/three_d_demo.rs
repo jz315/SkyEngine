@@ -2,7 +2,7 @@
 //!
 //! Shows the public high-level 3D path:
 //! - perspective camera
-//! - `RenderPipelineAsset::forward_3d()`
+//! - `RenderPipelineAsset::modern_3d()`
 //! - `StandardMaterial`
 //! - `DirectionalLight` shadowing
 //! - animated point lights and mesh instances
@@ -13,6 +13,9 @@
 //! - `W` / `S` or mouse wheel: zoom
 //! - `Space`: toggle auto orbit
 //! - `0`-`4`: GI debug off / probes / irradiance / visibility / ray budget
+//! - `F1`: lit scene
+//! - `F2`-`F5`: raw directional shadow cascade 0-3
+//! - `F6`: directional shadow cascade coverage overlay
 //!
 //! ```bash
 //! cargo run --example three_d_demo --features app --release
@@ -26,8 +29,9 @@ use sky_engine::math::{Quat, Vec3};
 use sky_engine::render::expert::{BoundingSphere, Mesh, MeshDescriptor, MeshHandle, MeshIndexData};
 use sky_engine::render::{
     BloomSettings, CameraMarker, Color, DdgiSettings, DdgiVolumeSettings, DirectionalLight,
-    GiDebugMode, GlobalIlluminationSettings, MainCamera, MaterialHandle, PointLight, Projection,
-    RenderPipelineAsset, RenderSettings, StandardMaterial, Texture, ToneMapSettings, Transform,
+    GiDebugMode, GlobalIlluminationMode, GlobalIlluminationSettings, MainCamera, MaterialHandle,
+    PointLight, Projection, RenderDebugView, RenderPipelineAsset, RenderSettings, SharpenSettings,
+    SpotLight, SsgiSettings, StandardMaterial, Texture, ToneMapSettings, Transform,
     WgpuMeshRenderer,
 };
 
@@ -69,6 +73,7 @@ struct ThreeDDemo {
     camera_pitch: f32,
     camera_distance: f32,
     gi_debug: GiDebugMode,
+    shadow_debug: RenderDebugView,
 }
 
 impl Default for ThreeDDemo {
@@ -83,6 +88,7 @@ impl Default for ThreeDDemo {
             camera_pitch: -0.18,
             camera_distance: 13.0,
             gi_debug: GiDebugMode::Off,
+            shadow_debug: RenderDebugView::None,
         }
     }
 }
@@ -103,6 +109,12 @@ impl AppState for ThreeDDemo {
             self.gi_debug = debug_mode;
             if let Some(settings) = ctx.world.get_resource_mut::<RenderSettings>() {
                 settings.global_illumination.debug = debug_mode;
+            }
+        }
+        if let Some(debug_view) = shadow_debug_view_from_input(ctx) {
+            self.shadow_debug = debug_view;
+            if let Some(settings) = ctx.world.get_resource_mut::<RenderSettings>() {
+                settings.debug_view = debug_view;
             }
         }
 
@@ -163,11 +175,16 @@ impl AppState for ThreeDDemo {
             let stats = ctx.render_stats();
             let orbit_mode = if self.auto_orbit { "auto" } else { "manual" };
             ctx.set_title(&format!(
-                "SkyEngine — 3D Demo | {:.0} FPS | {} draws | {} lights | camera {orbit_mode} | GI {}",
+                "SkyEngine — 3D Demo | {:.0} FPS | {} draws ({} shadow) | {} lights | CSM {}x {}x{} | camera {orbit_mode} | GI {} | shadows {}",
                 self.fps_smooth,
                 stats.draw_calls,
+                stats.shadow_draw_calls,
                 stats.light_count,
-                gi_debug_name(self.gi_debug)
+                stats.shadow_cascade_count,
+                stats.shadow_atlas_width,
+                stats.shadow_atlas_height,
+                gi_debug_name(self.gi_debug),
+                shadow_debug_name(self.shadow_debug)
             ));
         }
     }
@@ -189,6 +206,24 @@ fn gi_debug_mode_from_input(ctx: &FrameContext) -> Option<GiDebugMode> {
     }
 }
 
+fn shadow_debug_view_from_input(ctx: &FrameContext) -> Option<RenderDebugView> {
+    if ctx.input.key_pressed(KeyCode::F1) {
+        Some(RenderDebugView::None)
+    } else if ctx.input.key_pressed(KeyCode::F2) {
+        Some(RenderDebugView::DirectionalShadowCascade(0))
+    } else if ctx.input.key_pressed(KeyCode::F3) {
+        Some(RenderDebugView::DirectionalShadowCascade(1))
+    } else if ctx.input.key_pressed(KeyCode::F4) {
+        Some(RenderDebugView::DirectionalShadowCascade(2))
+    } else if ctx.input.key_pressed(KeyCode::F5) {
+        Some(RenderDebugView::DirectionalShadowCascade(3))
+    } else if ctx.input.key_pressed(KeyCode::F6) {
+        Some(RenderDebugView::DirectionalShadowCoverage)
+    } else {
+        None
+    }
+}
+
 fn gi_debug_name(mode: GiDebugMode) -> &'static str {
     match mode {
         GiDebugMode::Off => "off",
@@ -196,6 +231,20 @@ fn gi_debug_name(mode: GiDebugMode) -> &'static str {
         GiDebugMode::Irradiance => "irradiance",
         GiDebugMode::Visibility => "visibility",
         GiDebugMode::RayBudget => "ray budget",
+    }
+}
+
+fn shadow_debug_name(view: RenderDebugView) -> &'static str {
+    match view {
+        RenderDebugView::None => "lit",
+        RenderDebugView::DirectionalShadowMap => "shadow map",
+        RenderDebugView::DirectionalShadowCascade(0) => "cascade 0",
+        RenderDebugView::DirectionalShadowCascade(1) => "cascade 1",
+        RenderDebugView::DirectionalShadowCascade(2) => "cascade 2",
+        RenderDebugView::DirectionalShadowCascade(3) => "cascade 3",
+        RenderDebugView::DirectionalShadowCascade(_) => "cascade",
+        RenderDebugView::DirectionalShadowCoverage => "coverage",
+        _ => "debug",
     }
 }
 
@@ -477,12 +526,30 @@ fn initialize_scene(ctx: &mut FrameContext) {
             .color(Color::rgb(1.0, 0.97, 0.90))
             .falloff(1.10),
     ));
+    ctx.world.spawn((
+        Transform::from_xyz(-1.8, GROUND_Y + 6.2, -2.1).with_scale3(0.24, 0.24, 0.24),
+        WgpuMeshRenderer::new(assets.cube_mesh, assets.teal_emissive),
+        SpotLight::new(11.0)
+            .intensity(1.15)
+            .color(Color::rgb(0.62, 0.86, 1.0))
+            .direction([0.28, -0.92, -0.26])
+            .cone_angles(18.0_f32.to_radians(), 34.0_f32.to_radians())
+            .falloff(1.8)
+            .shadow_resolution(1024),
+    ));
 
     ctx.world.spawn((DirectionalLight::new([0.58, -1.0, 0.34])
         .intensity(1.88)
         .color(Color::rgb(1.0, 0.96, 0.90))
-        .shadow_map_size(2048)
-        .shadow_bias(0.0008),));
+        .cascade_count(4)
+        .cascade_distances([7.5, 18.0, 38.0, 80.0])
+        .cascade_blend(0.12)
+        .shadow_resolution_per_cascade(1536)
+        .shadow_bias(0.0008)
+        .shadow_depth_bias(3)
+        .shadow_slope_bias(1.8)
+        .shadow_normal_bias(0.018)
+        .shadow_filter_radius(0.035),));
 }
 
 fn update_camera(ctx: &mut FrameContext, yaw: f32, pitch: f32, distance: f32) {
@@ -978,6 +1045,13 @@ fn main() {
         ambient_color: Color::rgb(0.007, 0.009, 0.012),
         global_illumination: GlobalIlluminationSettings {
             enabled: true,
+            mode: GlobalIlluminationMode::Ssgi,
+            ssgi: SsgiSettings {
+                intensity: 1.0,
+                radius_pixels: 8.0,
+                depth_rejection: 8.0,
+                normal_power: 64.0,
+            },
             ddgi: DdgiSettings {
                 volume: DdgiVolumeSettings {
                     origin: [-12.0, -1.25, -14.0],
@@ -1003,6 +1077,11 @@ fn main() {
             intensity: 0.06,
             radius: 0.40,
         },
+        sharpen: SharpenSettings {
+            enabled: true,
+            strength: 0.32,
+            clamp: 0.075,
+        },
         tonemap: ToneMapSettings {
             enabled: true,
             exposure: 1.10,
@@ -1018,6 +1097,6 @@ fn main() {
     ));
 
     App::new(AppConfig::new("SkyEngine — 3D Demo", 1280, 720), world)
-        .with_render_pipeline(RenderPipelineAsset::forward_3d())
+        .with_render_pipeline(RenderPipelineAsset::modern_3d())
         .run(ThreeDDemo::default());
 }

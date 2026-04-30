@@ -9,8 +9,8 @@ use crate::gpu::GpuContext;
 use crate::render::execution::{PreparedFrame, PreparedView};
 use crate::render::expert::{Mesh, MeshDescriptor, MeshIndexData, RenderGraphError, TargetSize};
 use crate::render::pipeline::{
-    ComputePass, PostFxPass, RenderPass, RenderPhase, RenderPhaseExecuteContext,
-    RenderPhaseSetupContext,
+    ComputePass, GraphPass, GraphPassExecuteContext, GraphPassSetupContext, PostFxPass, RenderPass,
+    RenderPhase, RenderPhaseExecuteContext, RenderPhaseSetupContext,
 };
 use crate::render::view::Projection;
 use crate::render::{
@@ -22,7 +22,7 @@ use crate::render::{
 #[cfg(feature = "live2d")]
 use crate::render::{RenderQueueSort, SceneView, SortingLayer};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use wgpu::util::DeviceExt;
 
 #[cfg(feature = "live2d")]
@@ -83,6 +83,87 @@ fn builder_unlit_pipeline_renders_default_sprite_scene() {
     assert_eq!(stats.view_count, 1);
     assert!(stats.passes >= 1);
     assert!(stats.step_count >= 1);
+}
+
+struct OrderedGraphPass {
+    name: &'static str,
+    executions: Arc<Mutex<Vec<&'static str>>>,
+}
+
+impl GraphPass for OrderedGraphPass {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn setup(&mut self, ctx: &mut GraphPassSetupContext<'_, '_>) {
+        let target_size = ctx.view().target_size();
+        let output = ctx.graph().create_texture(|builder| {
+            builder
+                .name(self.name)
+                .size(TargetSize::Exact(target_size[0], target_size[1]))
+                .format(wgpu::TextureFormat::Bgra8Unorm)
+                .persistent();
+        });
+        ctx.graph().add_render_pass(self.name, |setup| {
+            setup.write_color(0, output);
+        });
+    }
+
+    fn execute(
+        &mut self,
+        ctx: &mut GraphPassExecuteContext<'_, '_>,
+    ) -> Result<(), RenderGraphError> {
+        if ctx.pass().name == self.name {
+            self.executions
+                .lock()
+                .expect("order log lock")
+                .push(self.name);
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn custom_graph_pass_execution_order_matches_builder_order() {
+    let (device, queue) = create_test_device();
+    let mut ctx =
+        GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [32, 32]);
+    let executions = Arc::new(Mutex::new(Vec::new()));
+    let pipeline = RenderPipelineAsset::builder()
+        .add_graph_pass(OrderedGraphPass {
+            name: "graph_order_a",
+            executions: executions.clone(),
+        })
+        .add_graph_pass(OrderedGraphPass {
+            name: "graph_order_b",
+            executions: executions.clone(),
+        })
+        .build();
+    assert_eq!(
+        pipeline.descriptor().step_names,
+        vec![
+            crate::render::PipelineStepDescriptor::Graph("graph_order_a"),
+            crate::render::PipelineStepDescriptor::Graph("graph_order_b"),
+        ]
+    );
+    let mut renderer = RenderComposer::from_asset(pipeline);
+    let mut world = World::new();
+    world.spawn((
+        Transform::default(),
+        CameraMarker::new(),
+        Projection::orthographic_fixed(32.0, 32.0),
+        MainCamera,
+    ));
+
+    ctx.begin_frame()
+        .expect("headless begin_frame should succeed");
+    renderer.render_world(&mut ctx, &world);
+    ctx.end_frame();
+
+    assert_eq!(
+        executions.lock().expect("order log lock").as_slice(),
+        ["graph_order_a", "graph_order_b"]
+    );
 }
 
 #[test]
@@ -219,6 +300,29 @@ fn forward_3d_descriptor_includes_directional_shadow_phase() {
 }
 
 #[test]
+fn modern_3d_descriptor_uses_wicked_style_pass_order() {
+    use crate::render::PipelineStepDescriptor::{Compute, Phase, PostFx};
+
+    let descriptor = RenderPipelineAsset::modern_3d().descriptor();
+    let steps = descriptor.step_names;
+    let expected = [
+        Phase("scene_normal_prepass"),
+        Phase("scene_material_prepass"),
+        Phase("directional_shadow"),
+        Compute("ddgi_update"),
+        Phase("opaque"),
+        PostFx("ssgi"),
+        Phase("transparent"),
+        PostFx("taa"),
+        PostFx("sharpen"),
+        PostFx("bloom"),
+        PostFx("tonemap"),
+        PostFx("debug_view"),
+    ];
+    assert_eq!(steps.as_slice(), &expected);
+}
+
+#[test]
 fn forward_3d_enables_shadow_view_for_perspective_directional_light() {
     #[repr(C)]
     #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -282,7 +386,7 @@ fn forward_3d_enables_shadow_view_for_perspective_directional_light() {
         Transform::from_xyz(0.0, 0.0, -3.0),
         WgpuMeshRenderer::new(mesh_handle, material),
     ));
-    world.spawn((DirectionalLight::new([0.3, -1.0, 0.2]),));
+    world.spawn((DirectionalLight::new([0.3, -1.0, 0.2]).shadow_filter_radius(0.05),));
 
     ctx.begin_frame()
         .expect("headless begin_frame should succeed");
@@ -292,6 +396,7 @@ fn forward_3d_enables_shadow_view_for_perspective_directional_light() {
     assert_eq!(renderer.shadows.views.len(), 1);
     assert!(renderer.shadows.views[0].enabled());
     assert!(renderer.shadows.views[0].caster_count() > 0);
+    assert!((renderer.shadows.views[0].radius() - 0.05).abs() < 0.0001);
 }
 
 #[test]
@@ -368,6 +473,89 @@ fn forward_3d_enables_shadow_view_for_orthographic_directional_light() {
     assert_eq!(renderer.shadows.views.len(), 1);
     assert!(renderer.shadows.views[0].enabled());
     assert!(renderer.shadows.views[0].caster_count() > 0);
+}
+
+#[test]
+fn forward_3d_shadow_stats_track_lod_mask_per_cascade() {
+    #[repr(C)]
+    #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+    struct Vertex {
+        position: [f32; 3],
+        normal: [f32; 3],
+        uv: [f32; 2],
+    }
+
+    let (device, queue) = create_test_device();
+    let mut ctx =
+        GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [96, 96]);
+    let mut renderer = RenderComposer::from_asset(RenderPipelineAsset::forward_3d());
+    renderer.register_material::<StandardMaterial>(&ctx);
+
+    let vertices = [
+        Vertex {
+            position: [-1.0, -1.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            uv: [0.0, 1.0],
+        },
+        Vertex {
+            position: [1.0, -1.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            uv: [1.0, 1.0],
+        },
+        Vertex {
+            position: [1.0, 1.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            uv: [1.0, 0.0],
+        },
+        Vertex {
+            position: [-1.0, 1.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            uv: [0.0, 0.0],
+        },
+    ];
+    let indices = [0u16, 1, 2, 0, 2, 3];
+    let mesh_handle = renderer.insert_mesh(Mesh::from_raw(
+        &ctx,
+        MeshDescriptor::new(
+            bytemuck::cast_slice(&vertices),
+            vertices.len() as u32,
+            Mesh::vertex_layout_position_normal_uv(),
+            "shadow_lod_stats_quad",
+        )
+        .with_indices(MeshIndexData::U16(&indices)),
+    ));
+    let material = renderer
+        .materials_mut::<StandardMaterial>()
+        .insert(StandardMaterial::default());
+
+    let mut world = World::new();
+    world.spawn((
+        Transform::default(),
+        CameraMarker::new(),
+        Projection::perspective(60.0f32.to_radians(), 0.1, 32.0),
+        MainCamera,
+    ));
+    world.spawn((
+        Transform::from_xyz(0.0, 0.0, -3.0),
+        WgpuMeshRenderer::new(mesh_handle, material).shadow_lod_cascades(1),
+    ));
+    world.spawn((DirectionalLight::new([0.3, -1.0, 0.2])
+        .cascade_count(2)
+        .cascade_distances([8.0, 32.0, 0.0, 0.0])
+        .shadow_map_size(64),));
+
+    ctx.begin_frame()
+        .expect("headless begin_frame should succeed");
+    renderer.render_world(&mut ctx, &world);
+    ctx.end_frame();
+
+    let stats = renderer.stats();
+    assert_eq!(stats.shadow_cascade_count, 2);
+    assert_eq!(stats.shadow_caster_count_by_cascade[0], 1);
+    assert_eq!(stats.shadow_caster_count_by_cascade[1], 0);
+    assert_eq!(stats.shadow_caster_count, 1);
+    assert_eq!(stats.shadow_draw_calls_by_cascade[0], 1);
+    assert_eq!(stats.shadow_draw_calls_by_cascade[1], 0);
 }
 
 const TEST_HOLOGRAM_SHADER: &str = r#"
@@ -924,6 +1112,10 @@ fn forward_3d_ddgi_executes_with_standard_material_geometry() {
             enabled: false,
             ..Default::default()
         },
+        temporal_aa: crate::render::TemporalAntiAliasingSettings {
+            enabled: true,
+            ..Default::default()
+        },
         vignette: crate::render::VignetteSettings {
             enabled: false,
             ..Default::default()
@@ -956,6 +1148,114 @@ fn forward_3d_ddgi_executes_with_standard_material_geometry() {
     assert_eq!(stats.view_count, 2);
     assert!(stats.passes >= 5);
     assert!(stats.draw_calls >= 1);
+}
+
+#[test]
+fn modern_3d_ssgi_executes_with_standard_material_geometry() {
+    #[repr(C)]
+    #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+    struct Vertex {
+        position: [f32; 3],
+        normal: [f32; 3],
+        uv: [f32; 2],
+    }
+
+    let (device, queue) = create_test_device();
+    let mut ctx =
+        GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [96, 96]);
+    let mut renderer = RenderComposer::from_asset(RenderPipelineAsset::modern_3d());
+    renderer.register_material::<StandardMaterial>(&ctx);
+
+    let vertices = [
+        Vertex {
+            position: [-0.9, -0.9, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            uv: [0.0, 1.0],
+        },
+        Vertex {
+            position: [0.9, -0.9, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            uv: [1.0, 1.0],
+        },
+        Vertex {
+            position: [0.9, 0.9, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            uv: [1.0, 0.0],
+        },
+        Vertex {
+            position: [-0.9, 0.9, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            uv: [0.0, 0.0],
+        },
+    ];
+    let indices = [0u16, 1, 2, 0, 2, 3];
+    let mesh_handle = renderer.insert_mesh(Mesh::from_raw(
+        &ctx,
+        MeshDescriptor::new(
+            bytemuck::cast_slice(&vertices),
+            vertices.len() as u32,
+            Mesh::vertex_layout_position_normal_uv(),
+            "modern_3d_ssgi_mesh",
+        )
+        .with_indices(MeshIndexData::U16(&indices)),
+    ));
+    let material_handle = renderer
+        .materials_mut::<StandardMaterial>()
+        .insert(StandardMaterial {
+            albedo: Color::new(0.72, 0.56, 0.42, 1.0),
+            roughness: 0.92,
+            emissive: Color::new(0.12, 0.08, 0.04, 1.0),
+            ..StandardMaterial::default()
+        });
+
+    let mut world = World::new();
+    world.insert_resource(RenderSettings {
+        global_illumination: crate::render::GlobalIlluminationSettings {
+            enabled: true,
+            mode: crate::render::GlobalIlluminationMode::Ssgi,
+            ssgi: crate::render::SsgiSettings {
+                intensity: 1.0,
+                radius_pixels: 8.0,
+                depth_rejection: 8.0,
+                normal_power: 64.0,
+            },
+            ..Default::default()
+        },
+        bloom: crate::render::BloomSettings {
+            enabled: false,
+            ..Default::default()
+        },
+        tonemap: crate::render::ToneMapSettings {
+            enabled: false,
+            ..Default::default()
+        },
+        vignette: crate::render::VignetteSettings {
+            enabled: false,
+            ..Default::default()
+        },
+        debug_view: crate::render::RenderDebugView::SsgiDiffuseMip(0),
+        ..RenderSettings::default()
+    });
+    world.spawn((
+        Transform::from_xyz(0.0, 0.0, 4.0),
+        CameraMarker::new(),
+        Projection::perspective(55.0f32.to_radians(), 0.1, 32.0),
+        MainCamera,
+    ));
+    world.spawn((
+        Transform::default(),
+        WgpuMeshRenderer::new(mesh_handle, material_handle),
+    ));
+
+    ctx.begin_frame()
+        .expect("headless begin_frame should succeed");
+    renderer.render_world(&mut ctx, &world);
+    ctx.end_frame();
+
+    let stats = renderer.stats();
+    assert_eq!(stats.view_count, 1);
+    assert!(stats.passes >= 5);
+    assert!(stats.draw_calls >= 2);
 }
 
 #[derive(Clone)]

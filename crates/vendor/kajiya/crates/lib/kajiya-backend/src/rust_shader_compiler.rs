@@ -121,7 +121,7 @@ impl LazyWorker for CompileRustShaderCrate {
             crate::file::FILE_WATCHER
                 .lock()
                 .watch(src_dir.clone(), move |event| {
-                    if matches!(event, hotwatch::Event::Write(_)) {
+                    if matches!(event.kind, hotwatch::EventKind::Modify(_)) {
                         invalidation_trigger();
                     }
                 })

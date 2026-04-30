@@ -76,3 +76,9 @@ pub mod ui;
 
 #[cfg(feature = "audio")]
 pub mod audio;
+
+#[cfg(feature = "video")]
+pub mod video;
+
+#[cfg(feature = "vn")]
+pub mod vn;

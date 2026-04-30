@@ -7,6 +7,7 @@ use crate::{asset::AssetServer, math::Projection};
 use super::kajiya_assets::{KajiyaAssetSyncStats, KajiyaRenderAssetCache};
 use super::kajiya_cache;
 use super::kajiya_config::KajiyaRendererConfig;
+use super::kajiya_error::KajiyaBackendError;
 use super::{SceneCamera, SceneSnapshot};
 
 pub(crate) struct NativeKajiyaRuntime {
@@ -31,7 +32,7 @@ impl NativeKajiyaRuntime {
         vsync: bool,
         surface_size: [u32; 2],
         triangle_only: bool,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, KajiyaBackendError> {
         kajiya_cache::configure_vfs(config.vendor_root(), config.cache_dir());
         std::env::set_var("SMOL_THREADS", "64");
 
@@ -61,32 +62,40 @@ impl NativeKajiyaRuntime {
                 swapchain_extent,
                 vsync,
                 graphics_debugging: false,
-                device_index: None,
+                device_index: config.device_index(),
             },
         )
-        .map_err(|error| format!("failed to create Kajiya Vulkan backend: {error:?}"))?;
+        .map_err(|error| KajiyaBackendError::create_renderer("Vulkan backend", error))?;
 
         let lazy_cache = turbosloth::LazyCache::create();
-        let world_renderer = ::kajiya::world_renderer::WorldRenderer::new(
+        let mut world_renderer = ::kajiya::world_renderer::WorldRenderer::new(
             render_extent,
             temporal_upscale_extent,
             &render_backend,
             &lazy_cache,
         )
-        .map_err(|error| format!("failed to create Kajiya WorldRenderer: {error:?}"))?;
+        .map_err(|error| KajiyaBackendError::create_renderer("WorldRenderer", error))?;
+        world_renderer.sun_size_multiplier = config.sun_size_multiplier();
+        world_renderer.use_taa_jitter = config.taa_jitter_enabled();
+        world_renderer.motion_blur_enabled = config.motion_blur_enabled();
         let ui_renderer = ::kajiya::ui_renderer::UiRenderer::default();
         let rg_renderer = ::kajiya::rg::renderer::Renderer::new(&render_backend)
-            .map_err(|error| format!("failed to create Kajiya render graph renderer: {error:?}"))?;
+            .map_err(|error| KajiyaBackendError::create_renderer("render graph renderer", error))?;
         let asset_cache = KajiyaRenderAssetCache::new(config.cache_dir().clone());
         if config.trace_enabled() {
             eprintln!(
-                "[SkyEngine][KajiyaNative] init ok render_extent={}x{} temporal_upscale={}x{} swapchain={}x{}",
+                "[SkyEngine][KajiyaNative] init ok render_extent={}x{} temporal_upscale={}x{} swapchain={}x{} ray_tracing={} device_index={:?} sun_size={:.3} taa_jitter={} motion_blur={}",
                 render_extent[0],
                 render_extent[1],
                 temporal_upscale_extent[0],
                 temporal_upscale_extent[1],
                 swapchain_extent[0],
-                swapchain_extent[1]
+                swapchain_extent[1],
+                world_renderer.ray_tracing_enabled(),
+                config.device_index(),
+                config.sun_size_multiplier(),
+                config.taa_jitter_enabled(),
+                config.motion_blur_enabled()
             );
         }
 
@@ -120,7 +129,7 @@ impl NativeKajiyaRuntime {
         &mut self,
         snapshot: &SceneSnapshot,
         assets: Option<&AssetServer>,
-    ) -> Result<(), String> {
+    ) -> Result<(), KajiyaBackendError> {
         let frame = self.frame_index;
         if self.config.should_trace_frame(frame) {
             eprintln!(
@@ -152,7 +161,7 @@ impl NativeKajiyaRuntime {
         &mut self,
         snapshot: &SceneSnapshot,
         assets: Option<&AssetServer>,
-    ) -> Result<(), String> {
+    ) -> Result<(), KajiyaBackendError> {
         if self.triangle_only {
             return self.render_triangle();
         }
@@ -208,7 +217,7 @@ impl NativeKajiyaRuntime {
             .dispatch([swapchain_extent[0], swapchain_extent[1], 1]);
         });
 
-        prepared_frame.map_err(|error| format!("failed to prepare Kajiya frame: {error:?}"))?;
+        prepared_frame.map_err(|error| KajiyaBackendError::prepare_frame("world", error))?;
         if self.config.should_trace_frame(self.frame_index) {
             eprintln!(
                 "[SkyEngine][KajiyaNative] world prepare_frame ok frame={}",
@@ -237,7 +246,7 @@ impl NativeKajiyaRuntime {
         Ok(())
     }
 
-    fn render_triangle(&mut self) -> Result<(), String> {
+    fn render_triangle(&mut self) -> Result<(), KajiyaBackendError> {
         let swapchain_extent = self.swapchain_extent;
         if self.config.should_trace_frame(self.frame_index) {
             eprintln!(
@@ -265,7 +274,7 @@ impl NativeKajiyaRuntime {
         });
 
         prepared_frame
-            .map_err(|error| format!("failed to prepare Kajiya debug triangle frame: {error:?}"))?;
+            .map_err(|error| KajiyaBackendError::prepare_frame("debug triangle", error))?;
         if self.config.should_trace_frame(self.frame_index) {
             eprintln!(
                 "[SkyEngine][KajiyaNative] triangle prepare_frame ok frame={}",
@@ -418,7 +427,7 @@ mod tests {
         render::backend::kajiya_config,
         render::{DirectionalLight, Transform},
     };
-    use ::kajiya::camera::LookThroughCamera;
+    use kajiya::camera::LookThroughCamera;
 
     fn assert_mat4_close(actual: ::kajiya::math::Mat4, expected: ::kajiya::math::Mat4) {
         let actual = actual.to_cols_array();
@@ -484,7 +493,7 @@ struct KajiyaWindowHandle03 {
 }
 
 impl KajiyaWindowHandle03 {
-    fn from_window(window: &Window) -> Result<Self, String> {
+    fn from_window(window: &Window) -> Result<Self, KajiyaBackendError> {
         platform_window_handle_03(window).map(|raw| Self { raw })
     }
 }
@@ -498,12 +507,12 @@ unsafe impl raw_window_handle_03::HasRawWindowHandle for KajiyaWindowHandle03 {
 #[cfg(target_os = "windows")]
 fn platform_window_handle_03(
     window: &Window,
-) -> Result<raw_window_handle_03::RawWindowHandle, String> {
+) -> Result<raw_window_handle_03::RawWindowHandle, KajiyaBackendError> {
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
     let handle = window
         .window_handle()
-        .map_err(|error| format!("failed to query winit raw window handle: {error}"))?;
+        .map_err(|error| KajiyaBackendError::WindowHandle(error.to_string()))?;
 
     match handle.as_raw() {
         RawWindowHandle::Win32(handle) => {
@@ -514,15 +523,17 @@ fn platform_window_handle_03(
                 .map_or(std::ptr::null_mut(), |value| value.get() as *mut _);
             Ok(raw_window_handle_03::RawWindowHandle::Windows(legacy))
         }
-        other => Err(format!(
+        other => Err(KajiyaBackendError::UnsupportedWindowHandle(format!(
             "Kajiya native runtime requires a Win32 window handle on Windows, got {other:?}"
-        )),
+        ))),
     }
 }
 
 #[cfg(not(target_os = "windows"))]
 fn platform_window_handle_03(
     _window: &Window,
-) -> Result<raw_window_handle_03::RawWindowHandle, String> {
-    Err("Kajiya native runtime currently has a raw-window-handle bridge only for Windows".into())
+) -> Result<raw_window_handle_03::RawWindowHandle, KajiyaBackendError> {
+    Err(KajiyaBackendError::UnsupportedWindowHandle(
+        "Kajiya native runtime currently has a raw-window-handle bridge only for Windows".into(),
+    ))
 }

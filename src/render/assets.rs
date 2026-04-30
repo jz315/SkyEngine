@@ -565,7 +565,7 @@ impl MeshAsset {
 }
 
 /// Backend-neutral texture sampling metadata.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TextureSamplerDesc {
     pub min_filter: TextureFilter,
     pub mag_filter: TextureFilter,
@@ -587,14 +587,14 @@ impl Default for TextureSamplerDesc {
 }
 
 /// Backend-neutral texture filter mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TextureFilter {
     Nearest,
     Linear,
 }
 
 /// Backend-neutral texture address mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TextureAddressMode {
     ClampToEdge,
     Repeat,
@@ -615,6 +615,8 @@ pub struct StandardMaterialAsset {
     pub emissive_texture: Option<Handle<TextureAsset>>,
     pub emissive_sampler: TextureSamplerDesc,
     pub alpha_mode: AlphaMode,
+    pub alpha_cutoff: f32,
+    pub receive_shadows: bool,
 }
 
 impl Asset for StandardMaterialAsset {
@@ -674,6 +676,25 @@ impl StandardMaterialAsset {
         self.alpha_mode = alpha_mode;
         self
     }
+
+    #[inline]
+    pub fn alpha_cutoff(mut self, alpha_cutoff: f32) -> Self {
+        self.alpha_cutoff = alpha_cutoff;
+        self
+    }
+
+    #[inline]
+    pub fn alpha_mask(mut self, alpha_cutoff: f32) -> Self {
+        self.alpha_mode = AlphaMode::Mask;
+        self.alpha_cutoff = alpha_cutoff;
+        self
+    }
+
+    #[inline]
+    pub fn receive_shadows(mut self, receive_shadows: bool) -> Self {
+        self.receive_shadows = receive_shadows;
+        self
+    }
 }
 
 impl Default for StandardMaterialAsset {
@@ -690,6 +711,8 @@ impl Default for StandardMaterialAsset {
             emissive_texture: None,
             emissive_sampler: TextureSamplerDesc::default(),
             alpha_mode: AlphaMode::Opaque,
+            alpha_cutoff: 0.5,
+            receive_shadows: true,
         }
     }
 }

@@ -5,18 +5,8 @@ use crate::render::graph::{
     CompiledPass, PhysicalResources, RenderGraph, ResourceRef, TargetSize, TextureHandle,
 };
 
-use super::slots::{PhaseState, TextureSlot};
+use super::slots::{PhaseState, SceneTexture, TextureSlot};
 use super::TextureFormat;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SceneTextureKind {
-    Depth,
-    Normal,
-    Velocity,
-    Albedo,
-    Material,
-    Emissive,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RequiredSceneGBuffer {
@@ -134,32 +124,18 @@ pub(crate) fn bind_current_as_scene_color(state: &mut PhaseState, node_name: &st
 }
 
 #[inline]
-fn scene_texture(state: &PhaseState, kind: SceneTextureKind) -> Option<TextureSlot> {
-    match kind {
-        SceneTextureKind::Depth => state.scene_depth(),
-        SceneTextureKind::Normal => state.scene_normal(),
-        SceneTextureKind::Velocity => state.scene_velocity(),
-        SceneTextureKind::Albedo => state.scene_albedo(),
-        SceneTextureKind::Material => state.scene_material(),
-        SceneTextureKind::Emissive => state.scene_emissive(),
-    }
+fn scene_texture(state: &PhaseState, kind: SceneTexture) -> Option<TextureSlot> {
+    state.scene_texture(kind)
 }
 
 #[inline]
 fn set_scene_texture(
     state: &mut PhaseState,
-    kind: SceneTextureKind,
+    kind: SceneTexture,
     handle: TextureHandle,
     format: TextureFormat,
 ) {
-    match kind {
-        SceneTextureKind::Depth => state.set_scene_depth(handle, format),
-        SceneTextureKind::Normal => state.set_scene_normal(handle, format),
-        SceneTextureKind::Velocity => state.set_scene_velocity(handle, format),
-        SceneTextureKind::Albedo => state.set_scene_albedo(handle, format),
-        SceneTextureKind::Material => state.set_scene_material(handle, format),
-        SceneTextureKind::Emissive => state.set_scene_emissive(handle, format),
-    }
+    let _ = state.set_scene_texture(kind, handle, format);
 }
 
 #[inline]
@@ -167,7 +143,7 @@ pub(crate) fn create_scene_texture(
     graph: &mut RenderGraph,
     state: &mut PhaseState,
     target_size: [u32; 2],
-    kind: SceneTextureKind,
+    kind: SceneTexture,
     format: TextureFormat,
     debug_name: &'static str,
 ) -> TextureSlot {
@@ -186,7 +162,7 @@ pub(crate) fn ensure_scene_texture(
     graph: &mut RenderGraph,
     state: &mut PhaseState,
     target_size: [u32; 2],
-    kind: SceneTextureKind,
+    kind: SceneTexture,
     format: TextureFormat,
     debug_name: &'static str,
 ) -> TextureSlot {

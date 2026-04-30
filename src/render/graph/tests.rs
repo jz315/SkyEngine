@@ -1,4 +1,5 @@
 use super::*;
+use crate::render::pipeline::TextureSpec;
 use std::sync::Arc;
 
 fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
@@ -977,6 +978,113 @@ fn readwrite_buffer_declares_both() {
     assert!(graph.passes[0].writes.contains(&ResourceRef::Buffer(buf)));
 }
 
+#[test]
+fn readwrite_subresource_declares_both() {
+    let mut graph = RenderGraph::new();
+    let texture = graph.create_texture(|b| {
+        b.name("atlas").mip_level_count(4).array_layer_count(16);
+    });
+    let subresource = TextureSubresource::new(texture, 2, 1, 7, 1);
+
+    graph.add_compute_pass("update_layer", |s| {
+        s.readwrite_subresource(subresource);
+    });
+
+    let resource = ResourceRef::TextureSubresource(subresource);
+    assert!(graph.passes[0].reads.contains(&resource));
+    assert!(graph.passes[0].writes.contains(&resource));
+}
+
+#[test]
+fn subresource_read_after_write_creates_dependency() {
+    let mut graph = RenderGraph::new();
+    let texture = graph.create_texture(|b| {
+        b.name("atlas").mip_level_count(4).array_layer_count(16);
+    });
+    let subresource = TextureSubresource::new(texture, 1, 1, 3, 1);
+
+    let writer = graph.add_compute_pass("write_subresource", |s| {
+        s.write_subresource(subresource);
+    });
+    let reader = graph.add_compute_pass("read_subresource", |s| {
+        s.read_subresource(subresource);
+        s.write_surface();
+    });
+
+    let compiled = graph.compile().unwrap();
+    assert_eq!(compiled[0].handle, writer);
+    assert_eq!(compiled[1].handle, reader);
+}
+
+#[test]
+fn non_overlapping_subresource_writes_can_coexist() {
+    let mut graph = RenderGraph::new();
+    let texture = graph.create_texture(|b| {
+        b.name("atlas")
+            .mip_level_count(4)
+            .array_layer_count(16)
+            .persistent();
+    });
+    let mip0 = TextureSubresource::new(texture, 0, 1, 0, 1);
+    let mip1 = TextureSubresource::new(texture, 1, 1, 0, 1);
+
+    graph.add_compute_pass("write_mip0", |s| {
+        s.write_subresource(mip0);
+    });
+    graph.add_compute_pass("write_mip1", |s| {
+        s.write_subresource(mip1);
+    });
+
+    let compiled = graph.compile().unwrap();
+    assert_eq!(compiled.len(), 2);
+    assert_eq!(compiled[0].dep_level, 0);
+    assert_eq!(compiled[1].dep_level, 0);
+}
+
+#[test]
+fn whole_texture_read_depends_on_subresource_write() {
+    let mut graph = RenderGraph::new();
+    let texture = graph.create_texture(|b| {
+        b.name("atlas").mip_level_count(4).array_layer_count(16);
+    });
+    let subresource = TextureSubresource::new(texture, 2, 1, 7, 1);
+
+    let writer = graph.add_compute_pass("write_subresource", |s| {
+        s.write_subresource(subresource);
+    });
+    let whole_reader = graph.add_compute_pass("read_whole", |s| {
+        s.read_texture(texture);
+        s.write_surface();
+    });
+
+    let compiled = graph.compile().unwrap();
+    assert_eq!(compiled[0].handle, writer);
+    assert_eq!(compiled[1].handle, whole_reader);
+}
+
+#[test]
+fn subresource_handles_reject_foreign_texture_handles() {
+    let mut source_graph = RenderGraph::new();
+    let foreign_texture = source_graph.create_texture(|b| {
+        b.name("foreign").mip_level_count(2).array_layer_count(2);
+    });
+
+    let mut graph = RenderGraph::new();
+    let foreign_subresource = TextureSubresource::new(foreign_texture, 0, 1, 0, 1);
+    graph.add_compute_pass("bad", |s| {
+        s.write_subresource(foreign_subresource);
+        s.write_surface();
+    });
+
+    assert!(matches!(
+        graph.compile(),
+        Err(RenderGraphError::InvalidResourceHandle {
+            resource: ResourceRef::TextureSubresource(_),
+            ..
+        })
+    ));
+}
+
 // ── Cycle detection ─────────────────────────────────────────────────
 
 #[test]
@@ -1192,11 +1300,79 @@ fn default_texture_is_transient() {
 fn texture_builder_tracks_sample_and_mip_counts() {
     let mut graph = RenderGraph::new();
     let t = graph.create_texture(|b| {
-        b.name("msaa_color").sample_count(4).mip_level_count(3);
+        b.name("msaa_color")
+            .sample_count(4)
+            .mip_level_count(3)
+            .array_layer_count(2);
     });
 
     assert_eq!(graph.textures[t.0].sample_count, 4);
     assert_eq!(graph.textures[t.0].mip_level_count, 3);
+    assert_eq!(graph.textures[t.0].array_layer_count, 2);
+}
+
+#[test]
+fn texture_builder_tracks_usage_flags() {
+    let mut graph = RenderGraph::new();
+    let default_tex = graph.create_texture(|b| {
+        b.name("default_usage");
+    });
+    let storage_tex = graph.create_texture(|b| {
+        b.name("storage_usage")
+            .usage(wgpu::TextureUsages::STORAGE_BINDING)
+            .sampled()
+            .copy_src();
+    });
+
+    assert_eq!(graph.textures[default_tex.0].usage, DEFAULT_TEXTURE_USAGE);
+    assert_eq!(
+        graph.textures[storage_tex.0].usage,
+        wgpu::TextureUsages::STORAGE_BINDING
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC
+    );
+}
+
+#[test]
+fn texture_spec_builds_expected_graph_texture() {
+    let mut graph = RenderGraph::new();
+    let slot = TextureSpec::rgba16f("spec_indirect_diffuse")
+        .half_res()
+        .storage()
+        .sampled()
+        .mips(4)
+        .array_layers(16)
+        .persistent()
+        .create_slot(&mut graph);
+
+    assert_eq!(
+        graph.get_texture("spec_indirect_diffuse"),
+        Some(slot.handle())
+    );
+    assert_eq!(slot.format(), TextureFormat::Rgba16Float);
+
+    let desc = &graph.textures[slot.handle().0];
+    assert_eq!(desc.name, "spec_indirect_diffuse");
+    assert_eq!(desc.size, TargetSize::Scale(0.5));
+    assert_eq!(desc.format, TextureFormat::Rgba16Float);
+    assert!(desc.usage.contains(wgpu::TextureUsages::STORAGE_BINDING));
+    assert!(desc.usage.contains(wgpu::TextureUsages::TEXTURE_BINDING));
+    assert_eq!(desc.mip_level_count, 4);
+    assert_eq!(desc.array_layer_count, 16);
+    assert!(!desc.transient);
+}
+
+#[test]
+fn texture_spec_half_res_resolves_against_surface() {
+    let mut graph = RenderGraph::new();
+    let texture = TextureSpec::r32f("spec_half_depth")
+        .half_res()
+        .create(&mut graph);
+
+    assert_eq!(
+        graph.resolve_texture_extent(texture, [1920, 1080]),
+        [960, 540]
+    );
 }
 
 // ── Resolve texture extent ──────────────────────────────────────────
@@ -1307,6 +1483,67 @@ fn alias_group_members_share_same_physical_texture() {
     );
 
     graph.destroy_physical_resources();
+}
+
+#[test]
+fn storage_only_texture_allocates_with_storage_binding_usage() {
+    let (device, queue) = create_test_device();
+    let ctx = crate::gpu::GpuContext::new_headless(
+        device,
+        queue,
+        wgpu::TextureFormat::Bgra8Unorm,
+        [64, 64],
+    );
+
+    let mut graph = RenderGraph::new();
+    let storage = graph.create_texture(|b| {
+        b.name("storage")
+            .size(TargetSize::Exact(32, 32))
+            .format(TextureFormat::Rgba8Unorm)
+            .usage(wgpu::TextureUsages::STORAGE_BINDING)
+            .persistent();
+    });
+    graph.add_compute_pass("write_storage", |s| {
+        s.write(storage);
+    });
+    graph.compile().unwrap();
+    graph.allocate_physical_resources(&ctx);
+
+    let target = graph.physical_texture(storage);
+    assert_eq!(target.usage(), wgpu::TextureUsages::STORAGE_BINDING);
+
+    graph.destroy_physical_resources();
+}
+
+#[test]
+fn transient_pool_separates_storage_and_render_attachment_usage() {
+    let (device, queue) = create_test_device();
+    let ctx = crate::gpu::GpuContext::new_headless(
+        device,
+        queue,
+        wgpu::TextureFormat::Bgra8Unorm,
+        [64, 64],
+    );
+    let mut pool = TransientPool::new();
+    let storage_key = PoolKey {
+        format: TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::STORAGE_BINDING,
+        width: 32,
+        height: 32,
+        sample_count: 1,
+        mip_level_count: 1,
+        array_layer_count: 1,
+    };
+    let render_key = PoolKey {
+        usage: DEFAULT_TEXTURE_USAGE,
+        ..storage_key
+    };
+
+    let storage_target = pool.acquire(&ctx, storage_key, "storage_target".into());
+    pool.release(storage_key, storage_target);
+    let render_target = pool.acquire(&ctx, render_key, "render_target".into());
+
+    assert_eq!(render_target.usage(), DEFAULT_TEXTURE_USAGE);
 }
 
 #[test]
@@ -1510,6 +1747,7 @@ fn physical_resources_view_follows_alias_redirect() {
         texture_descs: &graph.textures,
         buffer_descs: &graph.buffers,
         alias_redirects: &graph.alias_redirects,
+        blackboard: graph.blackboard_ref(),
     };
 
     // Both handles must resolve to valid views without panicking.
@@ -2440,8 +2678,10 @@ fn import_external_texture_resolves_correctly() {
         view: Arc::clone(&view),
         size: [128, 128],
         format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         sample_count: 1,
         mip_level_count: 1,
+        array_layer_count: 1,
     };
 
     let ctx = crate::gpu::GpuContext::new_headless(
@@ -2535,6 +2775,7 @@ fn physical_resources_texture_ref_returns_correct_data() {
         texture_descs: &graph.textures,
         buffer_descs: &graph.buffers,
         alias_redirects: &graph.alias_redirects,
+        blackboard: graph.blackboard_ref(),
     };
 
     let tex_ref = resources.texture_ref(t);
@@ -2543,6 +2784,167 @@ fn physical_resources_texture_ref_returns_correct_data() {
     assert!(tex_ref.render_target.is_some());
 
     graph.destroy_physical_resources();
+}
+
+#[test]
+fn physical_resources_texture_subresource_view_creates_mip_layer_view() {
+    let (device, queue) = create_test_device();
+    let ctx = crate::gpu::GpuContext::new_headless(
+        device,
+        queue,
+        wgpu::TextureFormat::Bgra8Unorm,
+        [64, 64],
+    );
+
+    let mut graph = RenderGraph::new();
+    let texture = graph.create_texture(|b| {
+        b.name("atlas")
+            .size(TargetSize::Exact(128, 128))
+            .format(TextureFormat::Rgba8Unorm)
+            .mip_level_count(4)
+            .array_layer_count(8)
+            .persistent();
+    });
+    let subresource = TextureSubresource::new(texture, 2, 1, 3, 1);
+    graph.add_compute_pass("write_subresource", |s| {
+        s.write_subresource(subresource);
+    });
+    graph.compile().unwrap();
+    graph.allocate_physical_resources(&ctx);
+
+    let resources = PhysicalResources {
+        handle_token: graph.handle_token,
+        textures: &graph.physical_textures,
+        buffers: &graph.physical_buffers,
+        texture_descs: &graph.textures,
+        buffer_descs: &graph.buffers,
+        alias_redirects: &graph.alias_redirects,
+        blackboard: graph.blackboard_ref(),
+    };
+
+    let _view = resources.texture_subresource_view(subresource, wgpu::TextureViewDimension::D2);
+
+    graph.destroy_physical_resources();
+}
+
+#[test]
+fn storage_texture_view_accepts_storage_usage() {
+    let (device, queue) = create_test_device();
+    let ctx = crate::gpu::GpuContext::new_headless(
+        device,
+        queue,
+        wgpu::TextureFormat::Bgra8Unorm,
+        [64, 64],
+    );
+
+    let mut graph = RenderGraph::new();
+    let texture = graph.create_texture(|b| {
+        b.name("storage_atlas")
+            .size(TargetSize::Exact(64, 64))
+            .format(TextureFormat::Rgba8Unorm)
+            .usage(wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING)
+            .mip_level_count(2)
+            .array_layer_count(4)
+            .persistent();
+    });
+    let subresource = TextureSubresource::new(texture, 1, 1, 0, 4);
+    graph.add_compute_pass("write_storage", |s| {
+        s.write_subresource(subresource);
+    });
+    graph.compile().unwrap();
+    graph.allocate_physical_resources(&ctx);
+
+    let resources = PhysicalResources {
+        handle_token: graph.handle_token,
+        textures: &graph.physical_textures,
+        buffers: &graph.physical_buffers,
+        texture_descs: &graph.textures,
+        buffer_descs: &graph.buffers,
+        alias_redirects: &graph.alias_redirects,
+        blackboard: graph.blackboard_ref(),
+    };
+
+    let _view = resources.storage_texture_view(subresource, wgpu::TextureViewDimension::D2Array);
+
+    graph.destroy_physical_resources();
+}
+
+#[test]
+#[should_panic(expected = "storage_texture_view requires STORAGE_BINDING usage")]
+fn storage_texture_view_panics_without_storage_usage() {
+    let (device, queue) = create_test_device();
+    let ctx = crate::gpu::GpuContext::new_headless(
+        device,
+        queue,
+        wgpu::TextureFormat::Bgra8Unorm,
+        [64, 64],
+    );
+
+    let mut graph = RenderGraph::new();
+    let texture = graph.create_texture(|b| {
+        b.name("sampled")
+            .size(TargetSize::Exact(64, 64))
+            .format(TextureFormat::Rgba8Unorm)
+            .array_layer_count(2)
+            .persistent();
+    });
+    let subresource = TextureSubresource::new(texture, 0, 1, 0, 1);
+    graph.add_compute_pass("write_sampled", |s| {
+        s.write_subresource(subresource);
+    });
+    graph.compile().unwrap();
+    graph.allocate_physical_resources(&ctx);
+
+    let resources = PhysicalResources {
+        handle_token: graph.handle_token,
+        textures: &graph.physical_textures,
+        buffers: &graph.physical_buffers,
+        texture_descs: &graph.textures,
+        buffer_descs: &graph.buffers,
+        alias_redirects: &graph.alias_redirects,
+        blackboard: graph.blackboard_ref(),
+    };
+
+    let _view = resources.storage_texture_view(subresource, wgpu::TextureViewDimension::D2);
+}
+
+#[test]
+#[should_panic(expected = "render_attachment_view requires exactly one array layer")]
+fn render_attachment_view_panics_for_multi_layer_range() {
+    let (device, queue) = create_test_device();
+    let ctx = crate::gpu::GpuContext::new_headless(
+        device,
+        queue,
+        wgpu::TextureFormat::Bgra8Unorm,
+        [64, 64],
+    );
+
+    let mut graph = RenderGraph::new();
+    let texture = graph.create_texture(|b| {
+        b.name("attachment_array")
+            .size(TargetSize::Exact(64, 64))
+            .format(TextureFormat::Rgba8Unorm)
+            .array_layer_count(2)
+            .persistent();
+    });
+    let subresource = TextureSubresource::new(texture, 0, 1, 0, 2);
+    graph.add_render_pass("write_attachment", |s| {
+        s.write_subresource(subresource);
+    });
+    graph.compile().unwrap();
+    graph.allocate_physical_resources(&ctx);
+
+    let resources = PhysicalResources {
+        handle_token: graph.handle_token,
+        textures: &graph.physical_textures,
+        buffers: &graph.physical_buffers,
+        texture_descs: &graph.textures,
+        buffer_descs: &graph.buffers,
+        alias_redirects: &graph.alias_redirects,
+        blackboard: graph.blackboard_ref(),
+    };
+
+    let _view = resources.render_attachment_view(subresource);
 }
 
 #[test]
@@ -2575,6 +2977,7 @@ fn physical_resources_buffer_resolves() {
         texture_descs: &graph.textures,
         buffer_descs: &graph.buffers,
         alias_redirects: &graph.alias_redirects,
+        blackboard: graph.blackboard_ref(),
     };
 
     let buf = resources.buffer(b);

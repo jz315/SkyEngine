@@ -114,30 +114,40 @@ struct ShaderIncludeProvider {
 impl shader_prepper::IncludeProvider for ShaderIncludeProvider {
     type IncludeContext = String;
 
-    fn get_include(
-        &mut self,
+    fn resolve_path(
+        &self,
         path: &str,
-        parent_file: &Self::IncludeContext,
+        context: &Self::IncludeContext,
     ) -> std::result::Result<
-        (String, Self::IncludeContext),
+        shader_prepper::ResolvedInclude<Self::IncludeContext>,
         shader_prepper::BoxedIncludeProviderError,
     > {
         let resolved_path = if let Some('/') = path.chars().next() {
             path.to_owned()
         } else {
-            let mut folder: RelativePathBuf = parent_file.into();
+            let mut folder: RelativePathBuf = context.into();
             folder.pop();
             folder.join(path).as_str().to_string()
         };
 
+        Ok(shader_prepper::ResolvedInclude {
+            resolved_path: shader_prepper::ResolvedIncludePath(resolved_path.clone()),
+            context: resolved_path,
+        })
+    }
+
+    fn get_include(
+        &mut self,
+        path: &shader_prepper::ResolvedIncludePath,
+    ) -> std::result::Result<String, shader_prepper::BoxedIncludeProviderError> {
         let blob: Arc<Bytes> = smol::block_on(
-            crate::file::LoadFile::new(&resolved_path)
-                .with_context(|| format!("Failed loading shader include {}", path))?
+            crate::file::LoadFile::new(&path.0)
+                .with_context(|| format!("Failed loading shader include {}", path.0))?
                 .into_lazy()
                 .eval(&self.ctx),
         )?;
 
-        Ok((String::from_utf8(blob.to_vec())?, resolved_path))
+        Ok(String::from_utf8(blob.to_vec())?)
     }
 }
 
@@ -165,7 +175,7 @@ pub fn get_cs_local_size_from_spirv(spirv: &[u32]) -> Result<[u32; 3]> {
 
 fn compile_generic_shader_hlsl_impl(
     name: &str,
-    source: &[shader_prepper::SourceChunk],
+    source: &[shader_prepper::SourceChunk<String>],
     target_profile: &str,
 ) -> Result<Bytes> {
     let mut source_text = String::new();

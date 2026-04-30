@@ -264,8 +264,11 @@ impl WorldRenderer {
                 .this_frame_out
         });
 
-        let mut final_post_input =
-            motion_blur(rg, &anti_aliased, &gbuffer_depth.depth, &reprojection_map);
+        let mut final_post_input = if self.motion_blur_enabled {
+            motion_blur(rg, &anti_aliased, &gbuffer_depth.depth, &reprojection_map)
+        } else {
+            anti_aliased
+        };
 
         if let Some(tlas) = tlas.as_ref() {
             if matches!(self.debug_mode, RenderDebugMode::WorldRadianceCache) {

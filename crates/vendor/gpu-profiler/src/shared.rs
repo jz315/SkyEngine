@@ -23,11 +23,6 @@ impl ScopeId {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-struct FrameScopeId {
-    scope: u32,
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct NanoSecond(u64);
 
@@ -189,31 +184,43 @@ impl GpuProfiler {
 
 impl TimedFrame {
     pub fn send_to_puffin(&self, gpu_frame_start_ns: puffin::NanoSecond) {
+        let scope_details = std::iter::once(puffin::ScopeDetails::from_scope_name("frame"))
+            .chain(
+                self.scopes
+                    .iter()
+                    .map(|scope| puffin::ScopeDetails::from_scope_name(scope.name.clone())),
+            )
+            .collect::<Vec<_>>();
+        let mut scope_ids = puffin::GlobalProfiler::lock()
+            .register_user_scopes(&scope_details)
+            .into_iter();
+        let frame_scope_id = scope_ids.next().expect("missing gpu frame scope id");
+
         let mut stream = puffin::Stream::default();
         let mut gpu_time_accum: puffin::NanoSecond = 0;
-        let mut puffin_scope_count = 0;
-        let main_gpu_scope_offset = stream.begin_scope(gpu_frame_start_ns, "frame", "", "");
-        puffin_scope_count += 1;
-        puffin_scope_count += self.scopes.len();
-        for TimedScope { name, duration } in &self.scopes {
+        let puffin_scope_count = 1 + self.scopes.len();
+        let (main_gpu_scope_offset, _) =
+            stream.begin_scope(move || gpu_frame_start_ns, frame_scope_id, "");
+        for (TimedScope { duration, .. }, scope_id) in self.scopes.iter().zip(scope_ids) {
             let ns = duration.raw_ns() as puffin::NanoSecond;
-            let offset = stream.begin_scope(gpu_frame_start_ns + gpu_time_accum, name, "", "");
+            let start_ns = gpu_frame_start_ns + gpu_time_accum;
+            let (offset, _) = stream.begin_scope(move || start_ns, scope_id, "");
             gpu_time_accum += ns;
             stream.end_scope(offset, gpu_frame_start_ns + gpu_time_accum);
         }
         stream.end_scope(main_gpu_scope_offset, gpu_frame_start_ns + gpu_time_accum);
-        puffin::global_reporter(
+        let stream_info = puffin::StreamInfo {
+            num_scopes: puffin_scope_count,
+            stream,
+            depth: 1,
+            range_ns: (gpu_frame_start_ns, gpu_frame_start_ns + gpu_time_accum),
+        };
+        puffin::GlobalProfiler::lock().report_user_scopes(
             puffin::ThreadInfo {
                 start_time_ns: None,
                 name: "gpu".to_owned(),
             },
-            &puffin::StreamInfo {
-                num_scopes: puffin_scope_count,
-                stream,
-                depth: 1,
-                range_ns: (gpu_frame_start_ns, gpu_frame_start_ns + gpu_time_accum),
-            }
-            .as_stream_into_ref(),
+            &stream_info.as_stream_into_ref(),
         );
     }
 }

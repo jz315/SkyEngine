@@ -35,8 +35,6 @@ use rust_shaders_shared::{
 use std::{collections::HashMap, mem::size_of, sync::Arc};
 use vulkan::buffer::{Buffer, BufferDesc};
 
-const USE_TAA_JITTER: bool = true;
-
 #[cfg(feature = "dlss")]
 use crate::renderers::dlss::DlssRenderer;
 
@@ -200,6 +198,8 @@ pub struct WorldRenderer {
     pub debug_mode: RenderDebugMode,
     pub debug_shading_mode: usize,
     pub debug_show_wrc: bool,
+    pub use_taa_jitter: bool,
+    pub motion_blur_enabled: bool,
     pub ev_shift: f32,
     pub dynamic_exposure: DynamicExposureState,
     pub contrast: f32,
@@ -501,6 +501,8 @@ impl WorldRenderer {
                 4
             },
             debug_show_wrc: false,
+            use_taa_jitter: true,
+            motion_blur_enabled: true,
             ev_shift: 0.0,
             dynamic_exposure: Default::default(),
             contrast: 1.0,
@@ -979,7 +981,7 @@ impl WorldRenderer {
 
         match self.render_mode {
             RenderMode::Standard => {
-                if USE_TAA_JITTER {
+                if self.use_taa_jitter {
                     self.taa.current_supersample_offset = self.supersample_offsets
                         [self.frame_idx as usize % self.supersample_offsets.len()];
                 } else {

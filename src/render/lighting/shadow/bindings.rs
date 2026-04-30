@@ -1,11 +1,22 @@
+use crate::render::component::MAX_DIRECTIONAL_SHADOW_CASCADES;
 use crate::render::gi::{DdgiSceneResources, DdgiUniform};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct ShadowUniform {
-    pub(crate) light_view_proj: [f32; 16],
+    pub(crate) light_view_proj: [[f32; 16]; MAX_DIRECTIONAL_SHADOW_CASCADES],
     pub(crate) light_direction: [f32; 4],
-    pub(crate) shadow_params: [f32; 4],
+    pub(crate) cascade_splits: [f32; MAX_DIRECTIONAL_SHADOW_CASCADES],
+    pub(crate) cascade_params: [[f32; 4]; MAX_DIRECTIONAL_SHADOW_CASCADES],
+    pub(crate) shadow_atlas_mul_add: [f32; 4],
+    pub(crate) shadow_atlas_resolution_rcp: [f32; 4], // xy atlas reciprocal, z guard band texels, w sampling mode
+    pub(crate) shadow_params: [f32; 4], // x cascade count, y blend, z coverage debug flag, w enabled
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct ShadowPassUniform {
+    pub(crate) light_view_proj: [f32; 16],
 }
 
 pub(crate) struct ShadowSceneBindingLayout {
@@ -136,6 +147,22 @@ pub(crate) fn create_shadow_scene_bind_group_layout(
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 9,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 10,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
         ],
     })
 }
@@ -164,8 +191,8 @@ fn create_shadow_pass_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGrou
                 ty: wgpu::BufferBindingType::Uniform,
                 has_dynamic_offset: false,
                 min_binding_size: Some(
-                    std::num::NonZeroU64::new(std::mem::size_of::<ShadowUniform>() as u64)
-                        .expect("ShadowUniform has non-zero size"),
+                    std::num::NonZeroU64::new(std::mem::size_of::<ShadowPassUniform>() as u64)
+                        .expect("ShadowPassUniform has non-zero size"),
                 ),
             },
             count: None,
@@ -182,6 +209,8 @@ pub(crate) fn create_shadow_scene_bind_group(
     shadow_view: &wgpu::TextureView,
     sampler: &wgpu::Sampler,
     ddgi: DdgiSceneResources<'_>,
+    transparent_shadow_view: &wgpu::TextureView,
+    transparent_shadow_sampler: &wgpu::Sampler,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("shadow_scene_bg"),
@@ -223,6 +252,14 @@ pub(crate) fn create_shadow_scene_bind_group(
                 binding: 8,
                 resource: wgpu::BindingResource::Sampler(ddgi.sampler),
             },
+            wgpu::BindGroupEntry {
+                binding: 9,
+                resource: wgpu::BindingResource::TextureView(transparent_shadow_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 10,
+                resource: wgpu::BindingResource::Sampler(transparent_shadow_sampler),
+            },
         ],
     })
 }
@@ -240,4 +277,63 @@ pub(crate) fn create_shadow_pass_bind_group(
             resource: uniform_buffer.as_entire_binding(),
         }],
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::mem::{align_of, offset_of, size_of};
+
+    #[test]
+    fn shadow_uniform_layout_matches_wgsl_contract() {
+        assert_eq!(size_of::<ShadowUniform>(), 400);
+        assert_eq!(align_of::<ShadowUniform>(), align_of::<f32>());
+        assert_eq!(offset_of!(ShadowUniform, light_view_proj), 0);
+        assert_eq!(offset_of!(ShadowUniform, light_direction), 256);
+        assert_eq!(offset_of!(ShadowUniform, cascade_splits), 272);
+        assert_eq!(offset_of!(ShadowUniform, cascade_params), 288);
+        assert_eq!(offset_of!(ShadowUniform, shadow_atlas_mul_add), 352);
+        assert_eq!(offset_of!(ShadowUniform, shadow_atlas_resolution_rcp), 368);
+        assert_eq!(offset_of!(ShadowUniform, shadow_params), 384);
+    }
+
+    #[test]
+    fn shadow_pass_uniform_layout_matches_wgsl_contract() {
+        assert_eq!(size_of::<ShadowPassUniform>(), 64);
+        assert_eq!(align_of::<ShadowPassUniform>(), align_of::<f32>());
+        assert_eq!(offset_of!(ShadowPassUniform, light_view_proj), 0);
+    }
+
+    #[test]
+    fn shadow_uniform_params_match_current_cascade_contract() {
+        let uniform = ShadowUniform {
+            light_view_proj: [[0.0; 16]; MAX_DIRECTIONAL_SHADOW_CASCADES],
+            light_direction: [0.0, -1.0, 0.0, 0.02],
+            cascade_splits: [8.0, 32.0, 128.0, 512.0],
+            cascade_params: [
+                [0.003, 1.0 / 2048.0, 0.05, 1.0],
+                [0.004, 1.0 / 1024.0, 0.06, 1.0],
+                [0.005, 1.0 / 512.0, 0.07, 1.0],
+                [0.006, 1.0 / 256.0, 0.08, 1.0],
+            ],
+            shadow_atlas_mul_add: [0.25, 1.0, 0.0, 0.0],
+            shadow_atlas_resolution_rcp: [1.0 / 8192.0, 1.0 / 2048.0, 1.0, 2.0],
+            shadow_params: [4.0, 0.1, 1.0, 1.0],
+        };
+
+        assert_eq!(uniform.light_direction[3], 0.02);
+        assert_eq!(uniform.cascade_splits[2], 128.0);
+        assert_eq!(uniform.cascade_params[0][0], 0.003);
+        assert_eq!(uniform.cascade_params[1][1], 1.0 / 1024.0);
+        assert_eq!(uniform.cascade_params[3][2], 0.08);
+        assert_eq!(uniform.shadow_atlas_mul_add, [0.25, 1.0, 0.0, 0.0]);
+        assert_eq!(
+            uniform.shadow_atlas_resolution_rcp,
+            [1.0 / 8192.0, 1.0 / 2048.0, 1.0, 2.0]
+        );
+        assert_eq!(uniform.shadow_params[0], 4.0);
+        assert_eq!(uniform.shadow_params[1], 0.1);
+        assert_eq!(uniform.shadow_params[2], 1.0);
+        assert_eq!(uniform.shadow_params[3], 1.0);
+    }
 }

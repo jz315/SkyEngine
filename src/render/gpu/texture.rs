@@ -7,9 +7,10 @@ use std::sync::Arc;
 use crate::gpu::GpuContext;
 
 /// Errors returned by fallible texture creation APIs.
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TextureError {
     InvalidRgba8Length { expected: usize, actual: usize },
+    InvalidTextureSize { width: u32, height: u32 },
     ImageLoad { path: PathBuf, message: String },
 }
 
@@ -21,6 +22,9 @@ impl std::fmt::Display for TextureError {
                     f,
                     "RGBA8 data length mismatch: expected {expected} bytes, got {actual}"
                 )
+            }
+            Self::InvalidTextureSize { width, height } => {
+                write!(f, "Invalid texture size: {width}x{height}")
             }
             Self::ImageLoad { path, message } => {
                 write!(f, "Failed to load texture {:?}: {message}", path)
@@ -127,6 +131,12 @@ impl TextureCreateDesc {
     }
 
     #[inline]
+    pub fn depth_or_array_layers(mut self, depth_or_array_layers: u32) -> Self {
+        self.size.depth_or_array_layers = depth_or_array_layers.max(1);
+        self
+    }
+
+    #[inline]
     pub fn sample_count(mut self, sample_count: u32) -> Self {
         self.sample_count = sample_count.max(1);
         self
@@ -213,6 +223,7 @@ struct TextureInner {
     view: wgpu::TextureView,
     size: wgpu::Extent3d,
     format: wgpu::TextureFormat,
+    usage: wgpu::TextureUsages,
     dimension: wgpu::TextureDimension,
     mip_level_count: u32,
     sample_count: u32,
@@ -252,6 +263,7 @@ impl Texture {
             view,
             size: desc.size,
             format: desc.format,
+            usage: desc.usage,
             dimension: desc.dimension,
             mip_level_count: desc.mip_level_count.max(1),
             sample_count: desc.sample_count.max(1),
@@ -266,7 +278,7 @@ impl Texture {
         ctx: &GpuContext,
         desc: TextureUploadDesc<'_>,
     ) -> Result<Self, TextureError> {
-        let expected = (desc.width * desc.height * 4) as usize;
+        let expected = rgba8_len(desc.width, desc.height)?;
         if desc.data.len() != expected {
             return Err(TextureError::InvalidRgba8Length {
                 expected,
@@ -300,6 +312,41 @@ impl Texture {
         );
 
         Ok(texture)
+    }
+
+    /// Upload raw RGBA8 pixels into this texture without reallocating it.
+    ///
+    /// This is the hot path for streamed video frames and other dynamic
+    /// textures. The texture must have been created with `COPY_DST` usage.
+    pub fn write_rgba8(&self, ctx: &GpuContext, data: &[u8]) -> Result<(), TextureError> {
+        let expected = rgba8_len(self.width(), self.height())?;
+        if data.len() != expected {
+            return Err(TextureError::InvalidRgba8Length {
+                expected,
+                actual: data.len(),
+            });
+        }
+
+        ctx.queue().write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: self.texture(),
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * self.width()),
+                rows_per_image: Some(self.height()),
+            },
+            wgpu::Extent3d {
+                width: self.width(),
+                height: self.height(),
+                depth_or_array_layers: 1,
+            },
+        );
+        Ok(())
     }
 
     /// Create a texture from raw RGBA8 pixel data.
@@ -444,6 +491,12 @@ impl Texture {
         self.0.format
     }
 
+    /// Texture usage flags used at creation.
+    #[inline]
+    pub fn usage(&self) -> wgpu::TextureUsages {
+        self.0.usage
+    }
+
     /// Texture dimension.
     #[inline]
     pub fn dimension(&self) -> wgpu::TextureDimension {
@@ -561,4 +614,12 @@ impl Texture {
             Cow::Borrowed("circle_normal"),
         )
     }
+}
+
+fn rgba8_len(width: u32, height: u32) -> Result<usize, TextureError> {
+    width
+        .checked_mul(height)
+        .and_then(|value| value.checked_mul(4))
+        .map(|value| value as usize)
+        .ok_or(TextureError::InvalidTextureSize { width, height })
 }

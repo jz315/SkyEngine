@@ -3,6 +3,7 @@ use std::borrow::Cow;
 use rustc_hash::FxHashMap;
 
 use crate::render::graph::{BufferHandle, TextureHandle};
+use crate::render::lighting::shadow::SceneShadowResources;
 use crate::render::view::ViewportRect;
 
 use super::payload::PreparedView;
@@ -31,6 +32,97 @@ impl TextureSlot {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SceneTexture {
+    Color,
+    Depth,
+    Normal,
+    Velocity,
+    Albedo,
+    Material,
+    Emissive,
+    Light,
+    IndirectDiffuse,
+}
+
+impl SceneTexture {
+    pub const ALL: [Self; 9] = [
+        Self::Color,
+        Self::Depth,
+        Self::Normal,
+        Self::Velocity,
+        Self::Albedo,
+        Self::Material,
+        Self::Emissive,
+        Self::Light,
+        Self::IndirectDiffuse,
+    ];
+    pub const MATERIAL_ROUGHNESS_CHANNEL: usize = 0;
+    pub const MATERIAL_METALLIC_CHANNEL: usize = 1;
+    pub const MATERIAL_AO_CHANNEL: usize = 2;
+    pub const MATERIAL_FLAGS_CHANNEL: usize = 3;
+
+    #[inline]
+    pub const fn label(self) -> &'static str {
+        match self {
+            SceneTexture::Color => "scene color",
+            SceneTexture::Depth => "scene depth",
+            SceneTexture::Normal => "scene normal",
+            SceneTexture::Velocity => "scene velocity",
+            SceneTexture::Albedo => "scene albedo",
+            SceneTexture::Material => "scene material",
+            SceneTexture::Emissive => "scene emissive",
+            SceneTexture::Light => "scene light",
+            SceneTexture::IndirectDiffuse => "scene indirect diffuse",
+        }
+    }
+
+    #[inline]
+    pub const fn debug_name(self) -> &'static str {
+        match self {
+            SceneTexture::Color => "scene_color",
+            SceneTexture::Depth => "scene_depth",
+            SceneTexture::Normal => "scene_normal",
+            SceneTexture::Velocity => "scene_velocity",
+            SceneTexture::Albedo => "scene_albedo",
+            SceneTexture::Material => "scene_material",
+            SceneTexture::Emissive => "scene_emissive",
+            SceneTexture::Light => "scene_light",
+            SceneTexture::IndirectDiffuse => "scene_indirect_diffuse",
+        }
+    }
+
+    #[inline]
+    pub const fn modern_3d_format(self) -> TextureFormat {
+        match self {
+            SceneTexture::Color
+            | SceneTexture::Emissive
+            | SceneTexture::Light
+            | SceneTexture::IndirectDiffuse => TextureFormat::Rgba16Float,
+            SceneTexture::Depth => TextureFormat::Depth32Float,
+            SceneTexture::Normal | SceneTexture::Albedo | SceneTexture::Material => {
+                TextureFormat::Rgba8Unorm
+            }
+            // The current velocity target keeps a vec4 render-target contract:
+            // xy = motion, zw = reset/validity space for temporal passes.
+            SceneTexture::Velocity => TextureFormat::Rgba16Float,
+        }
+    }
+
+    #[inline]
+    pub const fn is_modern_3d_gbuffer(self) -> bool {
+        match self {
+            SceneTexture::Depth
+            | SceneTexture::Normal
+            | SceneTexture::Velocity
+            | SceneTexture::Albedo
+            | SceneTexture::Material
+            | SceneTexture::Emissive => true,
+            SceneTexture::Color | SceneTexture::Light | SceneTexture::IndirectDiffuse => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SceneGBufferSlots {
     color: Option<TextureSlot>,
@@ -40,9 +132,41 @@ pub struct SceneGBufferSlots {
     albedo: Option<TextureSlot>,
     material: Option<TextureSlot>,
     emissive: Option<TextureSlot>,
+    light: Option<TextureSlot>,
+    indirect_diffuse: Option<TextureSlot>,
 }
 
 impl SceneGBufferSlots {
+    #[inline]
+    pub fn get(&self, texture: SceneTexture) -> Option<TextureSlot> {
+        match texture {
+            SceneTexture::Color => self.color(),
+            SceneTexture::Depth => self.depth(),
+            SceneTexture::Normal => self.normal(),
+            SceneTexture::Velocity => self.velocity(),
+            SceneTexture::Albedo => self.albedo(),
+            SceneTexture::Material => self.material(),
+            SceneTexture::Emissive => self.emissive(),
+            SceneTexture::Light => self.light(),
+            SceneTexture::IndirectDiffuse => self.indirect_diffuse(),
+        }
+    }
+
+    #[inline]
+    pub fn set(&mut self, texture: SceneTexture, slot: TextureSlot) -> Option<TextureSlot> {
+        match texture {
+            SceneTexture::Color => self.set_color(slot),
+            SceneTexture::Depth => self.set_depth(slot),
+            SceneTexture::Normal => self.set_normal(slot),
+            SceneTexture::Velocity => self.set_velocity(slot),
+            SceneTexture::Albedo => self.set_albedo(slot),
+            SceneTexture::Material => self.set_material(slot),
+            SceneTexture::Emissive => self.set_emissive(slot),
+            SceneTexture::Light => self.set_light(slot),
+            SceneTexture::IndirectDiffuse => self.set_indirect_diffuse(slot),
+        }
+    }
+
     #[inline]
     pub fn color(&self) -> Option<TextureSlot> {
         self.color
@@ -76,6 +200,16 @@ impl SceneGBufferSlots {
     #[inline]
     pub fn emissive(&self) -> Option<TextureSlot> {
         self.emissive
+    }
+
+    #[inline]
+    pub fn light(&self) -> Option<TextureSlot> {
+        self.light
+    }
+
+    #[inline]
+    pub fn indirect_diffuse(&self) -> Option<TextureSlot> {
+        self.indirect_diffuse
     }
 
     #[inline]
@@ -124,6 +258,20 @@ impl SceneGBufferSlots {
     pub fn set_emissive(&mut self, slot: TextureSlot) -> Option<TextureSlot> {
         let previous = self.emissive;
         self.emissive = Some(slot);
+        previous
+    }
+
+    #[inline]
+    pub fn set_light(&mut self, slot: TextureSlot) -> Option<TextureSlot> {
+        let previous = self.light;
+        self.light = Some(slot);
+        previous
+    }
+
+    #[inline]
+    pub fn set_indirect_diffuse(&mut self, slot: TextureSlot) -> Option<TextureSlot> {
+        let previous = self.indirect_diffuse;
+        self.indirect_diffuse = Some(slot);
         previous
     }
 }
@@ -217,6 +365,7 @@ pub struct PhaseState {
     has_surface: bool,
     slots: ResourceSlotMap,
     scene_gbuffer: SceneGBufferSlots,
+    scene_shadows: Option<SceneShadowResources>,
 }
 
 impl PhaseState {
@@ -227,6 +376,7 @@ impl PhaseState {
             has_surface,
             slots: ResourceSlotMap::default(),
             scene_gbuffer: SceneGBufferSlots::default(),
+            scene_shadows: None,
         }
     }
 
@@ -236,12 +386,14 @@ impl PhaseState {
         has_surface: bool,
         slots: ResourceSlotMap,
         scene_gbuffer: SceneGBufferSlots,
+        scene_shadows: Option<SceneShadowResources>,
     ) -> Self {
         Self {
             surface_format,
             has_surface,
             slots,
             scene_gbuffer,
+            scene_shadows,
         }
     }
 
@@ -276,6 +428,19 @@ impl PhaseState {
     }
 
     #[inline]
+    pub fn scene_shadows(&self) -> Option<&SceneShadowResources> {
+        self.scene_shadows.as_ref()
+    }
+
+    #[inline]
+    pub fn set_scene_shadows(
+        &mut self,
+        resources: SceneShadowResources,
+    ) -> Option<SceneShadowResources> {
+        self.scene_shadows.replace(resources)
+    }
+
+    #[inline]
     pub fn current_color(&self) -> Option<TextureSlot> {
         self.slots.current_color()
     }
@@ -288,6 +453,11 @@ impl PhaseState {
     #[inline]
     pub fn scene_color(&self) -> Option<TextureSlot> {
         self.scene_gbuffer.color()
+    }
+
+    #[inline]
+    pub fn scene_texture(&self, texture: SceneTexture) -> Option<TextureSlot> {
+        self.scene_gbuffer.get(texture)
     }
 
     #[inline]
@@ -318,6 +488,27 @@ impl PhaseState {
     #[inline]
     pub fn scene_emissive(&self) -> Option<TextureSlot> {
         self.scene_gbuffer.emissive()
+    }
+
+    #[inline]
+    pub fn scene_light(&self) -> Option<TextureSlot> {
+        self.scene_gbuffer.light()
+    }
+
+    #[inline]
+    pub fn scene_indirect_diffuse(&self) -> Option<TextureSlot> {
+        self.scene_gbuffer.indirect_diffuse()
+    }
+
+    #[inline]
+    pub fn set_scene_texture(
+        &mut self,
+        texture: SceneTexture,
+        handle: TextureHandle,
+        format: TextureFormat,
+    ) -> Option<TextureSlot> {
+        let slot = TextureSlot::new(handle, format);
+        self.scene_gbuffer.set(texture, slot)
     }
 
     #[inline]
@@ -363,6 +554,18 @@ impl PhaseState {
     }
 
     #[inline]
+    pub fn set_scene_light(&mut self, handle: TextureHandle, format: TextureFormat) {
+        let slot = TextureSlot::new(handle, format);
+        self.scene_gbuffer.set_light(slot);
+    }
+
+    #[inline]
+    pub fn set_scene_indirect_diffuse(&mut self, handle: TextureHandle, format: TextureFormat) {
+        let slot = TextureSlot::new(handle, format);
+        self.scene_gbuffer.set_indirect_diffuse(slot);
+    }
+
+    #[inline]
     pub fn texture_slot(&self, name: &str) -> Option<TextureSlot> {
         self.slots.texture(name)
     }
@@ -383,8 +586,14 @@ impl PhaseState {
     }
 
     #[inline]
-    pub fn into_parts(self) -> (ResourceSlotMap, SceneGBufferSlots) {
-        (self.slots, self.scene_gbuffer)
+    pub fn into_parts(
+        self,
+    ) -> (
+        ResourceSlotMap,
+        SceneGBufferSlots,
+        Option<SceneShadowResources>,
+    ) {
+        (self.slots, self.scene_gbuffer, self.scene_shadows)
     }
 }
 
@@ -397,6 +606,7 @@ pub struct CompletedViewState {
     clear_surface: bool,
     slots: ResourceSlotMap,
     scene_gbuffer: SceneGBufferSlots,
+    scene_shadows: Option<SceneShadowResources>,
 }
 
 impl CompletedViewState {
@@ -405,6 +615,7 @@ impl CompletedViewState {
         view: &PreparedView<'_>,
         slots: ResourceSlotMap,
         scene_gbuffer: SceneGBufferSlots,
+        scene_shadows: Option<SceneShadowResources>,
     ) -> Self {
         Self {
             view_index,
@@ -414,6 +625,7 @@ impl CompletedViewState {
             clear_surface: view.clear_surface(),
             slots,
             scene_gbuffer,
+            scene_shadows,
         }
     }
 
@@ -453,8 +665,18 @@ impl CompletedViewState {
     }
 
     #[inline]
+    pub fn scene_shadows(&self) -> Option<&SceneShadowResources> {
+        self.scene_shadows.as_ref()
+    }
+
+    #[inline]
     pub fn scene_color(&self) -> Option<TextureSlot> {
         self.scene_gbuffer.color()
+    }
+
+    #[inline]
+    pub fn scene_texture(&self, texture: SceneTexture) -> Option<TextureSlot> {
+        self.scene_gbuffer.get(texture)
     }
 
     #[inline]
@@ -485,6 +707,16 @@ impl CompletedViewState {
     #[inline]
     pub fn scene_emissive(&self) -> Option<TextureSlot> {
         self.scene_gbuffer.emissive()
+    }
+
+    #[inline]
+    pub fn scene_light(&self) -> Option<TextureSlot> {
+        self.scene_gbuffer.light()
+    }
+
+    #[inline]
+    pub fn scene_indirect_diffuse(&self) -> Option<TextureSlot> {
+        self.scene_gbuffer.indirect_diffuse()
     }
 }
 
@@ -559,6 +791,11 @@ impl<'a> FinalizePhaseState<'a> {
     }
 
     #[inline]
+    pub fn scene_texture(&self, texture: SceneTexture) -> Option<TextureSlot> {
+        self.scene_gbuffer.get(texture)
+    }
+
+    #[inline]
     pub fn scene_depth(&self) -> Option<TextureSlot> {
         self.scene_gbuffer.depth()
     }
@@ -589,6 +826,16 @@ impl<'a> FinalizePhaseState<'a> {
     }
 
     #[inline]
+    pub fn scene_light(&self) -> Option<TextureSlot> {
+        self.scene_gbuffer.light()
+    }
+
+    #[inline]
+    pub fn scene_indirect_diffuse(&self) -> Option<TextureSlot> {
+        self.scene_gbuffer.indirect_diffuse()
+    }
+
+    #[inline]
     pub fn set_current_color(&mut self, handle: TextureHandle, format: TextureFormat) {
         self.slots.set_current_color(handle, format);
     }
@@ -597,6 +844,17 @@ impl<'a> FinalizePhaseState<'a> {
     pub fn set_scene_color(&mut self, handle: TextureHandle, format: TextureFormat) {
         let slot = TextureSlot::new(handle, format);
         self.scene_gbuffer.set_color(slot);
+    }
+
+    #[inline]
+    pub fn set_scene_texture(
+        &mut self,
+        texture: SceneTexture,
+        handle: TextureHandle,
+        format: TextureFormat,
+    ) -> Option<TextureSlot> {
+        let slot = TextureSlot::new(handle, format);
+        self.scene_gbuffer.set(texture, slot)
     }
 
     #[inline]
@@ -633,6 +891,18 @@ impl<'a> FinalizePhaseState<'a> {
     pub fn set_scene_emissive(&mut self, handle: TextureHandle, format: TextureFormat) {
         let slot = TextureSlot::new(handle, format);
         self.scene_gbuffer.set_emissive(slot);
+    }
+
+    #[inline]
+    pub fn set_scene_light(&mut self, handle: TextureHandle, format: TextureFormat) {
+        let slot = TextureSlot::new(handle, format);
+        self.scene_gbuffer.set_light(slot);
+    }
+
+    #[inline]
+    pub fn set_scene_indirect_diffuse(&mut self, handle: TextureHandle, format: TextureFormat) {
+        let slot = TextureSlot::new(handle, format);
+        self.scene_gbuffer.set_indirect_diffuse(slot);
     }
 
     #[inline]

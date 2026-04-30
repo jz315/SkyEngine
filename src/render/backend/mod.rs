@@ -14,7 +14,11 @@ mod kajiya_cache;
 #[cfg(feature = "kajiya-renderer")]
 mod kajiya_config;
 #[cfg(feature = "kajiya-renderer")]
+mod kajiya_error;
+#[cfg(feature = "kajiya-renderer")]
 mod kajiya_native;
+#[cfg(feature = "renderling-renderer")]
+mod renderling;
 
 use std::sync::Arc;
 
@@ -24,13 +28,15 @@ use crate::render::pipeline::{RenderBackendKind, RenderPipelineAsset};
 
 pub use scene_renderer::{SceneRenderer, SceneRendererError, SceneRendererInitError};
 pub use snapshot::{
-    SceneCamera, SceneDirectionalLight, SceneMeshInstance, SceneSnapshot, SceneSnapshotExtractor,
-    SceneSnapshotStats,
+    SceneCamera, SceneDirectionalLight, SceneMeshInstance, ScenePointLight, SceneSnapshot,
+    SceneSnapshotExtractor, SceneSnapshotStats, SceneSpotLight,
 };
 pub use wgpu::WgpuSceneRenderer;
 
 #[cfg(feature = "kajiya-renderer")]
 pub use kajiya::{KajiyaSceneRenderer, KajiyaSceneSyncStats};
+#[cfg(feature = "renderling-renderer")]
+pub use renderling::{RenderlingSceneRenderer, RenderlingSceneSyncStats};
 
 pub fn create_scene_renderer(
     window: Arc<Window>,
@@ -55,6 +61,23 @@ pub fn create_scene_renderer(
                 ))
             }
         }
+        Some(RenderBackendKind::Renderling) => {
+            let pipeline = pipeline.expect("pipeline kind came from Some");
+            #[cfg(feature = "renderling-renderer")]
+            {
+                Ok(Box::new(RenderlingSceneRenderer::try_new(
+                    window, vsync, pipeline,
+                )?))
+            }
+            #[cfg(not(feature = "renderling-renderer"))]
+            {
+                let _ = (window, vsync, pipeline);
+                Err(SceneRendererInitError::RenderlingUnavailable(
+                    "RenderPipelineAsset::renderling_3d() requires the `renderling-renderer` feature"
+                        .into(),
+                ))
+            }
+        }
         Some(RenderBackendKind::Wgpu) | None => Ok(Box::new(WgpuSceneRenderer::try_new(
             window, vsync, pipeline,
         )?)),
@@ -71,7 +94,10 @@ mod tests {
     use crate::render::assets::{
         MeshAsset, MeshAssetDescriptor, MeshVertexLayout, StandardMaterialAsset,
     };
-    use crate::render::component::{Camera, DirectionalLight, MeshRenderer, Transform};
+    use crate::render::component::{
+        Camera, DirectionalLight, GlobalIlluminationMode, MeshRenderer, PointLight, RenderSettings,
+        SpotLight, Transform,
+    };
     use crate::render::pipeline::RenderPipelineAsset;
     use crate::render::resources::material::StandardMaterial;
     use crate::render::runtime::RenderComposer;
@@ -173,14 +199,36 @@ mod tests {
 
         let mesh_entity = world.spawn((
             Transform::from_xyz(1.0, 2.0, 3.0),
-            MeshRenderer::new(mesh, material),
+            MeshRenderer::new(mesh, material).shadow_lod_cascades(2),
         ));
-        let _light = world.spawn((Transform::default(), DirectionalLight::default()));
+        let directional_light = world.spawn((
+            Transform::default(),
+            DirectionalLight::default().radius(0.035),
+        ));
+        let point_light = world.spawn((
+            Transform::from_xyz(2.0, 3.0, 4.0),
+            PointLight::new(12.0).intensity(3.0),
+        ));
+        let spot_light = world.spawn((
+            Transform::from_xyz(-2.0, 5.0, 1.0),
+            SpotLight::new(18.0)
+                .direction([0.0, -1.0, 0.0])
+                .cone_angles(0.25, 0.55)
+                .shadow_resolution(512),
+        ));
         let _camera = world.spawn((
             Transform::default(),
             Camera::new(),
             Projection::perspective(60.0f32.to_radians(), 0.1, 100.0),
         ));
+        world.insert_resource(RenderSettings {
+            global_illumination: crate::render::GlobalIlluminationSettings {
+                enabled: true,
+                mode: GlobalIlluminationMode::Ssgi,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
 
         let mut extractor = SceneSnapshotExtractor::new();
         let mut snapshot = SceneSnapshot::default();
@@ -190,13 +238,43 @@ mod tests {
             SceneSnapshotStats {
                 mesh_instances: 1,
                 directional_lights: 1,
+                point_lights: 1,
+                spot_lights: 1,
                 cameras: 1,
             }
         );
+        assert!(snapshot.render_settings().global_illumination.uses_ssgi());
+        assert!(
+            (snapshot
+                .directional_light(directional_light)
+                .expect("directional light should be synced")
+                .radius
+                - 0.035)
+                .abs()
+                < 0.0001
+        );
+        assert_eq!(
+            snapshot
+                .point_light(point_light)
+                .expect("point light should be synced")
+                .position,
+            [2.0, 3.0, 4.0]
+        );
+        let synced_spot = snapshot
+            .spot_light(spot_light)
+            .expect("spot light should be synced");
+        assert_eq!(synced_spot.position, [-2.0, 5.0, 1.0]);
+        assert_eq!(synced_spot.shadow_resolution, 512);
+        assert!(synced_spot.casts_shadows);
         let first_transform = snapshot
             .mesh_instance(mesh_entity)
             .expect("mesh instance should be synced")
             .transform;
+        let mesh_instance = snapshot
+            .mesh_instance(mesh_entity)
+            .expect("mesh instance should be synced");
+        assert!(mesh_instance.casts_shadows);
+        assert_eq!(mesh_instance.shadow_cascade_mask, 0b0011);
 
         world
             .get_mut::<Transform>(mesh_entity)
@@ -241,6 +319,8 @@ mod tests {
             KajiyaSceneSyncStats {
                 mesh_instances: 1,
                 directional_lights: 1,
+                point_lights: 0,
+                spot_lights: 0,
                 cameras: 1,
             }
         );

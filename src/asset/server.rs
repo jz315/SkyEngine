@@ -5,10 +5,11 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 
 use super::registry::{AssetRuntimeFactory, ErasedAssetFactory, FactoryAdapter, ManifestIndex};
-use super::texture::TextureAssetFactory;
+use super::texture::{decode_texture_source_bytes, TextureAsset, TextureAssetFactory, TextureColorSpace};
 use super::types::{
     Asset, AssetConfig, AssetError, AssetEvent, AssetEventCursor, AssetEventKind, AssetId,
-    AssetInstallContext, AssetLoadContext, AssetRegistryManifest, AssetState, Handle,
+    AssetInstallContext, AssetLoadContext, AssetManifestEntry, AssetRegistryManifest, AssetState,
+    Handle,
     ASSET_SYSTEM_VERSION,
 };
 
@@ -89,6 +90,11 @@ impl AssetServer {
         inner.validate_typed_request::<T>(id)?;
         inner.queue_request(id, Some(TypeId::of::<T>()));
         Ok(Handle::new(id))
+    }
+
+    pub fn load_texture(&self, path_or_key: impl AsRef<Path>) -> Result<Handle<TextureAsset>, AssetError> {
+        let mut inner = self.inner.lock().expect("asset server mutex poisoned");
+        inner.load_texture(path_or_key.as_ref())
     }
 
     pub fn load_blocking<T: Asset>(&self, id: AssetId) -> Result<Arc<T>, AssetError> {
@@ -228,6 +234,16 @@ impl AssetServer {
         inner.insert_runtime(id, asset);
         Handle::new(id)
     }
+
+    /// Replace an existing runtime asset in-place while keeping its handle stable.
+    ///
+    /// This is intended for generated runtime content such as streaming video
+    /// frames where downstream systems should keep referencing the same handle
+    /// while the underlying payload changes.
+    pub fn replace_runtime<T: Asset>(&self, handle: Handle<T>, asset: T) -> Result<(), AssetError> {
+        let mut inner = self.inner.lock().expect("asset server mutex poisoned");
+        inner.replace_runtime(handle.id(), asset)
+    }
 }
 
 struct AssetServerInner {
@@ -235,6 +251,7 @@ struct AssetServerInner {
     manifest: ManifestIndex,
     factories: HashMap<String, Arc<dyn ErasedAssetFactory>>,
     records: HashMap<AssetId, AssetRecord>,
+    raw_textures: HashMap<String, AssetId>,
     requests: VecDeque<AssetRequest>,
     unloads: VecDeque<AssetId>,
     load_tx: Sender<CompletedLoad>,
@@ -252,6 +269,7 @@ impl AssetServerInner {
             manifest: ManifestIndex::new(manifest),
             factories: HashMap::default(),
             records: HashMap::default(),
+            raw_textures: HashMap::default(),
             requests: VecDeque::new(),
             unloads: VecDeque::new(),
             load_tx,
@@ -297,7 +315,11 @@ impl AssetServerInner {
 
         let ids: Vec<_> = self.records.keys().copied().collect();
         for id in ids {
-            if self.records.get(&id).is_some_and(|record| record.runtime) {
+            if self
+                .records
+                .get(&id)
+                .is_some_and(|record| record.runtime || record.raw_source_path.is_some())
+            {
                 continue;
             }
 
@@ -358,9 +380,68 @@ impl AssetServerInner {
         self.manifest.source_to_id.get(&key).copied()
     }
 
+    fn raw_texture_path(&self, path: &Path) -> PathBuf {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.config.asset_root.join(path)
+        }
+    }
+
+    fn raw_texture_key(&self, path: &Path) -> String {
+        self.config.source_key(path)
+    }
+
+    fn load_texture(&mut self, path_or_key: &Path) -> Result<Handle<TextureAsset>, AssetError> {
+        if let Some(id) = self.lookup_source_asset(path_or_key) {
+            self.validate_typed_request::<TextureAsset>(id)?;
+            self.queue_request(id, Some(TypeId::of::<TextureAsset>()));
+            return Ok(Handle::new(id));
+        }
+
+        let path = self.raw_texture_path(path_or_key);
+        let key = self.raw_texture_key(&path);
+        let id = match self.raw_textures.get(&key).copied() {
+            Some(id) => id,
+            None => {
+                let id = AssetId::new();
+                self.raw_textures.insert(key, id);
+                self.records
+                    .insert(id, AssetRecord::new_raw_texture(path.clone()));
+                id
+            }
+        };
+
+        let factory = self
+            .factories
+            .get(TextureAsset::TYPE)
+            .ok_or_else(|| AssetError::FactoryNotRegistered {
+                asset_type: TextureAsset::TYPE.to_string(),
+            })?;
+        if factory.product_type_id() != TypeId::of::<TextureAsset>() {
+            return Err(AssetError::Internal {
+                message: "registered texture factory product type does not match TextureAsset"
+                    .to_string(),
+            });
+        }
+
+        if let Some(record) = self.records.get_mut(&id) {
+            record.direct_request_count += 1;
+            if record.requested_type.is_none() {
+                record.requested_type = Some(TypeId::of::<TextureAsset>());
+            }
+        }
+        self.requests.push_back(AssetRequest {
+            id,
+            requested_type: Some(TypeId::of::<TextureAsset>()),
+        });
+        Ok(Handle::new(id))
+    }
+
     fn should_track_for_reload(&self, id: AssetId) -> bool {
         self.records.get(&id).is_some_and(|record| {
             !record.runtime
+                && record.raw_source_path.is_none()
                 && (record.direct_request_count > 0
                     || record.dependency_ref_count > 0
                     || record.installed.is_some()
@@ -818,15 +899,9 @@ impl AssetServerInner {
 
     fn apply_update(&mut self) -> Result<(), AssetError> {
         while let Some(request) = self.requests.pop_front() {
-            let entry = self
-                .manifest
-                .entry(request.id)
-                .ok_or(AssetError::AssetNotFound { id: request.id })?
-                .clone();
-            let record = self
-                .records
-                .entry(request.id)
-                .or_insert_with(|| AssetRecord::new(request.id, entry.asset_type.clone()));
+            let record = self.records.get_mut(&request.id).ok_or(AssetError::AssetNotFound {
+                id: request.id,
+            })?;
             Self::activate_record_for_load(record, request.requested_type);
         }
 
@@ -858,7 +933,11 @@ impl AssetServerInner {
 
                 match state {
                     AssetState::Loading => {
-                        if self.config.background_loading {
+                        let raw_texture = self
+                            .records
+                            .get(&id)
+                            .is_some_and(|record| record.raw_source_path.is_some());
+                        if self.config.background_loading || raw_texture {
                             if self.spawn_load_record(id)? {
                                 progressed = true;
                             }
@@ -906,7 +985,7 @@ impl AssetServerInner {
                 }
             }
 
-            if self.config.background_loading && self.drain_load_completions()? > 0 {
+            if self.drain_load_completions()? > 0 {
                 progressed = true;
             }
 
@@ -925,6 +1004,47 @@ impl AssetServerInner {
             AssetRecord::new_runtime(T::TYPE.to_string(), TypeId::of::<T>(), installed),
         );
         self.push_event(id, AssetEventKind::Installed, AssetState::Installed);
+    }
+
+    fn replace_runtime<T: Asset>(&mut self, id: AssetId, asset: T) -> Result<(), AssetError> {
+        let installed: Arc<dyn Any + Send + Sync> = Arc::new(asset);
+        self.release_held_dependencies(id);
+
+        match self.records.get_mut(&id) {
+            Some(record) => {
+                if record
+                    .requested_type
+                    .is_some_and(|type_id| type_id != TypeId::of::<T>())
+                {
+                    return Err(AssetError::AssetTypeMismatch {
+                        id,
+                        expected: T::TYPE,
+                        actual: record.asset_type.clone(),
+                    });
+                }
+                record.asset_type = T::TYPE.to_string();
+                record.state = AssetState::Installed;
+                record.requested_type = Some(TypeId::of::<T>());
+                record.dependencies.clear();
+                record.held_dependencies.clear();
+                record.loaded = Some(installed.clone());
+                record.installed = Some(installed);
+                record.error = None;
+                record.loaded_entry_fingerprint = None;
+                record.loaded_cooked_hash = None;
+                record.reload_pending = false;
+                record.runtime = true;
+            }
+            None => {
+                self.records.insert(
+                    id,
+                    AssetRecord::new_runtime(T::TYPE.to_string(), TypeId::of::<T>(), installed),
+                );
+            }
+        }
+
+        self.push_event(id, AssetEventKind::Installed, AssetState::Installed);
+        Ok(())
     }
 
     fn load_record(&mut self, id: AssetId) -> Result<(), AssetError> {
@@ -1149,6 +1269,7 @@ struct AssetRecord {
     reload_pending: bool,
     load_generation: u64,
     runtime: bool,
+    raw_source_path: Option<PathBuf>,
 }
 
 impl AssetRecord {
@@ -1169,6 +1290,28 @@ impl AssetRecord {
             reload_pending: false,
             load_generation: 0,
             runtime: false,
+            raw_source_path: None,
+        }
+    }
+
+    fn new_raw_texture(path: PathBuf) -> Self {
+        Self {
+            asset_type: TextureAsset::TYPE.to_string(),
+            state: AssetState::Unloaded,
+            requested_type: Some(TypeId::of::<TextureAsset>()),
+            direct_request_count: 0,
+            dependency_ref_count: 0,
+            dependencies: Vec::new(),
+            held_dependencies: Vec::new(),
+            loaded: None,
+            installed: None,
+            error: None,
+            loaded_entry_fingerprint: None,
+            loaded_cooked_hash: None,
+            reload_pending: false,
+            load_generation: 0,
+            runtime: false,
+            raw_source_path: Some(path),
         }
     }
 
@@ -1193,6 +1336,7 @@ impl AssetRecord {
             reload_pending: false,
             load_generation: 0,
             runtime: true,
+            raw_source_path: None,
         }
     }
 }
@@ -1490,6 +1634,27 @@ mod tests {
             .iter()
             .any(|event| { event.id == handle.id() && event.kind == AssetEventKind::Unloaded }));
         assert_eq!(server.state(&handle), AssetState::Unloaded);
+        Ok(())
+    }
+
+    #[test]
+    fn replace_runtime_keeps_handle_and_updates_payload() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempdir()?;
+        let config = write_manifest_entries(dir.path(), Vec::new())?;
+        let server = AssetServer::new(config)?;
+        let mut events = server.event_cursor();
+        let handle = server.insert_runtime(DummyAsset("frame-a".to_string()));
+        let _ = server.events_since(&mut events);
+
+        server.replace_runtime(handle, DummyAsset("frame-b".to_string()))?;
+
+        assert_eq!(server.state(&handle), AssetState::Installed);
+        assert_eq!(server.get(&handle)?.0, "frame-b");
+        let events = server.events_since(&mut events);
+        assert!(events
+            .iter()
+            .any(|event| event.id == handle.id() && event.kind == AssetEventKind::Installed));
         Ok(())
     }
 

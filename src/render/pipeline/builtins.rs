@@ -4,19 +4,33 @@ use std::sync::Arc;
 use rustc_hash::FxHashMap;
 use wgpu::util::DeviceExt;
 
-use crate::render::component::RenderSettings;
+use crate::render::component::{RenderDebugView, RenderSettings};
 use crate::render::execution::{
     create_scene_texture, ensure_scene_texture, pass_first_read_texture, pass_first_write_texture,
-    pass_nth_write_texture, require_render_target, PreparedFrame, PreparedView, SceneTextureKind,
-    ViewExecutionContext,
+    pass_nth_read_texture, pass_nth_write_texture, require_render_target, PreparedFrame,
+    PreparedView, SceneTexture, ViewExecutionContext,
 };
-use crate::render::gi::{DdgiRuntime, DDGI_SHADER, DDGI_WORKGROUP_SIZE};
-use crate::render::gpu::GpuScene;
-use crate::render::graph::{PassFlags, RenderGraphError};
+use crate::render::gi::{
+    DdgiRuntime, SsgiComputeGraphResources, DDGI_SHADER, DDGI_WORKGROUP_SIZE,
+    SSGI_COMPUTE_RESOURCES_BLACKBOARD,
+};
+use crate::render::gpu::{ComputePipelineCache, GpuScene};
+use crate::render::graph::{
+    CompiledPass, PassFlags, RenderGraphError, ResourceRef, TextureHandle, TextureSubresource,
+};
+use crate::render::lighting::shadow::ShadowDebugResources;
 use crate::render::phase::{
     MeshDrawData, OpaquePhase, SceneMaterialPrepassContext, SceneMaterialPrepassPipelineCache,
 };
 use crate::render::postfx::bloom::{Bloom as LowLevelBloom, DRAW_CALLS_PER_APPLY};
+use crate::render::postfx::debug_view::{
+    DebugView as LowLevelDebugView, DebugViewMode as LowLevelDebugViewMode,
+    DebugViewParams as LowLevelDebugViewParams,
+};
+use crate::render::postfx::sharpen::Sharpen as LowLevelSharpen;
+use crate::render::postfx::taa::{
+    TemporalAntiAliasing as LowLevelTemporalAntiAliasing, TemporalAntiAliasingParams,
+};
 use crate::render::postfx::tonemap::ToneMap as LowLevelToneMap;
 use crate::render::postfx::vignette::Vignette as LowLevelVignette;
 use crate::render::resources::mesh::{VertexAttribute, VertexLayout, VertexSemantic};
@@ -32,11 +46,13 @@ use super::passes::ComputePass;
 use super::passes::PostFxPass;
 use super::phases::RenderPhase;
 
-const SCENE_NORMAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-const SCENE_ALBEDO_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-const SCENE_MATERIAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-const SCENE_EMISSIVE_FORMAT: wgpu::TextureFormat = SCENE_HDR_FORMAT;
-const SCENE_VELOCITY_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+const SCENE_NORMAL_FORMAT: wgpu::TextureFormat = SceneTexture::Normal.modern_3d_format();
+const SCENE_ALBEDO_FORMAT: wgpu::TextureFormat = SceneTexture::Albedo.modern_3d_format();
+const SCENE_MATERIAL_FORMAT: wgpu::TextureFormat = SceneTexture::Material.modern_3d_format();
+const SCENE_EMISSIVE_FORMAT: wgpu::TextureFormat = SceneTexture::Emissive.modern_3d_format();
+const SCENE_VELOCITY_FORMAT: wgpu::TextureFormat = SceneTexture::Velocity.modern_3d_format();
+const SCENE_VELOCITY_CLEAR: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
+const SCENE_MATERIAL_VELOCITY_CLEAR_PASS: &str = "scene_material_prepass_velocity_clear";
 const SCENE_NORMAL_SHADER: &str = include_str!("../shaders/prepass/scene_normal_prepass.wgsl");
 const IDENTITY_MATRIX: [f32; 16] = [
     1.0, 0.0, 0.0, 0.0, //
@@ -157,7 +173,6 @@ pub struct SceneNormalPrepass {
     prev_view_proj_layout: Option<wgpu::BindGroupLayout>,
     prev_view_proj_buffer: Option<wgpu::Buffer>,
     prev_view_proj_bind_group: Option<wgpu::BindGroup>,
-    prev_view_proj_by_view: Vec<[f32; 16]>,
 }
 
 impl SceneNormalPrepass {
@@ -356,7 +371,7 @@ impl RenderPhase for SceneNormalPrepass {
                 graph,
                 state,
                 target_size,
-                SceneTextureKind::Normal,
+                SceneTexture::Normal,
                 SCENE_NORMAL_FORMAT,
                 "scene_normal",
             );
@@ -364,7 +379,7 @@ impl RenderPhase for SceneNormalPrepass {
                 graph,
                 state,
                 target_size,
-                SceneTextureKind::Velocity,
+                SceneTexture::Velocity,
                 SCENE_VELOCITY_FORMAT,
                 "scene_velocity",
             );
@@ -373,7 +388,7 @@ impl RenderPhase for SceneNormalPrepass {
                 graph,
                 state,
                 target_size,
-                SceneTextureKind::Depth,
+                SceneTexture::Depth,
                 DEFAULT_DEPTH_FORMAT,
                 "scene_depth",
             );
@@ -382,7 +397,7 @@ impl RenderPhase for SceneNormalPrepass {
 
         ctx.graph().add_render_pass(self.name(), |setup| {
             setup.write_color_cleared(0, normal.handle(), [0.5, 0.5, 1.0, 1.0]);
-            setup.write_color_cleared(1, velocity.handle(), [0.0, 0.0, 1.0, 1.0]);
+            setup.write_color_cleared(1, velocity.handle(), SCENE_VELOCITY_CLEAR);
             if existing_depth {
                 setup.set_depth_stencil_loaded(depth.handle());
             } else {
@@ -446,10 +461,10 @@ impl RenderPhase for SceneNormalPrepass {
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.0,
-                        g: 0.0,
-                        b: 1.0,
-                        a: 1.0,
+                        r: SCENE_VELOCITY_CLEAR[0] as f64,
+                        g: SCENE_VELOCITY_CLEAR[1] as f64,
+                        b: SCENE_VELOCITY_CLEAR[2] as f64,
+                        a: SCENE_VELOCITY_CLEAR[3] as f64,
                     }),
                     store: wgpu::StoreOp::Store,
                 },
@@ -474,12 +489,7 @@ impl RenderPhase for SceneNormalPrepass {
             .frame_payload::<PreviousModelMatrices>()
             .map(|matrices| matrices.0.as_slice());
         let device = gpu.device().clone();
-        let view_index = execution.view_index();
-        let previous_view_proj = self
-            .prev_view_proj_by_view
-            .get(view_index)
-            .copied()
-            .unwrap_or(scene_view.view_uniform.view_proj);
+        let previous_view_proj = scene_view.temporal.previous_view_proj;
         self.ensure_previous_view_proj_resources(&device);
         gpu.queue().write_buffer(
             self.prev_view_proj_buffer
@@ -604,12 +614,6 @@ impl RenderPhase for SceneNormalPrepass {
             cursor = batch_end;
         }
 
-        if self.prev_view_proj_by_view.len() <= view_index {
-            self.prev_view_proj_by_view
-                .resize(view_index + 1, scene_view.view_uniform.view_proj);
-        }
-        self.prev_view_proj_by_view[view_index] = scene_view.view_uniform.view_proj;
-
         Ok(())
     }
 }
@@ -645,13 +649,23 @@ impl RenderPhase for SceneMaterialPrepass {
         }
 
         let target_size = ctx.view().target_size();
-        let (albedo, material, emissive, normal, depth, existing_depth, existing_normal) = {
+        let (
+            albedo,
+            material,
+            emissive,
+            normal,
+            velocity,
+            depth,
+            existing_depth,
+            existing_normal,
+            existing_velocity,
+        ) = {
             let (graph, state) = ctx.graph_and_state();
             let albedo = create_scene_texture(
                 graph,
                 state,
                 target_size,
-                SceneTextureKind::Albedo,
+                SceneTexture::Albedo,
                 SCENE_ALBEDO_FORMAT,
                 "scene_albedo",
             );
@@ -659,7 +673,7 @@ impl RenderPhase for SceneMaterialPrepass {
                 graph,
                 state,
                 target_size,
-                SceneTextureKind::Material,
+                SceneTexture::Material,
                 SCENE_MATERIAL_FORMAT,
                 "scene_material",
             );
@@ -667,7 +681,7 @@ impl RenderPhase for SceneMaterialPrepass {
                 graph,
                 state,
                 target_size,
-                SceneTextureKind::Emissive,
+                SceneTexture::Emissive,
                 SCENE_EMISSIVE_FORMAT,
                 "scene_emissive",
             );
@@ -676,16 +690,25 @@ impl RenderPhase for SceneMaterialPrepass {
                 graph,
                 state,
                 target_size,
-                SceneTextureKind::Normal,
+                SceneTexture::Normal,
                 SCENE_NORMAL_FORMAT,
                 "scene_normal",
+            );
+            let existing_velocity = state.scene_velocity().is_some();
+            let velocity = ensure_scene_texture(
+                graph,
+                state,
+                target_size,
+                SceneTexture::Velocity,
+                SCENE_VELOCITY_FORMAT,
+                "scene_velocity",
             );
             let existing_depth = state.scene_depth().is_some();
             let depth = ensure_scene_texture(
                 graph,
                 state,
                 target_size,
-                SceneTextureKind::Depth,
+                SceneTexture::Depth,
                 DEFAULT_DEPTH_FORMAT,
                 "scene_depth",
             );
@@ -694,15 +717,24 @@ impl RenderPhase for SceneMaterialPrepass {
                 material,
                 emissive,
                 normal,
+                velocity,
                 depth,
                 existing_depth,
                 existing_normal,
+                existing_velocity,
             )
         };
 
+        if !existing_velocity {
+            ctx.graph()
+                .add_render_pass(SCENE_MATERIAL_VELOCITY_CLEAR_PASS, |setup| {
+                    setup.write_color_cleared(0, velocity.handle(), SCENE_VELOCITY_CLEAR);
+                });
+        }
+
         ctx.graph().add_render_pass(self.name(), |setup| {
             setup.write_color_cleared(0, albedo.handle(), [0.0, 0.0, 0.0, 0.0]);
-            setup.write_color_cleared(1, material.handle(), [0.0, 1.0, 0.0, 0.0]);
+            setup.write_color_cleared(1, material.handle(), [1.0, 0.0, 1.0, 0.0]);
             setup.write_color_cleared(2, emissive.handle(), [0.0, 0.0, 0.0, 0.0]);
             if existing_normal {
                 setup.write_color_loaded(3, normal.handle());
@@ -731,6 +763,32 @@ impl RenderPhase for SceneMaterialPrepass {
             mesh_registry,
             fallback_texture,
         ) = ctx.split();
+        if pass.name == SCENE_MATERIAL_VELOCITY_CLEAR_PASS {
+            let velocity_handle = pass_first_write_texture(pass, self.name(), "scene_velocity");
+            let velocity_rt =
+                require_render_target(resources, velocity_handle, self.name(), "scene_velocity");
+            let mut frame = gpu.frame();
+            let color_attachments = [Some(wgpu::RenderPassColorAttachment {
+                view: velocity_rt.view(),
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: SCENE_VELOCITY_CLEAR[0] as f64,
+                        g: SCENE_VELOCITY_CLEAR[1] as f64,
+                        b: SCENE_VELOCITY_CLEAR[2] as f64,
+                        a: SCENE_VELOCITY_CLEAR[3] as f64,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })];
+            let _clear_pass = frame.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some(SCENE_MATERIAL_VELOCITY_CLEAR_PASS),
+                color_attachments: &color_attachments,
+                ..Default::default()
+            });
+            return Ok(());
+        }
+
         let Some(scene_view) = execution.view_payload::<SceneView>() else {
             return Ok(());
         };
@@ -881,7 +939,7 @@ impl RenderPhase for SceneMaterialPrepass {
 
 #[derive(Default)]
 pub struct DdgiUpdateCompute {
-    pipeline: Option<wgpu::ComputePipeline>,
+    pipeline: Option<ComputePipelineCache>,
 }
 
 impl DdgiUpdateCompute {
@@ -900,28 +958,20 @@ impl DdgiUpdateCompute {
 
     fn ensure_pipeline(
         &mut self,
-        device: &wgpu::Device,
+        gpu: &crate::gpu::GpuContext,
         ddgi_layout: &wgpu::BindGroupLayout,
-    ) -> &wgpu::ComputePipeline {
-        self.pipeline.get_or_insert_with(|| {
-            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("ddgi_update_shader"),
-                source: wgpu::ShaderSource::Wgsl(DDGI_SHADER.into()),
-            });
-            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("ddgi_update_pipeline_layout"),
-                bind_group_layouts: &[ddgi_layout],
-                push_constant_ranges: &[],
-            });
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("ddgi_update_pipeline"),
-                layout: Some(&layout),
-                module: &shader,
-                entry_point: Some("cs_main"),
-                cache: None,
-                compilation_options: Default::default(),
+    ) -> Arc<wgpu::ComputePipeline> {
+        self.pipeline
+            .get_or_insert_with(|| {
+                ComputePipelineCache::new(
+                    gpu,
+                    DDGI_SHADER,
+                    "cs_main",
+                    &[ddgi_layout],
+                    "ddgi_update",
+                )
             })
-        })
+            .pipeline(gpu)
     }
 }
 
@@ -935,7 +985,7 @@ impl ComputePass for DdgiUpdateCompute {
             .frame_payload::<RenderSettings>()
             .copied()
             .unwrap_or_default();
-        if !settings.global_illumination.enabled
+        if !settings.global_illumination.uses_ddgi()
             || !Self::is_first_lit_view(ctx.frame(), ctx.view())
         {
             return;
@@ -963,7 +1013,7 @@ impl ComputePass for DdgiUpdateCompute {
             .frame_payload::<RenderSettings>()
             .copied()
             .unwrap_or_default();
-        if !settings.global_illumination.enabled
+        if !settings.global_illumination.uses_ddgi()
             || !Self::is_first_lit_view(execution.frame(), execution.view())
         {
             return Ok(());
@@ -979,15 +1029,14 @@ impl ComputePass for DdgiUpdateCompute {
 
         let bind_group = ddgi.bind_group();
         let layout = ddgi.bind_group_layout();
-        let device = gpu.device().clone();
         let pass_label = self.name();
-        let pipeline = self.ensure_pipeline(&device, layout);
+        let pipeline = self.ensure_pipeline(gpu, layout);
         let mut frame = gpu.frame();
         let mut pass = frame.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some(pass_label),
             ..Default::default()
         });
-        pass.set_pipeline(pipeline);
+        pass.set_pipeline(&pipeline);
         pass.set_bind_group(0, bind_group, &[]);
         pass.dispatch_workgroups(
             width.div_ceil(DDGI_WORKGROUP_SIZE),
@@ -1184,6 +1233,523 @@ impl PostFxPass for ToneMap {
 }
 
 #[derive(Default)]
+pub struct TemporalAntiAliasing {
+    runtime: Option<LowLevelTemporalAntiAliasing>,
+}
+
+impl PostFxPass for TemporalAntiAliasing {
+    fn name(&self) -> &'static str {
+        "taa"
+    }
+
+    fn is_enabled(&self, frame: &PreparedFrame<'_>, view: &PreparedView<'_>) -> bool {
+        if view
+            .payload::<SceneView>()
+            .is_some_and(SceneView::is_shadow)
+        {
+            return false;
+        }
+        frame
+            .payload::<RenderSettings>()
+            .copied()
+            .unwrap_or_default()
+            .temporal_aa
+            .enabled
+    }
+
+    fn requires_hdr_input(&self) -> bool {
+        true
+    }
+
+    fn setup(&mut self, ctx: &mut PostFxPassSetupContext<'_, '_>) {
+        let settings = ctx
+            .frame_payload::<RenderSettings>()
+            .copied()
+            .unwrap_or_default();
+        if !settings.temporal_aa.enabled {
+            return;
+        }
+
+        let Some(input) = ctx.state().current_color() else {
+            return;
+        };
+        let Some(depth) = ctx.state().scene_depth() else {
+            return;
+        };
+        let Some(velocity) = ctx.state().scene_velocity() else {
+            return;
+        };
+        if input.format() != SCENE_HDR_FORMAT {
+            return;
+        }
+
+        let target_size = ctx.view().target_size();
+        let history_color = ctx
+            .history_texture("taa_color")
+            .format(input.format())
+            .ping_pong()
+            .get();
+        let history_depth = ctx
+            .history_texture("taa_depth")
+            .format(depth.format())
+            .ping_pong()
+            .get();
+        let output = ctx.graph().create_texture(|builder| {
+            builder
+                .name("taa_out")
+                .size(crate::render::graph::TargetSize::Exact(
+                    target_size[0],
+                    target_size[1],
+                ))
+                .format(input.format())
+                .storage_binding();
+        });
+
+        ctx.graph().add_compute_pass(self.name(), |setup| {
+            setup.read(input.handle());
+            setup.read(depth.handle());
+            setup.read(velocity.handle());
+            if let Some(history) = history_color.read() {
+                setup.read(history);
+            }
+            if let Some(history) = history_depth.read() {
+                setup.read(history);
+            }
+            setup.write(output);
+            setup.with_flags(PassFlags::PREFER_ASYNC_COMPUTE | PassFlags::BANDWIDTH_INTENSIVE);
+        });
+        ctx.graph()
+            .add_copy_pass("taa_history_color_copy", |setup| {
+                setup.texture_to_texture(output, history_color.write());
+            });
+        ctx.graph()
+            .add_copy_pass("taa_history_depth_copy", |setup| {
+                setup.texture_to_texture(depth.handle(), history_depth.write());
+            });
+        ctx.state().set_current_color(output, input.format());
+        ctx.state().set_scene_color(output, input.format());
+    }
+
+    fn execute(
+        &mut self,
+        ctx: &mut PostFxPassExecuteContext<'_, '_>,
+    ) -> Result<(), RenderGraphError> {
+        let (gpu, pass, resources, execution) = ctx.split();
+        let input_handle = pass_nth_read_texture(pass, 0, self.name(), "input");
+        let depth_handle = pass_nth_read_texture(pass, 1, self.name(), "depth");
+        let velocity_handle = pass_nth_read_texture(pass, 2, self.name(), "velocity");
+        let history_handle = pass_nth_read_texture_optional(pass, 3).unwrap_or(input_handle);
+        let depth_history_handle = pass_nth_read_texture_optional(pass, 4).unwrap_or(depth_handle);
+        let output_handle = pass_first_write_texture(pass, self.name(), "output");
+        let input = require_render_target(resources, input_handle, self.name(), "input");
+        let depth = require_render_target(resources, depth_handle, self.name(), "depth");
+        let velocity = require_render_target(resources, velocity_handle, self.name(), "velocity");
+        let output = require_render_target(resources, output_handle, self.name(), "output");
+        let history = resources.texture_view(history_handle);
+        let depth_history = resources.texture_view(depth_history_handle);
+        let scene_view = execution.view_payload::<SceneView>().ok_or_else(|| {
+            RenderGraphError::ExecutionFailed("taa missing SceneView payload".into())
+        })?;
+        let settings = execution
+            .frame_payload::<RenderSettings>()
+            .copied()
+            .unwrap_or_default()
+            .temporal_aa;
+        let params = TemporalAntiAliasingParams {
+            reset: scene_view.temporal.history_reset
+                || pass_nth_read_texture_optional(pass, 3).is_none(),
+            feedback: settings.feedback,
+            history_clamp: settings.history_clamp,
+            near: scene_view.near,
+            far: scene_view.far,
+        };
+        let runtime = self
+            .runtime
+            .get_or_insert_with(|| LowLevelTemporalAntiAliasing::new(gpu));
+        runtime.apply_to_target(
+            gpu,
+            input,
+            history,
+            depth,
+            depth_history,
+            velocity,
+            output,
+            params,
+        );
+        Ok(())
+    }
+
+    fn draw_calls(&self, execution: &ViewExecutionContext<'_>) -> usize {
+        if execution
+            .frame_payload::<RenderSettings>()
+            .copied()
+            .unwrap_or_default()
+            .temporal_aa
+            .enabled
+        {
+            1
+        } else {
+            0
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum DebugViewSource {
+    Texture(TextureHandle),
+    Subresource(TextureSubresource),
+}
+
+impl DebugViewSource {
+    #[inline]
+    fn resource(self) -> ResourceRef {
+        match self {
+            Self::Texture(handle) => ResourceRef::Texture(handle),
+            Self::Subresource(subresource) => ResourceRef::TextureSubresource(subresource),
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct DebugView {
+    runtime: Option<LowLevelDebugView>,
+}
+
+impl PostFxPass for DebugView {
+    fn name(&self) -> &'static str {
+        "debug_view"
+    }
+
+    fn is_enabled(&self, frame: &PreparedFrame<'_>, view: &PreparedView<'_>) -> bool {
+        if view
+            .payload::<SceneView>()
+            .is_some_and(SceneView::is_shadow)
+        {
+            return false;
+        }
+        let debug_view = frame
+            .payload::<RenderSettings>()
+            .copied()
+            .unwrap_or_default()
+            .debug_view;
+        debug_view.is_enabled() && !matches!(debug_view, RenderDebugView::DirectionalShadowCoverage)
+    }
+
+    fn setup(&mut self, ctx: &mut PostFxPassSetupContext<'_, '_>) {
+        let debug_view = ctx
+            .frame_payload::<RenderSettings>()
+            .copied()
+            .unwrap_or_default()
+            .debug_view;
+        if !debug_view.is_enabled()
+            || matches!(debug_view, RenderDebugView::DirectionalShadowCoverage)
+        {
+            return;
+        }
+
+        let Some(current) = ctx.state().current_color() else {
+            return;
+        };
+        let ssgi_resources = ctx
+            .blackboard_get::<SsgiComputeGraphResources>(SSGI_COMPUTE_RESOURCES_BLACKBOARD)
+            .copied();
+        let depth = match debug_view {
+            RenderDebugView::DirectionalShadowMap
+            | RenderDebugView::DirectionalShadowCascade(_) => {
+                let Some(shadow_debug) = ctx.frame_payload::<ShadowDebugResources>() else {
+                    return;
+                };
+                let imported = shadow_debug.directional_shadow_atlas();
+                ctx.graph().create_texture(|builder| {
+                    builder
+                        .name("debug_directional_shadow_map")
+                        .import_external(imported);
+                })
+            }
+            _ => {
+                let Some(depth) = ctx.state().scene_depth() else {
+                    return;
+                };
+                depth.handle()
+            }
+        };
+        let Some(source) = debug_view_source(ctx.state(), debug_view, current, ssgi_resources)
+        else {
+            return;
+        };
+
+        let target_size = ctx.view().target_size();
+        let output = ctx.graph().create_texture(|builder| {
+            builder
+                .name("debug_view_out")
+                .size(crate::render::graph::TargetSize::Exact(
+                    target_size[0],
+                    target_size[1],
+                ))
+                .format(current.format());
+        });
+
+        ctx.graph().add_render_pass(self.name(), |setup| {
+            setup.read(depth);
+            match source.resource() {
+                ResourceRef::Texture(handle) => setup.read(handle),
+                ResourceRef::TextureSubresource(subresource) => setup.read_subresource(subresource),
+                ResourceRef::Surface | ResourceRef::Buffer(_) => unreachable!(),
+            }
+            setup.write_color(0, output);
+        });
+        ctx.state().set_current_color(output, current.format());
+        ctx.state().set_scene_color(output, current.format());
+    }
+
+    fn execute(
+        &mut self,
+        ctx: &mut PostFxPassExecuteContext<'_, '_>,
+    ) -> Result<(), RenderGraphError> {
+        let (gpu, pass, resources, execution) = ctx.split();
+        let debug_view = execution
+            .frame_payload::<RenderSettings>()
+            .copied()
+            .unwrap_or_default()
+            .debug_view;
+        let mode = debug_view_mode(debug_view).ok_or_else(|| {
+            RenderGraphError::ExecutionFailed("debug_view missing active mode".into())
+        })?;
+        let params = debug_view_params(execution, debug_view);
+        let depth_handle = pass_nth_read_texture(pass, 0, self.name(), "scene depth");
+        let source_ref = pass_nth_read_texture_resource(pass, 1, self.name(), "source");
+        let output_handle = pass_first_write_texture(pass, self.name(), "output");
+        let output = require_render_target(resources, output_handle, self.name(), "output");
+        let depth = resources.texture_view(depth_handle);
+        let subresource_view;
+        let source = match source_ref {
+            ResourceRef::Texture(handle) => resources.texture_view(handle),
+            ResourceRef::TextureSubresource(subresource) => {
+                subresource_view =
+                    resources.texture_subresource_view(subresource, wgpu::TextureViewDimension::D2);
+                &subresource_view
+            }
+            ResourceRef::Surface | ResourceRef::Buffer(_) => {
+                return Err(RenderGraphError::ExecutionFailed(
+                    "debug_view source must be a texture".into(),
+                ));
+            }
+        };
+        let runtime = self
+            .runtime
+            .get_or_insert_with(|| LowLevelDebugView::new(gpu, output.format()));
+        runtime.apply_to_target(gpu, depth, source, output, mode, params);
+        Ok(())
+    }
+
+    fn draw_calls(&self, execution: &ViewExecutionContext<'_>) -> usize {
+        let debug_view = execution
+            .frame_payload::<RenderSettings>()
+            .copied()
+            .unwrap_or_default()
+            .debug_view;
+        if debug_view.is_enabled()
+            && !matches!(debug_view, RenderDebugView::DirectionalShadowCoverage)
+        {
+            1
+        } else {
+            0
+        }
+    }
+}
+
+fn debug_view_source(
+    state: &crate::render::execution::PhaseState,
+    debug_view: RenderDebugView,
+    current_color: crate::render::execution::TextureSlot,
+    ssgi_resources: Option<SsgiComputeGraphResources>,
+) -> Option<DebugViewSource> {
+    let slot = |texture: SceneTexture| {
+        state
+            .scene_texture(texture)
+            .map(|slot| DebugViewSource::Texture(slot.handle()))
+    };
+
+    match debug_view {
+        RenderDebugView::None => None,
+        RenderDebugView::SceneColor => Some(DebugViewSource::Texture(current_color.handle())),
+        RenderDebugView::SceneDepth => Some(DebugViewSource::Texture(current_color.handle())),
+        RenderDebugView::SceneNormal => slot(SceneTexture::Normal),
+        RenderDebugView::Albedo => slot(SceneTexture::Albedo),
+        RenderDebugView::Roughness => slot(SceneTexture::Material),
+        RenderDebugView::Metallic => slot(SceneTexture::Material),
+        RenderDebugView::Emissive => slot(SceneTexture::Emissive),
+        RenderDebugView::Velocity => slot(SceneTexture::Velocity),
+        RenderDebugView::Light => slot(SceneTexture::Light),
+        RenderDebugView::IndirectDiffuse => slot(SceneTexture::IndirectDiffuse),
+        RenderDebugView::DirectionalShadowMap | RenderDebugView::DirectionalShadowCascade(_) => {
+            Some(DebugViewSource::Texture(current_color.handle()))
+        }
+        RenderDebugView::DirectionalShadowCoverage => {
+            Some(DebugViewSource::Texture(current_color.handle()))
+        }
+        RenderDebugView::SsgiDiffuseMip(mip) => ssgi_resources
+            .map(|resources| DebugViewSource::Subresource(resources.diffuse_mip(mip.min(3)))),
+        RenderDebugView::SsgiAtlasLayer { mip, layer } => ssgi_resources.map(|resources| {
+            DebugViewSource::Subresource(resources.atlas_color_layer(mip.min(3), layer.min(15)))
+        }),
+    }
+}
+
+fn debug_view_mode(debug_view: RenderDebugView) -> Option<LowLevelDebugViewMode> {
+    match debug_view {
+        RenderDebugView::None => None,
+        RenderDebugView::SceneDepth => Some(LowLevelDebugViewMode::SceneDepth),
+        RenderDebugView::DirectionalShadowMap | RenderDebugView::DirectionalShadowCascade(_) => {
+            Some(LowLevelDebugViewMode::ShadowDepth)
+        }
+        RenderDebugView::DirectionalShadowCoverage => None,
+        RenderDebugView::SceneNormal => Some(LowLevelDebugViewMode::SceneNormal),
+        RenderDebugView::Roughness => Some(LowLevelDebugViewMode::Roughness),
+        RenderDebugView::Metallic => Some(LowLevelDebugViewMode::Metallic),
+        RenderDebugView::Velocity => Some(LowLevelDebugViewMode::Velocity),
+        RenderDebugView::SceneColor
+        | RenderDebugView::Albedo
+        | RenderDebugView::Emissive
+        | RenderDebugView::Light
+        | RenderDebugView::IndirectDiffuse
+        | RenderDebugView::SsgiDiffuseMip(_)
+        | RenderDebugView::SsgiAtlasLayer { .. } => Some(LowLevelDebugViewMode::SourceRgb),
+    }
+}
+
+fn debug_view_params(
+    execution: &ViewExecutionContext<'_>,
+    debug_view: RenderDebugView,
+) -> LowLevelDebugViewParams {
+    match debug_view {
+        RenderDebugView::DirectionalShadowCascade(cascade) => execution
+            .frame_payload::<ShadowDebugResources>()
+            .map(|resources| {
+                LowLevelDebugViewParams::atlas_slice_with_mul_add(
+                    cascade,
+                    resources.directional_cascade_count(),
+                    resources.directional_shadow_mul_add(),
+                )
+            })
+            .unwrap_or_else(LowLevelDebugViewParams::full),
+        _ => LowLevelDebugViewParams::full(),
+    }
+}
+
+fn pass_nth_read_texture_resource(
+    pass: &CompiledPass,
+    index: usize,
+    node_name: &str,
+    label: &str,
+) -> ResourceRef {
+    pass.reads
+        .iter()
+        .filter_map(|resource| match resource {
+            ResourceRef::Texture(_) | ResourceRef::TextureSubresource(_) => Some(*resource),
+            ResourceRef::Surface | ResourceRef::Buffer(_) => None,
+        })
+        .nth(index)
+        .unwrap_or_else(|| panic!("{node_name} should read {label} texture"))
+}
+
+#[derive(Default)]
+pub struct Sharpen {
+    runtime: Option<LowLevelSharpen>,
+}
+
+impl PostFxPass for Sharpen {
+    fn name(&self) -> &'static str {
+        "sharpen"
+    }
+
+    fn is_enabled(&self, frame: &PreparedFrame<'_>, _view: &PreparedView<'_>) -> bool {
+        frame
+            .payload::<RenderSettings>()
+            .copied()
+            .unwrap_or_default()
+            .sharpen
+            .enabled
+    }
+
+    fn requires_hdr_input(&self) -> bool {
+        true
+    }
+
+    fn setup(&mut self, ctx: &mut PostFxPassSetupContext<'_, '_>) {
+        let settings = ctx
+            .frame_payload::<RenderSettings>()
+            .copied()
+            .unwrap_or_default();
+        if !settings.sharpen.enabled {
+            return;
+        }
+
+        let input = ctx
+            .state()
+            .current_color()
+            .unwrap_or_else(|| panic!("{} requires current color input", self.name()));
+        let target_size = ctx.view().target_size();
+        let output = ctx.graph().create_texture(|builder| {
+            builder
+                .name("sharpen_out")
+                .size(crate::render::graph::TargetSize::Exact(
+                    target_size[0],
+                    target_size[1],
+                ))
+                .format(input.format());
+        });
+        ctx.graph().add_render_pass(self.name(), |setup| {
+            setup.read(input.handle());
+            setup.write_color(0, output);
+        });
+        ctx.state().set_current_color(output, input.format());
+    }
+
+    fn execute(
+        &mut self,
+        ctx: &mut PostFxPassExecuteContext<'_, '_>,
+    ) -> Result<(), RenderGraphError> {
+        let (gpu, pass, resources, execution) = ctx.split();
+        let input_handle = pass_first_read_texture(pass, self.name(), "input");
+        let output_handle = pass_first_write_texture(pass, self.name(), "output");
+        let input_rt = require_render_target(resources, input_handle, self.name(), "input");
+        let output_rt = require_render_target(resources, output_handle, self.name(), "output");
+        let render_settings = execution
+            .frame_payload::<RenderSettings>()
+            .copied()
+            .unwrap_or_default();
+        let settings = render_settings.sharpen;
+        let runtime = self
+            .runtime
+            .get_or_insert_with(|| LowLevelSharpen::new(gpu, output_rt.format()));
+        let taa_sharpen = if render_settings.temporal_aa.enabled {
+            render_settings.temporal_aa.sharpen_amount.max(0.0)
+        } else {
+            0.0
+        };
+        runtime.strength = (settings.strength + taa_sharpen).max(0.0);
+        runtime.clamp = settings.clamp.max(0.0);
+        runtime.apply_to_target(gpu, input_rt, output_rt);
+        Ok(())
+    }
+
+    fn draw_calls(&self, execution: &ViewExecutionContext<'_>) -> usize {
+        if execution
+            .frame_payload::<RenderSettings>()
+            .copied()
+            .unwrap_or_default()
+            .sharpen
+            .enabled
+        {
+            1
+        } else {
+            0
+        }
+    }
+}
+
+#[derive(Default)]
 pub struct Vignette {
     runtime: Option<LowLevelVignette>,
 }
@@ -1272,5 +1838,363 @@ impl PostFxPass for Vignette {
         } else {
             0
         }
+    }
+}
+
+fn pass_nth_read_texture_optional(pass: &CompiledPass, index: usize) -> Option<TextureHandle> {
+    pass.reads
+        .iter()
+        .filter_map(|resource| match resource {
+            ResourceRef::Texture(handle) => Some(*handle),
+            _ => None,
+        })
+        .nth(index)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ecs::EntityId;
+    use crate::render::execution::{PhaseState, TextureFormat};
+    use crate::render::gpu::RenderTarget;
+    use crate::render::graph::{LoadOp, RenderGraph, ResourceRef, TargetSize};
+    use crate::render::phase::{DrawFunctionId, MeshDrawData, PhaseItem};
+    use crate::render::view::{Projection, ViewportRect};
+
+    fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .expect("No suitable GPU adapter found for built-in pipeline tests");
+
+        pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("builtin_pipeline_test_device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::Performance,
+            },
+            None,
+        ))
+        .expect("Failed to create test GPU device")
+    }
+
+    fn test_scene_view() -> SceneView {
+        let target_size = [64, 64];
+        let projection = Projection::orthographic_fixed(64.0, 64.0);
+        let transform = crate::render::Transform::default();
+        let view_uniform = projection.view_uniform(transform, target_size);
+        SceneView::new(
+            0,
+            ViewportRect::new(0, 0, target_size[0], target_size[1]),
+            target_size,
+            false,
+            u32::MAX,
+            transform,
+            projection,
+            view_uniform,
+            true,
+        )
+    }
+
+    fn test_opaque_phase() -> OpaquePhase {
+        let mut phase = OpaquePhase::new();
+        phase.add_item(PhaseItem::new(
+            0,
+            DrawFunctionId::from_raw(0),
+            EntityId::new(1, 0),
+            0,
+            MeshDrawData::default(),
+        ));
+        phase
+    }
+
+    fn setup_normal_prepass(graph: &mut RenderGraph, state: &mut PhaseState) {
+        let scene_view = test_scene_view();
+        let opaque = test_opaque_phase();
+        let frame = PreparedFrame::new(TextureFormat::Bgra8Unorm, false);
+        let mut view = PreparedView::new(0, scene_view.viewport, scene_view.target_size, false);
+        let _ = view.insert_payload(&scene_view);
+        let _ = view.insert_payload(&opaque);
+        let mut pass = SceneNormalPrepass::default();
+        let mut ctx = RenderPhaseSetupContext::new(graph, state, &frame, &view);
+        pass.setup(&mut ctx);
+    }
+
+    fn setup_material_prepass(graph: &mut RenderGraph, state: &mut PhaseState) {
+        let scene_view = test_scene_view();
+        let opaque = test_opaque_phase();
+        let frame = PreparedFrame::new(TextureFormat::Bgra8Unorm, false);
+        let mut view = PreparedView::new(0, scene_view.viewport, scene_view.target_size, false);
+        let _ = view.insert_payload(&scene_view);
+        let _ = view.insert_payload(&opaque);
+        let mut pass = SceneMaterialPrepass::default();
+        let mut ctx = RenderPhaseSetupContext::new(graph, state, &frame, &view);
+        pass.setup(&mut ctx);
+    }
+
+    fn keep_velocity_alive(
+        graph: &mut RenderGraph,
+        velocity: crate::render::execution::TextureSlot,
+    ) {
+        let sink = graph.create_texture(|builder| {
+            builder
+                .name("velocity_test_sink")
+                .size(TargetSize::Exact(64, 64))
+                .format(velocity.format())
+                .persistent();
+        });
+        graph.add_render_pass("velocity_test_sink", |setup| {
+            setup.read(velocity.handle());
+            setup.write_color(0, sink);
+        });
+    }
+
+    #[test]
+    fn modern_3d_material_prepass_publishes_all_gbuffer_slots() {
+        let mut graph = RenderGraph::new();
+        let mut state = PhaseState::new(TextureFormat::Bgra8Unorm, false);
+
+        setup_material_prepass(&mut graph, &mut state);
+
+        for texture in [
+            SceneTexture::Depth,
+            SceneTexture::Normal,
+            SceneTexture::Velocity,
+            SceneTexture::Albedo,
+            SceneTexture::Material,
+            SceneTexture::Emissive,
+        ] {
+            let slot = state
+                .scene_texture(texture)
+                .unwrap_or_else(|| panic!("material prepass should publish {}", texture.label()));
+            assert_eq!(slot.format(), texture.modern_3d_format());
+        }
+
+        let material = state
+            .scene_material()
+            .expect("material prepass should publish material target");
+        let sink = graph.create_texture(|builder| {
+            builder
+                .name("material_contract_sink")
+                .size(TargetSize::Exact(64, 64))
+                .format(material.format())
+                .persistent();
+        });
+        graph.add_render_pass("material_contract_sink", |setup| {
+            setup.read(material.handle());
+            setup.write_color(0, sink);
+        });
+        let compiled = graph.compile().expect("material graph should compile");
+        let material_pass = compiled
+            .iter()
+            .find(|pass| pass.name == "scene_material_prepass")
+            .expect("material prepass should stay alive");
+        assert_eq!(
+            material_pass.color_outputs[1].load,
+            LoadOp::Clear([1.0, 0.0, 1.0, 0.0])
+        );
+    }
+
+    #[test]
+    fn directional_shadow_debug_view_imports_shadow_depth_without_scene_depth() {
+        let (device, queue) = create_test_device();
+        let gpu = crate::gpu::GpuContext::new_headless(
+            device,
+            queue,
+            TextureFormat::Bgra8Unorm,
+            [16, 16],
+        );
+        let shadow_target = RenderTarget::new_depth(&gpu, 16, 16);
+        let shadow_debug = ShadowDebugResources::from_directional_map(&shadow_target);
+        let settings = RenderSettings {
+            debug_view: RenderDebugView::DirectionalShadowMap,
+            ..RenderSettings::default()
+        };
+        let mut frame = PreparedFrame::new(TextureFormat::Bgra8Unorm, false);
+        let _ = frame.insert_payload(&settings);
+        let _ = frame.insert_payload(&shadow_debug);
+        let view = PreparedView::new(
+            0,
+            ViewportRect::from_surface_size([16, 16]),
+            [16, 16],
+            false,
+        );
+        let mut graph = RenderGraph::new();
+        let mut state = PhaseState::new(TextureFormat::Bgra8Unorm, false);
+        let current = graph.create_texture(|builder| {
+            builder
+                .name("debug_shadow_current")
+                .size(TargetSize::Exact(16, 16))
+                .format(SCENE_HDR_FORMAT);
+        });
+        state.set_current_color(current, SCENE_HDR_FORMAT);
+        let mut debug_view = DebugView::default();
+
+        {
+            let mut ctx = PostFxPassSetupContext::new(&mut graph, &mut state, &frame, &view);
+            debug_view.setup(&mut ctx);
+        }
+
+        assert!(graph.get_texture("debug_directional_shadow_map").is_some());
+        assert_eq!(graph.pass_count(), 1);
+        assert_ne!(
+            state
+                .current_color()
+                .expect("debug view should replace current color")
+                .handle(),
+            current
+        );
+        assert_eq!(
+            debug_view_mode(RenderDebugView::DirectionalShadowMap),
+            Some(LowLevelDebugViewMode::ShadowDepth)
+        );
+        assert_eq!(
+            debug_view_mode(RenderDebugView::DirectionalShadowCascade(2)),
+            Some(LowLevelDebugViewMode::ShadowDepth)
+        );
+        assert_eq!(
+            debug_view_mode(RenderDebugView::DirectionalShadowCoverage),
+            None
+        );
+    }
+
+    #[test]
+    fn scene_material_prepass_writes_velocity() {
+        let mut graph = RenderGraph::new();
+        let mut state = PhaseState::new(TextureFormat::Bgra8Unorm, false);
+
+        setup_material_prepass(&mut graph, &mut state);
+
+        let velocity = state
+            .scene_velocity()
+            .expect("material prepass should publish scene velocity");
+        assert_eq!(velocity.format(), SCENE_VELOCITY_FORMAT);
+        keep_velocity_alive(&mut graph, velocity);
+        let compiled = graph.compile().expect("velocity graph should compile");
+        let clear_pass = compiled
+            .iter()
+            .find(|pass| pass.name == SCENE_MATERIAL_VELOCITY_CLEAR_PASS)
+            .expect("material prepass should clear velocity when no normal prepass wrote it");
+        assert_eq!(
+            clear_pass.color_outputs[0].target,
+            ResourceRef::Texture(velocity.handle())
+        );
+        assert_eq!(
+            clear_pass.color_outputs[0].load,
+            LoadOp::Clear(SCENE_VELOCITY_CLEAR)
+        );
+    }
+
+    #[test]
+    fn scene_material_prepass_preserves_existing_velocity() {
+        let mut graph = RenderGraph::new();
+        let mut state = PhaseState::new(TextureFormat::Bgra8Unorm, false);
+
+        setup_normal_prepass(&mut graph, &mut state);
+        let velocity = state
+            .scene_velocity()
+            .expect("normal prepass should publish scene velocity");
+        setup_material_prepass(&mut graph, &mut state);
+
+        assert_eq!(
+            state
+                .scene_velocity()
+                .expect("material prepass should keep scene velocity")
+                .handle(),
+            velocity.handle()
+        );
+        keep_velocity_alive(&mut graph, velocity);
+        let compiled = graph.compile().expect("velocity graph should compile");
+        assert!(
+            compiled
+                .iter()
+                .all(|pass| pass.name != SCENE_MATERIAL_VELOCITY_CLEAR_PASS),
+            "material prepass should not overwrite motion vectors from normal prepass"
+        );
+    }
+
+    #[test]
+    fn static_mesh_velocity_is_zero() {
+        let instance = NormalPrepassInstance::from_models(IDENTITY_MATRIX, IDENTITY_MATRIX);
+        let current = clip_uv(transform_instance_position(
+            [
+                instance.model_col0,
+                instance.model_col1,
+                instance.model_col2,
+                instance.model_col3,
+            ],
+            [0.0, 0.0, 0.0],
+        ));
+        let previous = clip_uv(transform_instance_position(
+            [
+                instance.prev_model_col0,
+                instance.prev_model_col1,
+                instance.prev_model_col2,
+                instance.prev_model_col3,
+            ],
+            [0.0, 0.0, 0.0],
+        ));
+
+        assert_eq!(
+            [previous[0] - current[0], previous[1] - current[1]],
+            [0.0, 0.0]
+        );
+        assert_eq!(SCENE_VELOCITY_CLEAR, [0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn moving_mesh_velocity_is_nonzero() {
+        let current_model = translated_model(1.0, 0.0, 0.0);
+        let instance = NormalPrepassInstance::from_models(current_model, IDENTITY_MATRIX);
+        let current = clip_uv(transform_instance_position(
+            [
+                instance.model_col0,
+                instance.model_col1,
+                instance.model_col2,
+                instance.model_col3,
+            ],
+            [0.0, 0.0, 0.0],
+        ));
+        let previous = clip_uv(transform_instance_position(
+            [
+                instance.prev_model_col0,
+                instance.prev_model_col1,
+                instance.prev_model_col2,
+                instance.prev_model_col3,
+            ],
+            [0.0, 0.0, 0.0],
+        ));
+        let velocity = [previous[0] - current[0], previous[1] - current[1]];
+
+        assert!(velocity[0].abs() > 0.0 || velocity[1].abs() > 0.0);
+    }
+
+    fn translated_model(x: f32, y: f32, z: f32) -> [f32; 16] {
+        [
+            1.0, 0.0, 0.0, 0.0, //
+            0.0, 1.0, 0.0, 0.0, //
+            0.0, 0.0, 1.0, 0.0, //
+            x, y, z, 1.0,
+        ]
+    }
+
+    fn transform_instance_position(cols: [[f32; 4]; 4], position: [f32; 3]) -> [f32; 4] {
+        let [x, y, z] = position;
+        [
+            cols[0][0] * x + cols[1][0] * y + cols[2][0] * z + cols[3][0],
+            cols[0][1] * x + cols[1][1] * y + cols[2][1] * z + cols[3][1],
+            cols[0][2] * x + cols[1][2] * y + cols[2][2] * z + cols[3][2],
+            cols[0][3] * x + cols[1][3] * y + cols[2][3] * z + cols[3][3],
+        ]
+    }
+
+    fn clip_uv(clip: [f32; 4]) -> [f32; 2] {
+        let inv_w = clip[3].recip();
+        let ndc = [clip[0] * inv_w, clip[1] * inv_w];
+        [ndc[0] * 0.5 + 0.5, ndc[1] * -0.5 + 0.5]
     }
 }

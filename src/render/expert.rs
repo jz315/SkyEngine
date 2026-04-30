@@ -10,16 +10,20 @@ pub use super::composite::CompositePass;
 pub use super::execution::{
     CompletedViewState, FinalizeExecutionContext, FinalizePhaseState, FrameExecutionStats,
     FrameFinalizeNode, FramePayloadStore, FramePipeline, FrameSetupNode, FrameViewNode, PhaseState,
-    PreparedFrame, PreparedView, ResourceSlotMap, SetupExecutionContext, SlotResource,
-    TextureFormat, TextureSlot, ViewExecutionContext, ViewPayloadStore,
+    PreparedFrame, PreparedView, ResourceSlotMap, SceneTexture, SetupExecutionContext,
+    SlotResource, TextureFormat, TextureSlot, ViewExecutionContext, ViewPayloadStore,
 };
 pub use super::extract::{
     ExtractContext, ExtractError, ExtractSchedule, ExtractSprites, Extractor,
 };
 pub use super::gpu::{
-    compose_fullscreen_shader, is_depth_format, FullscreenPass, FullscreenPipeline, GpuScene,
-    GpuTable, GpuTableManager, ModelMatrixTable, RenderTarget, RenderTargetDescriptor, Texture,
-    TextureCreateDesc, TextureError, TextureFileDesc, TextureUploadDesc, DEFAULT_DEPTH_FORMAT,
+    compose_fullscreen_shader, is_depth_format, read_render_target, read_render_target_subresource,
+    read_texture, read_texture_subresource, sampled_texture_entry, sampler_entry,
+    storage_buffer_entry, storage_texture_entry, uniform_buffer_entry, ComputePipelineCache,
+    FullscreenPass, FullscreenPipeline, GpuScene, GpuTable, GpuTableManager, ModelMatrixTable,
+    RenderTarget, RenderTargetDescriptor, Texture, TextureCreateDesc, TextureError,
+    TextureFileDesc, TextureReadback, TextureReadbackError, TextureUploadDesc,
+    DEFAULT_DEPTH_FORMAT,
 };
 pub use super::graph::{
     AliasingStats, BufferBuilder, BufferHandle, ColorOutput, CompiledPass, CopyOp, CopyPassSetup,
@@ -28,7 +32,8 @@ pub use super::graph::{
     RenderGraphProfiler, ResourceRef, TargetSize, TextureBuilder, TextureHandle,
 };
 pub use super::lighting::{
-    color_temperature, DirectionalShadowPhase, GpuLight, Light2D, LightPass, LightTable,
+    color_temperature, DirectionalShadowPhase, GpuLight, GpuLightKind, Light2D, LightPass,
+    LightTable, SceneLightingResources,
 };
 pub use super::mesh::{MeshDraw, MeshPass, MeshPassError};
 pub use super::phase::{
@@ -36,6 +41,7 @@ pub use super::phase::{
     DrawFunctionId, DrawFunctionRegistry, DrawMesh, DrawSprite, OpaquePhase, PhaseItem,
     TransparentPhase,
 };
+pub use super::pipeline::{GraphPass, GraphPassExecuteContext, GraphPassSetupContext, TextureSpec};
 pub use super::postfx::{bloom::Bloom, tonemap::ToneMap, vignette::Vignette, PostFx};
 pub use super::resources::{
     atlas::{AtlasError, AtlasPacker, TextureAtlas, UvRect},
@@ -52,9 +58,12 @@ pub use super::resources::{
         SubMesh, VertexAttribute, VertexLayout, VertexSemantic,
     },
 };
+pub use super::runtime::{HistoryTexture, HistoryTextureRequest, HistoryTextureSize};
 pub use super::sprite::batch::SpriteBatch;
 pub use super::sprite::Sprite;
-pub use super::view::{Camera, Color, Frustum, RenderView, SceneView, ViewUniform, ViewportRect};
+pub use super::view::{
+    Camera, Color, Frustum, RenderView, SceneView, TemporalViewState, ViewUniform, ViewportRect,
+};
 pub use crate::math::{Projection, Quat, Transform};
 
 #[cfg(feature = "live2d")]

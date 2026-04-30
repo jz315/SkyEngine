@@ -5,7 +5,7 @@ use crate::render::resources::{
 };
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub struct MeshDrawData {
     mesh_slot: u32,
     mesh_kind: u32,

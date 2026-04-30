@@ -2,13 +2,17 @@ use crate::asset::AssetServer;
 use crate::diagnostics::Diagnostics;
 use crate::ecs::World;
 use crate::gpu::GpuContext;
-use crate::render::component::{DirectionalLight, PointLight, RenderSettings, Transform};
+use crate::render::component::{
+    DirectionalLight, PointLight, RenderSettings, SpotLight, Transform,
+};
 use crate::render::execution::{PreparedFrame, PreparedView};
 use crate::render::extract::ExtractContext;
 use crate::render::gi::DdgiRuntime;
-use crate::render::lighting::shadow::{append_directional_shadow_views, sync_shadow_views};
+use crate::render::lighting::shadow::{
+    append_directional_shadow_views, sync_shadow_views, ShadowDebugResources,
+};
 use crate::render::lighting::Light2D;
-use crate::render::phase::{OpaquePhase, TransparentPhase};
+use crate::render::phase::{MeshDrawData, OpaquePhase, PhaseItem, TransparentPhase};
 use crate::render::resources::material::SpriteMaterial;
 use crate::render::view::{fallback_scene_view, RenderStats, SceneView};
 use crate::render::{GpuLight, LightTable, ModelMatrixTable};
@@ -67,6 +71,7 @@ impl RenderComposer {
             pipeline_cache.garbage_collect();
         }
         self.runtime.surface_size = gpu.surface_size();
+        self.runtime.history.begin_frame(gpu);
         self.runtime.frame_settings = world
             .get_resource::<RenderSettings>()
             .copied()
@@ -91,7 +96,12 @@ impl RenderComposer {
             feature.collect_views(&mut views);
         }
         let shadow_setups = append_directional_shadow_views(world, &mut views);
-        let views = PreparedFrameBuilder::finalize_views(views, self.runtime.surface_size);
+        let mut views = PreparedFrameBuilder::finalize_views(views, self.runtime.surface_size);
+        self.runtime.temporal.update_views(
+            &mut views,
+            self.runtime.frame_settings.temporal_aa.enabled,
+            self.runtime.frame_settings.temporal_aa.jitter_scale,
+        );
 
         for feature in &mut self.plan.runtime_features {
             feature.prepare(gpu, &views);
@@ -207,6 +217,8 @@ impl RenderComposer {
             gpu,
             &views,
             &opaque_phases,
+            &transparent_phases,
+            &model_matrices,
             &shadow_setups,
             self.shadows
                 .layout
@@ -226,6 +238,19 @@ impl RenderComposer {
                 .expect("phase runtime should initialize a GpuScene")
                 .table::<LightTable>(),
             ddgi_resources,
+            self.runtime.frame_settings.debug_view,
+        );
+        let shadow_debug_resources = self
+            .shadows
+            .views
+            .iter()
+            .find_map(ShadowDebugResources::from_directional_shadow);
+        let shadow_stats = collect_shadow_stats(&self.shadows.views);
+        let shadow_draw_calls = count_shadow_draw_calls(
+            &views,
+            &opaque_phases,
+            &transparent_phases,
+            &self.shadows.views,
         );
 
         let mut pipeline = self.build_runtime_pipeline(gpu);
@@ -242,6 +267,7 @@ impl RenderComposer {
                 .expect("phase runtime should initialize a GpuScene");
             let mut frame = PreparedFrame::new(builder.surface_format, builder.has_surface);
             let _ = frame.insert_payload(&self.runtime.frame_settings);
+            let _ = frame.insert_payload(&self.runtime.history);
             let _ = frame.insert_payload(gpu_scene);
             let _ = frame.insert_payload(&model_matrices);
             let _ = frame.insert_payload(&previous_model_matrices);
@@ -263,6 +289,9 @@ impl RenderComposer {
                     .as_ref()
                     .expect("shadow runtime should initialize a shared shadow-pass layout"),
             );
+            if let Some(shadow_debug_resources) = shadow_debug_resources.as_ref() {
+                let _ = frame.insert_payload(shadow_debug_resources);
+            }
             for feature in &self.plan.runtime_features {
                 feature.insert_frame_payloads(&mut frame);
             }
@@ -274,6 +303,7 @@ impl RenderComposer {
                     view.target_size,
                     view.clear_surface,
                 );
+                prepared_view.set_history_key(view.history_key());
                 let _ = prepared_view.insert_payload(view);
                 let _ = prepared_view.insert_payload(&opaque_phases[view_index]);
                 let _ = prepared_view.insert_payload(&transparent_phases[view_index]);
@@ -297,6 +327,21 @@ impl RenderComposer {
             view_count: views.len(),
             light_count: lights.len(),
             draw_calls: execution.0.draw_calls,
+            shadow_cascade_count: shadow_stats.cascade_count,
+            shadow_caster_count: shadow_stats.caster_count,
+            shadow_caster_count_by_cascade: shadow_stats.caster_count_by_cascade,
+            shadow_draw_calls,
+            shadow_draw_calls_by_cascade: count_shadow_draw_calls_by_cascade(
+                &views,
+                &opaque_phases,
+                &transparent_phases,
+                &self.shadows.views,
+            ),
+            shadow_atlas_width: shadow_stats.atlas_size[0],
+            shadow_atlas_height: shadow_stats.atlas_size[1],
+            shadow_atlas_rect_count: shadow_stats.rect_count,
+            shadow_atlas_used_pixel_ratio: shadow_stats.used_pixel_ratio,
+            shadow_atlas_guard_band_texels: shadow_stats.guard_band_texels,
             passes: execution.0.passes,
             resident_render_assets: render_asset_stats.resident_assets,
             uploaded_render_assets: render_asset_stats.uploaded_assets,
@@ -318,6 +363,140 @@ impl RenderComposer {
                 .map(|(entity, transform)| (entity, transform.to_matrix4().to_cols_array())),
         );
     }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct FrameShadowStats {
+    cascade_count: usize,
+    caster_count: usize,
+    caster_count_by_cascade: [usize; crate::render::component::MAX_DIRECTIONAL_SHADOW_CASCADES],
+    atlas_size: [u32; 2],
+    rect_count: usize,
+    used_pixel_ratio: f32,
+    guard_band_texels: f32,
+}
+
+fn collect_shadow_stats(
+    shadow_views: &[crate::render::lighting::shadow::ShadowViewBinding],
+) -> FrameShadowStats {
+    let mut stats = FrameShadowStats::default();
+    let mut atlas_area = 0u64;
+    let mut used_area = 0f64;
+
+    for shadow_view in shadow_views.iter().filter(|shadow| shadow.enabled()) {
+        let atlas = shadow_view.atlas_stats();
+        stats.cascade_count += atlas.active_cascade_count as usize;
+        stats.caster_count += shadow_view.caster_count();
+        for (index, count) in shadow_view
+            .caster_count_by_cascade()
+            .into_iter()
+            .enumerate()
+        {
+            stats.caster_count_by_cascade[index] += count;
+        }
+        stats.rect_count += atlas.used_rect_count as usize;
+        stats.atlas_size[0] = stats.atlas_size[0].max(atlas.atlas_size[0]);
+        stats.atlas_size[1] = stats.atlas_size[1].max(atlas.atlas_size[1]);
+        stats.guard_band_texels = stats.guard_band_texels.max(atlas.guard_band_texels);
+        let area = atlas.atlas_size[0] as u64 * atlas.atlas_size[1] as u64;
+        atlas_area += area;
+        used_area += atlas.used_pixel_ratio as f64 * area as f64;
+    }
+
+    if atlas_area > 0 {
+        stats.used_pixel_ratio = (used_area / atlas_area as f64) as f32;
+    }
+
+    stats
+}
+
+fn count_shadow_draw_calls(
+    views: &[SceneView],
+    opaque_phases: &[OpaquePhase],
+    transparent_phases: &[TransparentPhase],
+    shadow_views: &[crate::render::lighting::shadow::ShadowViewBinding],
+) -> usize {
+    views
+        .iter()
+        .enumerate()
+        .filter(|(_, view)| view.is_shadow())
+        .filter(|(_, view)| {
+            view.shadow_binding()
+                .and_then(|binding| shadow_views.get(binding))
+                .is_some_and(|shadow| {
+                    shadow.enabled() && shadow.should_update_cascade(view.shadow_cascade())
+                })
+        })
+        .map(|(index, _)| {
+            opaque_phases
+                .get(index)
+                .map_or(0, |phase| count_shadow_batches(phase.items()))
+                + transparent_phases
+                    .get(index)
+                    .map_or(0, |phase| count_shadow_batches(phase.items()))
+        })
+        .sum()
+}
+
+fn count_shadow_draw_calls_by_cascade(
+    views: &[SceneView],
+    opaque_phases: &[OpaquePhase],
+    transparent_phases: &[TransparentPhase],
+    shadow_views: &[crate::render::lighting::shadow::ShadowViewBinding],
+) -> [usize; crate::render::component::MAX_DIRECTIONAL_SHADOW_CASCADES] {
+    let mut draw_calls = [0usize; crate::render::component::MAX_DIRECTIONAL_SHADOW_CASCADES];
+    for (view_index, view) in views
+        .iter()
+        .enumerate()
+        .filter(|(_, view)| view.is_shadow())
+    {
+        let cascade = view.shadow_cascade() as usize;
+        if cascade >= draw_calls.len() {
+            continue;
+        }
+        let Some(shadow_view) = view
+            .shadow_binding()
+            .and_then(|binding| shadow_views.get(binding))
+        else {
+            continue;
+        };
+        if !shadow_view.enabled() || !shadow_view.should_update_cascade(view.shadow_cascade()) {
+            continue;
+        }
+        draw_calls[cascade] += opaque_phases
+            .get(view_index)
+            .map_or(0, |phase| count_shadow_batches(phase.items()))
+            + transparent_phases
+                .get(view_index)
+                .map_or(0, |phase| count_shadow_batches(phase.items()));
+    }
+    draw_calls
+}
+
+fn count_shadow_batches(items: &[PhaseItem]) -> usize {
+    let mut draws = 0usize;
+    let mut cursor = 0usize;
+    while cursor < items.len() {
+        let base = *items[cursor].data::<MeshDrawData>();
+        let base_draw_function = items[cursor].draw_function_id;
+        let base_material = base.material_handle::<crate::render::StandardMaterial>();
+        let mut batch_end = cursor + 1;
+        while batch_end < items.len() {
+            let next = *items[batch_end].data::<MeshDrawData>();
+            let next_draw_function = items[batch_end].draw_function_id;
+            if next.mesh_handle() != base.mesh_handle()
+                || next.sub_mesh_index() != base.sub_mesh_index()
+                || next_draw_function != base_draw_function
+                || next.material_handle::<crate::render::StandardMaterial>() != base_material
+            {
+                break;
+            }
+            batch_end += 1;
+        }
+        draws += 1;
+        cursor = batch_end;
+    }
+    draws
 }
 
 fn collect_gpu_lights(
@@ -345,6 +524,32 @@ fn collect_gpu_lights(
             ],
             color: light.effective_color(),
             falloff: [light.falloff.max(0.001), 0.0, 0.0, 0.0],
+            dir_shadow: [0.0, 0.0, 0.0, -1.0],
+        });
+    });
+    let mut spot_lights = world.query::<(&Transform, &SpotLight)>();
+    spot_lights.for_each_with_entity(world, |entity, (transform, light)| {
+        if !light.visible {
+            return;
+        }
+        let transform = transforms.get(entity).unwrap_or(*transform);
+        let direction = normalized_or(light.direction, [0.0, -1.0, 0.0]);
+        let [inner_cos, outer_cos] = light.resolved_cone_cosines();
+        let light_2d = Light2D::new(transform.x(), transform.y(), light.radius)
+            .intensity(light.intensity)
+            .color(light.color)
+            .temperature(light.temperature)
+            .falloff(light.falloff);
+        lights.push(GpuLight {
+            pos_radius: [
+                light_2d.position[0],
+                light_2d.position[1],
+                transform.z(),
+                light_2d.radius,
+            ],
+            color: light_2d.effective_color(),
+            falloff: [light.falloff.max(0.001), 2.0, inner_cos, outer_cos],
+            dir_shadow: [direction[0], direction[1], direction[2], -1.0],
         });
     });
     let mut directional_lights = world.query::<&DirectionalLight>();
@@ -352,21 +557,7 @@ fn collect_gpu_lights(
         if !light.visible {
             return;
         }
-        let dir = {
-            let len_sq = light.direction[0] * light.direction[0]
-                + light.direction[1] * light.direction[1]
-                + light.direction[2] * light.direction[2];
-            if len_sq <= f32::EPSILON {
-                [0.0, -1.0, 0.0]
-            } else {
-                let inv_len = len_sq.sqrt().recip();
-                [
-                    light.direction[0] * inv_len,
-                    light.direction[1] * inv_len,
-                    light.direction[2] * inv_len,
-                ]
-            }
-        };
+        let dir = normalized_or(light.direction, [0.0, -1.0, 0.0]);
         lights.push(GpuLight {
             pos_radius: [dir[0], dir[1], dir[2], 0.0],
             color: [
@@ -376,9 +567,61 @@ fn collect_gpu_lights(
                 light.color.a,
             ],
             falloff: [0.0, 1.0, 0.0, 0.0],
+            dir_shadow: [0.0, 0.0, 0.0, -1.0],
         });
     });
     lights
+}
+
+fn normalized_or(direction: [f32; 3], fallback: [f32; 3]) -> [f32; 3] {
+    let len_sq =
+        direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2];
+    if len_sq <= f32::EPSILON {
+        fallback
+    } else {
+        let inv_len = len_sq.sqrt().recip();
+        [
+            direction[0] * inv_len,
+            direction[1] * inv_len,
+            direction[2] * inv_len,
+        ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ecs::World;
+    use crate::render::component::{DirectionalLight, PointLight, SpotLight};
+    use crate::render::view::ResolvedSceneTransforms;
+    use crate::render::{Color, GpuLightKind};
+
+    #[test]
+    fn collect_gpu_lights_uploads_spot_cone_records() {
+        let mut world = World::new();
+        world.spawn((
+            Transform::from_xyz(1.0, 2.0, 3.0),
+            PointLight::new(4.0).intensity(0.5),
+        ));
+        world.spawn((
+            Transform::from_xyz(-1.0, 6.0, 2.0),
+            SpotLight::new(9.0)
+                .color(Color::rgb(0.5, 0.75, 1.0))
+                .direction([0.0, -2.0, 0.0])
+                .cone_angles(0.25, 0.5),
+        ));
+        world.spawn((DirectionalLight::new([0.0, -1.0, 0.0]),));
+
+        let lights = collect_gpu_lights(&world, &ResolvedSceneTransforms::default());
+
+        assert_eq!(lights.len(), 3);
+        assert_eq!(lights[0].kind(), GpuLightKind::Point);
+        assert_eq!(lights[1].kind(), GpuLightKind::Spot);
+        assert_eq!(lights[1].pos_radius, [-1.0, 6.0, 2.0, 9.0]);
+        assert_eq!(lights[1].dir_shadow, [0.0, -1.0, 0.0, -1.0]);
+        assert!(lights[1].falloff[2] > lights[1].falloff[3]);
+        assert_eq!(lights[2].kind(), GpuLightKind::Directional);
+    }
 }
 
 const IDENTITY_MODEL_MATRIX: [f32; 16] = [

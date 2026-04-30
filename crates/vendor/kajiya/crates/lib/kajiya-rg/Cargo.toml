@@ -9,11 +9,11 @@ edition = "2021"
 kajiya-backend = { path = "../kajiya-backend" }
 
 anyhow = "1.0"
-arrayvec = "0.5"
+arrayvec = "0.7"
 lazy_static = "1.4"
 log = "0.4"
-parking_lot = "0.11"
-puffin = "0.11.0"
+parking_lot = "0.12"
+puffin = "0.20"
 turbosloth = { git = "https://github.com/h3r2tic/turbosloth.git", rev = "92030af" }
 
 [lints.rust]

@@ -36,6 +36,7 @@ impl<'a> SetupExecutionContext<'a> {
 pub struct ViewExecutionContext<'a> {
     pub(crate) frame: &'a PreparedFrame<'a>,
     pub(crate) view: &'a PreparedView<'a>,
+    pub(crate) view_state: &'a CompletedViewState,
     pub(crate) view_index: usize,
 }
 
@@ -48,6 +49,11 @@ impl<'a> ViewExecutionContext<'a> {
     #[inline]
     pub fn view(&self) -> &PreparedView<'a> {
         self.view
+    }
+
+    #[inline]
+    pub fn view_state(&self) -> &'a CompletedViewState {
+        self.view_state
     }
 
     #[inline]

@@ -1611,8 +1611,21 @@ impl Material for SpriteMaterial {
 pub enum AlphaMode {
     #[default]
     Opaque,
+    Mask,
     Blend,
     Additive,
+}
+
+impl AlphaMode {
+    #[inline]
+    pub const fn is_alpha_test(self) -> bool {
+        matches!(self, Self::Mask)
+    }
+
+    #[inline]
+    pub const fn is_transparent(self) -> bool {
+        matches!(self, Self::Blend | Self::Additive)
+    }
 }
 
 fn textured_uniform_layout(device: &wgpu::Device, label: &'static str) -> wgpu::BindGroupLayout {
@@ -1830,12 +1843,44 @@ pub struct StandardMaterial {
     pub emissive: Color,
     pub emissive_texture: Option<Texture>,
     pub alpha_mode: AlphaMode,
+    pub alpha_cutoff: f32,
+    pub receive_shadows: bool,
 }
 
 impl StandardMaterial {
     #[inline]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[inline]
+    pub fn receive_shadows(mut self, receive_shadows: bool) -> Self {
+        self.receive_shadows = receive_shadows;
+        self
+    }
+
+    #[inline]
+    pub fn alpha_mode(mut self, alpha_mode: AlphaMode) -> Self {
+        self.alpha_mode = alpha_mode;
+        self
+    }
+
+    #[inline]
+    pub fn alpha_cutoff(mut self, alpha_cutoff: f32) -> Self {
+        self.alpha_cutoff = alpha_cutoff;
+        self
+    }
+
+    #[inline]
+    pub fn alpha_mask(mut self, alpha_cutoff: f32) -> Self {
+        self.alpha_mode = AlphaMode::Mask;
+        self.alpha_cutoff = alpha_cutoff;
+        self
+    }
+
+    #[inline]
+    pub(crate) fn casts_alpha_test_shadow(&self) -> bool {
+        self.alpha_mode.is_alpha_test()
     }
 }
 
@@ -1850,6 +1895,8 @@ impl Default for StandardMaterial {
             emissive: Color::BLACK,
             emissive_texture: None,
             alpha_mode: AlphaMode::Opaque,
+            alpha_cutoff: 0.5,
+            receive_shadows: true,
         }
     }
 }
@@ -1863,6 +1910,8 @@ impl std::fmt::Debug for StandardMaterial {
             .field("roughness", &self.roughness)
             .field("emissive", &self.emissive.to_array())
             .field("alpha_mode", &self.alpha_mode)
+            .field("alpha_cutoff", &self.alpha_cutoff)
+            .field("receive_shadows", &self.receive_shadows)
             .finish()
     }
 }
@@ -1895,6 +1944,7 @@ impl Material for StandardMaterial {
             albedo: [f32; 4],
             emissive: [f32; 4],
             params: [f32; 4],
+            shadow: [f32; 4],
         }
 
         let albedo_texture = ctx.texture_or_fallback(self.albedo_texture.as_ref());
@@ -1908,6 +1958,12 @@ impl Material for StandardMaterial {
                 self.roughness,
                 self.normal_texture.is_some() as u32 as f32,
                 self.emissive_texture.is_some() as u32 as f32,
+            ],
+            shadow: [
+                self.receive_shadows as u32 as f32,
+                self.alpha_cutoff,
+                self.alpha_mode.is_alpha_test() as u32 as f32,
+                0.0,
             ],
         };
         let uniform_buffer = ctx
@@ -1947,7 +2003,7 @@ impl Material for StandardMaterial {
 
     fn render_state(&self) -> MaterialRenderState {
         match self.alpha_mode {
-            AlphaMode::Opaque => MaterialRenderState::opaque(),
+            AlphaMode::Opaque | AlphaMode::Mask => MaterialRenderState::opaque(),
             AlphaMode::Blend => MaterialRenderState::transparent(),
             AlphaMode::Additive => MaterialRenderState::additive(),
         }
@@ -2353,6 +2409,16 @@ mod tests {
             None,
         ))
         .expect("Failed to create test GPU device")
+    }
+
+    #[test]
+    fn standard_material_receive_shadows_defaults_to_wicked_style_enabled() {
+        assert!(StandardMaterial::default().receive_shadows);
+        assert!(
+            !StandardMaterial::default()
+                .receive_shadows(false)
+                .receive_shadows
+        );
     }
 
     #[test]
@@ -2820,6 +2886,12 @@ mod tests {
             plain_shader.wgsl_source(),
             include_str!("../shaders/prepass/scene_material_standard_prepass.wgsl")
         );
+        assert!(
+            plain_shader.wgsl_source().contains(
+                "clamp(material.params.y, 0.0, 1.0),\n        clamp(material.params.x, 0.0, 1.0),"
+            ),
+            "standard material prepass should pack material.r = roughness and material.g = metallic"
+        );
 
         let normal_mapped = StandardMaterial {
             normal_texture: Some(fallback),
@@ -2835,6 +2907,12 @@ mod tests {
         assert_eq!(
             normal_mapped_shader.wgsl_source(),
             include_str!("../shaders/prepass/scene_material_standard_normal_mapped_prepass.wgsl")
+        );
+        assert!(
+            normal_mapped_shader.wgsl_source().contains(
+                "clamp(material.params.y, 0.0, 1.0),\n        clamp(material.params.x, 0.0, 1.0),"
+            ),
+            "normal-mapped material prepass should pack material.r = roughness and material.g = metallic"
         );
     }
 }

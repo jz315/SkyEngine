@@ -101,15 +101,18 @@ impl AppState for TutorialUi {
 - `ctx.update_ui()`：计算布局、hover、pressed、clicked，并更新 `UiSlider` / `UiToggle` / `UiScroll`。
 - 读取 `UiEvents` 应放在 `update_ui()` 之后。
 - `ctx.render_ui()` 应放在 `ctx.render()` 之后，让 UI 覆盖在场景上。
-- UI 的默认配置放在 `AppConfig`；只有底层/非 App 用法才需要直接调用 `install_ui(world, config)`。
+- UI 默认会在第一次 `ctx.update_ui()` / `ctx.render_ui()` 时安装；需要自定义配置时使用 `UiPlugin`。
 
-自定义 UI 配置时，在创建 App 时写：
+自定义 UI 配置时，在创建 App 前写：
 
 ```rust
-let config = AppConfig::new("SkyEngine - UI Tutorial", 960, 600)
-    .with_ui_config(sky_engine::ui::UiConfig {
-        load_system_fonts: false,
-    });
+let mut world = World::new();
+sky_engine::ui::UiPlugin::new(sky_engine::ui::UiConfig {
+    load_system_fonts: false,
+})
+.install(&mut world);
+
+let config = AppConfig::new("SkyEngine - UI Tutorial", 960, 600);
 ```
 
 ## 3. 创建 UI 树

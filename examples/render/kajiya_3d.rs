@@ -6,11 +6,12 @@
 
 use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
 use sky_engine::ecs::{EntityId, World};
+use sky_engine::input::{KeyCode, MouseButton};
 use sky_engine::math::{Quat, Vec3};
 use sky_engine::render::{
-    CameraMarker, Color, DirectionalLight, MeshAsset, MeshAssetDescriptor, MeshIndexData,
-    MeshRenderer, MeshVertexLayout, Projection, RenderPipelineAsset, StandardMaterialAsset,
-    Transform,
+    CameraMarker, Color, DirectionalLight, KajiyaRendererSettings, MeshAsset, MeshAssetDescriptor,
+    MeshIndexData, MeshRenderer, MeshVertexLayout, Projection, RenderPipelineAsset,
+    StandardMaterialAsset, Transform,
 };
 
 #[repr(C)]
@@ -24,6 +25,9 @@ struct Vertex {
 #[derive(Default)]
 struct KajiyaDemo {
     cube: Option<EntityId>,
+    camera: Option<EntityId>,
+    camera_yaw: f32,
+    camera_pitch: f32,
     time: f32,
     fps_accum_seconds: f32,
     fps_accum_frames: u32,
@@ -59,11 +63,14 @@ impl AppState for KajiyaDemo {
             MeshRenderer::new(floor_mesh, floor_material),
         ));
 
-        ctx.world.spawn((
-            Transform::from_xyz(0.0, 2.2, 6.0).with_euler_angles(-0.28, 0.0, 0.0),
+        let camera_pitch = -0.28;
+        let camera = ctx.world.spawn((
+            Transform::from_xyz(0.0, 2.2, 6.0).with_euler_angles(camera_pitch, 0.0, 0.0),
             CameraMarker::new(),
             Projection::perspective(60.0f32.to_radians(), 0.1, 100.0),
         ));
+        self.camera = Some(camera);
+        self.camera_pitch = camera_pitch;
 
         ctx.world.spawn((
             Transform::default(),
@@ -82,12 +89,82 @@ impl AppState for KajiyaDemo {
             }
         }
 
+        self.update_camera(ctx);
         ctx.render();
         self.update_frame_stats(ctx);
     }
 }
 
 impl KajiyaDemo {
+    fn update_camera(&mut self, ctx: &mut FrameContext<'_>) {
+        const LOOK_SPEED_KEYS: f32 = 1.6;
+        const LOOK_SPEED_MOUSE: f32 = 0.003;
+        const MOVE_SPEED: f32 = 4.0;
+        const FAST_MULTIPLIER: f32 = 3.0;
+        const PITCH_LIMIT: f32 = 1.45;
+
+        let dt = ctx.dt();
+        if ctx.input.key_held(KeyCode::ArrowLeft) {
+            self.camera_yaw += LOOK_SPEED_KEYS * dt;
+        }
+        if ctx.input.key_held(KeyCode::ArrowRight) {
+            self.camera_yaw -= LOOK_SPEED_KEYS * dt;
+        }
+        if ctx.input.key_held(KeyCode::ArrowUp) {
+            self.camera_pitch += LOOK_SPEED_KEYS * dt;
+        }
+        if ctx.input.key_held(KeyCode::ArrowDown) {
+            self.camera_pitch -= LOOK_SPEED_KEYS * dt;
+        }
+        if ctx.input.mouse_button_held(MouseButton::Right) && ctx.input.mouse_in_window() {
+            let [dx, dy] = ctx.input.mouse_delta();
+            self.camera_yaw -= dx * LOOK_SPEED_MOUSE;
+            self.camera_pitch -= dy * LOOK_SPEED_MOUSE;
+        }
+        self.camera_pitch = self.camera_pitch.clamp(-PITCH_LIMIT, PITCH_LIMIT);
+
+        let rotation = Quat::from_euler_angles(self.camera_pitch, self.camera_yaw, 0.0);
+        let forward = rotation.rotate_vec3(Vec3::new(0.0, 0.0, -1.0));
+        let right = rotation.rotate_vec3(Vec3::new(1.0, 0.0, 0.0));
+        let up = Vec3::new(0.0, 1.0, 0.0);
+
+        let mut movement = Vec3::ZERO;
+        if ctx.input.key_held(KeyCode::KeyW) {
+            movement += forward;
+        }
+        if ctx.input.key_held(KeyCode::KeyS) {
+            movement -= forward;
+        }
+        if ctx.input.key_held(KeyCode::KeyD) {
+            movement += right;
+        }
+        if ctx.input.key_held(KeyCode::KeyA) {
+            movement -= right;
+        }
+        if ctx.input.key_held(KeyCode::KeyE) || ctx.input.key_held(KeyCode::Space) {
+            movement += up;
+        }
+        if ctx.input.key_held(KeyCode::KeyQ) {
+            movement -= up;
+        }
+
+        let speed =
+            if ctx.input.key_held(KeyCode::ShiftLeft) || ctx.input.key_held(KeyCode::ShiftRight) {
+                MOVE_SPEED * FAST_MULTIPLIER
+            } else {
+                MOVE_SPEED
+            };
+
+        if let Some(camera) = self.camera {
+            if let Some(transform) = ctx.world.get_mut::<Transform>(camera) {
+                transform.rotation = rotation;
+                if movement.length_squared() > f32::EPSILON {
+                    transform.position += movement.normalized() * speed * dt;
+                }
+            }
+        }
+    }
+
     fn update_frame_stats(&mut self, ctx: &mut FrameContext<'_>) {
         self.fps_accum_seconds += ctx.dt().max(0.0);
         self.fps_accum_frames += 1;
@@ -99,7 +176,7 @@ impl KajiyaDemo {
         let frame_ms = 1000.0 / fps.max(0.0001);
         let stats = ctx.render_stats();
         ctx.set_title(&format!(
-            "SkyEngine Kajiya 3D | {:.0} FPS ({:.2} ms) | views {} meshes {} instances {} uploaded {}",
+            "SkyEngine Kajiya 3D | {:.0} FPS ({:.2} ms) | views {} meshes {} instances {} uploaded {} | WASD/QE + RMB",
             fps,
             frame_ms,
             stats.view_count,
@@ -118,7 +195,10 @@ fn main() {
         AppConfig::new("SkyEngine Kajiya 3D", 1280, 720),
         World::new(),
     )
-    .with_render_pipeline(RenderPipelineAsset::kajiya_3d())
+    .with_render_pipeline(
+        RenderPipelineAsset::kajiya_3d()
+            .with_kajiya_settings(KajiyaRendererSettings::viewer_720p()),
+    )
     .run(KajiyaDemo::default());
 }
 
@@ -234,7 +314,7 @@ fn floor_mesh() -> MeshAsset {
             MeshVertexLayout::position_normal_uv(),
             "kajiya_floor",
         )
-        .with_indices(MeshIndexData::u32([0, 1, 2, 0, 2, 3])),
+        .with_indices(MeshIndexData::u32([0, 2, 1, 0, 3, 2])),
     )
 }
 

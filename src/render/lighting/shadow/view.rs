@@ -1,29 +1,68 @@
+use std::hash::{Hash, Hasher};
+
 use rustc_hash::FxHashMap;
 
 use crate::ecs::World;
 use crate::gpu::GpuContext;
 use crate::math::{Mat4, Vec3, Vec4};
+use crate::render::component::{RenderDebugView, MAX_DIRECTIONAL_SHADOW_CASCADES};
 use crate::render::gi::DdgiSceneResources;
 use crate::render::gpu::{RenderTarget, RenderTargetDescriptor};
-use crate::render::phase::OpaquePhase;
+use crate::render::phase::{MeshDrawData, OpaquePhase, TransparentPhase};
 use crate::render::view::{Projection, SceneView, SceneViewKind};
 use crate::render::LightTable;
-use crate::render::{DirectionalLight, Transform};
+use crate::render::{DirectionalLight, ShadowSamplingMode, ShadowUpdatePolicy, Transform};
 
 use super::{
-    create_shadow_pass_bind_group, create_shadow_scene_bind_group, ShadowPassBindingLayout,
-    ShadowSceneBindingLayout, ShadowUniform,
+    create_shadow_pass_bind_group, create_shadow_scene_bind_group, ShadowAtlasLayout,
+    ShadowAtlasStats, ShadowPassBindingLayout, ShadowPassUniform, ShadowSceneBindingLayout,
+    ShadowUniform, DEFAULT_SHADOW_ATLAS_GUARD_BAND_TEXELS, TRANSPARENT_SHADOW_FORMAT,
 };
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ShadowRasterBias {
+    pub(crate) constant: i32,
+    pub(crate) slope_scale: f32,
+    pub(crate) clamp: f32,
+}
+
+impl ShadowRasterBias {
+    #[inline]
+    pub(crate) const fn new(constant: i32, slope_scale: f32, clamp: f32) -> Self {
+        Self {
+            constant,
+            slope_scale,
+            clamp,
+        }
+    }
+}
+
+impl Default for ShadowRasterBias {
+    fn default() -> Self {
+        Self::new(2, 2.0, 0.0)
+    }
+}
 
 pub(crate) struct ShadowViewBinding {
     enabled: bool,
     target: RenderTarget,
+    transparent_target: RenderTarget,
     uniform_buffer: wgpu::Buffer,
     scene_bind_group: wgpu::BindGroup,
-    shadow_pass_bind_group: wgpu::BindGroup,
+    shadow_pass_uniform_buffers: Vec<wgpu::Buffer>,
+    shadow_pass_bind_groups: Vec<wgpu::BindGroup>,
     bias: f32,
+    radius: f32,
+    raster_bias: ShadowRasterBias,
+    normal_bias: f32,
+    cascade_count: u32,
+    caster_count_by_cascade: [usize; MAX_DIRECTIONAL_SHADOW_CASCADES],
+    atlas_layout: ShadowAtlasLayout,
     light_direction: [f32; 3],
     caster_count: usize,
+    coverage_debug: bool,
+    cascade_update_mask: u32,
+    previous_cascade_signatures: [u64; MAX_DIRECTIONAL_SHADOW_CASCADES],
 }
 
 impl ShadowViewBinding {
@@ -39,12 +78,19 @@ impl ShadowViewBinding {
             gpu,
             RenderTargetDescriptor::new_depth(1, 1).label("directional_shadow_map"),
         );
+        let transparent_target = RenderTarget::from_descriptor(
+            gpu,
+            RenderTargetDescriptor::new(1, 1, TRANSPARENT_SHADOW_FORMAT)
+                .label("directional_transparent_shadow_map"),
+        );
         let uniform_buffer = gpu.device().create_buffer(&wgpu::BufferDescriptor {
             label: Some("directional_shadow_uniform"),
             size: std::mem::size_of::<ShadowUniform>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let (shadow_pass_uniform_buffers, shadow_pass_bind_groups) =
+            create_shadow_pass_bindings(gpu.device(), pass_layout.bind_group_layout());
         let scene_bind_group = create_shadow_scene_bind_group(
             gpu.device(),
             scene_layout.bind_group_layout(),
@@ -54,21 +100,29 @@ impl ShadowViewBinding {
             target.view(),
             sampler,
             ddgi,
-        );
-        let shadow_pass_bind_group = create_shadow_pass_bind_group(
-            gpu.device(),
-            pass_layout.bind_group_layout(),
-            &uniform_buffer,
+            transparent_target.view(),
+            gpu.sampler_linear(),
         );
         let instance = Self {
             enabled: false,
             target,
+            transparent_target,
             uniform_buffer,
             scene_bind_group,
-            shadow_pass_bind_group,
+            shadow_pass_uniform_buffers,
+            shadow_pass_bind_groups,
             bias: 0.0,
+            radius: 0.0,
+            raster_bias: ShadowRasterBias::default(),
+            normal_bias: 0.0,
+            cascade_count: 0,
+            caster_count_by_cascade: [0; MAX_DIRECTIONAL_SHADOW_CASCADES],
+            atlas_layout: ShadowAtlasLayout::default(),
             light_direction: [0.0, -1.0, 0.0],
             caster_count: 0,
+            coverage_debug: false,
+            cascade_update_mask: 0,
+            previous_cascade_signatures: [0; MAX_DIRECTIONAL_SHADOW_CASCADES],
         };
         instance.write_disabled(gpu.queue());
         instance
@@ -76,8 +130,12 @@ impl ShadowViewBinding {
 
     fn write_disabled(&self, queue: &wgpu::Queue) {
         let uniform = ShadowUniform {
-            light_view_proj: IDENTITY_MATRIX,
+            light_view_proj: [IDENTITY_MATRIX; MAX_DIRECTIONAL_SHADOW_CASCADES],
             light_direction: [0.0, -1.0, 0.0, 0.0],
+            cascade_splits: [0.0; MAX_DIRECTIONAL_SHADOW_CASCADES],
+            cascade_params: [[0.0; 4]; MAX_DIRECTIONAL_SHADOW_CASCADES],
+            shadow_atlas_mul_add: [0.0; 4],
+            shadow_atlas_resolution_rcp: [0.0; 4],
             shadow_params: [0.0, 0.0, 0.0, 0.0],
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
@@ -94,7 +152,16 @@ impl ShadowViewBinding {
         self.enabled = false;
         self.caster_count = 0;
         self.bias = 0.0;
+        self.radius = 0.0;
+        self.raster_bias = ShadowRasterBias::default();
+        self.normal_bias = 0.0;
+        self.cascade_count = 0;
+        self.caster_count_by_cascade = [0; MAX_DIRECTIONAL_SHADOW_CASCADES];
+        self.atlas_layout = ShadowAtlasLayout::default();
         self.light_direction = [0.0, -1.0, 0.0];
+        self.coverage_debug = false;
+        self.cascade_update_mask = 0;
+        self.previous_cascade_signatures = [0; MAX_DIRECTIONAL_SHADOW_CASCADES];
         self.scene_bind_group = create_shadow_scene_bind_group(
             gpu.device(),
             scene_layout.bind_group_layout(),
@@ -104,6 +171,8 @@ impl ShadowViewBinding {
             self.target.view(),
             sampler,
             ddgi,
+            self.transparent_target.view(),
+            gpu.sampler_linear(),
         );
         self.write_disabled(gpu.queue());
     }
@@ -118,10 +187,28 @@ impl ShadowViewBinding {
         ddgi: DdgiSceneResources<'_>,
         update: ShadowViewUpdate,
     ) {
+        let cascade_count = update
+            .cascade_count
+            .clamp(1, MAX_DIRECTIONAL_SHADOW_CASCADES as u32);
+        let atlas_layout = ShadowAtlasLayout::directional_packed(
+            update.resolution,
+            cascade_count,
+            DEFAULT_SHADOW_ATLAS_GUARD_BAND_TEXELS,
+        );
+        let atlas_size = atlas_layout.atlas_size();
+        let force_update = !self.enabled
+            || self.cascade_count != cascade_count
+            || self.target.width() != atlas_size[0]
+            || self.target.height() != atlas_size[1];
         self.target.resize_with(
             gpu,
-            RenderTargetDescriptor::new_depth(update.resolution, update.resolution)
-                .label("directional_shadow_map"),
+            RenderTargetDescriptor::new_depth(atlas_size[0], atlas_size[1])
+                .label("directional_shadow_atlas"),
+        );
+        self.transparent_target.resize_with(
+            gpu,
+            RenderTargetDescriptor::new(atlas_size[0], atlas_size[1], TRANSPARENT_SHADOW_FORMAT)
+                .label("directional_transparent_shadow_atlas"),
         );
         self.scene_bind_group = create_shadow_scene_bind_group(
             gpu.device(),
@@ -132,25 +219,70 @@ impl ShadowViewBinding {
             self.target.view(),
             sampler,
             ddgi,
+            self.transparent_target.view(),
+            gpu.sampler_linear(),
         );
-        self.shadow_pass_bind_group = create_shadow_pass_bind_group(
-            gpu.device(),
-            pass_layout.bind_group_layout(),
-            &self.uniform_buffer,
-        );
+        if self.shadow_pass_bind_groups.len() != MAX_DIRECTIONAL_SHADOW_CASCADES {
+            let (buffers, bind_groups) =
+                create_shadow_pass_bindings(gpu.device(), pass_layout.bind_group_layout());
+            self.shadow_pass_uniform_buffers = buffers;
+            self.shadow_pass_bind_groups = bind_groups;
+        }
         self.enabled = true;
         self.bias = update.bias;
+        self.radius = update.radius;
+        self.raster_bias = update.raster_bias;
+        self.normal_bias = update.normal_bias;
+        self.cascade_count = cascade_count;
+        self.caster_count_by_cascade = update.caster_count_by_cascade;
+        self.atlas_layout = atlas_layout;
         self.light_direction = update.light_direction;
         self.caster_count = update.caster_count;
+        self.coverage_debug = update.coverage_debug;
+        self.cascade_update_mask = cascade_update_mask(
+            update.update_policy,
+            force_update,
+            cascade_count,
+            &self.previous_cascade_signatures,
+            &update.cascade_signatures,
+        );
+        self.previous_cascade_signatures = update.cascade_signatures;
+        let mut light_view_proj = [IDENTITY_MATRIX; MAX_DIRECTIONAL_SHADOW_CASCADES];
+        let mut cascade_params = [[0.0; 4]; MAX_DIRECTIONAL_SHADOW_CASCADES];
+        for index in 0..cascade_count as usize {
+            light_view_proj[index] = update.light_view_proj[index];
+            let texel_size = (update.resolution as f32).recip();
+            cascade_params[index] = [update.bias, texel_size, update.radius, 1.0];
+            let pass_uniform = ShadowPassUniform {
+                light_view_proj: update.light_view_proj[index],
+            };
+            gpu.queue().write_buffer(
+                &self.shadow_pass_uniform_buffers[index],
+                0,
+                bytemuck::bytes_of(&pass_uniform),
+            );
+        }
         let uniform = ShadowUniform {
-            light_view_proj: update.light_view_proj,
+            light_view_proj,
             light_direction: [
                 update.light_direction[0],
                 update.light_direction[1],
                 update.light_direction[2],
-                0.0,
+                update.normal_bias,
             ],
-            shadow_params: [update.bias, (update.resolution as f32).recip(), 1.25, 1.0],
+            cascade_splits: update.cascade_splits,
+            cascade_params,
+            shadow_atlas_mul_add: atlas_layout.shadow_atlas_mul_add(),
+            shadow_atlas_resolution_rcp: shadow_atlas_resolution_rcp_with_sampling_mode(
+                atlas_layout,
+                update.sampling_mode,
+            ),
+            shadow_params: [
+                cascade_count as f32,
+                update.cascade_blend,
+                if update.coverage_debug { 1.0 } else { 0.0 },
+                1.0,
+            ],
         };
         gpu.queue()
             .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
@@ -167,8 +299,9 @@ impl ShadowViewBinding {
     }
 
     #[inline]
-    pub(crate) fn shadow_pass_bind_group(&self) -> &wgpu::BindGroup {
-        &self.shadow_pass_bind_group
+    pub(crate) fn shadow_pass_bind_group(&self, cascade_index: u32) -> &wgpu::BindGroup {
+        let index = (cascade_index as usize).min(self.shadow_pass_bind_groups.len() - 1);
+        &self.shadow_pass_bind_groups[index]
     }
 
     #[inline]
@@ -177,27 +310,125 @@ impl ShadowViewBinding {
     }
 
     #[inline]
+    pub(crate) fn transparent_target(&self) -> &RenderTarget {
+        &self.transparent_target
+    }
+
+    #[inline]
+    pub(crate) fn cascade_count(&self) -> u32 {
+        self.cascade_count
+    }
+
+    #[inline]
+    pub(crate) fn atlas_layout(&self) -> ShadowAtlasLayout {
+        self.atlas_layout
+    }
+
+    #[inline]
+    pub(crate) fn atlas_stats(&self) -> ShadowAtlasStats {
+        if self.enabled {
+            self.atlas_layout.stats()
+        } else {
+            ShadowAtlasStats::default()
+        }
+    }
+
+    #[inline]
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn caster_count(&self) -> usize {
         self.caster_count
     }
+
+    #[inline]
+    pub(crate) fn caster_count_by_cascade(&self) -> [usize; MAX_DIRECTIONAL_SHADOW_CASCADES] {
+        self.caster_count_by_cascade
+    }
+
+    #[inline]
+    pub(crate) fn should_update_cascade(&self, cascade_index: u32) -> bool {
+        let bit = 1u32.checked_shl(cascade_index).unwrap_or(0);
+        self.enabled && bit != 0 && (self.cascade_update_mask & bit) != 0
+    }
+
+    #[inline]
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn radius(&self) -> f32 {
+        self.radius
+    }
+
+    #[inline]
+    pub(crate) fn raster_bias(&self) -> ShadowRasterBias {
+        self.raster_bias
+    }
+
+    #[inline]
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn normal_bias(&self) -> f32 {
+        self.normal_bias
+    }
+
+    #[inline]
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn coverage_debug(&self) -> bool {
+        self.coverage_debug
+    }
+}
+
+fn create_shadow_pass_bindings(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+) -> (Vec<wgpu::Buffer>, Vec<wgpu::BindGroup>) {
+    let mut buffers = Vec::with_capacity(MAX_DIRECTIONAL_SHADOW_CASCADES);
+    let mut bind_groups = Vec::with_capacity(MAX_DIRECTIONAL_SHADOW_CASCADES);
+    for _cascade in 0..MAX_DIRECTIONAL_SHADOW_CASCADES {
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("directional_shadow_pass_uniform"),
+            size: std::mem::size_of::<ShadowPassUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_group = create_shadow_pass_bind_group(device, layout, &buffer);
+        buffers.push(buffer);
+        bind_groups.push(bind_group);
+    }
+    (buffers, bind_groups)
 }
 
 #[derive(Clone, Copy)]
 struct ShadowViewUpdate {
-    light_view_proj: [f32; 16],
+    light_view_proj: [[f32; 16]; MAX_DIRECTIONAL_SHADOW_CASCADES],
     light_direction: [f32; 3],
     resolution: u32,
     bias: f32,
+    radius: f32,
+    raster_bias: ShadowRasterBias,
+    normal_bias: f32,
+    cascade_count: u32,
+    cascade_splits: [f32; MAX_DIRECTIONAL_SHADOW_CASCADES],
+    cascade_blend: f32,
     caster_count: usize,
+    caster_count_by_cascade: [usize; MAX_DIRECTIONAL_SHADOW_CASCADES],
+    cascade_signatures: [u64; MAX_DIRECTIONAL_SHADOW_CASCADES],
+    coverage_debug: bool,
+    sampling_mode: ShadowSamplingMode,
+    update_policy: ShadowUpdatePolicy,
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct DirectionalShadowSetup {
     pub(crate) binding_index: usize,
+    cascade_index: u32,
     light_direction: [f32; 3],
     resolution: u32,
     bias: f32,
+    radius: f32,
+    raster_bias: ShadowRasterBias,
+    normal_bias: f32,
+    cascade_count: u32,
+    cascade_splits: [f32; MAX_DIRECTIONAL_SHADOW_CASCADES],
+    cascade_blend: f32,
+    sampling_mode: ShadowSamplingMode,
+    update_policy: ShadowUpdatePolicy,
 }
 
 pub(crate) fn append_directional_shadow_views(
@@ -225,11 +456,16 @@ pub(crate) fn append_directional_shadow_views(
         let Some(light) = select_shadow_light(&lights, view.layer_mask) else {
             continue;
         };
-        let Some((shadow_view, setup)) = build_shadow_view(&view, light, binding_index) else {
-            continue;
-        };
-        shadow_views.push(shadow_view);
-        setups.push(setup);
+        let cascade_count = resolved_cascade_count(light);
+        for cascade_index in 0..cascade_count {
+            let Some((shadow_view, setup)) =
+                build_shadow_view(&view, light, binding_index, cascade_index)
+            else {
+                continue;
+            };
+            shadow_views.push(shadow_view);
+            setups.push(setup);
+        }
     }
     views.extend(shadow_views);
     setups
@@ -240,12 +476,15 @@ pub(crate) fn sync_shadow_views(
     gpu: &GpuContext,
     views: &[SceneView],
     opaque_phases: &[OpaquePhase],
+    transparent_phases: &[TransparentPhase],
+    model_matrices: &[[f32; 16]],
     shadow_setups: &[DirectionalShadowSetup],
     scene_layout: &ShadowSceneBindingLayout,
     pass_layout: &ShadowPassBindingLayout,
     sampler: &wgpu::Sampler,
     light_table: &LightTable,
     ddgi: DdgiSceneResources<'_>,
+    debug_view: RenderDebugView,
 ) {
     let binding_count = views
         .iter()
@@ -270,14 +509,18 @@ pub(crate) fn sync_shadow_views(
     for (view_index, view) in views.iter().enumerate() {
         if view.kind == SceneViewKind::DirectionalShadow {
             if let Some(binding_index) = view.shadow_binding() {
-                shadow_view_by_binding.insert(binding_index, (view_index, *view));
+                shadow_view_by_binding
+                    .insert((binding_index, view.shadow_cascade()), (view_index, *view));
             }
         }
     }
 
-    let mut setup_by_binding = FxHashMap::default();
+    let mut setup_by_binding: FxHashMap<usize, DirectionalShadowSetup> = FxHashMap::default();
     for setup in shadow_setups {
-        setup_by_binding.insert(setup.binding_index, *setup);
+        let _cascade_index = setup.cascade_index;
+        setup_by_binding
+            .entry(setup.binding_index)
+            .or_insert(*setup);
     }
 
     for (binding_index, shadow_view) in shadow_views.iter_mut().enumerate() {
@@ -285,22 +528,65 @@ pub(crate) fn sync_shadow_views(
             shadow_view.disable(gpu, scene_layout, sampler, light_table, ddgi);
             continue;
         };
-        let Some((view_index, scene_view)) = shadow_view_by_binding.get(&binding_index).copied()
-        else {
+        let mut light_view_proj = [IDENTITY_MATRIX; MAX_DIRECTIONAL_SHADOW_CASCADES];
+        let mut caster_count_by_cascade = [0usize; MAX_DIRECTIONAL_SHADOW_CASCADES];
+        let mut cascade_signatures = [0u64; MAX_DIRECTIONAL_SHADOW_CASCADES];
+        let mut caster_count = 0usize;
+        let mut missing_cascade = false;
+        for cascade_index in 0..setup.cascade_count {
+            let Some((view_index, scene_view)) = shadow_view_by_binding
+                .get(&(binding_index, cascade_index))
+                .copied()
+            else {
+                missing_cascade = true;
+                break;
+            };
+            light_view_proj[cascade_index as usize] = scene_view.view_uniform.view_proj;
+            let Some(opaque_phase) = opaque_phases.get(view_index) else {
+                missing_cascade = true;
+                break;
+            };
+            let Some(transparent_phase) = transparent_phases.get(view_index) else {
+                missing_cascade = true;
+                break;
+            };
+            let cascade_slot = cascade_index as usize;
+            let cascade_caster_count = opaque_phase.len() + transparent_phase.len();
+            caster_count_by_cascade[cascade_slot] = cascade_caster_count;
+            cascade_signatures[cascade_slot] = shadow_cascade_signature(
+                &setup,
+                scene_view,
+                opaque_phase,
+                transparent_phase,
+                model_matrices,
+            );
+            caster_count += cascade_caster_count;
+        }
+        if missing_cascade {
             shadow_view.disable(gpu, scene_layout, sampler, light_table, ddgi);
             continue;
-        };
-        let caster_count = opaque_phases.get(view_index).map_or(0, OpaquePhase::len);
+        }
         if caster_count == 0 {
             shadow_view.disable(gpu, scene_layout, sampler, light_table, ddgi);
             continue;
         }
         let update = ShadowViewUpdate {
-            light_view_proj: scene_view.view_uniform.view_proj,
+            light_view_proj,
             light_direction: setup.light_direction,
             resolution: setup.resolution,
             bias: setup.bias,
+            radius: setup.radius,
+            raster_bias: setup.raster_bias,
+            normal_bias: setup.normal_bias,
+            cascade_count: setup.cascade_count,
+            cascade_splits: setup.cascade_splits,
+            cascade_blend: setup.cascade_blend,
             caster_count,
+            caster_count_by_cascade,
+            cascade_signatures,
+            coverage_debug: matches!(debug_view, RenderDebugView::DirectionalShadowCoverage),
+            sampling_mode: setup.sampling_mode,
+            update_policy: setup.update_policy,
         };
         shadow_view.update(
             gpu,
@@ -326,58 +612,87 @@ fn build_shadow_view(
     view: &SceneView,
     light: DirectionalLight,
     binding_index: usize,
+    cascade_index: u32,
 ) -> Option<(SceneView, DirectionalShadowSetup)> {
     let light_direction = Vec3::from_array(light.direction)
         .try_normalized()?
         .to_array();
-    let corners = view_frustum_corners_world(view)?;
-    let center = average_points(&corners);
-    let light_view = light_view_matrix(center, light_direction);
+    let cascade_count = resolved_cascade_count(light);
+    let cascade_splits = resolved_cascade_splits(light, view, cascade_count);
+    if cascade_index >= cascade_count {
+        return None;
+    }
+    let full_corners = view_frustum_corners_world(view)?;
+    let corners =
+        cascade_frustum_corners_world(&full_corners, view, &cascade_splits, cascade_index);
+    let light_view = light_view_matrix(light_direction);
+    let light_view_matrix = Mat4::from_cols_array(light_view);
 
-    let mut min_x = f32::INFINITY;
-    let mut max_x = f32::NEG_INFINITY;
-    let mut min_y = f32::INFINITY;
-    let mut max_y = f32::NEG_INFINITY;
-    let mut min_depth = f32::INFINITY;
-    let mut max_depth = f32::NEG_INFINITY;
-
-    for corner in &corners {
-        let light_space = Mat4::from_cols_array(light_view)
+    // Ported from WickedEngine's MIT-licensed CreateDirLightShadowCams():
+    // transform the camera frustum into light space, fit a bounding sphere,
+    // and snap that sphere-aligned box to the shadow texel grid.
+    let mut center = [0.0; 3];
+    let mut light_space_corners = [[0.0; 3]; 8];
+    for (index, corner) in corners.iter().enumerate() {
+        let light_space = light_view_matrix
             .transform_point3(Vec3::from_array(*corner))
             .to_array();
-        min_x = min_x.min(light_space[0]);
-        max_x = max_x.max(light_space[0]);
-        min_y = min_y.min(light_space[1]);
-        max_y = max_y.max(light_space[1]);
-        let depth = -light_space[2];
-        min_depth = min_depth.min(depth);
-        max_depth = max_depth.max(depth);
+        light_space_corners[index] = light_space;
+        center[0] += light_space[0];
+        center[1] += light_space[1];
+        center[2] += light_space[2];
     }
+    let center_scale = (light_space_corners.len() as f32).recip();
+    center[0] *= center_scale;
+    center[1] *= center_scale;
+    center[2] *= center_scale;
 
-    if !min_x.is_finite()
-        || !max_x.is_finite()
-        || !min_y.is_finite()
-        || !max_y.is_finite()
-        || !min_depth.is_finite()
-        || !max_depth.is_finite()
-    {
+    let mut radius = 0.0f32;
+    for corner in &light_space_corners {
+        let delta = [
+            corner[0] - center[0],
+            corner[1] - center[1],
+            corner[2] - center[2],
+        ];
+        radius =
+            radius.max((delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]).sqrt());
+    }
+    if !radius.is_finite() || radius <= 0.0 {
         return None;
     }
 
-    let padding_xy = 0.5;
-    let padding_depth = 2.0;
-    min_x -= padding_xy;
-    max_x += padding_xy;
-    min_y -= padding_xy;
-    max_y += padding_xy;
-    min_depth = (min_depth - padding_depth).max(0.0);
-    max_depth += padding_depth;
+    let mut min_x = center[0] - radius;
+    let mut max_x = center[0] + radius;
+    let mut min_y = center[1] - radius;
+    let mut max_y = center[1] + radius;
+    let min_z = center[2] - radius;
 
-    let projection = Mat4::orthographic_rh(min_x, max_x, min_y, max_y, min_depth, max_depth);
-    let inverse_view = Mat4::from_cols_array(light_view).inverse().to_cols_array();
+    let resolution = light.shadow_resolution_per_cascade.max(1);
+    let texel_size_x = ((max_x - min_x) / resolution as f32).max(f32::EPSILON);
+    let texel_size_y = ((max_y - min_y) / resolution as f32).max(f32::EPSILON);
+    min_x = (min_x / texel_size_x).floor() * texel_size_x;
+    max_x = (max_x / texel_size_x).floor() * texel_size_x;
+    min_y = (min_y / texel_size_y).floor() * texel_size_y;
+    max_y = (max_y / texel_size_y).floor() * texel_size_y;
+    center[0] = (min_x + max_x) * 0.5;
+    center[1] = (min_y + max_y) * 0.5;
+
+    // Wicked expands Z by 4x for the actual projection: tight enough for
+    // precision, with enough room for cascade blending and far casters.
+    let depth_extent = (center[2] - min_z).abs() * 4.0;
+    let min_z = center[2] - depth_extent;
+    let max_z = center[2] + depth_extent;
+
+    let near = -max_z;
+    let far = -min_z;
+    if !near.is_finite() || !far.is_finite() || (far - near).abs() <= 1e-5 {
+        return None;
+    }
+
+    let projection = Mat4::orthographic_rh(min_x, max_x, min_y, max_y, near, far);
+    let inverse_view = light_view_matrix.inverse().to_cols_array();
     let camera_position = [inverse_view[12], inverse_view[13], inverse_view[14]];
-    let view_proj = (projection * Mat4::from_cols_array(light_view)).to_cols_array();
-    let resolution = light.shadow_map_size.max(1);
+    let view_proj = (projection * light_view_matrix).to_cols_array();
     let view_uniform = crate::render::view::ViewUniform {
         view_proj,
         camera: [
@@ -401,7 +716,7 @@ fn build_shadow_view(
             camera_position[2],
             1.0,
         ],
-        near_far_time_delta: [min_depth, max_depth, 0.0, 0.0],
+        near_far_time_delta: [near, far, 0.0, 0.0],
     };
     let shadow_view = SceneView::from_parts(
         view.order,
@@ -415,17 +730,198 @@ fn build_shadow_view(
         Projection::orthographic_fixed((max_x - min_x).max(1e-3), (max_y - min_y).max(1e-3)),
         view_uniform,
         false,
-    );
+    )
+    .with_shadow_binding_and_cascade(binding_index, cascade_index);
 
     Some((
         shadow_view,
         DirectionalShadowSetup {
             binding_index,
+            cascade_index,
             light_direction,
             resolution,
             bias: light.shadow_bias.max(0.0),
+            radius: light.shadow_filter_radius.max(0.0),
+            raster_bias: ShadowRasterBias::new(
+                light.shadow_depth_bias,
+                light.shadow_slope_bias.max(0.0),
+                0.0,
+            ),
+            normal_bias: light.shadow_normal_bias.max(0.0),
+            cascade_count,
+            cascade_splits,
+            cascade_blend: light.cascade_blend.max(0.0),
+            sampling_mode: light.shadow_sampling_mode,
+            update_policy: light.shadow_update_policy,
         },
     ))
+}
+
+fn shadow_atlas_resolution_rcp_with_sampling_mode(
+    atlas_layout: ShadowAtlasLayout,
+    sampling_mode: ShadowSamplingMode,
+) -> [f32; 4] {
+    let mut params = atlas_layout.shadow_atlas_resolution_rcp();
+    params[3] = sampling_mode.shader_code();
+    params
+}
+
+fn cascade_update_mask(
+    policy: ShadowUpdatePolicy,
+    force_update: bool,
+    cascade_count: u32,
+    previous_signatures: &[u64; MAX_DIRECTIONAL_SHADOW_CASCADES],
+    next_signatures: &[u64; MAX_DIRECTIONAL_SHADOW_CASCADES],
+) -> u32 {
+    let active_mask = if cascade_count >= MAX_DIRECTIONAL_SHADOW_CASCADES as u32 {
+        (1u32 << MAX_DIRECTIONAL_SHADOW_CASCADES) - 1
+    } else {
+        (1u32 << cascade_count.max(1)) - 1
+    };
+    if force_update || matches!(policy, ShadowUpdatePolicy::EveryFrame) {
+        return active_mask;
+    }
+
+    let mut mask = 0u32;
+    for cascade in 0..cascade_count.min(MAX_DIRECTIONAL_SHADOW_CASCADES as u32) {
+        let index = cascade as usize;
+        if previous_signatures[index] != next_signatures[index] {
+            mask |= 1u32 << cascade;
+        }
+    }
+    mask
+}
+
+fn shadow_cascade_signature(
+    setup: &DirectionalShadowSetup,
+    scene_view: SceneView,
+    opaque_phase: &OpaquePhase,
+    transparent_phase: &TransparentPhase,
+    model_matrices: &[[f32; 16]],
+) -> u64 {
+    let mut hasher = rustc_hash::FxHasher::default();
+    setup.binding_index.hash(&mut hasher);
+    setup.cascade_index.hash(&mut hasher);
+    setup.resolution.hash(&mut hasher);
+    setup.bias.to_bits().hash(&mut hasher);
+    setup.radius.to_bits().hash(&mut hasher);
+    setup.raster_bias.constant.hash(&mut hasher);
+    setup.raster_bias.slope_scale.to_bits().hash(&mut hasher);
+    setup.raster_bias.clamp.to_bits().hash(&mut hasher);
+    setup.normal_bias.to_bits().hash(&mut hasher);
+    setup.cascade_count.hash(&mut hasher);
+    for split in setup.cascade_splits {
+        split.to_bits().hash(&mut hasher);
+    }
+    setup.cascade_blend.to_bits().hash(&mut hasher);
+    setup.sampling_mode.hash(&mut hasher);
+    setup.update_policy.hash(&mut hasher);
+    scene_view.shadow_cascade().hash(&mut hasher);
+    scene_view
+        .view_uniform
+        .view_proj
+        .hash_f32_array(&mut hasher);
+    hash_shadow_phase_items(opaque_phase.items(), model_matrices, &mut hasher);
+    hash_shadow_phase_items(transparent_phase.items(), model_matrices, &mut hasher);
+    hasher.finish()
+}
+
+fn hash_shadow_phase_items(
+    items: &[crate::render::phase::PhaseItem],
+    model_matrices: &[[f32; 16]],
+    hasher: &mut impl Hasher,
+) {
+    items.len().hash(&mut *hasher);
+    for item in items {
+        item.draw_function_id.hash(&mut *hasher);
+        item.entity.hash(&mut *hasher);
+        item.batch_key.hash(&mut *hasher);
+        let draw = *item.data::<MeshDrawData>();
+        draw.hash(&mut *hasher);
+        if let Some(model) = model_matrices.get(draw.model_slot() as usize) {
+            (*model).hash_f32_array(&mut *hasher);
+        }
+    }
+}
+
+trait HashF32Array {
+    fn hash_f32_array(self, hasher: &mut impl Hasher);
+}
+
+impl<const N: usize> HashF32Array for [f32; N] {
+    fn hash_f32_array(self, hasher: &mut impl Hasher) {
+        for value in self {
+            value.to_bits().hash(hasher);
+        }
+    }
+}
+
+fn resolved_cascade_count(light: DirectionalLight) -> u32 {
+    light
+        .cascade_count
+        .clamp(1, MAX_DIRECTIONAL_SHADOW_CASCADES as u32)
+}
+
+fn resolved_cascade_splits(
+    light: DirectionalLight,
+    view: &SceneView,
+    cascade_count: u32,
+) -> [f32; MAX_DIRECTIONAL_SHADOW_CASCADES] {
+    let mut splits = [view.far.max(view.near + 1.0); MAX_DIRECTIONAL_SHADOW_CASCADES];
+    let near = view.near.max(0.0);
+    let far = if view.far.is_finite() && view.far > near {
+        view.far
+    } else {
+        near + 1.0
+    };
+    let active_count = cascade_count.clamp(1, MAX_DIRECTIONAL_SHADOW_CASCADES as u32) as usize;
+    let mut previous = near;
+    for (index, split) in splits.iter_mut().take(active_count).enumerate() {
+        let fallback = near + (far - near) * ((index + 1) as f32 / active_count as f32);
+        let requested = light.cascade_distances[index];
+        let candidate = if requested.is_finite() && requested > previous {
+            requested
+        } else {
+            fallback
+        };
+        *split = candidate.clamp(previous + 1e-4, far);
+        previous = *split;
+    }
+    splits
+}
+
+fn cascade_frustum_corners_world(
+    full_corners: &[[f32; 3]; 8],
+    view: &SceneView,
+    cascade_splits: &[f32; MAX_DIRECTIONAL_SHADOW_CASCADES],
+    cascade_index: u32,
+) -> [[f32; 3]; 8] {
+    let far = view.far.max(1e-4);
+    let near_split = if cascade_index == 0 {
+        0.0
+    } else {
+        cascade_splits[cascade_index as usize - 1] / far
+    }
+    .clamp(0.0, 1.0);
+    let far_split = cascade_splits[cascade_index as usize].max(0.0).min(far) / far;
+    let far_split = far_split.clamp(near_split, 1.0);
+
+    let mut corners = [[0.0; 3]; 8];
+    for corner in 0..4 {
+        let near = full_corners[corner];
+        let far = full_corners[corner + 4];
+        corners[corner] = lerp_point(near, far, near_split);
+        corners[corner + 4] = lerp_point(near, far, far_split);
+    }
+    corners
+}
+
+fn lerp_point(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    ]
 }
 
 fn view_frustum_corners_world(view: &SceneView) -> Option<[[f32; 3]; 8]> {
@@ -458,25 +954,14 @@ fn view_frustum_corners_world(view: &SceneView) -> Option<[[f32; 3]; 8]> {
     Some(world)
 }
 
-fn average_points(points: &[[f32; 3]]) -> [f32; 3] {
-    let mut sum = [0.0; 3];
-    for point in points {
-        sum[0] += point[0];
-        sum[1] += point[1];
-        sum[2] += point[2];
-    }
-    let scale = (points.len() as f32).recip();
-    [sum[0] * scale, sum[1] * scale, sum[2] * scale]
-}
-
-fn light_view_matrix(origin: [f32; 3], light_direction: [f32; 3]) -> [f32; 16] {
+fn light_view_matrix(light_direction: [f32; 3]) -> [f32; 16] {
     let up_guess = if light_direction[1].abs() > 0.98 {
         [0.0, 0.0, 1.0]
     } else {
         [0.0, 1.0, 0.0]
     };
     Mat4::look_to_rh(
-        Vec3::from_array(origin),
+        Vec3::from_array([0.0, 0.0, 0.0]),
         Vec3::from_array(light_direction),
         Vec3::from_array(up_guess),
     )
@@ -489,3 +974,103 @@ pub(crate) const IDENTITY_MATRIX: [f32; 16] = [
     0.0, 0.0, 1.0, 0.0, //
     0.0, 0.0, 0.0, 1.0,
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ecs::World;
+    use crate::render::view::ViewportRect;
+
+    #[test]
+    fn directional_shadow_setup_resolves_fixed_cascade_contract() {
+        let projection = Projection::perspective(60.0_f32.to_radians(), 0.1, 100.0);
+        let main_view = SceneView::new(
+            0,
+            ViewportRect::from_surface_size([128, 128]),
+            [128, 128],
+            false,
+            u32::MAX,
+            Transform::default(),
+            projection,
+            projection.view_uniform(Transform::default(), [128, 128]),
+            false,
+        );
+        let mut world = World::new();
+        world.spawn((DirectionalLight::new([0.3, -1.0, 0.2])
+            .cascade_count(3)
+            .cascade_distances([12.0, 36.0, 90.0, 0.0])
+            .cascade_blend(0.15)
+            .shadow_resolution_per_cascade(512)
+            .pcss_shadows(),));
+
+        let mut views = vec![main_view];
+        let setups = append_directional_shadow_views(&world, &mut views);
+
+        assert_eq!(views.len(), 4);
+        assert_eq!(setups.len(), 3);
+        assert_eq!(setups[0].cascade_count, 3);
+        assert_eq!(setups[0].cascade_index, 0);
+        assert_eq!(setups[1].cascade_index, 1);
+        assert_eq!(setups[2].cascade_index, 2);
+        assert_eq!(views[1].shadow_cascade(), 0);
+        assert_eq!(views[2].shadow_cascade(), 1);
+        assert_eq!(views[3].shadow_cascade(), 2);
+        assert_eq!(setups[0].cascade_splits, [12.0, 36.0, 90.0, 100.0]);
+        assert_eq!(setups[0].cascade_blend, 0.15);
+        assert_eq!(setups[0].resolution, 512);
+        assert_eq!(setups[0].sampling_mode, ShadowSamplingMode::Pcss);
+    }
+
+    #[test]
+    fn packed_shadow_atlas_mul_add_matches_wicked_cascade_mapping() {
+        let layout = ShadowAtlasLayout::directional_packed(512, 4, 1.0);
+        let mul_add = layout.shadow_atlas_mul_add();
+        let atlas_rcp = layout.shadow_atlas_resolution_rcp();
+
+        assert_eq!(mul_add, [0.25, 1.0, 0.0, 0.0]);
+        assert_eq!(atlas_rcp, [1.0 / 2048.0, 1.0 / 512.0, 1.0, 0.0]);
+        assert_eq!(
+            shadow_atlas_resolution_rcp_with_sampling_mode(layout, ShadowSamplingMode::DitheredPcf),
+            [1.0 / 2048.0, 1.0 / 512.0, 1.0, 1.0]
+        );
+
+        for cascade in 0..4 {
+            let left = ((0.0 + cascade as f32) * mul_add[0]) + mul_add[2];
+            let right = ((1.0 + cascade as f32) * mul_add[0]) + mul_add[2];
+            assert_eq!(left, cascade as f32 * 0.25);
+            assert_eq!(right, (cascade + 1) as f32 * 0.25);
+        }
+    }
+
+    #[test]
+    fn static_shadow_update_policy_only_marks_changed_cascades() {
+        let previous = [11, 22, 33, 44];
+        let same = previous;
+        let changed = [11, 99, 33, 88];
+
+        assert_eq!(
+            cascade_update_mask(
+                ShadowUpdatePolicy::StaticWhenUnchanged,
+                false,
+                4,
+                &previous,
+                &same
+            ),
+            0
+        );
+        assert_eq!(
+            cascade_update_mask(
+                ShadowUpdatePolicy::StaticWhenUnchanged,
+                false,
+                4,
+                &previous,
+                &changed
+            ),
+            0b1010
+        );
+        assert_eq!(
+            cascade_update_mask(ShadowUpdatePolicy::EveryFrame, false, 3, &previous, &same),
+            0b0111
+        );
+    }
+}

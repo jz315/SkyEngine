@@ -28,6 +28,7 @@ pub struct RenderTargetDescriptor {
     pub usage: wgpu::TextureUsages,
     pub sample_count: u32,
     pub mip_level_count: u32,
+    pub array_layer_count: u32,
     pub label: Cow<'static, str>,
 }
 
@@ -43,6 +44,7 @@ impl RenderTargetDescriptor {
                 | wgpu::TextureUsages::COPY_DST,
             sample_count: 1,
             mip_level_count: 1,
+            array_layer_count: 1,
             label: Cow::Borrowed("render_target"),
         }
     }
@@ -70,6 +72,12 @@ impl RenderTargetDescriptor {
     }
 
     #[inline]
+    pub fn array_layer_count(mut self, array_layer_count: u32) -> Self {
+        self.array_layer_count = array_layer_count.max(1);
+        self
+    }
+
+    #[inline]
     pub fn label(mut self, label: impl Into<Cow<'static, str>>) -> Self {
         self.label = label.into();
         self
@@ -89,6 +97,7 @@ pub struct RenderTarget {
     usage: wgpu::TextureUsages,
     sample_count: u32,
     mip_level_count: u32,
+    array_layer_count: u32,
     label: Cow<'static, str>,
 }
 
@@ -101,6 +110,7 @@ impl std::fmt::Debug for RenderTarget {
             .field("usage", &self.usage)
             .field("sample_count", &self.sample_count)
             .field("mip_level_count", &self.mip_level_count)
+            .field("array_layer_count", &self.array_layer_count)
             .field("label", &self.label)
             .finish_non_exhaustive()
     }
@@ -115,6 +125,7 @@ impl RenderTarget {
             .usage(desc.usage)
             .sample_count(desc.sample_count)
             .mip_level_count(desc.mip_level_count)
+            .depth_or_array_layers(desc.array_layer_count)
             .label(desc.label.clone());
         let texture = ctx.device().create_texture(&wgpu::TextureDescriptor {
             label: Some(texture_desc.label.as_ref()),
@@ -153,6 +164,7 @@ impl RenderTarget {
         let desc = RenderTargetDescriptor {
             width,
             height,
+            array_layer_count: desc.array_layer_count.max(1),
             ..desc
         };
         let (texture, view) = Self::create_texture(ctx, &desc);
@@ -166,6 +178,7 @@ impl RenderTarget {
             usage: desc.usage,
             sample_count: desc.sample_count,
             mip_level_count: desc.mip_level_count,
+            array_layer_count: desc.array_layer_count,
             label: desc.label,
         }
     }
@@ -197,12 +210,14 @@ impl RenderTarget {
         let height = desc.height.max(1);
         let sample_count = desc.sample_count.max(1);
         let mip_level_count = desc.mip_level_count.max(1);
+        let array_layer_count = desc.array_layer_count.max(1);
         if self.width == width
             && self.height == height
             && self.format == desc.format
             && self.usage == desc.usage
             && self.sample_count == sample_count
             && self.mip_level_count == mip_level_count
+            && self.array_layer_count == array_layer_count
         {
             return;
         }
@@ -214,6 +229,7 @@ impl RenderTarget {
             usage: desc.usage,
             sample_count,
             mip_level_count,
+            array_layer_count,
             label: desc.label,
         };
         let (texture, view) = Self::create_texture(ctx, &desc);
@@ -225,6 +241,7 @@ impl RenderTarget {
         self.usage = desc.usage;
         self.sample_count = desc.sample_count;
         self.mip_level_count = desc.mip_level_count;
+        self.array_layer_count = desc.array_layer_count;
         self.label = desc.label;
     }
 
@@ -262,15 +279,17 @@ impl RenderTarget {
             self.mip_level_count
         );
 
-        assert!(
-            base_array_layer == 0,
-            "RenderTarget only supports a single array layer, got base_array_layer={base_array_layer}"
-        );
-
         let layer_count = array_layer_count.unwrap_or(1);
         assert!(
-            layer_count == 1,
-            "RenderTarget only supports a single array layer, got array_layer_count={layer_count}"
+            base_array_layer < self.array_layer_count,
+            "RenderTarget array layer {base_array_layer} out of range for {} layers",
+            self.array_layer_count
+        );
+        assert!(
+            layer_count >= 1 && base_array_layer + layer_count <= self.array_layer_count,
+            "RenderTarget array layer range [{base_array_layer}, {}) exceeds {} layers",
+            base_array_layer + layer_count,
+            self.array_layer_count
         );
     }
 
@@ -293,6 +312,34 @@ impl RenderTarget {
         self.create_view_with(&wgpu::TextureViewDescriptor {
             base_mip_level: mip_level,
             mip_level_count: Some(1),
+            ..Default::default()
+        })
+    }
+
+    /// Create a view for one array layer.
+    #[inline]
+    pub fn create_array_layer_view(&self, array_layer: u32) -> wgpu::TextureView {
+        self.create_view_with(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2),
+            base_array_layer: array_layer,
+            array_layer_count: Some(1),
+            ..Default::default()
+        })
+    }
+
+    /// Create a view for one mip level and one array layer.
+    #[inline]
+    pub fn create_mip_array_layer_view(
+        &self,
+        mip_level: u32,
+        array_layer: u32,
+    ) -> wgpu::TextureView {
+        self.create_view_with(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2),
+            base_mip_level: mip_level,
+            mip_level_count: Some(1),
+            base_array_layer: array_layer,
+            array_layer_count: Some(1),
             ..Default::default()
         })
     }
@@ -343,6 +390,11 @@ impl RenderTarget {
     #[inline]
     pub fn mip_level_count(&self) -> u32 {
         self.mip_level_count
+    }
+
+    #[inline]
+    pub fn array_layer_count(&self) -> u32 {
+        self.array_layer_count
     }
 
     #[inline]
@@ -407,6 +459,7 @@ mod tests {
         assert_eq!(target.format(), wgpu::TextureFormat::Rgba16Float);
         assert_eq!(target.sample_count(), 1);
         assert_eq!(target.mip_level_count(), 3);
+        assert_eq!(target.array_layer_count(), 1);
         assert_eq!(target.label(), "target_reconfigured");
     }
 
@@ -477,6 +530,59 @@ mod tests {
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: wgpu::BindingResource::TextureView(&range_view),
+            }],
+        });
+    }
+
+    #[test]
+    fn array_layer_view_helpers_create_bindable_subresource_views() {
+        let (device, queue) = create_test_device();
+        let ctx =
+            GpuContext::new_headless(device, queue, wgpu::TextureFormat::Rgba8Unorm, [32, 32]);
+        let target = RenderTarget::from_descriptor(
+            &ctx,
+            RenderTargetDescriptor::new(16, 8, wgpu::TextureFormat::Rgba8Unorm)
+                .mip_level_count(3)
+                .array_layer_count(4)
+                .label("array_target"),
+        );
+
+        assert_eq!(target.array_layer_count(), 4);
+
+        let layer_view = target.create_array_layer_view(2);
+        let mip_layer_view = target.create_mip_array_layer_view(1, 3);
+
+        let bgl = ctx
+            .device()
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("render_target_array_view_test_bgl"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                }],
+            });
+
+        let _layer_bg = ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("render_target_array_layer_bg"),
+            layout: &bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&layer_view),
+            }],
+        });
+
+        let _mip_layer_bg = ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("render_target_mip_array_layer_bg"),
+            layout: &bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&mip_layer_view),
             }],
         });
     }

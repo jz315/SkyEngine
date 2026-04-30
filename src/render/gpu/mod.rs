@@ -1,6 +1,9 @@
+mod bindings;
+mod compute;
 mod fullscreen;
 pub(crate) mod helpers;
 mod model_matrix;
+mod readback;
 mod scene;
 mod target;
 mod texture;
@@ -9,8 +12,17 @@ use std::any::{Any, TypeId};
 
 use rustc_hash::FxHashMap;
 
+pub use bindings::{
+    sampled_texture_entry, sampler_entry, storage_buffer_entry, storage_texture_entry,
+    uniform_buffer_entry,
+};
+pub use compute::ComputePipelineCache;
 pub use fullscreen::{compose_fullscreen_shader, FullscreenPass, FullscreenPipeline};
 pub use model_matrix::ModelMatrixTable;
+pub use readback::{
+    read_render_target, read_render_target_subresource, read_texture, read_texture_subresource,
+    TextureReadback, TextureReadbackError,
+};
 pub use scene::GpuScene;
 pub use target::{is_depth_format, RenderTarget, RenderTargetDescriptor, DEFAULT_DEPTH_FORMAT};
 pub use texture::{Texture, TextureCreateDesc, TextureError, TextureFileDesc, TextureUploadDesc};

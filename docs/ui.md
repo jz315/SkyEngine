@@ -25,25 +25,26 @@ ctx.render_ui();
 
 `update_ui` 使用逻辑像素和左上角原点做布局、hit-test、hover/press/click 事件，并会更新交互控件（例如 `UiSlider`、`UiToggle`）的值。`render_ui` 在当前 surface frame 上追加 overlay pass，所以 UI 不受游戏 camera 影响。
 
-## AppConfig
+## Configuration
 
 默认不需要手动 install。`ctx.update_ui()` / `ctx.render_ui()` 会在第一次使用时自动插入 UI 资源。
 
-UI 配置属于 app 配置。需要自定义时，在创建 `AppConfig` 时设置：
+需要自定义 UI 配置时，把 `UiPlugin` 安装进 `World`：
 
 ```rust
-use sky_engine::app::AppConfig;
-use sky_engine::ui::UiConfig;
+use sky_engine::ecs::World;
+use sky_engine::ui::{UiConfig, UiPlugin};
 
-let config = AppConfig::new("Game", 1280, 720)
-    .with_ui_config(UiConfig {
-        load_system_fonts: false,
-    });
+let mut world = World::new();
+UiPlugin::new(UiConfig {
+    load_system_fonts: false,
+})
+.install(&mut world);
 ```
 
 自动安装会插入 `UiConfig`、`UiTheme`、`UiState`、`UiEvents`、`UiFontBook`。默认会尝试系统字体；没有可用字体时 quad UI 仍然渲染。
 
-底层/非 App 用法仍然可以直接调用 `install_ui(world, config)`，但普通游戏和示例应走 `AppConfig::with_ui_config`。
+底层/非 App 用法仍然可以直接调用 `install_ui(world, config)`，但普通游戏和示例应走 `UiPlugin::install`。
 
 ## Components
 

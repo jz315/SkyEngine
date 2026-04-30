@@ -11,7 +11,7 @@ mod state;
 mod text;
 
 pub use components::{
-    UiAlign, UiAnchor, UiButton, UiId, UiInteraction, UiLayout, UiLength, UiNode, UiPanel,
+    UiAlign, UiAnchor, UiButton, UiId, UiImage, UiInteraction, UiLayout, UiLength, UiNode, UiPanel,
     UiProgressBar, UiRect, UiScroll, UiSlider, UiText, UiToggle,
 };
 pub use input::update_ui;
@@ -24,12 +24,26 @@ pub(crate) use text::preferred_text_size;
 
 use crate::ecs::World;
 
+#[derive(Clone, Debug, Default)]
+pub struct UiPlugin {
+    pub config: UiConfig,
+}
+
+impl UiPlugin {
+    pub fn new(config: UiConfig) -> Self {
+        Self { config }
+    }
+
+    pub fn install(self, world: &mut World) {
+        install_ui(world, self.config);
+    }
+}
+
 /// Install native UI resources with explicit configuration.
 ///
-/// Most applications do not need to call this. In an [`App`](crate::app::App),
-/// configure UI through [`AppConfig::with_ui_config`](crate::app::AppConfig::with_ui_config).
-/// [`update_ui`] and [`render_ui`] lazily install resources from the `UiConfig`
-/// resource, falling back to defaults for lower-level/manual worlds.
+/// Most applications do not need to call this directly. Use [`UiPlugin`] for
+/// explicit configuration, or let [`update_ui`] / [`render_ui`] lazily install
+/// default resources.
 pub fn install_ui(world: &mut World, config: UiConfig) {
     world.insert_resource(config.clone());
     install_ui_resources(world, &config);
@@ -77,6 +91,22 @@ mod tests {
         ensure_ui_resources(&mut world);
 
         assert!(world.get_resource::<UiConfig>().is_some());
+        assert!(world.get_resource::<UiTheme>().is_some());
+        assert!(world.get_resource::<UiState>().is_some());
+        assert!(world.get_resource::<UiEvents>().is_some());
+        assert!(world.get_resource::<UiFontBook>().is_some());
+    }
+
+    #[test]
+    fn ui_plugin_installs_configured_runtime_resources() {
+        let mut world = World::new();
+
+        UiPlugin::new(UiConfig {
+            load_system_fonts: false,
+        })
+        .install(&mut world);
+
+        assert!(!world.get_resource::<UiConfig>().unwrap().load_system_fonts);
         assert!(world.get_resource::<UiTheme>().is_some());
         assert!(world.get_resource::<UiState>().is_some());
         assert!(world.get_resource::<UiEvents>().is_some());
