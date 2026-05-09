@@ -460,6 +460,12 @@ impl DirectionalLight {
 
     #[inline]
     pub const fn pcss_shadows(mut self) -> Self {
+        if self.shadow_filter_radius < 0.07 {
+            self.shadow_filter_radius = 0.07;
+        }
+        if self.shadow_normal_bias < 0.006 {
+            self.shadow_normal_bias = 0.006;
+        }
         self.shadow_sampling_mode = ShadowSamplingMode::Pcss;
         self
     }
@@ -591,6 +597,10 @@ mod tests {
                 .shadow_sampling_mode,
             ShadowSamplingMode::Pcss
         );
+        let pcss = DirectionalLight::default().pcss_shadows();
+        assert_eq!(pcss.shadow_sampling_mode, ShadowSamplingMode::Pcss);
+        assert!(pcss.shadow_filter_radius >= 0.07);
+        assert!(pcss.shadow_normal_bias >= 0.006);
         assert_eq!(ShadowSamplingMode::Pcss.shader_code(), 2.0);
     }
 

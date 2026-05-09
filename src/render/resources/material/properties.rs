@@ -1,13 +1,10 @@
-//! Typed uniform buffer with named float/vector properties and STD140 layout.
-
 use std::borrow::Cow;
 
 use rustc_hash::FxHashMap;
 
 use crate::gpu::GpuContext;
-use super::MaterialError;
 
-// ── Property types ──────────────────────────────────────────────────────────
+use super::MaterialError;
 
 /// Supported property value types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,7 +17,7 @@ pub enum PropertyType {
 
 impl PropertyType {
     #[inline]
-    pub(crate) const fn size(self) -> usize {
+    const fn size(self) -> usize {
         match self {
             Self::Float => 4,
             Self::Vec2 => 8,
@@ -30,7 +27,7 @@ impl PropertyType {
     }
 
     #[inline]
-    pub(crate) const fn align(self) -> usize {
+    const fn align(self) -> usize {
         match self {
             Self::Float => 4,
             Self::Vec2 => 8,
@@ -39,15 +36,13 @@ impl PropertyType {
     }
 }
 
-// ── Property layout ─────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct PropertySlot {
-    pub offset: usize,
-    pub ty: PropertyType,
+struct PropertySlot {
+    offset: usize,
+    ty: PropertyType,
 }
 
-pub(crate) fn build_property_layout(
+fn build_property_layout(
     properties: &[(&str, PropertyType)],
 ) -> Result<(FxHashMap<Cow<'static, str>, PropertySlot>, Vec<u8>), MaterialError> {
     let mut slots = FxHashMap::default();
@@ -165,69 +160,11 @@ impl MaterialProperties {
         Ok(())
     }
 
-    pub fn set_float(&mut self, name: &str, value: f32) {
-        self.try_set_float(name, value)
-            .expect("MaterialProperties::set_float failed");
-    }
-
-    pub fn try_set_vec2(&mut self, name: &str, value: [f32; 2]) -> Result<(), MaterialError> {
-        let slot = self.property_slot(name, PropertyType::Vec2)?;
-        self.data[slot.offset..slot.offset + 8].copy_from_slice(bytemuck::bytes_of(&value));
-        self.dirty = true;
-        Ok(())
-    }
-
-    pub fn set_vec2(&mut self, name: &str, value: [f32; 2]) {
-        self.try_set_vec2(name, value)
-            .expect("MaterialProperties::set_vec2 failed");
-    }
-
-    pub fn try_set_vec3(&mut self, name: &str, value: [f32; 3]) -> Result<(), MaterialError> {
-        let slot = self.property_slot(name, PropertyType::Vec3)?;
-        self.data[slot.offset..slot.offset + 12].copy_from_slice(bytemuck::bytes_of(&value));
-        self.dirty = true;
-        Ok(())
-    }
-
-    pub fn set_vec3(&mut self, name: &str, value: [f32; 3]) {
-        self.try_set_vec3(name, value)
-            .expect("MaterialProperties::set_vec3 failed");
-    }
-
     pub fn try_set_vec4(&mut self, name: &str, value: [f32; 4]) -> Result<(), MaterialError> {
         let slot = self.property_slot(name, PropertyType::Vec4)?;
         self.data[slot.offset..slot.offset + 16].copy_from_slice(bytemuck::bytes_of(&value));
         self.dirty = true;
         Ok(())
-    }
-
-    pub fn set_vec4(&mut self, name: &str, value: [f32; 4]) {
-        self.try_set_vec4(name, value)
-            .expect("MaterialProperties::set_vec4 failed");
-    }
-
-    pub fn try_get_float(&self, name: &str) -> Result<f32, MaterialError> {
-        let slot = self.property_slot(name, PropertyType::Float)?;
-        Ok(f32::from_le_bytes(
-            self.data[slot.offset..slot.offset + 4]
-                .try_into()
-                .expect("validated float property length"),
-        ))
-    }
-
-    pub fn get_float(&self, name: &str) -> Option<f32> {
-        self.try_get_float(name).ok()
-    }
-
-    pub fn try_get_vec4(&self, name: &str) -> Result<[f32; 4], MaterialError> {
-        let slot = self.property_slot(name, PropertyType::Vec4)?;
-        Ok(*bytemuck::from_bytes::<[f32; 4]>(
-            &self.data[slot.offset..slot.offset + 16],
-        ))
-    }
-
-    pub fn get_vec4(&self, name: &str) -> Option<[f32; 4]> {
-        self.try_get_vec4(name).ok()
     }
 
     pub fn upload(&mut self, ctx: &GpuContext) {
@@ -245,11 +182,6 @@ impl MaterialProperties {
     #[inline]
     pub fn bind_group(&self) -> &wgpu::BindGroup {
         &self.bind_group
-    }
-
-    #[inline]
-    pub fn buffer(&self) -> &wgpu::Buffer {
-        &self.buffer
     }
 
     #[inline]

@@ -232,6 +232,11 @@ name = "kenney_platformer_game"
 path = "examples/game/kenney_platformer.rs"
 required-features = ["ui"]
 
+[[example]]
+name = "last_light_guild"
+path = "examples/game/last_light_guild/main.rs"
+required-features = ["ui"]
+
 # ── Full demo showcases (GPU, --features app) ────────────────────────────────
 
 [[example]]

@@ -141,8 +141,8 @@ impl SceneSnapshot {
     }
 
     #[inline]
-    pub fn render_settings(&self) -> RenderSettings {
-        self.render_settings
+    pub fn render_settings(&self) -> &RenderSettings {
+        &self.render_settings
     }
 
     pub fn mesh_instances(&self) -> impl Iterator<Item = (EntityId, &SceneMeshInstance)> + '_ {
@@ -253,7 +253,7 @@ impl SceneSnapshotExtractor {
         snapshot.set_render_settings(
             world
                 .get_resource::<RenderSettings>()
-                .copied()
+                .cloned()
                 .unwrap_or_default(),
         );
 

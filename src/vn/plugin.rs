@@ -1,14 +1,10 @@
 use crate::ecs::World;
-use crate::vn::action::VnInputState;
-use crate::vn::extension::VnCommandRegistry;
-use crate::vn::loader::VnLoader;
 use crate::vn::preferences::VnPreferences;
+use crate::vn::resource::VnResource;
 use crate::vn::rollback::VnRollbackStack;
-use crate::vn::save::VnSaveStore;
 use crate::vn::systems::{
     vn_input_system, vn_load_system, vn_script_system, vn_ui_system, VnSystemConfig,
 };
-use crate::vn::ui::VnUiState;
 use crate::vn::VnRuntimeResult;
 
 #[derive(Clone, Debug)]
@@ -17,6 +13,8 @@ pub struct VnPlugin {
     pub rollback_limit: usize,
     pub system_config: VnSystemConfig,
     pub install_systems: bool,
+    pub builtin_ui: bool,
+    pub sprite_presentation: bool,
 }
 
 impl Default for VnPlugin {
@@ -26,6 +24,8 @@ impl Default for VnPlugin {
             rollback_limit: 64,
             system_config: VnSystemConfig::default(),
             install_systems: true,
+            builtin_ui: cfg!(feature = "vn-ui"),
+            sprite_presentation: cfg!(feature = "app"),
         }
     }
 }
@@ -51,42 +51,24 @@ impl VnPlugin {
         self
     }
 
+    pub fn with_builtin_ui(mut self, enabled: bool) -> Self {
+        self.builtin_ui = enabled;
+        self
+    }
+
+    pub fn with_sprite_presentation(mut self, enabled: bool) -> Self {
+        self.sprite_presentation = enabled;
+        self
+    }
+
     pub fn install(self, world: &mut World) -> VnRuntimeResult<()> {
-        if !world.contains_resource::<VnLoader>() {
-            world.insert_resource(VnLoader::default());
-        }
-        world.insert_resource(self.preferences);
-        world.insert_resource(VnInputState::default());
-        world.insert_resource(crate::vn::VnPlaybackState::default());
-        world.insert_resource(VnUiState::default());
-        world.insert_resource(VnCommandRegistry::default());
-        world.insert_resource(self.system_config);
-        #[cfg(feature = "app")]
-        {
-            if !world.contains_resource::<crate::vn::presentation::VnSpritePresentationConfig>() {
-                world.insert_resource(
-                    crate::vn::presentation::VnSpritePresentationConfig::default(),
-                );
-            }
-            if !world.contains_resource::<crate::vn::presentation::VnSpriteSceneEntities>() {
-                world.insert_resource(crate::vn::presentation::VnSpriteSceneEntities::default());
-            }
-            if !world.contains_resource::<crate::vn::presentation::VnSpriteTextureMap>() {
-                world.insert_resource(crate::vn::presentation::VnSpriteTextureMap::default());
-            }
-        }
-        #[cfg(feature = "vn-audio")]
-        if !world.contains_resource::<crate::vn::audio_binding::VnAudioBindings>() {
-            world.insert_resource(crate::vn::audio_binding::VnAudioBindings::default());
-        }
-        #[cfg(feature = "vn-ui")]
-        {
-            if !world.contains_resource::<crate::vn::ui_binding::VnUiEntities>() {
-                world.insert_resource(crate::vn::ui_binding::VnUiEntities::default());
-            }
-        }
-        world.insert_resource(VnRollbackStack::new(self.rollback_limit));
-        world.insert_resource(VnSaveStore::default());
+        let _builtin_ui = self.builtin_ui;
+        let _sprite_presentation = self.sprite_presentation;
+        world.insert_resource(VnResource::new(
+            self.preferences,
+            VnRollbackStack::new(self.rollback_limit),
+            self.system_config,
+        ));
         if self.install_systems {
             world.group("vn/load").add(vn_load_system);
             world.group("vn/input").add(vn_input_system);
@@ -100,15 +82,19 @@ impl VnPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vn::VnRuntime;
+    use crate::vn::{VnInputState, VnLoader, VnRuntime, VnSaveStore, VnUiState};
 
     #[test]
-    fn default_install_adds_loader_without_loading_runtime() {
+    fn default_install_adds_one_vn_resource_without_loading_runtime() {
         let mut world = World::new();
 
         VnPlugin::default().install(&mut world).unwrap();
 
-        assert!(world.contains_resource::<VnLoader>());
+        assert!(world.contains_resource::<VnResource>());
         assert!(!world.contains_resource::<VnRuntime>());
+        assert!(!world.contains_resource::<VnLoader>());
+        assert!(!world.contains_resource::<VnInputState>());
+        assert!(!world.contains_resource::<VnSaveStore>());
+        assert!(!world.contains_resource::<VnUiState>());
     }
 }

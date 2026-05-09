@@ -8,7 +8,7 @@ pub(crate) mod composite;
 pub(crate) mod execution;
 pub mod expert;
 pub(crate) mod extract;
-pub(crate) mod gi;
+pub mod gi;
 pub(crate) mod gpu;
 pub(crate) mod graph;
 pub(crate) mod lighting;
@@ -40,17 +40,17 @@ pub use backend::{
     SceneRenderer, SceneRendererError, SceneRendererInitError, SceneSpotLight, WgpuSceneRenderer,
 };
 pub use component::{
-    BloomSettings, Camera as CameraMarker, CameraViewport, DdgiSettings, DdgiVolumeSettings,
-    DirectionalLight, GiDebugMode, GlobalIlluminationMode, GlobalIlluminationSettings, MainCamera,
-    MeshRenderer, Parent, PointLight, RenderDebugView, RenderLayerMask, RenderSettings,
-    ShadowSamplingMode, ShadowUpdatePolicy, SharpenSettings, SortingLayer, SpotLight,
-    SpriteRenderer, SsgiSettings, TemporalAntiAliasingSettings, TileAnimation, TileAnimationFrame,
-    TilemapDepthSort, TilemapOrientation, TilemapRenderOrder, TilemapRenderer, TilemapStaggerAxis,
-    TilemapStaggerIndex, TilesetGrid, TilesetTileRect, ToneMapSettings, VignetteSettings,
-    WgpuMeshRenderer, ALL_SHADOW_CASCADE_MASK, MAX_DIRECTIONAL_SHADOW_CASCADES,
+    BloomSettings, Camera as CameraMarker, CameraViewport, ContactShadowsSettings,
+    DirectionalLight, GlobalIllumination, MainCamera, MeshRenderer, Parent, PointLight,
+    RenderDebugView, RenderLayerMask, RenderSettings, ShadowSamplingMode, ShadowUpdatePolicy,
+    SharpenSettings, SortingLayer, SpotLight, SpriteRenderer, TemporalAntiAliasingSettings,
+    TileAnimation, TileAnimationFrame, TilemapDepthSort, TilemapOrientation, TilemapRenderOrder,
+    TilemapRenderer, TilemapStaggerAxis, TilemapStaggerIndex, TilesetGrid, TilesetTileRect,
+    ToneMapSettings, VignetteSettings, WgpuMeshRenderer, ALL_SHADOW_CASCADE_MASK,
+    MAX_DIRECTIONAL_SHADOW_CASCADES,
 };
 pub use execution::SceneTexture;
-pub use gi::{SsgiComputeTextureLayout, SsgiPass, SsgiResources};
+pub use gi::{GiProviderConfig, GiProviderFactory, GiProviderId, GiSettings};
 pub use gpu::{
     is_depth_format, GpuScene, GpuTable, GpuTableManager, ModelMatrixTable, Texture,
     DEFAULT_DEPTH_FORMAT,
@@ -59,18 +59,22 @@ pub use lighting::DirectionalShadowPhase;
 pub use lighting::{GpuLight, GpuLightKind, Light2D, LightTable, SceneLightingResources};
 pub use phase::{OpaquePhase, TransparentPhase};
 pub use pipeline::{
-    Bloom, ComputePass, ComputePassExecuteContext, ComputePassSetupContext, DdgiUpdateCompute,
-    DebugView, GraphPass, GraphPassExecuteContext, GraphPassSetupContext, KajiyaDpiMode,
-    KajiyaRendererSettings, PipelineStepDescriptor, PostFxPass, PostFxPassExecuteContext,
-    PostFxPassSetupContext, RenderBackendKind, RenderFeature, RenderPass, RenderPassExecuteContext,
-    RenderPassSetupContext, RenderPhase, RenderPhaseExecuteContext, RenderPhaseSetupContext,
-    RenderPipelineAsset, RenderPipelineBuilder, RenderPipelineDescriptor, SceneMaterialPrepass,
-    SceneNormalPrepass, Sharpen, SpriteFeature, TemporalAntiAliasing, TextureSpec, ToneMap,
-    Vignette,
+    Bloom, ComputePass, ComputePassExecuteContext, ComputePassSetupContext, ContactShadows,
+    DebugView, GiCompositePass, GiUpdateCompute, GraphPass, GraphPassExecuteContext,
+    GraphPassSetupContext, KajiyaDpiMode, KajiyaRendererSettings, PipelineStepDescriptor,
+    PostFxPass, PostFxPassExecuteContext, PostFxPassSetupContext, RenderBackendKind, RenderFeature,
+    RenderPass, RenderPassExecuteContext, RenderPassSetupContext, RenderPhase,
+    RenderPhaseExecuteContext, RenderPhaseSetupContext, RenderPipelineAsset, RenderPipelineBuilder,
+    RenderPipelineDescriptor, SceneMaterialPrepass, SceneNormalPrepass, Sharpen, SpriteFeature,
+    TemporalAntiAliasing, TextureSpec, ToneMap, Vignette,
 };
+pub use resources::assets::{SharedRenderAssetCache, TextureReadiness};
 pub use resources::material::{
-    AlphaMode, Material, MaterialBindContext, MaterialHandle, MaterialRenderState, MaterialStorage,
-    SceneBindingDesc, SceneBindingKind, ShaderSource, SpriteMaterial, StandardMaterial,
+    AlphaMode, MainPassMode, Material, MaterialBindContext, MaterialBinding, MaterialBindingLayout,
+    MaterialError, MaterialHandle, MaterialInterface, MaterialPassSet, MaterialPrepareContext,
+    MaterialPrepassMode, MaterialRenderState, MaterialShaderSet, MaterialStorage, PreparedMaterial,
+    SceneBindingDesc, SceneBindingKind, SceneResourceKind, SceneResourceRequirements, ShaderSource,
+    ShaderVariantKey, ShaderVariantPolicy, ShadowPassMode, SpriteMaterial, StandardMaterial,
     UnlitMaterial,
 };
 pub use runtime::RenderComposer;
@@ -112,6 +116,7 @@ mod tests {
             .build();
         let _builder = RenderPipelineAsset::builder();
         let _settings = RenderSettings::default();
+        let _texture_readiness = TextureReadiness::CpuLoading;
         let _sprite = Sprite::new(0.0, 0.0, 1.0, 1.0);
         let _sprite_animation_clip =
             SpriteAnimationClip::new([SpriteAnimationFrame::new([0.0, 0.0, 1.0, 1.0], 100)]);
@@ -136,7 +141,6 @@ mod tests {
         );
         let _gpu_light_kind = GpuLightKind::Point;
         let _scene_lighting: Option<SceneLightingResources<'_>> = None;
-        let _ssgi_layout: Option<SsgiComputeTextureLayout> = None;
         let _sprite_renderer = SpriteRenderer::new(8.0, 8.0);
         let _tile = Tile::new(TileId(0));
         let _tilemap_storage = TilemapStorage::new();

@@ -1,3 +1,4 @@
+use crate::render::gi::GiProviderConfig;
 use crate::render::Color;
 
 /// Shared render-layer mask used by the unified scene renderer.
@@ -21,165 +22,65 @@ impl Default for RenderLayerMask {
 #[derive(Clone, Copy, Debug)]
 pub struct BloomSettings {
     pub enabled: bool,
-    pub threshold: f32,
     pub intensity: f32,
-    pub radius: f32,
+    pub spread: f32,
 }
 
 impl Default for BloomSettings {
     fn default() -> Self {
         Self {
             enabled: true,
-            threshold: 0.55,
-            intensity: 0.45,
-            radius: 1.15,
-        }
-    }
-}
-
-/// Debug visualization mode for DDGI.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum GiDebugMode {
-    #[default]
-    Off,
-    Probes,
-    Irradiance,
-    Visibility,
-    RayBudget,
-}
-
-/// Runtime GI algorithm selected by the high-level 3D renderer.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum GlobalIlluminationMode {
-    #[default]
-    Off,
-    Ssgi,
-    Ddgi,
-}
-
-/// Screen-space GI controls for the Wicked-inspired modern 3D pipeline.
-#[derive(Clone, Copy, Debug)]
-pub struct SsgiSettings {
-    /// Final composite strength. Wicked applies SSGI as a separate indirect term;
-    /// `1.0` preserves that energy in SkyEngine's current post-composite path.
-    pub intensity: f32,
-    /// Public radius hint. The current WGSL pass maps `8.0` to Wicked's narrow
-    /// `range = 2, spread = 2` SSGI sampling pass.
-    pub radius_pixels: f32,
-    /// Wicked's SSGI depth rejection distance; the shader uses its reciprocal.
-    pub depth_rejection: f32,
-    /// Wicked's bilateral normal threshold for SSGI upsample-style rejection.
-    pub normal_power: f32,
-}
-
-impl Default for SsgiSettings {
-    fn default() -> Self {
-        Self {
             intensity: 1.0,
-            radius_pixels: 8.0,
-            depth_rejection: 8.0,
-            normal_power: 64.0,
+            spread: 1.0,
         }
     }
 }
 
-/// World-space DDGI probe volume controls.
-#[derive(Clone, Copy, Debug)]
-pub struct DdgiVolumeSettings {
-    pub origin: [f32; 3],
-    pub spacing: f32,
-    pub counts: [u32; 3],
-    pub scroll_with_main_camera: bool,
+/// Global illumination provider selected by the high-level renderer.
+#[derive(Clone, Debug, Default)]
+pub enum GlobalIllumination {
+    #[default]
+    Off,
+    Provider(GiProviderConfig),
 }
 
-impl Default for DdgiVolumeSettings {
-    fn default() -> Self {
-        Self {
-            origin: [-14.0, -4.0, -14.0],
-            spacing: 1.85,
-            counts: [16, 8, 16],
-            scroll_with_main_camera: true,
-        }
+impl GlobalIllumination {
+    #[inline]
+    pub fn provider(config: GiProviderConfig) -> Self {
+        Self::Provider(config)
+    }
+
+    #[inline]
+    pub const fn is_off(&self) -> bool {
+        matches!(self, Self::Off)
     }
 }
 
-/// Dynamic diffuse global illumination controls.
+/// Photon-style screen-space contact shadow and horizon AO controls.
 #[derive(Clone, Copy, Debug)]
-pub struct DdgiSettings {
-    pub volume: DdgiVolumeSettings,
-    pub rays_per_probe: u32,
-    pub probes_per_frame: u32,
-    pub hysteresis: f32,
-    pub normal_bias: f32,
-    pub view_bias: f32,
-    pub max_ray_distance: f32,
-    pub irradiance_resolution: u32,
-    pub visibility_resolution: u32,
-    pub bounces: u32,
-}
-
-impl Default for DdgiSettings {
-    fn default() -> Self {
-        Self {
-            volume: DdgiVolumeSettings::default(),
-            rays_per_probe: 64,
-            probes_per_frame: 128,
-            hysteresis: 0.92,
-            normal_bias: 0.08,
-            view_bias: 0.20,
-            max_ray_distance: 40.0,
-            irradiance_resolution: 6,
-            visibility_resolution: 6,
-            bounces: 2,
-        }
-    }
-}
-
-/// Global illumination settings for the high-level 3D renderer.
-#[derive(Clone, Copy, Debug)]
-pub struct GlobalIlluminationSettings {
+pub struct ContactShadowsSettings {
     pub enabled: bool,
-    pub mode: GlobalIlluminationMode,
-    pub ssgi: SsgiSettings,
-    pub ddgi: DdgiSettings,
-    pub debug: GiDebugMode,
+    pub intensity: f32,
+    pub max_distance: f32,
+    pub thickness: f32,
+    pub ray_steps: u32,
+    pub ao_intensity: f32,
+    pub ao_radius_pixels: f32,
+    pub ao_steps: u32,
 }
 
-impl Default for GlobalIlluminationSettings {
+impl Default for ContactShadowsSettings {
     fn default() -> Self {
         Self {
-            enabled: false,
-            mode: GlobalIlluminationMode::Off,
-            ssgi: SsgiSettings::default(),
-            ddgi: DdgiSettings::default(),
-            debug: GiDebugMode::Off,
+            enabled: true,
+            intensity: 0.72,
+            max_distance: 2.6,
+            thickness: 0.18,
+            ray_steps: 10,
+            ao_intensity: 0.46,
+            ao_radius_pixels: 18.0,
+            ao_steps: 3,
         }
-    }
-}
-
-impl GlobalIlluminationSettings {
-    #[inline]
-    pub fn effective_mode(self) -> GlobalIlluminationMode {
-        if !self.enabled {
-            return GlobalIlluminationMode::Off;
-        }
-
-        match self.mode {
-            // Compatibility: older callers only toggled `enabled`; keep that
-            // path using the existing DDGI implementation.
-            GlobalIlluminationMode::Off => GlobalIlluminationMode::Ddgi,
-            mode => mode,
-        }
-    }
-
-    #[inline]
-    pub fn uses_ssgi(self) -> bool {
-        self.effective_mode() == GlobalIlluminationMode::Ssgi
-    }
-
-    #[inline]
-    pub fn uses_ddgi(self) -> bool {
-        self.effective_mode() == GlobalIlluminationMode::Ddgi
     }
 }
 
@@ -259,11 +160,6 @@ pub enum RenderDebugView {
     DirectionalShadowMap,
     DirectionalShadowCascade(u32),
     DirectionalShadowCoverage,
-    SsgiDiffuseMip(u32),
-    SsgiAtlasLayer {
-        mip: u32,
-        layer: u32,
-    },
 }
 
 impl RenderDebugView {
@@ -292,11 +188,12 @@ impl Default for VignetteSettings {
 }
 
 /// Per-frame render settings consumed from the [`crate::ecs::World`].
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct RenderSettings {
     pub clear_color: Color,
     pub ambient_color: Color,
-    pub global_illumination: GlobalIlluminationSettings,
+    pub global_illumination: GlobalIllumination,
+    pub contact_shadows: ContactShadowsSettings,
     pub bloom: BloomSettings,
     pub tonemap: ToneMapSettings,
     pub temporal_aa: TemporalAntiAliasingSettings,
@@ -310,7 +207,8 @@ impl Default for RenderSettings {
         Self {
             clear_color: Color::new(0.015, 0.016, 0.02, 1.0),
             ambient_color: Color::new(0.07, 0.075, 0.09, 1.0),
-            global_illumination: GlobalIlluminationSettings::default(),
+            global_illumination: GlobalIllumination::default(),
+            contact_shadows: ContactShadowsSettings::default(),
             bloom: BloomSettings::default(),
             tonemap: ToneMapSettings::default(),
             temporal_aa: TemporalAntiAliasingSettings::default(),
@@ -326,13 +224,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ssgi_defaults_match_wicked_depth_rejection_path() {
-        let settings = SsgiSettings::default();
+    fn contact_shadow_defaults_match_photon_style_ssrt_path() {
+        let settings = ContactShadowsSettings::default();
 
-        assert_eq!(settings.intensity, 1.0);
-        assert_eq!(settings.radius_pixels, 8.0);
-        assert_eq!(settings.depth_rejection, 8.0);
-        assert_eq!(settings.normal_power, 64.0);
+        assert!(settings.enabled);
+        assert_eq!(settings.ray_steps, 10);
+        assert_eq!(settings.ao_steps, 3);
+        assert_eq!(settings.max_distance, 2.6);
     }
 
     #[test]

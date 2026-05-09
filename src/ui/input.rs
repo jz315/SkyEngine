@@ -1,16 +1,16 @@
 use rustc_hash::FxHashMap;
 
 use crate::ecs::{EntityId, World};
-use crate::input::Input;
+use crate::input::{Input, InteractionContext, MouseButton};
 
 use super::{
-    hit_test, rect_map, resolve_world_layout, UiEvent, UiEventKind, UiEvents, UiId, UiNode, UiRect,
-    UiScroll, UiSlider, UiState, UiToggle,
+    hit_test_input, rect_map, resolve_world_layout, UiEvent, UiEventKind, UiEvents, UiId, UiNode,
+    UiRect, UiScroll, UiSlider, UiState, UiToggle,
 };
 
 /// Update layout and pointer interaction for the retained UI tree.
 pub fn update_ui(world: &mut World, input: &Input, surface_size: [f32; 2]) {
-    super::ensure_ui_resources(world);
+    super::ensure_legacy_ui_resources(world);
     #[cfg(feature = "vn-ui")]
     crate::vn::ui_binding::sync_runtime_ui_to_world_with_surface(world, surface_size);
 
@@ -22,8 +22,8 @@ pub fn update_ui(world: &mut World, input: &Input, surface_size: [f32; 2]) {
     }
 
     let pointer = input.mouse_in_window().then(|| input.mouse_position());
-    let scroll_hovered =
-        pointer.and_then(|position| hit_test(&resolved, position).map(|node| node.entity));
+    let input_hovered_node = pointer.and_then(|position| hit_test_input(&resolved, position));
+    let scroll_hovered = input_hovered_node.as_ref().map(|node| node.entity);
     let mut scrolled = None;
     let scroll_delta = input.scroll_delta();
     if (scroll_delta[0].abs() > f32::EPSILON || scroll_delta[1].abs() > f32::EPSILON)
@@ -56,8 +56,7 @@ pub fn update_ui(world: &mut World, input: &Input, surface_size: [f32; 2]) {
         .map(|node| (node.entity, node.visible && node.enabled))
         .collect();
 
-    let hovered =
-        pointer.and_then(|position| hit_test(&resolved, position).map(|node| node.entity));
+    let hovered = input_hovered_node.as_ref().map(|node| node.entity);
 
     let (previous_hovered, previous_pressed) = world
         .get_resource::<UiState>()
@@ -140,6 +139,17 @@ pub fn update_ui(world: &mut World, input: &Input, surface_size: [f32; 2]) {
         next_pressed = None;
     }
 
+    update_interaction_context(
+        world,
+        hovered,
+        next_pressed,
+        hovered.is_some(),
+        input.mouse_left_pressed(),
+        input.mouse_left(),
+        input.mouse_left_released(),
+        scrolled.is_some(),
+    );
+
     if let Some(state) = world.get_resource_mut::<UiState>() {
         state.set_layout(surface_size, rects);
         state.set_pointer_position(pointer);
@@ -152,6 +162,35 @@ pub fn update_ui(world: &mut World, input: &Input, surface_size: [f32; 2]) {
         for event in emitted {
             events.push(event);
         }
+    }
+}
+
+fn update_interaction_context(
+    world: &mut World,
+    hovered: Option<EntityId>,
+    pressed: Option<EntityId>,
+    hovered_blocks_input: bool,
+    left_pressed: bool,
+    left_held: bool,
+    left_released: bool,
+    scrolled: bool,
+) {
+    if world.get_resource::<InteractionContext>().is_none() {
+        world.insert_resource(InteractionContext::default());
+    }
+    let Some(interaction) = world.get_resource_mut::<InteractionContext>() else {
+        return;
+    };
+    interaction.set_hovered(hovered.filter(|_| hovered_blocks_input));
+    interaction.set_pressed(pressed);
+    if scrolled {
+        interaction.consume_scroll();
+    }
+    if hovered_blocks_input && (left_pressed || left_released) {
+        interaction.consume_pointer(MouseButton::Left);
+    }
+    if (left_held || left_released) && pressed.is_some() {
+        interaction.consume_pointer(MouseButton::Left);
     }
 }
 
@@ -296,7 +335,7 @@ fn update_slider_from_pointer(
 #[cfg(test)]
 mod tests {
     use crate::ecs::World;
-    use crate::input::raw::MouseButton;
+    use crate::input::{InteractionContext, MouseButton};
 
     use super::super::{
         update_ui, UiEventKind, UiEvents, UiNode, UiScroll, UiSlider, UiState, UiToggle,
@@ -384,6 +423,32 @@ mod tests {
         let input = input_at(20.0, 20.0);
         update_ui(&mut world, &input, [800.0, 600.0]);
         assert!(world.get_resource::<UiState>().unwrap().wants_pointer());
+    }
+
+    #[test]
+    fn ui_hit_consumes_left_pointer_for_later_systems() {
+        let mut world = World::new();
+        world.spawn((UiNode::panel(100.0, 40.0),));
+
+        let mut input = input_at(20.0, 20.0);
+        input.mouse_button_down(MouseButton::Left as usize);
+        update_ui(&mut world, &input, [800.0, 600.0]);
+
+        let interaction = world.get_resource::<InteractionContext>().unwrap();
+        assert!(interaction.pointer_consumed(MouseButton::Left));
+    }
+
+    #[test]
+    fn input_transparent_ui_does_not_consume_left_pointer() {
+        let mut world = World::new();
+        world.spawn((UiNode::panel(100.0, 40.0).input_transparent(),));
+
+        let mut input = input_at(20.0, 20.0);
+        input.mouse_button_down(MouseButton::Left as usize);
+        update_ui(&mut world, &input, [800.0, 600.0]);
+
+        let interaction = world.get_resource::<InteractionContext>().unwrap();
+        assert!(!interaction.pointer_consumed(MouseButton::Left));
     }
 
     #[test]

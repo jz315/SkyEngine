@@ -71,7 +71,11 @@ impl Color {
     pub const fn new(r: f32, g: f32, b: f32, a: f32) -> Self {
         Self { r, g, b, a }
     }
-
+    /// Create a colour from 0.0–1.0 RGBA values.
+    #[inline]
+    pub const fn rgba(r: f32, g: f32, b: f32, a: f32) -> Self {
+        Self { r, g, b, a }
+    }
     /// Create a colour from 0.0–1.0 RGB values (alpha = 1).
     #[inline]
     pub const fn rgb(r: f32, g: f32, b: f32) -> Self {

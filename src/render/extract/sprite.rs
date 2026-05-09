@@ -36,9 +36,9 @@ impl Extractor for ExtractSprites {
     ) -> Result<(), ExtractError> {
         let gpu = ctx.gpu;
         let asset_server = ctx.asset_server;
-        let render_assets = &mut *ctx.render_assets;
+        let render_assets = ctx.render_assets;
         let transparent_phase = &mut *ctx.transparent_phase;
-        let material_storage = ctx
+        let mut material_storage = ctx
             .material_registry
             .try_materials_mut::<SpriteMaterial>()
             .ok_or(MaterialError::UnregisteredMaterialType {
@@ -59,12 +59,8 @@ impl Extractor for ExtractSprites {
                 }
 
                 let transform = transforms.get(entity).unwrap_or(*transform);
-                let texture = sprite.texture.and_then(|handle| match asset_server {
-                    Some(server) => render_assets.texture(gpu, server, handle),
-                    None => {
-                        render_assets.mark_texture_missing(handle);
-                        None
-                    }
+                let texture = sprite.texture.and_then(|handle| {
+                    resolve_sprite_texture(gpu, asset_server, render_assets, handle)
                 });
                 let texture_key = texture.as_ref().map_or(usize::MAX, |texture| {
                     std::ptr::from_ref(texture.texture()) as usize
@@ -76,7 +72,7 @@ impl Extractor for ExtractSprites {
                     if let Some(texture) = texture {
                         material = material.texture(texture);
                     }
-                    let handle = material_storage.insert(material);
+                    let handle = material_storage.insert(material).erased();
                     texture_materials.insert(texture_key, handle);
                     handle
                 };
@@ -104,6 +100,22 @@ impl Extractor for ExtractSprites {
         );
 
         Ok(())
+    }
+}
+
+fn resolve_sprite_texture(
+    gpu: &crate::gpu::GpuContext,
+    asset_server: Option<&crate::asset::AssetServer>,
+    render_assets: Option<&crate::render::resources::assets::SharedRenderAssetCache>,
+    handle: crate::asset::Handle<crate::asset::TextureAsset>,
+) -> Option<crate::render::Texture> {
+    match (asset_server, render_assets) {
+        (Some(server), Some(cache)) => cache.borrow_mut().texture(gpu, server, handle),
+        (_, Some(cache)) => {
+            cache.borrow_mut().mark_texture_missing(handle);
+            None
+        }
+        _ => None,
     }
 }
 

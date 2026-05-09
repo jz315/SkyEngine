@@ -5,12 +5,13 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 
 use super::registry::{AssetRuntimeFactory, ErasedAssetFactory, FactoryAdapter, ManifestIndex};
-use super::texture::{decode_texture_source_bytes, TextureAsset, TextureAssetFactory, TextureColorSpace};
+use super::texture::{
+    decode_texture_source_bytes, TextureAsset, TextureAssetFactory, TextureColorSpace,
+};
 use super::types::{
     Asset, AssetConfig, AssetError, AssetEvent, AssetEventCursor, AssetEventKind, AssetId,
     AssetInstallContext, AssetLoadContext, AssetManifestEntry, AssetRegistryManifest, AssetState,
-    Handle,
-    ASSET_SYSTEM_VERSION,
+    Handle, ASSET_SYSTEM_VERSION,
 };
 
 const ASSET_EVENT_LOG_CAP: usize = 1024;
@@ -92,7 +93,10 @@ impl AssetServer {
         Ok(Handle::new(id))
     }
 
-    pub fn load_texture(&self, path_or_key: impl AsRef<Path>) -> Result<Handle<TextureAsset>, AssetError> {
+    pub fn load_texture(
+        &self,
+        path_or_key: impl AsRef<Path>,
+    ) -> Result<Handle<TextureAsset>, AssetError> {
         let mut inner = self.inner.lock().expect("asset server mutex poisoned");
         inner.load_texture(path_or_key.as_ref())
     }
@@ -380,18 +384,6 @@ impl AssetServerInner {
         self.manifest.source_to_id.get(&key).copied()
     }
 
-    fn raw_texture_path(&self, path: &Path) -> PathBuf {
-        if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            self.config.asset_root.join(path)
-        }
-    }
-
-    fn raw_texture_key(&self, path: &Path) -> String {
-        self.config.source_key(path)
-    }
-
     fn load_texture(&mut self, path_or_key: &Path) -> Result<Handle<TextureAsset>, AssetError> {
         if let Some(id) = self.lookup_source_asset(path_or_key) {
             self.validate_typed_request::<TextureAsset>(id)?;
@@ -399,25 +391,23 @@ impl AssetServerInner {
             return Ok(Handle::new(id));
         }
 
-        let path = self.raw_texture_path(path_or_key);
-        let key = self.raw_texture_key(&path);
-        let id = match self.raw_textures.get(&key).copied() {
+        let request = RawTextureRequest::new(&self.config, path_or_key);
+        let id = match self.raw_textures.get(&request.key).copied() {
             Some(id) => id,
             None => {
                 let id = AssetId::new();
-                self.raw_textures.insert(key, id);
+                self.raw_textures.insert(request.key, id);
                 self.records
-                    .insert(id, AssetRecord::new_raw_texture(path.clone()));
+                    .insert(id, AssetRecord::new_raw_texture(request.path.clone()));
                 id
             }
         };
 
-        let factory = self
-            .factories
-            .get(TextureAsset::TYPE)
-            .ok_or_else(|| AssetError::FactoryNotRegistered {
+        let factory = self.factories.get(TextureAsset::TYPE).ok_or_else(|| {
+            AssetError::FactoryNotRegistered {
                 asset_type: TextureAsset::TYPE.to_string(),
-            })?;
+            }
+        })?;
         if factory.product_type_id() != TypeId::of::<TextureAsset>() {
             return Err(AssetError::Internal {
                 message: "registered texture factory product type does not match TextureAsset"
@@ -761,12 +751,25 @@ impl AssetServerInner {
         Ok(impacted)
     }
 
+    fn entry_for_record(&self, id: AssetId) -> Result<AssetManifestEntry, AssetError> {
+        if let Some(entry) = self.manifest.entry(id) {
+            return Ok(entry.clone());
+        }
+
+        let path = self
+            .records
+            .get(&id)
+            .and_then(|record| record.raw_source_path.as_ref())
+            .ok_or(AssetError::AssetNotFound { id })?;
+        Ok(raw_texture_manifest_entry(
+            id,
+            self.config.source_key(path),
+            serde_json::json!({ "srgb": true }),
+        ))
+    }
+
     fn spawn_load_record(&mut self, id: AssetId) -> Result<bool, AssetError> {
-        let entry = self
-            .manifest
-            .entry(id)
-            .ok_or(AssetError::AssetNotFound { id })?
-            .clone();
+        let entry = self.entry_for_record(id)?;
         let generation = self
             .records
             .get(&id)
@@ -777,6 +780,10 @@ impl AssetServerInner {
             return Ok(false);
         }
 
+        let raw_source_path = self
+            .records
+            .get(&id)
+            .and_then(|record| record.raw_source_path.clone());
         let cooked_path = self.config.cooked_root().join(&entry.cooked_path);
         let asset_root = self.config.asset_root.clone();
         let cooked_root = self.config.cooked_root();
@@ -791,17 +798,31 @@ impl AssetServerInner {
 
         std::thread::spawn(move || {
             let result = (|| {
-                let bytes = std::fs::read(&cooked_path)
-                    .map_err(|error| map_read_error(id, &cooked_path, error))?;
-                let cooked_hash = hash_bytes(&bytes);
-                let loaded = factory.load(AssetLoadContext {
-                    asset_id: id,
-                    entry: &entry,
-                    bytes: &bytes,
-                    asset_root: &asset_root,
-                    cooked_root: &cooked_root,
-                })?;
-                Ok((loaded, cooked_hash))
+                if let Some(raw_source_path) = raw_source_path {
+                    let bytes = std::fs::read(&raw_source_path)
+                        .map_err(|error| map_raw_source_read_error(&raw_source_path, error))?;
+                    let texture = decode_texture_source_bytes(
+                        &raw_source_path,
+                        &bytes,
+                        TextureColorSpace::Srgb,
+                    )?;
+                    let loaded = crate::asset::LoadedAsset::new(
+                        Arc::new(texture) as Arc<dyn Any + Send + Sync>
+                    );
+                    Ok((loaded, hash_bytes(&bytes)))
+                } else {
+                    let bytes = std::fs::read(&cooked_path)
+                        .map_err(|error| map_read_error(id, &cooked_path, error))?;
+                    let cooked_hash = hash_bytes(&bytes);
+                    let loaded = factory.load(AssetLoadContext {
+                        asset_id: id,
+                        entry: &entry,
+                        bytes: &bytes,
+                        asset_root: &asset_root,
+                        cooked_root: &cooked_root,
+                    })?;
+                    Ok((loaded, cooked_hash))
+                }
             })();
 
             let completion = match result {
@@ -899,9 +920,10 @@ impl AssetServerInner {
 
     fn apply_update(&mut self) -> Result<(), AssetError> {
         while let Some(request) = self.requests.pop_front() {
-            let record = self.records.get_mut(&request.id).ok_or(AssetError::AssetNotFound {
-                id: request.id,
-            })?;
+            let record = self
+                .records
+                .get_mut(&request.id)
+                .ok_or(AssetError::AssetNotFound { id: request.id })?;
             Self::activate_record_for_load(record, request.requested_type);
         }
 
@@ -933,11 +955,11 @@ impl AssetServerInner {
 
                 match state {
                     AssetState::Loading => {
-                        let raw_texture = self
-                            .records
-                            .get(&id)
-                            .is_some_and(|record| record.raw_source_path.is_some());
-                        if self.config.background_loading || raw_texture {
+                        let texture_asset = self.records.get(&id).is_some_and(|record| {
+                            record.raw_source_path.is_some()
+                                || record.asset_type == TextureAsset::TYPE
+                        });
+                        if self.config.background_loading || texture_asset {
                             if self.spawn_load_record(id)? {
                                 progressed = true;
                             }
@@ -1034,6 +1056,7 @@ impl AssetServerInner {
                 record.loaded_cooked_hash = None;
                 record.reload_pending = false;
                 record.runtime = true;
+                record.raw_source_path = None;
             }
             None => {
                 self.records.insert(
@@ -1048,11 +1071,50 @@ impl AssetServerInner {
     }
 
     fn load_record(&mut self, id: AssetId) -> Result<(), AssetError> {
-        let entry = self
-            .manifest
-            .entry(id)
-            .ok_or(AssetError::AssetNotFound { id })?
-            .clone();
+        let entry = self.entry_for_record(id)?;
+        let raw_source_path = self
+            .records
+            .get(&id)
+            .and_then(|record| record.raw_source_path.clone());
+
+        if let Some(raw_source_path) = raw_source_path {
+            let bytes = std::fs::read(&raw_source_path)
+                .map_err(|error| map_raw_source_read_error(&raw_source_path, error))?;
+            let result =
+                decode_texture_source_bytes(&raw_source_path, &bytes, TextureColorSpace::Srgb);
+
+            match result {
+                Ok(texture) => {
+                    let entry_fingerprint = manifest_entry_fingerprint(&entry)?;
+                    let source_hash = hash_bytes(&bytes);
+                    self.replace_held_dependencies(id, Vec::new());
+
+                    let record = self.records.get_mut(&id).expect("record should exist");
+                    record.loaded = Some(Arc::new(texture));
+                    record.dependencies.clear();
+                    record.error = None;
+                    record.loaded_entry_fingerprint = Some(entry_fingerprint);
+                    record.loaded_cooked_hash = Some(source_hash);
+                    record.state = AssetState::Loaded;
+                    return Ok(());
+                }
+                Err(error) => {
+                    self.release_held_dependencies(id);
+                    let record = self.records.get_mut(&id).expect("record should exist");
+                    record.loaded = None;
+                    record.installed = None;
+                    record.error = Some(error.clone());
+                    record.loaded_entry_fingerprint = None;
+                    record.loaded_cooked_hash = None;
+                    record.reload_pending = false;
+                    record.state = AssetState::Failed;
+                    self.push_event(id, AssetEventKind::Failed, AssetState::Failed);
+                    self.schedule_release_if_unused(id);
+                    return Err(error);
+                }
+            }
+        }
+
         let cooked_path = self.config.cooked_root().join(&entry.cooked_path);
         let cooked_root = self.config.cooked_root();
         let bytes =
@@ -1187,11 +1249,7 @@ impl AssetServerInner {
     }
 
     fn install_record(&mut self, id: AssetId) -> Result<(), AssetError> {
-        let entry = self
-            .manifest
-            .entry(id)
-            .ok_or(AssetError::AssetNotFound { id })?
-            .clone();
+        let entry = self.entry_for_record(id)?;
         let factory = self
             .factories
             .get(&entry.asset_type)
@@ -1250,6 +1308,29 @@ impl AssetServerInner {
 struct AssetRequest {
     id: AssetId,
     requested_type: Option<TypeId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RawTextureRequest {
+    key: String,
+    path: PathBuf,
+}
+
+impl RawTextureRequest {
+    fn new(config: &AssetConfig, path: &Path) -> Self {
+        let path = if path.is_absolute() {
+            path.to_path_buf()
+        } else if config.asset_root.is_absolute() {
+            config.asset_root.join(path)
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(&config.asset_root)
+                .join(path)
+        };
+        let key = config.source_key(&path);
+        Self { key, path }
+    }
 }
 
 #[derive(Clone)]
@@ -1344,14 +1425,30 @@ impl AssetRecord {
 struct CompletedLoad {
     id: AssetId,
     generation: u64,
-    entry: crate::asset::AssetManifestEntry,
+    entry: AssetManifestEntry,
     cooked_hash: Option<String>,
     result: Result<crate::asset::LoadedAsset<Arc<dyn Any + Send + Sync>>, AssetError>,
 }
 
-fn manifest_entry_fingerprint(
-    entry: &crate::asset::AssetManifestEntry,
-) -> Result<String, AssetError> {
+fn raw_texture_manifest_entry(
+    id: AssetId,
+    source_path: String,
+    import_settings: serde_json::Value,
+) -> AssetManifestEntry {
+    AssetManifestEntry {
+        asset_id: id,
+        asset_type: TextureAsset::TYPE.to_string(),
+        importer: "texture.raw".to_string(),
+        cooker: "texture.raw_rgba8".to_string(),
+        version: 1,
+        source_path,
+        cooked_path: String::new(),
+        dependencies: Vec::new(),
+        import_settings,
+    }
+}
+
+fn manifest_entry_fingerprint(entry: &AssetManifestEntry) -> Result<String, AssetError> {
     let fingerprint = serde_json::json!({
         "asset_id": entry.asset_id.to_string(),
         "asset_type": entry.asset_type,
@@ -1441,6 +1538,13 @@ fn map_read_error(id: AssetId, path: &PathBuf, error: std::io::Error) -> AssetEr
             path: path.clone(),
             message: error.to_string(),
         }
+    }
+}
+
+fn map_raw_source_read_error(path: &PathBuf, error: std::io::Error) -> AssetError {
+    AssetError::Io {
+        path: path.clone(),
+        message: error.to_string(),
     }
 }
 
@@ -1960,6 +2064,133 @@ mod tests {
     }
 
     #[test]
+    fn load_texture_deduplicates_raw_paths() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        image::save_buffer(
+            dir.path().join("white.png"),
+            &[255, 255, 255, 255],
+            1,
+            1,
+            image::ColorType::Rgba8,
+        )?;
+
+        let server = AssetServer::with_empty_manifest(AssetConfig::new(dir.path(), "native"));
+        let first = server.load_texture("white.png")?;
+        let second = server.load_texture(dir.path().join("white.png"))?;
+        assert_eq!(first, second);
+
+        wait_for_terminal_texture(&server, &first)?;
+        assert_eq!(server.state(&first), AssetState::Installed);
+        assert_eq!(server.get(&first)?.size(), [1, 1]);
+        Ok(())
+    }
+
+    #[test]
+    fn load_texture_installs_raw_texture_metadata() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let pixels = [
+            0, 0, 0, 0, 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255,
+            255,
+        ];
+        image::save_buffer(
+            dir.path().join("pose.png"),
+            &pixels,
+            3,
+            2,
+            image::ColorType::Rgba8,
+        )?;
+
+        let server = AssetServer::with_empty_manifest(AssetConfig::new(dir.path(), "native"));
+        let handle = server.load_texture("pose.png")?;
+        wait_for_terminal_texture(&server, &handle)?;
+
+        let texture = server.get(&handle)?;
+        assert_eq!(texture.size(), [3, 2]);
+        assert_eq!(texture.visible_rect(), [1, 0, 2, 2]);
+        Ok(())
+    }
+
+    #[test]
+    fn load_texture_missing_raw_path_fails_without_panic() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempdir()?;
+        let server = AssetServer::with_empty_manifest(AssetConfig::new(dir.path(), "native"));
+        let handle = server.load_texture("missing.png")?;
+
+        wait_for_terminal_texture(&server, &handle)?;
+        assert_eq!(server.state(&handle), AssetState::Failed);
+        assert!(matches!(server.error(&handle), Some(AssetError::Io { .. })));
+        Ok(())
+    }
+
+    #[test]
+    fn load_texture_returns_before_raw_decode_completes() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempdir()?;
+        image::save_buffer(
+            dir.path().join("white.png"),
+            &[255, 255, 255, 255],
+            1,
+            1,
+            image::ColorType::Rgba8,
+        )?;
+
+        let server = AssetServer::with_empty_manifest(AssetConfig::new(dir.path(), "native"));
+        let handle = server.load_texture("white.png")?;
+
+        assert_ne!(server.state(&handle), AssetState::Installed);
+        wait_for_terminal_texture(&server, &handle)?;
+        assert_eq!(server.state(&handle), AssetState::Installed);
+        Ok(())
+    }
+
+    #[test]
+    fn load_texture_retries_failed_raw_path_when_requested_again(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let path = dir.path().join("late.png");
+        let server = AssetServer::with_empty_manifest(AssetConfig::new(dir.path(), "native"));
+        let handle = server.load_texture("late.png")?;
+
+        wait_for_terminal_texture(&server, &handle)?;
+        assert_eq!(server.state(&handle), AssetState::Failed);
+
+        image::save_buffer(&path, &[255, 255, 255, 255], 1, 1, image::ColorType::Rgba8)?;
+        let retry = server.load_texture("late.png")?;
+        assert_eq!(retry, handle);
+        wait_for_terminal_texture(&server, &retry)?;
+
+        assert_eq!(server.state(&retry), AssetState::Installed);
+        assert_eq!(server.get(&retry)?.size(), [1, 1]);
+        Ok(())
+    }
+
+    #[test]
+    fn load_texture_reuses_raw_handle_after_unload() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        image::save_buffer(
+            dir.path().join("white.png"),
+            &[255, 255, 255, 255],
+            1,
+            1,
+            image::ColorType::Rgba8,
+        )?;
+
+        let server = AssetServer::with_empty_manifest(AssetConfig::new(dir.path(), "native"));
+        let first = server.load_texture("white.png")?;
+        wait_for_terminal_texture(&server, &first)?;
+        server.unload(&first);
+        server.update()?;
+        assert_eq!(server.state(&first), AssetState::Unloaded);
+
+        let second = server.load_texture("white.png")?;
+        assert_eq!(second, first);
+        wait_for_terminal_texture(&server, &second)?;
+        assert_eq!(server.state(&second), AssetState::Installed);
+        Ok(())
+    }
+
+    #[test]
     fn reload_manifest_refreshes_source_lookup() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempdir()?;
         let asset_root = dir.path().join("assets");
@@ -2001,6 +2232,24 @@ mod tests {
             Some(asset_id)
         );
         Ok(())
+    }
+
+    fn wait_for_terminal_texture(
+        server: &AssetServer,
+        handle: &Handle<TextureAsset>,
+    ) -> Result<(), AssetError> {
+        for _ in 0..64 {
+            let _ = server.update();
+            match server.state(handle) {
+                AssetState::Installed | AssetState::Failed => return Ok(()),
+                _ => std::thread::sleep(Duration::from_millis(5)),
+            }
+        }
+        Err(AssetError::InvalidState {
+            id: handle.id(),
+            state: server.state(handle),
+            message: "raw texture did not reach a terminal state".to_string(),
+        })
     }
 
     #[test]
@@ -2082,6 +2331,41 @@ mod tests {
         server.update()?;
         assert_eq!(server.state(&handle), AssetState::Installed);
         assert_eq!(server.get(&handle)?.0, "ready");
+        Ok(())
+    }
+
+    #[test]
+    fn cooked_texture_load_uses_background_worker_even_without_global_background_loading(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let asset_id = AssetId::new();
+        let config = write_manifest(
+            dir.path(),
+            AssetManifestEntry {
+                asset_id,
+                asset_type: TextureAsset::TYPE.to_string(),
+                importer: "texture".to_string(),
+                cooker: "texture".to_string(),
+                version: 1,
+                source_path: "white.png".to_string(),
+                cooked_path: "white.skytex".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            },
+        )?;
+        std::fs::write(
+            config.cooked_root().join("white.skytex"),
+            crate::asset::texture::encode_texture_cooked(&TextureAsset::white_pixel()),
+        )?;
+
+        let server = AssetServer::new(config)?;
+        let handle = server.load::<TextureAsset>(asset_id)?;
+        server.update()?;
+        assert_ne!(server.state(&handle), AssetState::Installed);
+
+        wait_for_terminal_texture(&server, &handle)?;
+        assert_eq!(server.state(&handle), AssetState::Installed);
+        assert_eq!(server.get(&handle)?.size(), [1, 1]);
         Ok(())
     }
 

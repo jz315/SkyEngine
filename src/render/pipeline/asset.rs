@@ -1,7 +1,6 @@
 use std::any::TypeId;
 
 use crate::render::extract::{ExtractMeshes, ExtractSprites, Extractor};
-use crate::render::gi::SsgiPass;
 use crate::render::phase::{
     DrawFunction, DrawFunctionId, DrawMesh, DrawSprite, OpaquePhase, TransparentPhase,
 };
@@ -9,8 +8,8 @@ use crate::render::resources::material::{Material, SpriteMaterial};
 use crate::render::GpuTable;
 
 use super::{
-    AnyRenderFeature, Bloom, ComputePass, DdgiUpdateCompute, DebugView, GraphPass, PostFxPass,
-    RenderFeature, RenderPass, RenderPhase, Sharpen, TemporalAntiAliasing, ToneMap,
+    AnyRenderFeature, Bloom, ComputePass, DebugView, GiCompositePass, GiUpdateCompute, GraphPass,
+    PostFxPass, RenderFeature, RenderPass, RenderPhase, Sharpen, TemporalAntiAliasing, ToneMap,
 };
 
 /// Rendering backend requested by a [`RenderPipelineAsset`].
@@ -237,7 +236,9 @@ impl RenderPipelineBuilder {
         self.materials.push(MaterialRegistration {
             type_id,
             type_name: std::any::type_name::<M>(),
-            register: |registry, device| registry.register_material::<M>(device),
+            register: |registry, device| {
+                let _ = registry.register_material::<M>(device);
+            },
         });
 
         if type_id == TypeId::of::<SpriteMaterial>() {
@@ -413,7 +414,7 @@ impl RenderPipelineAsset {
         Self::builder()
             .add_feature(super::SpriteFeature::lit_hdr())
             .add_phase(crate::render::lighting::shadow::DirectionalShadowPhase::new())
-            .add_compute(DdgiUpdateCompute::default())
+            .add_compute(GiUpdateCompute::default())
             .add_phase(OpaquePhase::new())
             .add_phase(TransparentPhase::new())
             .add_postfx(Bloom::default())
@@ -427,9 +428,10 @@ impl RenderPipelineAsset {
             .add_phase(super::SceneNormalPrepass::default())
             .add_phase(super::SceneMaterialPrepass::default())
             .add_phase(crate::render::lighting::shadow::DirectionalShadowPhase::new())
-            .add_compute(DdgiUpdateCompute::default())
+            .add_compute(GiUpdateCompute::default())
             .add_phase(OpaquePhase::new())
-            .add_postfx(SsgiPass::default())
+            .add_postfx(super::ContactShadows::default())
+            .add_postfx(GiCompositePass::default())
             .add_phase(TransparentPhase::new())
             .add_postfx(TemporalAntiAliasing::default())
             .add_postfx(Sharpen::default())

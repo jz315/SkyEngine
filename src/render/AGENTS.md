@@ -179,11 +179,11 @@ render/
 - `postfx/` owns reusable effect implementations behind the built-in post-fx markers.
 - `resources/` owns shared material, mesh, atlas, and blackboard systems.
 - `resources/mesh.rs` uploads tangent-capable glTF meshes for `StandardMaterial` normal mapping.
-- `resources/mesh.rs` also extracts CPU ray geometry for meshes with a Float32x3 `Position` attribute; this feeds DDGI tracing while non-position meshes remain renderable but not GI-traceable.
+- `resources/mesh.rs` also extracts CPU ray geometry for meshes with a Float32x3 `Position` attribute; this feeds provider-driven GI tracing while non-position meshes remain renderable but not GI-traceable.
 - Material pipelines resolve vertex inputs by semantic against the actual mesh layout, so meshes may contain extra attributes if the material-required ones are present with compatible formats.
 - `StandardMaterial` without a normal map requires `Position + Normal + UV0`.
 - `StandardMaterial` with a normal map requires `Position + Normal + Tangent + UV0`.
-- The built-in 3D path now runs directional shadows and `DdgiUpdateCompute` ahead of opaque shading; DDGI is sampled inside `StandardMaterial` forward shading through the unified lighting scene bind group.
+- The built-in 3D path now runs directional shadows and generic `GiUpdateCompute` ahead of opaque shading; `StandardMaterial` samples indirect diffuse through an independent GI sampling bind group selected by the active provider.
 - Custom mesh materials can opt into `SceneMaterialPrepass` by implementing the `Material::scene_prepass_*` hooks; once they do, they participate in scene gbuffer generation without extra engine-side registration.
 
 ### `live2d/`
@@ -200,7 +200,7 @@ render/
 3. Registered `Extractor`s populate per-view `OpaquePhase` and `TransparentPhase`.
 4. Registered features run `prepare(...)` and may append additional phase items.
 5. Shared GPU tables are updated and uploaded through `GpuScene`.
-6. `RenderComposer` prepares DDGI resources and per-view directional-shadow payloads used by `StandardMaterial` and `DirectionalShadowPhase`.
+6. `RenderComposer` prepares generic GI provider resources and per-view directional-shadow payloads used by `StandardMaterial` and `DirectionalShadowPhase`.
 7. `RenderComposer` builds a `PreparedFrame` and one `PreparedView` per visible view, then lets features inject typed frame/view payloads.
 8. `pipeline_runtime.rs` converts `PipelineStep`s into `FramePipeline` nodes.
 9. `FramePipeline` executes phases, compute steps, custom passes, post-fx, and final viewport presentation.

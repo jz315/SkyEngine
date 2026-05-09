@@ -1,6 +1,6 @@
 use crate::ecs::EntityId;
 use crate::render::resources::{
-    material::{Material, MaterialHandle},
+    material::{Material, MaterialHandle, TypedMaterialHandle},
     mesh::MeshHandle,
 };
 
@@ -22,9 +22,10 @@ impl MeshDrawData {
     #[inline]
     pub fn new(
         mesh_handle: MeshHandle,
-        material_handle: MaterialHandle,
+        material_handle: impl Into<MaterialHandle>,
         sub_mesh_index: u32,
     ) -> Self {
+        let material_handle = material_handle.into();
         Self {
             mesh_slot: mesh_handle.slot(),
             mesh_kind: if mesh_handle.is_builtin() {
@@ -51,6 +52,11 @@ impl MeshDrawData {
     #[inline]
     pub fn material_handle<M: Material>(self) -> MaterialHandle {
         MaterialHandle::new::<M>(self.material_index, self.material_generation)
+    }
+
+    #[inline]
+    pub fn typed_material_handle<M: Material>(self) -> Option<TypedMaterialHandle<M>> {
+        self.material_handle::<M>().typed::<M>()
     }
 
     #[inline]

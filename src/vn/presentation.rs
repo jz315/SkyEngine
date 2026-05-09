@@ -3,12 +3,12 @@ use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::asset::{AssetServer, Handle, TextureAsset, TextureColorSpace};
+use crate::asset::{AssetError, AssetServer, Handle, TextureAsset};
 use crate::ecs::{EntityId, World};
 use crate::render::{Color, SortingLayer, SpriteRenderer, Transform};
 use crate::vn::components::{VnActorSprite, VnBackground};
+use crate::vn::resource::VnResource;
 use crate::vn::scene::{VnActor, VnImageLayer, VnSceneState};
-use crate::vn::VnRuntime;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct VnSpritePresentationConfig {
@@ -56,8 +56,28 @@ impl VnSpriteTextureMap {
         self.textures.insert(asset, texture)
     }
 
+    pub fn insert_handle(
+        &mut self,
+        asset: impl Into<String>,
+        texture: Handle<TextureAsset>,
+    ) -> Option<Handle<TextureAsset>> {
+        self.insert(asset, texture)
+    }
+
     pub fn get(&self, asset: &str) -> Option<Handle<TextureAsset>> {
         self.textures.get(asset).copied()
+    }
+
+    pub fn len(&self) -> usize {
+        self.textures.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.textures.is_empty()
+    }
+
+    pub fn ready_count(&self) -> usize {
+        self.sizes.len()
     }
 
     pub fn insert_with_size(
@@ -104,9 +124,7 @@ impl VnSpriteTextureMap {
 
     pub fn visible_uv_rect(&self, asset: &str) -> Option<[f32; 4]> {
         let size = self.size(asset)?;
-        let rect = self
-            .visible_rect(asset)
-            .unwrap_or([0, 0, size[0], size[1]]);
+        let rect = self.visible_rect(asset).unwrap_or([0, 0, size[0], size[1]]);
         if size[0] == 0 || size[1] == 0 {
             return Some([0.0, 0.0, 1.0, 1.0]);
         }
@@ -120,66 +138,45 @@ impl VnSpriteTextureMap {
         ])
     }
 
-    pub fn load_image_file(
+    pub fn refresh_metadata(&mut self, assets: &AssetServer) {
+        let pending: Vec<_> = self
+            .textures
+            .iter()
+            .filter(|(asset, _)| !self.sizes.contains_key(*asset))
+            .map(|(asset, handle)| (asset.clone(), *handle))
+            .collect();
+        for (asset, handle) in pending {
+            if let Some(texture) = assets.try_get(&handle) {
+                self.sizes.insert(asset.clone(), texture.size());
+                self.visible_rects.insert(asset, texture.visible_rect());
+            }
+        }
+    }
+
+    pub fn request_image_file(
         &mut self,
         assets: &AssetServer,
         asset: impl Into<String>,
         path: impl AsRef<Path>,
-    ) -> Result<VnLoadedTexture, VnTextureLoadError> {
+    ) -> Result<Handle<TextureAsset>, VnTextureLoadError> {
         let asset = asset.into();
         let path = path.as_ref();
-        let bytes = std::fs::read(path).map_err(|source| VnTextureLoadError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        let image = image::load_from_memory(&bytes)
-            .map_err(|source| VnTextureLoadError::Decode {
+        let handle = assets
+            .load_texture(path)
+            .map_err(|source| VnTextureLoadError::Asset {
                 path: path.to_path_buf(),
                 source,
             })?;
-        let has_alpha = image.color().has_alpha();
-        let image = image.to_rgba8();
-        let (width, height) = image.dimensions();
-        let visible_rect = if has_alpha {
-            alpha_visible_rect(&image)
-        } else {
-            [0, 0, width, height]
-        };
-        let handle = assets.insert_runtime(TextureAsset::new(
-            width,
-            height,
-            TextureColorSpace::Srgb,
-            image.into_raw(),
-        ));
-        self.insert_with_visible_rect(asset.clone(), handle, [width, height], visible_rect);
-        Ok(VnLoadedTexture {
-            asset,
-            handle,
-            size: [width, height],
-        })
+        self.insert_handle(asset, handle);
+        Ok(handle)
     }
 
-    pub fn load_image_files<A, P>(
-        &mut self,
-        assets: &AssetServer,
-        files: impl IntoIterator<Item = (A, P)>,
-    ) -> Result<Vec<VnLoadedTexture>, VnTextureLoadError>
-    where
-        A: Into<String>,
-        P: AsRef<Path>,
-    {
-        files
-            .into_iter()
-            .map(|(asset, path)| self.load_image_file(assets, asset, path))
-            .collect()
-    }
-
-    pub fn load_image_files_from<A, P>(
+    pub fn request_image_files_from<A, P>(
         &mut self,
         assets: &AssetServer,
         root: impl AsRef<Path>,
         files: impl IntoIterator<Item = (A, P)>,
-    ) -> Result<Vec<VnLoadedTexture>, VnTextureLoadError>
+    ) -> Result<Vec<Handle<TextureAsset>>, VnTextureLoadError>
     where
         A: Into<String>,
         P: AsRef<Path>,
@@ -187,61 +184,8 @@ impl VnSpriteTextureMap {
         let root = root.as_ref();
         files
             .into_iter()
-            .map(|(asset, path)| self.load_image_file(assets, asset, root.join(path)))
+            .map(|(asset, path)| self.request_image_file(assets, asset, root.join(path)))
             .collect()
-    }
-
-    pub fn from_image_files<A, P>(
-        assets: &AssetServer,
-        files: impl IntoIterator<Item = (A, P)>,
-    ) -> Result<Self, VnTextureLoadError>
-    where
-        A: Into<String>,
-        P: AsRef<Path>,
-    {
-        let mut textures = Self::default();
-        textures.load_image_files(assets, files)?;
-        Ok(textures)
-    }
-
-    pub fn from_image_files_from<A, P>(
-        assets: &AssetServer,
-        root: impl AsRef<Path>,
-        files: impl IntoIterator<Item = (A, P)>,
-    ) -> Result<Self, VnTextureLoadError>
-    where
-        A: Into<String>,
-        P: AsRef<Path>,
-    {
-        let mut textures = Self::default();
-        textures.load_image_files_from(assets, root, files)?;
-        Ok(textures)
-    }
-}
-
-fn alpha_visible_rect(image: &image::RgbaImage) -> [u32; 4] {
-    let (width, height) = image.dimensions();
-    let mut min_x = width;
-    let mut min_y = height;
-    let mut max_x = 0;
-    let mut max_y = 0;
-    let mut found = false;
-
-    for (x, y, pixel) in image.enumerate_pixels() {
-        if pixel.0[3] == 0 {
-            continue;
-        }
-        found = true;
-        min_x = min_x.min(x);
-        min_y = min_y.min(y);
-        max_x = max_x.max(x);
-        max_y = max_y.max(y);
-    }
-
-    if found {
-        [min_x, min_y, max_x - min_x + 1, max_y - min_y + 1]
-    } else {
-        [0, 0, width, height]
     }
 }
 
@@ -253,39 +197,32 @@ fn clamp_visible_rect(size: [u32; 2], rect: [u32; 4]) -> [u32; 4] {
     [x, y, width, height]
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct VnLoadedTexture {
-    pub asset: String,
-    pub handle: Handle<TextureAsset>,
-    pub size: [u32; 2],
-}
-
 #[derive(Debug)]
 pub enum VnTextureLoadError {
-    Io {
-        path: PathBuf,
-        source: std::io::Error,
-    },
     Decode {
         path: PathBuf,
         source: image::ImageError,
+    },
+    Asset {
+        path: PathBuf,
+        source: AssetError,
     },
 }
 
 impl fmt::Display for VnTextureLoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Io { path, source } => {
-                write!(
-                    f,
-                    "failed to read VN texture '{}': {source}",
-                    path.display()
-                )
-            }
             Self::Decode { path, source } => {
                 write!(
                     f,
                     "failed to decode VN texture '{}': {source}",
+                    path.display()
+                )
+            }
+            Self::Asset { path, source } => {
+                write!(
+                    f,
+                    "failed to load VN texture asset '{}': {source}",
                     path.display()
                 )
             }
@@ -296,8 +233,8 @@ impl fmt::Display for VnTextureLoadError {
 impl Error for VnTextureLoadError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Io { source, .. } => Some(source),
             Self::Decode { source, .. } => Some(source),
+            Self::Asset { source, .. } => Some(source),
         }
     }
 }
@@ -310,26 +247,24 @@ pub struct VnSpriteSceneEntities {
 }
 
 pub fn sync_runtime_scene_to_world(world: &mut World) {
-    let Some(scene) = world
-        .get_resource::<VnRuntime>()
-        .map(|runtime| runtime.scene().clone())
+    let Some((scene, config, textures, mut entities)) =
+        world.get_resource_mut::<VnResource>().and_then(|vn| {
+            let scene = vn.runtime()?.scene().clone();
+            Some((
+                scene,
+                vn.sprite_presentation_config.clone(),
+                vn.sprite_textures.clone(),
+                std::mem::take(&mut vn.sprite_scene_entities),
+            ))
+        })
     else {
         return;
     };
-    let config = world
-        .get_resource::<VnSpritePresentationConfig>()
-        .cloned()
-        .unwrap_or_default();
-    let textures = world
-        .get_resource::<VnSpriteTextureMap>()
-        .cloned()
-        .unwrap_or_default();
-    let mut entities = world
-        .remove_resource::<VnSpriteSceneEntities>()
-        .unwrap_or_default();
 
     sync_scene_to_world(world, &mut entities, &scene, &config, &textures);
-    world.insert_resource(entities);
+    if let Some(vn) = world.get_resource_mut::<VnResource>() {
+        vn.sprite_scene_entities = entities;
+    }
 }
 
 pub fn sync_scene_to_world(
@@ -544,7 +479,7 @@ impl ColorAlphaExt for Color {
 #[cfg(test)]
 mod tests {
     use crate::asset::{AssetConfig, AssetServer};
-    use crate::vn::{VnRuntime, VnRuntimeEvent, YarnScript};
+    use crate::vn::{VnResource, VnRuntime, VnRuntimeEvent, YarnScript};
 
     use super::*;
 
@@ -571,12 +506,15 @@ title: Start
         ));
 
         let mut world = World::new();
-        world.insert_resource(runtime);
+        let mut vn = VnResource::default();
+        vn.runtime = Some(runtime);
+        world.insert_resource(vn);
         sync_runtime_scene_to_world(&mut world);
 
         let entities = world
-            .get_resource::<VnSpriteSceneEntities>()
+            .get_resource::<VnResource>()
             .unwrap()
+            .sprite_scene_entities
             .clone();
         let background = entities.background.unwrap();
         let alice = entities.actors["alice"];
@@ -584,26 +522,31 @@ title: Start
         assert!(world.get::<VnActorSprite>(alice).is_some());
 
         sync_runtime_scene_to_world(&mut world);
-        let reused = world.get_resource::<VnSpriteSceneEntities>().unwrap();
+        let reused = &world
+            .get_resource::<VnResource>()
+            .unwrap()
+            .sprite_scene_entities;
         assert_eq!(reused.background, Some(background));
         assert_eq!(reused.actors["alice"], alice);
     }
 
     #[test]
-    fn texture_map_loads_image_files_with_sizes() {
+    fn texture_map_requests_image_files_and_refreshes_sizes() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("white.png");
         image::save_buffer(&path, &[255, 255, 255, 255], 1, 1, image::ColorType::Rgba8).unwrap();
 
-        let asset_server = AssetServer::with_empty_manifest(AssetConfig::default());
-        let textures = VnSpriteTextureMap::from_image_files_from(
-            &asset_server,
-            temp.path(),
-            [("vn/white", "white.png")],
-        )
-        .unwrap();
+        let asset_server =
+            AssetServer::with_empty_manifest(AssetConfig::new(temp.path(), "native"));
+        let mut textures = VnSpriteTextureMap::default();
+        textures
+            .request_image_files_from(&asset_server, temp.path(), [("vn/white", "white.png")])
+            .unwrap();
 
         let handle = textures.get("vn/white").unwrap();
+        assert_eq!(textures.size("vn/white"), None);
+        wait_for_texture(&asset_server, handle);
+        textures.refresh_metadata(&asset_server);
         assert_eq!(textures.size("vn/white"), Some([1, 1]));
         assert!(asset_server.is_installed(&handle));
     }
@@ -613,18 +556,19 @@ title: Start
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("pose.png");
         let pixels = [
-            0, 0, 0, 0, 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255,
-            255, 255,
+            0, 0, 0, 0, 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255,
+            255,
         ];
         image::save_buffer(&path, &pixels, 3, 2, image::ColorType::Rgba8).unwrap();
 
-        let asset_server = AssetServer::with_empty_manifest(AssetConfig::default());
-        let textures = VnSpriteTextureMap::from_image_files_from(
-            &asset_server,
-            temp.path(),
-            [("vn/pose", "pose.png")],
-        )
-        .unwrap();
+        let asset_server =
+            AssetServer::with_empty_manifest(AssetConfig::new(temp.path(), "native"));
+        let mut textures = VnSpriteTextureMap::default();
+        let handle = textures
+            .request_image_file(&asset_server, "vn/pose", temp.path().join("pose.png"))
+            .unwrap();
+        wait_for_texture(&asset_server, handle);
+        textures.refresh_metadata(&asset_server);
 
         assert_eq!(textures.size("vn/pose"), Some([3, 2]));
         assert_eq!(textures.visible_rect("vn/pose"), Some([1, 0, 2, 2]));
@@ -642,5 +586,16 @@ title: Start
                 "expected {expected}, got {actual}"
             );
         }
+    }
+
+    fn wait_for_texture(asset_server: &AssetServer, handle: Handle<TextureAsset>) {
+        for _ in 0..64 {
+            asset_server.update().unwrap();
+            if asset_server.is_installed(&handle) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("texture did not install");
     }
 }

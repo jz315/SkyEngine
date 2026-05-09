@@ -11,9 +11,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::vn::components::{VnActorSprite, VnBackground, VnChoiceUi, VnDialogueUi, VnSceneLayer};
 use crate::vn::dialogue::VnDialogueState;
 use crate::vn::presentation::VnSpriteTextureMap;
-use crate::vn::runtime::{VnRuntime, VnRuntimeEvent, VnRuntimeResult, VnStatus};
+use crate::vn::resource::VnResource;
+use crate::vn::runtime::{VnRuntime, VnRuntimeEvent, VnRuntimeResult};
 use crate::vn::scene::{VnActor, VnImageLayer, VnSceneState};
-use crate::vn::ui::{VnUiMode, VnUiState};
+use crate::vn::ui::VnUiMode;
 
 static VN_UI_DEBUG_FRAMES: AtomicUsize = AtomicUsize::new(0);
 
@@ -248,30 +249,30 @@ pub fn sync_runtime_ui_to_world(world: &mut World) {
 }
 
 pub fn sync_runtime_ui_to_world_with_surface(world: &mut World, surface_size: [f32; 2]) {
-    let Some((dialogue, scene)) = world
-        .get_resource::<VnRuntime>()
-        .map(|runtime| (runtime.dialogue().clone(), runtime.scene().clone()))
+    let Some((dialogue, scene, mode, config, textures, mut entities)) =
+        world.get_resource_mut::<VnResource>().and_then(|vn| {
+            let runtime = vn.runtime()?;
+            Some((
+                runtime.dialogue().clone(),
+                runtime.scene().clone(),
+                vn.ui.clone(),
+                vn.ui_presentation_config
+                    .clone()
+                    .unwrap_or_else(|| VnUiPresentationConfig::for_surface(surface_size)),
+                vn.sprite_textures.clone(),
+                std::mem::take(&mut vn.ui_entities),
+            ))
+        })
     else {
         return;
     };
-    let mode = world
-        .get_resource::<VnUiState>()
-        .map(|ui| ui.mode.clone())
-        .unwrap_or(VnUiMode::Reading);
-    let config = world
-        .get_resource::<VnUiPresentationConfig>()
-        .cloned()
-        .unwrap_or_else(|| VnUiPresentationConfig::for_surface(surface_size));
-    let textures = world
-        .get_resource::<VnSpriteTextureMap>()
-        .cloned()
-        .unwrap_or_default();
-    let mut entities = world.remove_resource::<VnUiEntities>().unwrap_or_default();
     let debug = begin_vn_ui_debug(surface_size, &config, &scene);
 
     sync_scene_ui_to_world_debug(world, &mut entities, &scene, &config, &textures, debug);
-    sync_dialogue_ui_to_world_debug(world, &mut entities, &dialogue, &mode, &config, debug);
-    world.insert_resource(entities);
+    sync_dialogue_ui_to_world_debug(world, &mut entities, &dialogue, &mode.mode, &config, debug);
+    if let Some(vn) = world.get_resource_mut::<VnResource>() {
+        vn.ui_entities = entities;
+    }
 }
 
 pub fn sync_scene_ui_to_world(
@@ -354,7 +355,8 @@ fn sync_image_ui_layer(
     let node = UiNode::panel(rect[2], rect[3])
         .anchor(UiAnchor::TopLeft)
         .at(rect[0], rect[1])
-        .z(layer.layer);
+        .z(layer.layer)
+        .input_transparent();
     let image = UiImage::new(texture).uv(uv_rect[0], uv_rect[1], uv_rect[2], uv_rect[3]);
     let entity = match live_entity(world, *slot) {
         Some(entity) => {
@@ -447,8 +449,11 @@ fn sync_actor_ui_layer(
     let node = UiNode::panel(width, height)
         .anchor(UiAnchor::TopLeft)
         .at(x, y)
-        .z(actor.layer);
-    let uv_rect = textures.visible_uv_rect(asset).unwrap_or([0.0, 0.0, 1.0, 1.0]);
+        .z(actor.layer)
+        .input_transparent();
+    let uv_rect = textures
+        .visible_uv_rect(asset)
+        .unwrap_or([0.0, 0.0, 1.0, 1.0]);
     let image = UiImage::new(texture)
         .uv(uv_rect[0], uv_rect[1], uv_rect[2], uv_rect[3])
         .color(Color::new(1.0, 1.0, 1.0, actor.opacity));
@@ -749,8 +754,8 @@ fn debug_log_actor(
         return;
     };
     eprintln!(
-        "[SkyEngine][VN UI][frame {}] actor id={} asset={} image_size={:?} anchor={:?} scene_size={:?} rect={:?} opacity={:.3}",
-        debug.frame, actor.id, asset, image_size, anchor, scene_size, rect, actor.opacity
+        "[SkyEngine][VN UI][frame {}] actor id={} asset={} position={:?} image_size={:?} anchor={:?} scene_size={:?} rect={:?} opacity={:.3}",
+        debug.frame, actor.id, asset, actor.position, image_size, anchor, scene_size, rect, actor.opacity
     );
 }
 
@@ -778,14 +783,19 @@ fn debug_log_dialogue(
     );
 }
 
-pub fn apply_vn_ui_events(world: &mut World) -> VnRuntimeResult<Vec<VnRuntimeEvent>> {
+pub fn drain_vn_ui_actions(world: &mut World) -> VnRuntimeResult<Vec<VnAction>> {
     let mut actions = Vec::new();
     if let Some(events) = world.get_resource_mut::<UiEvents>() {
         let mut retained = Vec::new();
         for event in events.drain() {
             if event.kind == UiEventKind::Clicked {
                 if let Some(id) = event.id.as_ref().and_then(parse_vn_ui_action) {
-                    actions.push(id);
+                    let action = match id {
+                        VnUiAction::Advance => VnAction::Advance,
+                        VnUiAction::Choice(index) => VnAction::Choice(index),
+                    };
+                    debug_log_ui_action(id);
+                    actions.push(action);
                     continue;
                 }
             }
@@ -796,29 +806,53 @@ pub fn apply_vn_ui_events(world: &mut World) -> VnRuntimeResult<Vec<VnRuntimeEve
         }
     }
 
+    Ok(actions)
+}
+
+pub fn apply_vn_ui_events(world: &mut World) -> VnRuntimeResult<Vec<VnRuntimeEvent>> {
+    let actions = drain_vn_ui_actions(world)?;
     let mut output = Vec::new();
-    let Some(runtime) = world.get_resource_mut::<VnRuntime>() else {
+    let Some(vn) = world.get_resource_mut::<VnResource>() else {
+        return Ok(output);
+    };
+    let Some(runtime) = vn.runtime_mut() else {
         return Ok(output);
     };
 
     for action in actions {
-        match action {
-            VnUiAction::Advance => {
-                if let Some(event) = runtime.apply_action(VnAction::Advance)? {
-                    output.push(event);
-                }
-            }
-            VnUiAction::Choice(index) => {
-                if runtime.status() == &VnStatus::Choice {
-                    runtime.dialogue_mut().selected_choice = index;
-                    runtime.choose(index)?;
-                    output.push(runtime.advance()?);
-                }
+        if let Some(event) = runtime.apply_action(action)? {
+            let drain_commands = matches!(event, VnRuntimeEvent::Command(_));
+            output.push(event);
+            if drain_commands {
+                drain_runtime_commands(runtime, &mut output)?;
             }
         }
     }
 
     Ok(output)
+}
+
+fn debug_log_ui_action(action: VnUiAction) {
+    let Ok(raw) = std::env::var("SKY_VN_UI_DEBUG") else {
+        return;
+    };
+    if raw.is_empty() || raw == "0" || raw.eq_ignore_ascii_case("false") {
+        return;
+    }
+    eprintln!("[SkyEngine][VN UI] action={action:?}");
+}
+
+fn drain_runtime_commands(
+    runtime: &mut VnRuntime,
+    output: &mut Vec<VnRuntimeEvent>,
+) -> VnRuntimeResult<()> {
+    for _ in 0..16 {
+        let Some(VnRuntimeEvent::Command(_)) = output.last() else {
+            break;
+        };
+        output.push(runtime.advance()?);
+    }
+    Ok(())
 }
 
 fn ensure_dialogue_widgets(
@@ -859,7 +893,8 @@ fn ensure_dialogue_widgets(
                 UiNode::panel(320.0, 28.0)
                     .child_of(panel)
                     .at(28.0, 18.0)
-                    .z(101),
+                    .z(101)
+                    .input_transparent(),
                 UiText::new("")
                     .size(config.speaker_font_size)
                     .color(config.speaker_color),
@@ -880,7 +915,8 @@ fn ensure_dialogue_widgets(
                 UiNode::panel(config.dialogue_size[0] - 120.0, 82.0)
                     .child_of(panel)
                     .at(28.0, 56.0)
-                    .z(101),
+                    .z(101)
+                    .input_transparent(),
                 UiText::new("")
                     .size(config.line_font_size)
                     .color(config.text_color),
@@ -1045,11 +1081,26 @@ fn parse_vn_ui_action(id: &UiId) -> Option<VnUiAction> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::asset::{AssetConfig, AssetServer, TextureAsset};
     use crate::ui::{UiEvent, UiEvents};
+    use crate::vn::resource::VnResource;
+    use crate::vn::runtime::VnStatus;
     use crate::vn::script::{VnValue, YarnInstruction, YarnScript};
 
-    use super::*;
+    fn insert_vn_runtime(world: &mut World, runtime: VnRuntime) {
+        let mut vn = VnResource::default();
+        vn.runtime = Some(runtime);
+        world.insert_resource(vn);
+    }
+
+    fn vn(world: &World) -> &VnResource {
+        world.get_resource::<VnResource>().unwrap()
+    }
+
+    fn vn_mut(world: &mut World) -> &mut VnResource {
+        world.get_resource_mut::<VnResource>().unwrap()
+    }
 
     #[test]
     fn ui_sync_spawns_dialogue_and_choices() {
@@ -1059,10 +1110,10 @@ mod tests {
         runtime.advance().unwrap();
 
         let mut world = World::new();
-        world.insert_resource(runtime);
+        insert_vn_runtime(&mut world, runtime);
         sync_runtime_ui_to_world(&mut world);
 
-        let entities = world.get_resource::<VnUiEntities>().unwrap().clone();
+        let entities = vn(&world).ui_entities.clone();
         assert!(world
             .get::<VnDialogueUi>(entities.dialogue_panel.unwrap())
             .is_some());
@@ -1087,9 +1138,9 @@ mod tests {
         runtime.advance().unwrap();
 
         let mut world = World::new();
-        world.insert_resource(runtime);
+        insert_vn_runtime(&mut world, runtime);
         sync_runtime_ui_to_world(&mut world);
-        let entities = world.get_resource::<VnUiEntities>().unwrap().clone();
+        let entities = vn(&world).ui_entities.clone();
         world.insert_resource(UiEvents::new());
         world
             .get_resource_mut::<UiEvents>()
@@ -1102,8 +1153,183 @@ mod tests {
         let events = apply_vn_ui_events(&mut world).unwrap();
         assert!(matches!(events.first(), Some(VnRuntimeEvent::Line(_))));
         assert_eq!(
-            world.get_resource::<VnRuntime>().unwrap().variable("route"),
+            vn(&world).runtime().unwrap().variable("route"),
             Some(&VnValue::String("b".to_owned()))
+        );
+    }
+
+    #[test]
+    fn ui_events_can_be_drained_as_vn_actions_without_mutating_runtime() {
+        let mut runtime = choice_runtime();
+        runtime.advance().unwrap();
+        runtime.dialogue_mut().complete_line();
+        runtime.advance().unwrap();
+
+        let mut world = World::new();
+        insert_vn_runtime(&mut world, runtime);
+        sync_runtime_ui_to_world(&mut world);
+        let entities = vn(&world).ui_entities.clone();
+        world.insert_resource(UiEvents::new());
+        world
+            .get_resource_mut::<UiEvents>()
+            .unwrap()
+            .push(UiEvent::clicked(
+                entities.choice_buttons[1],
+                Some(UiId::new("vn.choice.1")),
+            ));
+
+        let actions = drain_vn_ui_actions(&mut world).unwrap();
+
+        assert_eq!(actions, vec![VnAction::Choice(1)]);
+        assert_eq!(vn(&world).runtime().unwrap().variable("route"), None);
+    }
+
+    #[test]
+    fn runtime_ui_sync_updates_actor_position_after_move() {
+        let actor = AssetServer::with_empty_manifest(AssetConfig::default())
+            .insert_runtime(TextureAsset::white_pixel());
+        let mut textures = VnSpriteTextureMap::default();
+        textures.insert_with_size("alice_pose", actor, [300, 600]);
+
+        let script = YarnScript::parse_str(
+            r#"
+title: Start
+---
+<<show alice "alice_pose" at="right">>
+Alice: Ready. #line:start.1
+-> Center
+    <<move alice to="center">>
+    Alice: Center. #line:center.1
+===
+"#,
+        )
+        .unwrap();
+        let mut runtime = VnRuntime::from_script(script, "Start").unwrap();
+        runtime.advance().unwrap();
+        runtime.advance().unwrap();
+
+        let config = VnUiPresentationConfig {
+            scene_position: [0.0, 0.0],
+            scene_size: [1000.0, 600.0],
+            actor_height: 0.9,
+            ..Default::default()
+        };
+        let mut world = World::new();
+        insert_vn_runtime(&mut world, runtime);
+        {
+            let vn = vn_mut(&mut world);
+            vn.sprite_textures = textures;
+            vn.ui_presentation_config = Some(config);
+        }
+        sync_runtime_ui_to_world(&mut world);
+        let actor_entity = vn(&world).ui_entities.actors["alice"];
+        let right_x = world.get::<UiNode>(actor_entity).unwrap().position[0];
+
+        {
+            let runtime = vn_mut(&mut world).runtime_mut().unwrap();
+            runtime.dialogue_mut().complete_line();
+            assert!(matches!(
+                runtime.advance().unwrap(),
+                VnRuntimeEvent::Choices(_)
+            ));
+            runtime.choose(0).unwrap();
+            assert!(matches!(
+                runtime.advance().unwrap(),
+                VnRuntimeEvent::Command(_)
+            ));
+        }
+        crate::vn::systems::vn_ui_system(&mut world);
+
+        let moved_x = world.get::<UiNode>(actor_entity).unwrap().position[0];
+        assert!(
+            moved_x < right_x,
+            "expected center position {moved_x} to be left of right position {right_x}"
+        );
+        assert_eq!(
+            vn(&world).runtime().unwrap().scene().actors["alice"]
+                .position
+                .as_deref(),
+            Some("center")
+        );
+    }
+
+    #[test]
+    fn ui_choice_click_can_execute_move_command_branch() {
+        let actor = AssetServer::with_empty_manifest(AssetConfig::default())
+            .insert_runtime(TextureAsset::white_pixel());
+        let mut textures = VnSpriteTextureMap::default();
+        textures.insert_with_size("alice_pose", actor, [300, 600]);
+
+        let script = YarnScript::parse_str(
+            r#"
+title: Start
+---
+<<show alice "alice_pose" at="right">>
+Alice: Ready. #line:start.1
+-> Stay
+    Alice: Stay. #line:stay.1
+-> Also stay
+    Alice: Also stay. #line:stay.2
+-> Center
+    <<move alice to="center">>
+    Alice: Center. #line:center.1
+===
+"#,
+        )
+        .unwrap();
+        let mut runtime = VnRuntime::from_script(script, "Start").unwrap();
+        runtime.advance().unwrap();
+        runtime.advance().unwrap();
+        runtime.dialogue_mut().complete_line();
+        runtime.advance().unwrap();
+
+        let config = VnUiPresentationConfig {
+            scene_position: [0.0, 0.0],
+            scene_size: [1000.0, 600.0],
+            actor_height: 0.9,
+            ..Default::default()
+        };
+        let mut world = World::new();
+        insert_vn_runtime(&mut world, runtime);
+        {
+            let vn = vn_mut(&mut world);
+            vn.sprite_textures = textures;
+            vn.ui_presentation_config = Some(config);
+        }
+        sync_runtime_ui_to_world(&mut world);
+
+        let entities = vn(&world).ui_entities.clone();
+        let actor_entity = entities.actors["alice"];
+        let right_x = world.get::<UiNode>(actor_entity).unwrap().position[0];
+        world.insert_resource(UiEvents::new());
+        world
+            .get_resource_mut::<UiEvents>()
+            .unwrap()
+            .push(UiEvent::clicked(
+                entities.choice_buttons[2],
+                Some(UiId::new("vn.choice.2")),
+            ));
+
+        crate::vn::systems::vn_input_system(&mut world);
+        crate::vn::systems::vn_ui_system(&mut world);
+
+        let moved_x = world.get::<UiNode>(actor_entity).unwrap().position[0];
+        assert!(
+            moved_x < right_x,
+            "expected clicked move choice to move actor from {right_x} to {moved_x}"
+        );
+        let runtime = vn(&world).runtime().unwrap();
+        assert_eq!(
+            runtime.scene().actors["alice"].position.as_deref(),
+            Some("center")
+        );
+        assert_eq!(
+            runtime
+                .dialogue()
+                .current_line
+                .as_ref()
+                .map(|line| line.text.as_str()),
+            Some("Center.")
         );
     }
 
@@ -1122,12 +1348,12 @@ mod tests {
             ..Default::default()
         };
         let mut world = World::new();
-        world.insert_resource(runtime);
-        world.insert_resource(config);
+        insert_vn_runtime(&mut world, runtime);
+        vn_mut(&mut world).ui_presentation_config = Some(config);
 
         sync_runtime_ui_to_world(&mut world);
 
-        let entities = world.get_resource::<VnUiEntities>().unwrap();
+        let entities = &vn(&world).ui_entities;
         let dialogue = world
             .get::<UiNode>(entities.dialogue_panel.unwrap())
             .unwrap();
@@ -1320,12 +1546,12 @@ Alice: Surface sized. #line:start.1
         }
 
         let mut world = World::new();
-        world.insert_resource(runtime);
-        world.insert_resource(textures);
+        insert_vn_runtime(&mut world, runtime);
+        vn_mut(&mut world).sprite_textures = textures;
 
         sync_runtime_ui_to_world_with_surface(&mut world, [1600.0, 900.0]);
 
-        let entities = world.get_resource::<VnUiEntities>().unwrap();
+        let entities = &vn(&world).ui_entities;
         let background_node = world
             .get::<UiNode>(entities.background_image.unwrap())
             .unwrap();

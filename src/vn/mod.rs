@@ -22,6 +22,7 @@ pub mod preferences;
 #[cfg(feature = "app")]
 pub mod presentation;
 pub mod progress;
+pub mod resource;
 pub mod rollback;
 pub mod runtime;
 pub mod save;
@@ -34,7 +35,7 @@ pub mod ui_binding;
 pub mod video;
 
 pub use action::{VnAction, VnInputState, VnPlaybackState};
-pub use asset::{VnAssetIntent, VnAssetIntentKind, VnAssetState};
+pub use asset::{VnAssetIntent, VnAssetIntentKind, VnAssetState, VnAssetUsePolicy};
 pub use audio::{
     VnAudioIntent, VnAudioState, VnAudioVolumes, VnBgmState, VnSfxEvent, VnVoiceState,
 };
@@ -55,10 +56,11 @@ pub use plugin::VnPlugin;
 pub use preferences::VnPreferences;
 #[cfg(feature = "app")]
 pub use presentation::{
-    sync_runtime_scene_to_world, sync_scene_to_world, VnLoadedTexture, VnSpritePresentationConfig,
+    sync_runtime_scene_to_world, sync_scene_to_world, VnSpritePresentationConfig,
     VnSpriteSceneEntities, VnSpriteTextureMap, VnTextureLoadError,
 };
 pub use progress::{VnProgressChange, VnProgressState};
+pub use resource::{VnLoadError, VnResource, VnResourceStatus};
 pub use rollback::{VnRollbackReason, VnRollbackSnapshot, VnRollbackStack};
 pub use runtime::{
     VnActiveChoice, VnConditionalSnapshot, VnRuntime, VnRuntimeConfig, VnRuntimeError,
@@ -80,7 +82,7 @@ pub use systems::{
 pub use ui::{VnConfirmKind, VnUiMode, VnUiState};
 #[cfg(feature = "vn-ui")]
 pub use ui_binding::{
-    apply_vn_ui_events, sync_dialogue_ui_to_world, sync_runtime_ui_to_world,
+    apply_vn_ui_events, drain_vn_ui_actions, sync_dialogue_ui_to_world, sync_runtime_ui_to_world,
     sync_runtime_ui_to_world_with_surface, sync_scene_ui_to_world, VnUiEntities, VnUiImageFit,
     VnUiLayoutPreset, VnUiPresentationConfig,
 };

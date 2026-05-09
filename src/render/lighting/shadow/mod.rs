@@ -7,6 +7,7 @@ mod view;
 pub(crate) const TRANSPARENT_SHADOW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 pub use phase::DirectionalShadowPhase;
+pub(crate) use resources::SceneShadowGraphResources;
 pub use resources::{SceneShadowResources, ShadowDebugResources, ShadowResourceKind};
 
 pub(crate) use atlas::{

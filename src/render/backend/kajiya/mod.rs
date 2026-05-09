@@ -7,8 +7,15 @@ use crate::ecs::World;
 use crate::render::pipeline::{RenderBackendKind, RenderPipelineAsset};
 use crate::render::view::RenderStats;
 
-use super::kajiya_config::KajiyaRendererConfig;
-use super::kajiya_native::NativeKajiyaRuntime;
+mod assets;
+mod cache;
+mod config;
+mod error;
+mod native;
+
+use self::config::KajiyaRendererConfig;
+use self::native::NativeKajiyaRuntime;
+
 use super::scene_renderer::{SceneRenderer, SceneRendererError, SceneRendererInitError};
 use super::{SceneSnapshot, SceneSnapshotExtractor, SceneSnapshotStats};
 

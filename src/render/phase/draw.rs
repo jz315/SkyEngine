@@ -8,12 +8,13 @@ use rustc_hash::FxHashMap;
 
 use crate::ecs::EntityId;
 use crate::render::execution::{PreparedFrame, PreparedView};
+use crate::render::gi::GiSamplingBinding;
 use crate::render::gpu::GpuScene;
 use crate::render::gpu::RenderTarget;
 use crate::render::gpu::Texture;
 use crate::render::lighting::shadow::SceneShadowResources;
 use crate::render::resources::material::{
-    Material, MaterialError, MaterialRegistry, SceneBindingKind,
+    Material, MaterialError, MaterialModelExt, MaterialRegistry, SceneBindingKind,
 };
 use crate::render::resources::mesh::{MeshHandle, MeshRegistry, VertexLayout};
 use crate::render::view::ResolvedSceneTransforms;
@@ -164,6 +165,9 @@ pub struct DrawContext<'ctx, 'pass, 'tex> {
     cpu_model_matrices: Option<&'ctx [[f32; 16]]>,
     gpu_scene: Option<&'ctx GpuScene>,
     scene_shadows: Option<SceneShadowResources>,
+    gi_sampling: Option<GiSamplingBinding>,
+    gi_shader_source: Option<&'ctx str>,
+    gi_shader_key: u64,
     material_registry: &'ctx mut MaterialRegistry,
     mesh_registry: &'ctx MeshRegistry,
     fallback_texture: Option<&'tex Texture>,
@@ -184,6 +188,9 @@ impl<'ctx, 'pass, 'tex> DrawContext<'ctx, 'pass, 'tex> {
         cpu_model_matrices: Option<&'ctx [[f32; 16]]>,
         gpu_scene: Option<&'ctx GpuScene>,
         scene_shadows: Option<SceneShadowResources>,
+        gi_sampling: Option<GiSamplingBinding>,
+        gi_shader_source: Option<&'ctx str>,
+        gi_shader_key: u64,
         material_registry: &'ctx mut MaterialRegistry,
         mesh_registry: &'ctx MeshRegistry,
         fallback_texture: Option<&'tex Texture>,
@@ -201,6 +208,9 @@ impl<'ctx, 'pass, 'tex> DrawContext<'ctx, 'pass, 'tex> {
             cpu_model_matrices,
             gpu_scene,
             scene_shadows,
+            gi_sampling,
+            gi_shader_source,
+            gi_shader_key,
             material_registry,
             mesh_registry,
             fallback_texture,
@@ -397,7 +407,7 @@ impl SceneMaterialPrepassPipelineCache {
     fn ensure_pipeline<M: Material>(
         &mut self,
         device: &wgpu::Device,
-        material: &M,
+        material: &M::Data,
         view_layout: &wgpu::BindGroupLayout,
         material_layout: &wgpu::BindGroupLayout,
         mesh_layout: &VertexLayout,
@@ -407,7 +417,7 @@ impl SceneMaterialPrepassPipelineCache {
         normal_format: wgpu::TextureFormat,
         depth_format: wgpu::TextureFormat,
     ) -> Result<Option<Arc<wgpu::RenderPipeline>>, MaterialError> {
-        let Some(material_pipeline) = material.scene_prepass_pipeline_key() else {
+        let Some(material_pipeline) = M::scene_prepass_pipeline_key(material) else {
             return Ok(None);
         };
         let mut mesh_hasher = rustc_hash::FxHasher::default();
@@ -427,11 +437,11 @@ impl SceneMaterialPrepassPipelineCache {
             return Ok(Some(pipeline.clone()));
         }
 
-        let Some(shader_source) = material.scene_prepass_shader_source() else {
+        let Some(shader_source) = M::scene_prepass_shader_source(material) else {
             return Ok(None);
         };
         let attributes = resolve_scene_prepass_vertex_attributes(
-            &material.scene_prepass_vertex_layout(),
+            &M::scene_prepass_vertex_layout(material),
             mesh_layout,
         )?;
         let shader = self.ensure_shader(device, &shader_source);
@@ -448,20 +458,20 @@ impl SceneMaterialPrepassPipelineCache {
             bind_group_layouts: &[view_layout, material_layout],
             push_constant_ranges: &[],
         });
-        let render_state = material.render_state();
+        let render_state = M::render_state(material);
         let pipeline = Arc::new(
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("scene_material_prepass_pipeline"),
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
-                    entry_point: Some(material.scene_prepass_vertex_entry()),
+                    entry_point: Some(M::scene_prepass_vertex_entry(material)),
                     buffers: &vertex_buffers,
                     compilation_options: Default::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
-                    entry_point: Some(material.scene_prepass_fragment_entry()),
+                    entry_point: Some(M::scene_prepass_fragment_entry(material)),
                     targets: &[
                         Some(wgpu::ColorTargetState {
                             format: albedo_format,
@@ -931,21 +941,6 @@ where
         let Some(storage) = ctx.material_registry.try_materials::<M>() else {
             return Ok(());
         };
-        let material_layout = ctx
-            .material_registry
-            .pipeline_cache()
-            .layout::<M>()
-            .ok_or(MaterialError::UnregisteredMaterialType {
-                type_name: std::any::type_name::<M>(),
-            })?
-            .clone();
-        let bind_context = crate::render::resources::material::MaterialBindContext::new(
-            ctx.device,
-            ctx.sampler_linear,
-            ctx.sampler_nearest,
-            &material_layout,
-            ctx.fallback_texture,
-        );
         let mut bind_group_keepalive = Vec::new();
         let mut cursor = 0usize;
 
@@ -977,11 +972,15 @@ where
                 .ok_or(DrawError::MissingMaterial {
                     type_name: std::any::type_name::<M>(),
                 })?;
-            let Some(pipeline) = ctx.pipeline_cache.ensure_pipeline(
+            let Some(pipeline) = ctx.pipeline_cache.ensure_pipeline::<M>(
                 ctx.device,
                 material,
                 ctx.view_bind_group_layout,
-                &material_layout,
+                ctx.material_registry.pipeline_cache().layout::<M>().ok_or(
+                    MaterialError::UnregisteredMaterialType {
+                        type_name: std::any::type_name::<M>(),
+                    },
+                )?,
                 mesh.vertex_layout(),
                 ctx.albedo_format,
                 ctx.material_format,
@@ -993,7 +992,12 @@ where
                 cursor = batch_end;
                 continue;
             };
-            bind_group_keepalive.push(material.create_bind_group(&bind_context));
+            bind_group_keepalive.push(
+                ctx.material_registry
+                    .prepared(material_handle)?
+                    .bind_group()
+                    .clone(),
+            );
 
             let models: Vec<[f32; 16]> = items[cursor..batch_end]
                 .iter()
@@ -1084,10 +1088,14 @@ where
             return Ok(());
         }
 
-        let (storage, pipeline_cache) =
-            ctx.material_registry.materials_and_pipeline_cache::<M>()?;
-        let cpu_model_matrices = ctx.cpu_model_matrices;
+        if !ctx.material_registry.is_registered::<M>() {
+            return Err(MaterialError::UnregisteredMaterialType {
+                type_name: std::any::type_name::<M>(),
+            }
+            .into());
+        }
         let mut bind_group_keepalive = Vec::new();
+        let cpu_model_matrices = ctx.cpu_model_matrices;
         let mut cursor = 0usize;
 
         while cursor < items.len() {
@@ -1113,76 +1121,91 @@ where
                 .ok_or(DrawError::MissingMesh {
                     handle: mesh_handle,
                 })?;
-            let material = storage
-                .get(material_handle)
-                .ok_or(DrawError::MissingMaterial {
+            let typed_material_handle =
+                material_handle
+                    .typed::<M>()
+                    .ok_or(DrawError::MissingMaterial {
+                        type_name: std::any::type_name::<M>(),
+                    })?;
+            let material = ctx
+                .material_registry
+                .get(typed_material_handle)
+                .cloned()
+                .map_err(|_| DrawError::MissingMaterial {
                     type_name: std::any::type_name::<M>(),
                 })?;
-            let bind_layout = pipeline_cache
-                .layout::<M>()
-                .ok_or(MaterialError::UnregisteredMaterialType {
-                    type_name: std::any::type_name::<M>(),
-                })?
-                .clone();
-            let scene_bindings = material.scene_bindings();
+            let scene_bindings = M::scene_bindings(&material);
 
             let mut fixed_layouts = vec![(0, ctx.view_bind_group_layout)];
-            if !scene_bindings.is_empty() {
-                let Some(gpu_scene) = ctx.gpu_scene else {
-                    return Err(DrawError::MissingSceneBinding {
-                        type_name: std::any::type_name::<M>(),
-                        kind: scene_bindings[0].kind,
-                    });
-                };
-                for binding in &scene_bindings {
-                    match binding.kind {
-                        SceneBindingKind::GpuTable(type_id) => {
-                            let Some(table) = gpu_scene.try_table_by_type_id(type_id) else {
-                                return Err(DrawError::MissingSceneBinding {
-                                    type_name: std::any::type_name::<M>(),
-                                    kind: binding.kind,
-                                });
-                            };
-                            fixed_layouts.push((binding.slot, table.bind_group_layout()));
-                        }
-                        SceneBindingKind::ShadowView => {
-                            let Some(scene_shadows) = ctx.scene_shadows.as_ref() else {
-                                return Err(DrawError::MissingSceneBinding {
-                                    type_name: std::any::type_name::<M>(),
-                                    kind: binding.kind,
-                                });
-                            };
-                            let Some(layout) = scene_shadows.bind_group_layout() else {
-                                return Err(DrawError::MissingSceneBinding {
-                                    type_name: std::any::type_name::<M>(),
-                                    kind: binding.kind,
-                                });
-                            };
-                            fixed_layouts.push((binding.slot, layout));
-                        }
+            for binding in &scene_bindings {
+                match binding.kind {
+                    SceneBindingKind::GpuTable(type_id) => {
+                        let Some(gpu_scene) = ctx.gpu_scene else {
+                            return Err(DrawError::MissingSceneBinding {
+                                type_name: std::any::type_name::<M>(),
+                                kind: binding.kind,
+                            });
+                        };
+                        let Some(table) = gpu_scene.try_table_by_type_id(type_id) else {
+                            return Err(DrawError::MissingSceneBinding {
+                                type_name: std::any::type_name::<M>(),
+                                kind: binding.kind,
+                            });
+                        };
+                        fixed_layouts.push((binding.slot, table.bind_group_layout()));
+                    }
+                    SceneBindingKind::ShadowView => {
+                        let Some(scene_shadows) = ctx.scene_shadows.as_ref() else {
+                            return Err(DrawError::MissingSceneBinding {
+                                type_name: std::any::type_name::<M>(),
+                                kind: binding.kind,
+                            });
+                        };
+                        let Some(layout) = scene_shadows.bind_group_layout() else {
+                            return Err(DrawError::MissingSceneBinding {
+                                type_name: std::any::type_name::<M>(),
+                                kind: binding.kind,
+                            });
+                        };
+                        fixed_layouts.push((binding.slot, layout));
+                    }
+                    SceneBindingKind::GlobalIllumination => {
+                        let Some(gi_sampling) = ctx.gi_sampling.as_ref() else {
+                            return Err(DrawError::MissingSceneBinding {
+                                type_name: std::any::type_name::<M>(),
+                                kind: binding.kind,
+                            });
+                        };
+                        fixed_layouts.push((binding.slot, &gi_sampling.layout));
                     }
                 }
             }
 
-            let pipeline = pipeline_cache
+            let pipeline = ctx
+                .material_registry
+                .pipeline_cache_mut()
                 .get_or_create::<M>(
                     ctx.device,
-                    material,
+                    &material,
                     mesh.vertex_layout(),
                     &fixed_layouts,
+                    ctx.gi_shader_source,
+                    ctx.gi_shader_key,
                     ctx.target_format,
                     ctx.depth_format,
                 )?
                 .clone();
-            let bind_context = crate::render::resources::material::MaterialBindContext::new(
-                ctx.device,
-                ctx.sampler_linear,
-                ctx.sampler_nearest,
-                &bind_layout,
-                ctx.fallback_texture,
+            bind_group_keepalive.push(
+                ctx.material_registry
+                    .prepared(material_handle)?
+                    .bind_group()
+                    .clone(),
             );
-            bind_group_keepalive.push(material.create_bind_group(&bind_context));
-            let empty_bind_group = pipeline_cache.shared_empty_bind_group(ctx.device).clone();
+            let empty_bind_group = ctx
+                .material_registry
+                .pipeline_cache_mut()
+                .shared_empty_bind_group(ctx.device)
+                .clone();
 
             let models: Vec<[f32; 16]> = items[cursor..batch_end]
                 .iter()
@@ -1205,34 +1228,48 @@ where
                     .expect("mesh draw should cache current material bind group"),
                 &[],
             );
-            if let Some(gpu_scene) = ctx.gpu_scene {
-                for binding in &scene_bindings {
-                    match binding.kind {
-                        SceneBindingKind::GpuTable(type_id) => {
-                            let Some(table) = gpu_scene.try_table_by_type_id(type_id) else {
-                                return Err(DrawError::MissingSceneBinding {
-                                    type_name: std::any::type_name::<M>(),
-                                    kind: binding.kind,
-                                });
-                            };
-                            ctx.pass
-                                .set_bind_group(binding.slot, table.bind_group(), &[]);
-                        }
-                        SceneBindingKind::ShadowView => {
-                            let Some(scene_shadows) = ctx.scene_shadows.as_ref() else {
-                                return Err(DrawError::MissingSceneBinding {
-                                    type_name: std::any::type_name::<M>(),
-                                    kind: binding.kind,
-                                });
-                            };
-                            let Some(bind_group) = scene_shadows.bind_group() else {
-                                return Err(DrawError::MissingSceneBinding {
-                                    type_name: std::any::type_name::<M>(),
-                                    kind: binding.kind,
-                                });
-                            };
-                            ctx.pass.set_bind_group(binding.slot, bind_group, &[]);
-                        }
+            for binding in &scene_bindings {
+                match binding.kind {
+                    SceneBindingKind::GpuTable(type_id) => {
+                        let Some(gpu_scene) = ctx.gpu_scene else {
+                            return Err(DrawError::MissingSceneBinding {
+                                type_name: std::any::type_name::<M>(),
+                                kind: binding.kind,
+                            });
+                        };
+                        let Some(table) = gpu_scene.try_table_by_type_id(type_id) else {
+                            return Err(DrawError::MissingSceneBinding {
+                                type_name: std::any::type_name::<M>(),
+                                kind: binding.kind,
+                            });
+                        };
+                        ctx.pass
+                            .set_bind_group(binding.slot, table.bind_group(), &[]);
+                    }
+                    SceneBindingKind::ShadowView => {
+                        let Some(scene_shadows) = ctx.scene_shadows.as_ref() else {
+                            return Err(DrawError::MissingSceneBinding {
+                                type_name: std::any::type_name::<M>(),
+                                kind: binding.kind,
+                            });
+                        };
+                        let Some(bind_group) = scene_shadows.bind_group() else {
+                            return Err(DrawError::MissingSceneBinding {
+                                type_name: std::any::type_name::<M>(),
+                                kind: binding.kind,
+                            });
+                        };
+                        ctx.pass.set_bind_group(binding.slot, bind_group, &[]);
+                    }
+                    SceneBindingKind::GlobalIllumination => {
+                        let Some(gi_sampling) = ctx.gi_sampling.as_ref() else {
+                            return Err(DrawError::MissingSceneBinding {
+                                type_name: std::any::type_name::<M>(),
+                                kind: binding.kind,
+                            });
+                        };
+                        ctx.pass
+                            .set_bind_group(binding.slot, &gi_sampling.bind_group, &[]);
                     }
                 }
             }
@@ -1288,7 +1325,6 @@ where
                 ctx.pass
                     .draw(0..mesh.vertex_count(), 0..models.len() as u32);
             }
-
             cursor = batch_end;
         }
 

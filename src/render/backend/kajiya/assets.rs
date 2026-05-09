@@ -17,8 +17,8 @@ use crate::render::assets::{
     StandardMaterialAsset,
 };
 
-use super::kajiya_error::KajiyaBackendError;
-use super::{SceneMeshInstance, SceneSnapshot};
+use super::super::{SceneMeshInstance, SceneSnapshot};
+use super::error::KajiyaBackendError;
 
 const KAJIYA_MESH_BAKE_VERSION: u64 = 2;
 

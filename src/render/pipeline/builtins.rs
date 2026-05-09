@@ -1,28 +1,27 @@
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use rustc_hash::FxHashMap;
 use wgpu::util::DeviceExt;
 
+use crate::math::{Mat4, Vec3};
 use crate::render::component::{RenderDebugView, RenderSettings};
 use crate::render::execution::{
     create_scene_texture, ensure_scene_texture, pass_first_read_texture, pass_first_write_texture,
     pass_nth_read_texture, pass_nth_write_texture, require_render_target, PreparedFrame,
     PreparedView, SceneTexture, ViewExecutionContext,
 };
-use crate::render::gi::{
-    DdgiRuntime, SsgiComputeGraphResources, DDGI_SHADER, DDGI_WORKGROUP_SIZE,
-    SSGI_COMPUTE_RESOURCES_BLACKBOARD,
-};
-use crate::render::gpu::{ComputePipelineCache, GpuScene};
-use crate::render::graph::{
-    CompiledPass, PassFlags, RenderGraphError, ResourceRef, TextureHandle, TextureSubresource,
-};
+use crate::render::gi::GiRuntime;
+use crate::render::gpu::GpuScene;
+use crate::render::graph::{CompiledPass, PassFlags, RenderGraphError, ResourceRef, TextureHandle};
 use crate::render::lighting::shadow::ShadowDebugResources;
 use crate::render::phase::{
     MeshDrawData, OpaquePhase, SceneMaterialPrepassContext, SceneMaterialPrepassPipelineCache,
 };
 use crate::render::postfx::bloom::{Bloom as LowLevelBloom, DRAW_CALLS_PER_APPLY};
+use crate::render::postfx::contact_shadows::{
+    ContactShadows as LowLevelContactShadows, ContactShadowsParams,
+};
 use crate::render::postfx::debug_view::{
     DebugView as LowLevelDebugView, DebugViewMode as LowLevelDebugViewMode,
     DebugViewParams as LowLevelDebugViewParams,
@@ -54,6 +53,24 @@ const SCENE_VELOCITY_FORMAT: wgpu::TextureFormat = SceneTexture::Velocity.modern
 const SCENE_VELOCITY_CLEAR: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 const SCENE_MATERIAL_VELOCITY_CLEAR_PASS: &str = "scene_material_prepass_velocity_clear";
 const SCENE_NORMAL_SHADER: &str = include_str!("../shaders/prepass/scene_normal_prepass.wgsl");
+
+fn render_debug_log_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("SKY_RENDER_DEBUG_LOG")
+            .map(|value| {
+                matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false)
+    })
+}
+
+fn should_log_scene_view(scene_view: &SceneView) -> bool {
+    render_debug_log_enabled() && scene_view.temporal.frame_index % 120 == 0
+}
 const IDENTITY_MATRIX: [f32; 16] = [
     1.0, 0.0, 0.0, 0.0, //
     0.0, 1.0, 0.0, 0.0, //
@@ -155,8 +172,8 @@ fn normal_prepass_instance_buffer(
 ) -> wgpu::Buffer {
     let instances: Vec<NormalPrepassInstance> = models
         .iter()
-        .copied()
-        .zip(previous_models.iter().copied())
+        .cloned()
+        .zip(previous_models.iter().cloned())
         .map(|(model, previous)| NormalPrepassInstance::from_models(model, previous))
         .collect();
     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -548,7 +565,7 @@ impl RenderPhase for SceneNormalPrepass {
                     let draw = *item.data::<MeshDrawData>();
                     model_matrices
                         .and_then(|matrices| matrices.get(draw.model_slot() as usize))
-                        .copied()
+                        .cloned()
                         .unwrap_or(IDENTITY_MATRIX)
                 })
                 .collect();
@@ -558,11 +575,11 @@ impl RenderPhase for SceneNormalPrepass {
                     let draw = *item.data::<MeshDrawData>();
                     previous_model_matrices
                         .and_then(|matrices| matrices.get(draw.model_slot() as usize))
-                        .copied()
+                        .cloned()
                         .unwrap_or_else(|| {
                             model_matrices
                                 .and_then(|matrices| matrices.get(draw.model_slot() as usize))
-                                .copied()
+                                .cloned()
                                 .unwrap_or(IDENTITY_MATRIX)
                         })
                 })
@@ -938,69 +955,47 @@ impl RenderPhase for SceneMaterialPrepass {
 }
 
 #[derive(Default)]
-pub struct DdgiUpdateCompute {
-    pipeline: Option<ComputePipelineCache>,
-}
+pub struct GiUpdateCompute;
 
-impl DdgiUpdateCompute {
-    fn first_lit_view<'frame>(
-        frame: &'frame PreparedFrame<'frame>,
-    ) -> Option<&'frame PreparedView<'frame>> {
-        frame.views().iter().find(|view| {
-            view.payload::<SceneView>()
-                .is_some_and(|scene_view| !scene_view.is_shadow())
-        })
-    }
-
+impl GiUpdateCompute {
     fn is_first_lit_view(frame: &PreparedFrame<'_>, view: &PreparedView<'_>) -> bool {
-        Self::first_lit_view(frame).is_some_and(|candidate| std::ptr::eq(candidate, view))
-    }
-
-    fn ensure_pipeline(
-        &mut self,
-        gpu: &crate::gpu::GpuContext,
-        ddgi_layout: &wgpu::BindGroupLayout,
-    ) -> Arc<wgpu::ComputePipeline> {
-        self.pipeline
-            .get_or_insert_with(|| {
-                ComputePipelineCache::new(
-                    gpu,
-                    DDGI_SHADER,
-                    "cs_main",
-                    &[ddgi_layout],
-                    "ddgi_update",
-                )
+        frame
+            .views()
+            .iter()
+            .find(|candidate| {
+                candidate
+                    .payload::<SceneView>()
+                    .is_some_and(|scene_view| !scene_view.is_shadow())
             })
-            .pipeline(gpu)
+            .is_some_and(|candidate| std::ptr::eq(candidate, view))
     }
 }
 
-impl ComputePass for DdgiUpdateCompute {
+impl ComputePass for GiUpdateCompute {
     fn name(&self) -> &'static str {
-        "ddgi_update"
+        "gi_update"
     }
 
     fn setup(&mut self, ctx: &mut ComputePassSetupContext<'_, '_>) {
-        let settings = ctx
-            .frame_payload::<RenderSettings>()
-            .copied()
-            .unwrap_or_default();
-        if !settings.global_illumination.uses_ddgi()
-            || !Self::is_first_lit_view(ctx.frame(), ctx.view())
-        {
+        if !Self::is_first_lit_view(ctx.frame(), ctx.view()) {
             return;
         }
-
+        let Some(gi) = ctx.frame_payload::<GiRuntime>() else {
+            return;
+        };
+        let Some(descriptor) = gi.update_descriptor() else {
+            return;
+        };
         let marker = ctx.graph().create_buffer(|builder| {
             builder
-                .name("ddgi_update_marker")
+                .name("gi_update_marker")
                 .size(4)
                 .usage(wgpu::BufferUsages::COPY_DST)
                 .persistent();
         });
-        ctx.graph().add_compute_pass(self.name(), |setup| {
+        ctx.graph().add_compute_pass(descriptor.label, |setup| {
             setup.write_buffer(marker);
-            setup.with_flags(PassFlags::PREFER_ASYNC_COMPUTE | PassFlags::COMPUTE_INTENSIVE);
+            setup.with_flags(descriptor.flags);
         });
     }
 
@@ -1008,42 +1003,254 @@ impl ComputePass for DdgiUpdateCompute {
         &mut self,
         ctx: &mut ComputePassExecuteContext<'_, '_>,
     ) -> Result<(), RenderGraphError> {
-        let (gpu, _pass, _resources, execution) = ctx.split();
-        let settings = execution
-            .frame_payload::<RenderSettings>()
-            .copied()
-            .unwrap_or_default();
-        if !settings.global_illumination.uses_ddgi()
-            || !Self::is_first_lit_view(execution.frame(), execution.view())
-        {
+        let execution = ctx.execution();
+        if !Self::is_first_lit_view(execution.frame(), execution.view()) {
             return Ok(());
         }
-
-        let Some(ddgi) = execution.frame_payload::<DdgiRuntime>() else {
+        let Some(gi) = execution.frame_payload::<GiRuntime>() else {
             return Ok(());
         };
-        let (width, height) = ddgi.dispatch_size();
-        if width == 0 || height == 0 {
+        gi.update(ctx)
+    }
+}
+
+#[derive(Default)]
+pub struct GiCompositePass;
+
+impl PostFxPass for GiCompositePass {
+    fn name(&self) -> &'static str {
+        "gi_composite"
+    }
+
+    fn is_enabled(&self, frame: &PreparedFrame<'_>, view: &PreparedView<'_>) -> bool {
+        if view
+            .payload::<SceneView>()
+            .is_some_and(SceneView::is_shadow)
+        {
+            return false;
+        }
+        frame
+            .payload::<GiRuntime>()
+            .is_some_and(|gi| gi.composite_descriptor().is_some())
+    }
+
+    fn requires_hdr_input(&self) -> bool {
+        true
+    }
+
+    fn setup(&mut self, ctx: &mut PostFxPassSetupContext<'_, '_>) {
+        let Some(gi) = ctx.frame_payload::<GiRuntime>() else {
+            return;
+        };
+        if gi.composite_descriptor().is_none() {
+            return;
+        }
+        gi.setup_composite(ctx);
+    }
+
+    fn execute(
+        &mut self,
+        ctx: &mut PostFxPassExecuteContext<'_, '_>,
+    ) -> Result<(), RenderGraphError> {
+        let execution = ctx.execution();
+        let Some(gi) = execution.frame_payload::<GiRuntime>() else {
+            return Ok(());
+        };
+        if gi.composite_descriptor().is_none() {
             return Ok(());
         }
+        gi.execute_composite(ctx)
+    }
 
-        let bind_group = ddgi.bind_group();
-        let layout = ddgi.bind_group_layout();
-        let pass_label = self.name();
-        let pipeline = self.ensure_pipeline(gpu, layout);
-        let mut frame = gpu.frame();
-        let mut pass = frame.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some(pass_label),
-            ..Default::default()
+    fn draw_calls(&self, execution: &ViewExecutionContext<'_>) -> usize {
+        if execution
+            .frame_payload::<GiRuntime>()
+            .is_some_and(|gi| gi.composite_descriptor().is_some())
+        {
+            1
+        } else {
+            0
+        }
+    }
+
+    fn resize(&mut self, ctx: &crate::gpu::GpuContext, width: u32, height: u32) {
+        let _ = (ctx, width, height);
+    }
+}
+
+#[derive(Default)]
+pub struct ContactShadows {
+    runtime: Option<LowLevelContactShadows>,
+}
+
+impl ContactShadows {
+    fn primary_directional_light(execution: &ViewExecutionContext<'_>) -> Option<[f32; 3]> {
+        let gpu_scene = execution.frame_payload::<GpuScene>()?;
+        gpu_scene
+            .table::<crate::render::LightTable>()
+            .lights()
+            .iter()
+            .find(|light| light.is_directional())
+            .map(|light| {
+                let dir = Vec3::from_array([
+                    -light.pos_radius[0],
+                    -light.pos_radius[1],
+                    -light.pos_radius[2],
+                ]);
+                dir.normalized().to_array()
+            })
+    }
+}
+
+impl PostFxPass for ContactShadows {
+    fn name(&self) -> &'static str {
+        "contact_shadows"
+    }
+
+    fn is_enabled(&self, frame: &PreparedFrame<'_>, view: &PreparedView<'_>) -> bool {
+        if view
+            .payload::<SceneView>()
+            .is_some_and(SceneView::is_shadow)
+        {
+            return false;
+        }
+        frame
+            .payload::<RenderSettings>()
+            .cloned()
+            .unwrap_or_default()
+            .contact_shadows
+            .enabled
+    }
+
+    fn requires_hdr_input(&self) -> bool {
+        true
+    }
+
+    fn setup(&mut self, ctx: &mut PostFxPassSetupContext<'_, '_>) {
+        let settings = ctx
+            .frame_payload::<RenderSettings>()
+            .cloned()
+            .unwrap_or_default()
+            .contact_shadows;
+        if !settings.enabled {
+            return;
+        }
+        if ctx
+            .scene_lighting()
+            .is_none_or(|lighting| lighting.directional_light_count() == 0)
+        {
+            return;
+        }
+
+        let Some(input) = ctx.state().current_color() else {
+            return;
+        };
+        let Some(depth) = ctx.state().scene_depth() else {
+            return;
+        };
+        let Some(normal) = ctx.state().scene_normal() else {
+            return;
+        };
+
+        let target_size = ctx.view().target_size();
+        let output = ctx.graph().create_texture(|builder| {
+            builder
+                .name("contact_shadows_out")
+                .size(crate::render::graph::TargetSize::Exact(
+                    target_size[0],
+                    target_size[1],
+                ))
+                .format(input.format());
         });
-        pass.set_pipeline(&pipeline);
-        pass.set_bind_group(0, bind_group, &[]);
-        pass.dispatch_workgroups(
-            width.div_ceil(DDGI_WORKGROUP_SIZE),
-            height.div_ceil(DDGI_WORKGROUP_SIZE),
-            1,
-        );
+        ctx.graph().add_render_pass(self.name(), |setup| {
+            setup.read(input.handle());
+            setup.read(depth.handle());
+            setup.read(normal.handle());
+            setup.write_color(0, output);
+        });
+        ctx.state().set_current_color(output, input.format());
+        ctx.state().set_scene_color(output, input.format());
+    }
+
+    fn execute(
+        &mut self,
+        ctx: &mut PostFxPassExecuteContext<'_, '_>,
+    ) -> Result<(), RenderGraphError> {
+        let (gpu, pass, resources, execution) = ctx.split();
+        let input_handle = pass_nth_read_texture(pass, 0, self.name(), "input");
+        let depth_handle = pass_nth_read_texture(pass, 1, self.name(), "depth");
+        let normal_handle = pass_nth_read_texture(pass, 2, self.name(), "normal");
+        let output_handle = pass_first_write_texture(pass, self.name(), "output");
+        let input = require_render_target(resources, input_handle, self.name(), "input");
+        let depth = require_render_target(resources, depth_handle, self.name(), "depth");
+        let normal = require_render_target(resources, normal_handle, self.name(), "normal");
+        let output = require_render_target(resources, output_handle, self.name(), "output");
+        let scene_view = execution.view_payload::<SceneView>().ok_or_else(|| {
+            RenderGraphError::ExecutionFailed("contact shadows missing SceneView payload".into())
+        })?;
+        let settings = execution
+            .frame_payload::<RenderSettings>()
+            .cloned()
+            .unwrap_or_default()
+            .contact_shadows;
+        let Some(light_direction_world) = Self::primary_directional_light(execution) else {
+            return Ok(());
+        };
+        let view = Mat4::from_cols_array(scene_view.view_matrix);
+        let light_direction_view = view
+            .transform_vector3(Vec3::from_array(light_direction_world))
+            .normalized()
+            .to_array();
+        let projection = scene_view.unjittered_projection_matrix;
+        let params = ContactShadowsParams {
+            projection,
+            inverse_projection: Mat4::from_cols_array(projection).inverse().to_cols_array(),
+            light_direction_view,
+            temporal_seed: scene_view.temporal.frame_index as f32,
+            intensity: settings.intensity,
+            max_distance: settings.max_distance,
+            thickness: settings.thickness,
+            ray_steps: settings.ray_steps,
+            ao_intensity: settings.ao_intensity,
+            ao_radius_pixels: settings.ao_radius_pixels,
+            ao_steps: settings.ao_steps,
+        };
+
+        if should_log_scene_view(scene_view) {
+            eprintln!(
+                "[contact_shadows][frame={}] input={}x{} output={}x{} settings={:?} light_world={:?} light_view={:?} jitter={:?}",
+                scene_view.temporal.frame_index,
+                input.width(),
+                input.height(),
+                output.width(),
+                output.height(),
+                settings,
+                light_direction_world,
+                light_direction_view,
+                scene_view.temporal.jitter
+            );
+        }
+
+        let runtime = self
+            .runtime
+            .get_or_insert_with(|| LowLevelContactShadows::new(gpu, output.format()));
+        runtime.apply_to_target(gpu, input, depth, normal, output, params);
         Ok(())
+    }
+
+    fn draw_calls(&self, execution: &ViewExecutionContext<'_>) -> usize {
+        if execution
+            .frame_payload::<RenderSettings>()
+            .cloned()
+            .unwrap_or_default()
+            .contact_shadows
+            .enabled
+            && Self::primary_directional_light(execution).is_some()
+        {
+            1
+        } else {
+            0
+        }
     }
 }
 
@@ -1060,7 +1267,7 @@ impl PostFxPass for Bloom {
     fn is_enabled(&self, frame: &PreparedFrame<'_>, _view: &PreparedView<'_>) -> bool {
         frame
             .payload::<RenderSettings>()
-            .copied()
+            .cloned()
             .unwrap_or_default()
             .bloom
             .enabled
@@ -1073,7 +1280,7 @@ impl PostFxPass for Bloom {
     fn setup(&mut self, ctx: &mut PostFxPassSetupContext<'_, '_>) {
         let settings = ctx
             .frame_payload::<RenderSettings>()
-            .copied()
+            .cloned()
             .unwrap_or_default();
         if !settings.bloom.enabled {
             return;
@@ -1111,15 +1318,14 @@ impl PostFxPass for Bloom {
         let output_rt = require_render_target(resources, output_handle, self.name(), "output");
         let settings = execution
             .frame_payload::<RenderSettings>()
-            .copied()
+            .cloned()
             .unwrap_or_default()
             .bloom;
         let runtime = self.runtime.get_or_insert_with(|| {
             LowLevelBloom::new(gpu, input_rt.width(), input_rt.height(), output_rt.format())
         });
-        runtime.threshold = settings.threshold;
         runtime.intensity = settings.intensity;
-        runtime.radius = settings.radius;
+        runtime.spread = settings.spread;
         runtime.resize(gpu, input_rt.width(), input_rt.height(), output_rt.format());
         runtime.apply(gpu, input_rt, output_rt);
         Ok(())
@@ -1128,7 +1334,7 @@ impl PostFxPass for Bloom {
     fn draw_calls(&self, execution: &ViewExecutionContext<'_>) -> usize {
         if execution
             .frame_payload::<RenderSettings>()
-            .copied()
+            .cloned()
             .unwrap_or_default()
             .bloom
             .enabled
@@ -1153,7 +1359,7 @@ impl PostFxPass for ToneMap {
     fn is_enabled(&self, frame: &PreparedFrame<'_>, _view: &PreparedView<'_>) -> bool {
         frame
             .payload::<RenderSettings>()
-            .copied()
+            .cloned()
             .unwrap_or_default()
             .tonemap
             .enabled
@@ -1166,7 +1372,7 @@ impl PostFxPass for ToneMap {
     fn setup(&mut self, ctx: &mut PostFxPassSetupContext<'_, '_>) {
         let settings = ctx
             .frame_payload::<RenderSettings>()
-            .copied()
+            .cloned()
             .unwrap_or_default();
         if !settings.tonemap.enabled {
             return;
@@ -1205,7 +1411,7 @@ impl PostFxPass for ToneMap {
         let output_rt = require_render_target(resources, output_handle, self.name(), "output");
         let settings = execution
             .frame_payload::<RenderSettings>()
-            .copied()
+            .cloned()
             .unwrap_or_default()
             .tonemap;
         let runtime = self
@@ -1220,7 +1426,7 @@ impl PostFxPass for ToneMap {
     fn draw_calls(&self, execution: &ViewExecutionContext<'_>) -> usize {
         if execution
             .frame_payload::<RenderSettings>()
-            .copied()
+            .cloned()
             .unwrap_or_default()
             .tonemap
             .enabled
@@ -1251,7 +1457,7 @@ impl PostFxPass for TemporalAntiAliasing {
         }
         frame
             .payload::<RenderSettings>()
-            .copied()
+            .cloned()
             .unwrap_or_default()
             .temporal_aa
             .enabled
@@ -1264,7 +1470,7 @@ impl PostFxPass for TemporalAntiAliasing {
     fn setup(&mut self, ctx: &mut PostFxPassSetupContext<'_, '_>) {
         let settings = ctx
             .frame_payload::<RenderSettings>()
-            .copied()
+            .cloned()
             .unwrap_or_default();
         if !settings.temporal_aa.enabled {
             return;
@@ -1352,7 +1558,7 @@ impl PostFxPass for TemporalAntiAliasing {
         })?;
         let settings = execution
             .frame_payload::<RenderSettings>()
-            .copied()
+            .cloned()
             .unwrap_or_default()
             .temporal_aa;
         let params = TemporalAntiAliasingParams {
@@ -1360,9 +1566,29 @@ impl PostFxPass for TemporalAntiAliasing {
                 || pass_nth_read_texture_optional(pass, 3).is_none(),
             feedback: settings.feedback,
             history_clamp: settings.history_clamp,
+            jitter: scene_view.temporal.jitter,
+            previous_jitter: scene_view.temporal.previous_jitter,
             near: scene_view.near,
             far: scene_view.far,
         };
+        if should_log_scene_view(scene_view) {
+            eprintln!(
+                "[taa][frame={}] input={}x{} output={}x{} settings={:?} reset={} jitter={:?} prev_jitter={:?} near_far=({:.3},{:.3}) history_present={} depth_history_present={}",
+                scene_view.temporal.frame_index,
+                input.width(),
+                input.height(),
+                output.width(),
+                output.height(),
+                settings,
+                params.reset,
+                params.jitter,
+                params.previous_jitter,
+                params.near,
+                params.far,
+                pass_nth_read_texture_optional(pass, 3).is_some(),
+                pass_nth_read_texture_optional(pass, 4).is_some()
+            );
+        }
         let runtime = self
             .runtime
             .get_or_insert_with(|| LowLevelTemporalAntiAliasing::new(gpu));
@@ -1382,7 +1608,7 @@ impl PostFxPass for TemporalAntiAliasing {
     fn draw_calls(&self, execution: &ViewExecutionContext<'_>) -> usize {
         if execution
             .frame_payload::<RenderSettings>()
-            .copied()
+            .cloned()
             .unwrap_or_default()
             .temporal_aa
             .enabled
@@ -1397,7 +1623,6 @@ impl PostFxPass for TemporalAntiAliasing {
 #[derive(Clone, Copy)]
 enum DebugViewSource {
     Texture(TextureHandle),
-    Subresource(TextureSubresource),
 }
 
 impl DebugViewSource {
@@ -1405,7 +1630,6 @@ impl DebugViewSource {
     fn resource(self) -> ResourceRef {
         match self {
             Self::Texture(handle) => ResourceRef::Texture(handle),
-            Self::Subresource(subresource) => ResourceRef::TextureSubresource(subresource),
         }
     }
 }
@@ -1429,7 +1653,7 @@ impl PostFxPass for DebugView {
         }
         let debug_view = frame
             .payload::<RenderSettings>()
-            .copied()
+            .cloned()
             .unwrap_or_default()
             .debug_view;
         debug_view.is_enabled() && !matches!(debug_view, RenderDebugView::DirectionalShadowCoverage)
@@ -1438,7 +1662,7 @@ impl PostFxPass for DebugView {
     fn setup(&mut self, ctx: &mut PostFxPassSetupContext<'_, '_>) {
         let debug_view = ctx
             .frame_payload::<RenderSettings>()
-            .copied()
+            .cloned()
             .unwrap_or_default()
             .debug_view;
         if !debug_view.is_enabled()
@@ -1450,9 +1674,6 @@ impl PostFxPass for DebugView {
         let Some(current) = ctx.state().current_color() else {
             return;
         };
-        let ssgi_resources = ctx
-            .blackboard_get::<SsgiComputeGraphResources>(SSGI_COMPUTE_RESOURCES_BLACKBOARD)
-            .copied();
         let depth = match debug_view {
             RenderDebugView::DirectionalShadowMap
             | RenderDebugView::DirectionalShadowCascade(_) => {
@@ -1473,8 +1694,7 @@ impl PostFxPass for DebugView {
                 depth.handle()
             }
         };
-        let Some(source) = debug_view_source(ctx.state(), debug_view, current, ssgi_resources)
-        else {
+        let Some(source) = debug_view_source(ctx.state(), debug_view, current) else {
             return;
         };
 
@@ -1509,7 +1729,7 @@ impl PostFxPass for DebugView {
         let (gpu, pass, resources, execution) = ctx.split();
         let debug_view = execution
             .frame_payload::<RenderSettings>()
-            .copied()
+            .cloned()
             .unwrap_or_default()
             .debug_view;
         let mode = debug_view_mode(debug_view).ok_or_else(|| {
@@ -1545,7 +1765,7 @@ impl PostFxPass for DebugView {
     fn draw_calls(&self, execution: &ViewExecutionContext<'_>) -> usize {
         let debug_view = execution
             .frame_payload::<RenderSettings>()
-            .copied()
+            .cloned()
             .unwrap_or_default()
             .debug_view;
         if debug_view.is_enabled()
@@ -1562,7 +1782,6 @@ fn debug_view_source(
     state: &crate::render::execution::PhaseState,
     debug_view: RenderDebugView,
     current_color: crate::render::execution::TextureSlot,
-    ssgi_resources: Option<SsgiComputeGraphResources>,
 ) -> Option<DebugViewSource> {
     let slot = |texture: SceneTexture| {
         state
@@ -1588,11 +1807,6 @@ fn debug_view_source(
         RenderDebugView::DirectionalShadowCoverage => {
             Some(DebugViewSource::Texture(current_color.handle()))
         }
-        RenderDebugView::SsgiDiffuseMip(mip) => ssgi_resources
-            .map(|resources| DebugViewSource::Subresource(resources.diffuse_mip(mip.min(3)))),
-        RenderDebugView::SsgiAtlasLayer { mip, layer } => ssgi_resources.map(|resources| {
-            DebugViewSource::Subresource(resources.atlas_color_layer(mip.min(3), layer.min(15)))
-        }),
     }
 }
 
@@ -1612,9 +1826,7 @@ fn debug_view_mode(debug_view: RenderDebugView) -> Option<LowLevelDebugViewMode>
         | RenderDebugView::Albedo
         | RenderDebugView::Emissive
         | RenderDebugView::Light
-        | RenderDebugView::IndirectDiffuse
-        | RenderDebugView::SsgiDiffuseMip(_)
-        | RenderDebugView::SsgiAtlasLayer { .. } => Some(LowLevelDebugViewMode::SourceRgb),
+        | RenderDebugView::IndirectDiffuse => Some(LowLevelDebugViewMode::SourceRgb),
     }
 }
 
@@ -1666,7 +1878,7 @@ impl PostFxPass for Sharpen {
     fn is_enabled(&self, frame: &PreparedFrame<'_>, _view: &PreparedView<'_>) -> bool {
         frame
             .payload::<RenderSettings>()
-            .copied()
+            .cloned()
             .unwrap_or_default()
             .sharpen
             .enabled
@@ -1679,7 +1891,7 @@ impl PostFxPass for Sharpen {
     fn setup(&mut self, ctx: &mut PostFxPassSetupContext<'_, '_>) {
         let settings = ctx
             .frame_payload::<RenderSettings>()
-            .copied()
+            .cloned()
             .unwrap_or_default();
         if !settings.sharpen.enabled {
             return;
@@ -1717,7 +1929,7 @@ impl PostFxPass for Sharpen {
         let output_rt = require_render_target(resources, output_handle, self.name(), "output");
         let render_settings = execution
             .frame_payload::<RenderSettings>()
-            .copied()
+            .cloned()
             .unwrap_or_default();
         let settings = render_settings.sharpen;
         let runtime = self
@@ -1737,7 +1949,7 @@ impl PostFxPass for Sharpen {
     fn draw_calls(&self, execution: &ViewExecutionContext<'_>) -> usize {
         if execution
             .frame_payload::<RenderSettings>()
-            .copied()
+            .cloned()
             .unwrap_or_default()
             .sharpen
             .enabled
@@ -1762,7 +1974,7 @@ impl PostFxPass for Vignette {
     fn is_enabled(&self, frame: &PreparedFrame<'_>, _view: &PreparedView<'_>) -> bool {
         frame
             .payload::<RenderSettings>()
-            .copied()
+            .cloned()
             .unwrap_or_default()
             .vignette
             .enabled
@@ -1775,7 +1987,7 @@ impl PostFxPass for Vignette {
     fn setup(&mut self, ctx: &mut PostFxPassSetupContext<'_, '_>) {
         let settings = ctx
             .frame_payload::<RenderSettings>()
-            .copied()
+            .cloned()
             .unwrap_or_default();
         if !settings.vignette.enabled {
             return;
@@ -1814,7 +2026,7 @@ impl PostFxPass for Vignette {
         let output_rt = require_render_target(resources, output_handle, self.name(), "output");
         let settings = execution
             .frame_payload::<RenderSettings>()
-            .copied()
+            .cloned()
             .unwrap_or_default()
             .vignette;
         let runtime = self
@@ -1829,7 +2041,7 @@ impl PostFxPass for Vignette {
     fn draw_calls(&self, execution: &ViewExecutionContext<'_>) -> usize {
         if execution
             .frame_payload::<RenderSettings>()
-            .copied()
+            .cloned()
             .unwrap_or_default()
             .vignette
             .enabled

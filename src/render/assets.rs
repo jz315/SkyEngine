@@ -735,7 +735,7 @@ impl<'a> RenderAssets<'a> {
             return server.clone();
         }
 
-        let config = AssetConfig::default();
+        let config = AssetConfig::default().with_background_loading(true);
         let server = match AssetServer::new(config.clone()) {
             Ok(server) => server,
             Err(error) => {

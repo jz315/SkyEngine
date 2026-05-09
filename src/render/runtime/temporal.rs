@@ -120,7 +120,7 @@ fn apply_wicked_projection_jitter(view: &mut SceneView, jitter: [f32; 2]) {
     uniform.view_proj = (Mat4::from_cols_array(uniform.projection)
         * Mat4::from_cols_array(uniform.view))
     .to_cols_array();
-    view.set_view_uniform(uniform);
+    view.set_jittered_view_uniform(uniform);
 }
 
 fn wicked_jittered_projection(mut projection: [f32; 16], jitter: [f32; 2]) -> [f32; 16] {
@@ -244,11 +244,14 @@ mod tests {
             Projection::perspective(60.0f32.to_radians(), 0.1, 100.0),
         )];
         let unjittered = views[0].view_uniform.view_proj;
+        let unjittered_projection = views[0].view_uniform.projection;
 
         tracker.update_views(&mut views, true, 1.0);
 
         assert_eq!(views[0].temporal.jitter, halton_jitter(0, [128, 64]));
         assert_ne!(views[0].view_uniform.view_proj, unjittered);
+        assert_eq!(views[0].unjittered_view_proj_matrix, unjittered);
+        assert_eq!(views[0].unjittered_projection_matrix, unjittered_projection);
         assert_eq!(
             views[0].temporal.current_view_proj,
             views[0].view_uniform.view_proj

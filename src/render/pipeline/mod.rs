@@ -12,8 +12,8 @@ pub use asset::{
     RenderPipelineAsset, RenderPipelineBuilder, RenderPipelineDescriptor,
 };
 pub use builtins::{
-    Bloom, DdgiUpdateCompute, DebugView, SceneMaterialPrepass, SceneNormalPrepass, Sharpen,
-    TemporalAntiAliasing, ToneMap, Vignette,
+    Bloom, ContactShadows, DebugView, GiCompositePass, GiUpdateCompute, SceneMaterialPrepass,
+    SceneNormalPrepass, Sharpen, TemporalAntiAliasing, ToneMap, Vignette,
 };
 pub use contexts::{
     ComputePassExecuteContext, ComputePassSetupContext, GraphPassExecuteContext,

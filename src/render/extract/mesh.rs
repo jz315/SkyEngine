@@ -6,7 +6,7 @@ use crate::render::phase::{
     opaque_sort_key, transparent_sort_key, DrawFunctionId, MeshDrawData, PhaseItem,
 };
 use crate::render::resources::{
-    material::{Material, MaterialError, MaterialHandle},
+    material::{Material, MaterialError, MaterialHandle, MaterialModelExt},
     mesh::{BoundingSphere, MeshHandle},
 };
 use crate::render::view::{ResolvedSceneTransforms, SceneView};
@@ -102,13 +102,13 @@ where
 
                     let batch_key = batch_key_for(
                         self.draw_function_id,
-                        material.pipeline_key(),
+                        M::pipeline_key(material),
                         material_handle,
                         mesh_renderer.mesh,
                         sub_mesh_index as u32,
                     );
                     let item = PhaseItem::new(
-                        if material.is_transparent() {
+                        if M::is_transparent(material) {
                             transparent_sort_key(
                                 sorting_layer.copied().unwrap_or_default(),
                                 batch_key,
@@ -128,7 +128,7 @@ where
                         ),
                     );
 
-                    if material.is_transparent() {
+                    if M::is_transparent(material) {
                         transparent_phase.add_item(item);
                     } else {
                         opaque_phase.add_item(item);

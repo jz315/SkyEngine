@@ -191,6 +191,7 @@ pub struct UiNode {
     pub z: i32,
     pub visible: bool,
     pub enabled: bool,
+    pub blocks_input: bool,
     pub layout: UiLayout,
 }
 
@@ -272,6 +273,11 @@ impl UiNode {
         self.enabled = false;
         self
     }
+
+    pub fn input_transparent(mut self) -> Self {
+        self.blocks_input = false;
+        self
+    }
 }
 
 impl Default for UiNode {
@@ -286,6 +292,7 @@ impl Default for UiNode {
             z: 0,
             visible: true,
             enabled: true,
+            blocks_input: true,
             layout: UiLayout::None,
         }
     }

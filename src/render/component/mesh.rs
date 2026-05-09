@@ -94,10 +94,10 @@ pub struct WgpuMeshRenderer {
 
 impl WgpuMeshRenderer {
     #[inline]
-    pub fn new(mesh: MeshHandle, material: MaterialHandle) -> Self {
+    pub fn new(mesh: MeshHandle, material: impl Into<MaterialHandle>) -> Self {
         Self {
             mesh,
-            materials: vec![material],
+            materials: vec![material.into()],
             visible: true,
             layer_mask: u32::MAX,
             casts_shadows: true,
@@ -106,8 +106,11 @@ impl WgpuMeshRenderer {
     }
 
     #[inline]
-    pub fn materials(mut self, materials: impl Into<Vec<MaterialHandle>>) -> Self {
-        self.materials = materials.into();
+    pub fn materials<H>(mut self, materials: impl IntoIterator<Item = H>) -> Self
+    where
+        H: Into<MaterialHandle>,
+    {
+        self.materials = materials.into_iter().map(Into::into).collect();
         self
     }
 

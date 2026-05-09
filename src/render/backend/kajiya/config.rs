@@ -4,7 +4,7 @@ use winit::window::Window;
 
 use crate::render::pipeline::{KajiyaDpiMode, KajiyaRendererSettings};
 
-use super::kajiya_cache;
+use super::cache;
 
 #[derive(Clone, Debug)]
 pub(crate) struct KajiyaRendererConfig {
@@ -23,8 +23,8 @@ pub(crate) struct KajiyaRendererConfig {
 impl KajiyaRendererConfig {
     pub(crate) fn from_settings(settings: KajiyaRendererSettings) -> Self {
         Self {
-            vendor_root: kajiya_cache::vendor_root(),
-            cache_dir: kajiya_cache::default_cache_dir(),
+            vendor_root: cache::vendor_root(),
+            cache_dir: cache::default_cache_dir(),
             temporal_upsampling: env_f32("SKY_KAJIYA_TEMPORAL_UPSAMPLE")
                 .unwrap_or(settings.temporal_upsampling())
                 .clamp(1.0, 8.0),

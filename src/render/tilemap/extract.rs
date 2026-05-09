@@ -200,15 +200,19 @@ fn resolve_tileset_texture(
     renderer: &TilemapRenderer,
     ctx: &mut ExtractContext<'_>,
 ) -> Option<Texture> {
-    match ctx.asset_server {
-        Some(server) => ctx
-            .render_assets
-            .texture(ctx.gpu, server, renderer.tileset.texture),
-        None => {
-            ctx.render_assets
+    match (ctx.asset_server, ctx.render_assets) {
+        (Some(server), Some(cache)) => {
+            cache
+                .borrow_mut()
+                .texture(ctx.gpu, server, renderer.tileset.texture)
+        }
+        (_, Some(cache)) => {
+            cache
+                .borrow_mut()
                 .mark_texture_missing(renderer.tileset.texture);
             None
         }
+        _ => None,
     }
 }
 

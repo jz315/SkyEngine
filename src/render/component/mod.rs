@@ -22,9 +22,9 @@ pub use light::{
 pub use live2d::{Live2DAnimator, Live2DCommand, Live2DCommands, Live2DModelInstance};
 pub use mesh::{MeshRenderer, WgpuMeshRenderer, ALL_SHADOW_CASCADE_MASK};
 pub use settings::{
-    BloomSettings, DdgiSettings, DdgiVolumeSettings, GiDebugMode, GlobalIlluminationMode,
-    GlobalIlluminationSettings, RenderDebugView, RenderLayerMask, RenderSettings, SharpenSettings,
-    SsgiSettings, TemporalAntiAliasingSettings, ToneMapSettings, VignetteSettings,
+    BloomSettings, ContactShadowsSettings, GlobalIllumination, RenderDebugView, RenderLayerMask,
+    RenderSettings, SharpenSettings, TemporalAntiAliasingSettings, ToneMapSettings,
+    VignetteSettings,
 };
 pub use sprite::{SortingLayer, SpriteRenderer};
 pub use tilemap::{

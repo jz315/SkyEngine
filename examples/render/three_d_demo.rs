@@ -27,12 +27,12 @@ use sky_engine::ecs::{With, World};
 use sky_engine::input::KeyCode;
 use sky_engine::math::{Quat, Vec3};
 use sky_engine::render::expert::{BoundingSphere, Mesh, MeshDescriptor, MeshHandle, MeshIndexData};
+use sky_engine::render::gi::providers::{ddgi, ssgi};
 use sky_engine::render::{
-    BloomSettings, CameraMarker, Color, DdgiSettings, DdgiVolumeSettings, DirectionalLight,
-    GiDebugMode, GlobalIlluminationMode, GlobalIlluminationSettings, MainCamera, MaterialHandle,
-    PointLight, Projection, RenderDebugView, RenderPipelineAsset, RenderSettings, SharpenSettings,
-    SpotLight, SsgiSettings, StandardMaterial, Texture, ToneMapSettings, Transform,
-    WgpuMeshRenderer,
+    BloomSettings, CameraMarker, Color, ContactShadowsSettings, DirectionalLight,
+    GlobalIllumination, MainCamera, MaterialHandle, PointLight, Projection, RenderDebugView,
+    RenderPipelineAsset, RenderSettings, SharpenSettings, SpotLight, StandardMaterial,
+    TemporalAntiAliasingSettings, Texture, ToneMapSettings, Transform, WgpuMeshRenderer,
 };
 
 const GROUND_Y: f32 = -1.25;
@@ -72,7 +72,7 @@ struct ThreeDDemo {
     camera_yaw: f32,
     camera_pitch: f32,
     camera_distance: f32,
-    gi_debug: GiDebugMode,
+    gi_debug: ddgi::DdgiDebugMode,
     shadow_debug: RenderDebugView,
 }
 
@@ -87,7 +87,7 @@ impl Default for ThreeDDemo {
             camera_yaw: 0.0,
             camera_pitch: -0.18,
             camera_distance: 13.0,
-            gi_debug: GiDebugMode::Off,
+            gi_debug: ddgi::DdgiDebugMode::Off,
             shadow_debug: RenderDebugView::None,
         }
     }
@@ -108,7 +108,7 @@ impl AppState for ThreeDDemo {
         if let Some(debug_mode) = gi_debug_mode_from_input(ctx) {
             self.gi_debug = debug_mode;
             if let Some(settings) = ctx.world.get_resource_mut::<RenderSettings>() {
-                settings.global_illumination.debug = debug_mode;
+                settings.global_illumination = default_ddgi_global_illumination(debug_mode);
             }
         }
         if let Some(debug_view) = shadow_debug_view_from_input(ctx) {
@@ -164,6 +164,28 @@ impl AppState for ThreeDDemo {
 
         ctx.render();
 
+        if render_debug_log_enabled() && self.frame_count % 120 == 0 {
+            let stats = ctx.render_stats();
+            if let Some(settings) = ctx.world.get_resource::<RenderSettings>() {
+                eprintln!(
+                    "[three_d_demo][frame={}] dt={:.4} fps={:.1} draws={} shadow_draws={} lights={} shadow_atlas={}x{} gi={:?} contact={:?} taa={:?} bloom={:?} tonemap={:?}",
+                    self.frame_count,
+                    ctx.dt,
+                    if ctx.dt > 0.0 { 1.0 / ctx.dt } else { 0.0 },
+                    stats.draw_calls,
+                    stats.shadow_draw_calls,
+                    stats.light_count,
+                    stats.shadow_atlas_width,
+                    stats.shadow_atlas_height,
+                    settings.global_illumination,
+                    settings.contact_shadows,
+                    settings.temporal_aa,
+                    settings.bloom,
+                    settings.tonemap
+                );
+            }
+        }
+
         let fps_instant = if ctx.dt > 0.0 { 1.0 / ctx.dt } else { 0.0 };
         self.fps_smooth = if self.fps_smooth == 0.0 {
             fps_instant
@@ -174,6 +196,11 @@ impl AppState for ThreeDDemo {
         if self.frame_count % 30 == 0 {
             let stats = ctx.render_stats();
             let orbit_mode = if self.auto_orbit { "auto" } else { "manual" };
+            let gi_label = ctx
+                .world
+                .get_resource::<RenderSettings>()
+                .map(|settings| gi_status_name(&settings.global_illumination))
+                .unwrap_or("off");
             ctx.set_title(&format!(
                 "SkyEngine — 3D Demo | {:.0} FPS | {} draws ({} shadow) | {} lights | CSM {}x {}x{} | camera {orbit_mode} | GI {} | shadows {}",
                 self.fps_smooth,
@@ -183,24 +210,24 @@ impl AppState for ThreeDDemo {
                 stats.shadow_cascade_count,
                 stats.shadow_atlas_width,
                 stats.shadow_atlas_height,
-                gi_debug_name(self.gi_debug),
+                gi_label,
                 shadow_debug_name(self.shadow_debug)
             ));
         }
     }
 }
 
-fn gi_debug_mode_from_input(ctx: &FrameContext) -> Option<GiDebugMode> {
+fn gi_debug_mode_from_input(ctx: &FrameContext) -> Option<ddgi::DdgiDebugMode> {
     if ctx.input.key_pressed(KeyCode::Digit0) {
-        Some(GiDebugMode::Off)
+        Some(ddgi::DdgiDebugMode::Off)
     } else if ctx.input.key_pressed(KeyCode::Digit1) {
-        Some(GiDebugMode::Probes)
+        Some(ddgi::DdgiDebugMode::Probes)
     } else if ctx.input.key_pressed(KeyCode::Digit2) {
-        Some(GiDebugMode::Irradiance)
+        Some(ddgi::DdgiDebugMode::Irradiance)
     } else if ctx.input.key_pressed(KeyCode::Digit3) {
-        Some(GiDebugMode::Visibility)
+        Some(ddgi::DdgiDebugMode::Visibility)
     } else if ctx.input.key_pressed(KeyCode::Digit4) {
-        Some(GiDebugMode::RayBudget)
+        Some(ddgi::DdgiDebugMode::RayBudget)
     } else {
         None
     }
@@ -224,13 +251,70 @@ fn shadow_debug_view_from_input(ctx: &FrameContext) -> Option<RenderDebugView> {
     }
 }
 
-fn gi_debug_name(mode: GiDebugMode) -> &'static str {
-    match mode {
-        GiDebugMode::Off => "off",
-        GiDebugMode::Probes => "probes",
-        GiDebugMode::Irradiance => "irradiance",
-        GiDebugMode::Visibility => "visibility",
-        GiDebugMode::RayBudget => "ray budget",
+fn render_debug_log_enabled() -> bool {
+    std::env::var("SKY_RENDER_DEBUG_LOG")
+        .map(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn apply_render_debug_overrides(settings: &mut RenderSettings) {
+    if env_flag("SKY_DEMO_DISABLE_SSGI") {
+        settings.global_illumination = GlobalIllumination::Off;
+    }
+    if env_flag("SKY_DEMO_DISABLE_TAA") {
+        settings.temporal_aa.enabled = false;
+    }
+    if env_flag("SKY_DEMO_DISABLE_BLOOM") {
+        settings.bloom.enabled = false;
+    }
+    if env_flag("SKY_DEMO_DISABLE_CONTACT_SHADOWS") {
+        settings.contact_shadows.enabled = false;
+    }
+}
+
+fn default_ddgi_global_illumination(debug: ddgi::DdgiDebugMode) -> GlobalIllumination {
+    ddgi::global_illumination(ddgi::DdgiSettings {
+        volume: ddgi::DdgiVolumeSettings {
+            origin: [-12.0, -1.25, -14.0],
+            spacing: 1.85,
+            counts: [14, 8, 18],
+            scroll_with_main_camera: true,
+        },
+        rays_per_probe: 64,
+        probes_per_frame: 128,
+        hysteresis: 0.92,
+        normal_bias: 0.08,
+        view_bias: 0.20,
+        max_ray_distance: 42.0,
+        irradiance_resolution: 6,
+        visibility_resolution: 6,
+        bounces: 2,
+        debug,
+    })
+}
+
+fn gi_status_name(settings: &GlobalIllumination) -> &'static str {
+    match settings {
+        GlobalIllumination::Off => "off",
+        GlobalIllumination::Provider(config) if config.id == ssgi::SSGI_PROVIDER_ID => "ssgi",
+        GlobalIllumination::Provider(config) if config.id == ddgi::DDGI_PROVIDER_ID => "ddgi",
+        GlobalIllumination::Provider(_) => "provider",
     }
 }
 
@@ -355,15 +439,15 @@ fn initialize_scene(ctx: &mut FrameContext) {
             SceneAssets {
                 cube_mesh,
                 plane_mesh,
-                floor,
-                plaster,
-                warm_wall,
-                cool_wall,
-                charcoal,
-                stone,
-                bronze,
-                teal_emissive,
-                amber_emissive,
+                floor: floor.into(),
+                plaster: plaster.into(),
+                warm_wall: warm_wall.into(),
+                cool_wall: cool_wall.into(),
+                charcoal: charcoal.into(),
+                stone: stone.into(),
+                bronze: bronze.into(),
+                teal_emissive: teal_emissive.into(),
+                amber_emissive: amber_emissive.into(),
             }
         })
         .expect("three_d_demo requires App::with_render_pipeline(...)");
@@ -542,14 +626,15 @@ fn initialize_scene(ctx: &mut FrameContext) {
         .intensity(1.88)
         .color(Color::rgb(1.0, 0.96, 0.90))
         .cascade_count(4)
-        .cascade_distances([7.5, 18.0, 38.0, 80.0])
-        .cascade_blend(0.12)
-        .shadow_resolution_per_cascade(1536)
+        .cascade_distances([5.5, 13.0, 30.0, 80.0])
+        .cascade_blend(0.18)
+        .shadow_resolution_per_cascade(2048)
         .shadow_bias(0.0008)
         .shadow_depth_bias(3)
         .shadow_slope_bias(1.8)
-        .shadow_normal_bias(0.018)
-        .shadow_filter_radius(0.035),));
+        .shadow_normal_bias(0.007)
+        .shadow_filter_radius(0.09)
+        .pcss_shadows(),));
 }
 
 fn update_camera(ctx: &mut FrameContext, yaw: f32, pitch: f32, distance: f32) {
@@ -822,7 +907,7 @@ fn create_ground_mesh(ctx: &sky_engine::gpu::GpuContext, label: &'static str) ->
             uv: [0.0, 0.0],
         },
     ];
-    let indices = [0u16, 1, 2, 0, 2, 3];
+    let indices = [0u16, 2, 1, 0, 3, 2];
 
     Mesh::from_raw(
         ctx,
@@ -1040,47 +1125,41 @@ struct SceneAssets {
 
 fn main() {
     let mut world = World::new();
-    world.insert_resource(RenderSettings {
+    let mut render_settings = RenderSettings {
         clear_color: Color::rgb(0.0014, 0.0018, 0.0024),
         ambient_color: Color::rgb(0.007, 0.009, 0.012),
-        global_illumination: GlobalIlluminationSettings {
+        global_illumination: ssgi::global_illumination(ssgi::SsgiSettings {
+            intensity: 0.28,
+            radius_pixels: 5.0,
+            depth_rejection: 6.0,
+            normal_power: 12.0,
+        }),
+        contact_shadows: ContactShadowsSettings {
             enabled: true,
-            mode: GlobalIlluminationMode::Ssgi,
-            ssgi: SsgiSettings {
-                intensity: 1.0,
-                radius_pixels: 8.0,
-                depth_rejection: 8.0,
-                normal_power: 64.0,
-            },
-            ddgi: DdgiSettings {
-                volume: DdgiVolumeSettings {
-                    origin: [-12.0, -1.25, -14.0],
-                    spacing: 1.85,
-                    counts: [14, 8, 18],
-                    scroll_with_main_camera: true,
-                },
-                rays_per_probe: 64,
-                probes_per_frame: 128,
-                hysteresis: 0.92,
-                normal_bias: 0.08,
-                view_bias: 0.20,
-                max_ray_distance: 42.0,
-                irradiance_resolution: 6,
-                visibility_resolution: 6,
-                bounces: 2,
-            },
-            debug: GiDebugMode::Off,
+            intensity: 0.68,
+            max_distance: 3.0,
+            thickness: 0.18,
+            ray_steps: 16,
+            ao_intensity: 0.40,
+            ao_radius_pixels: 18.0,
+            ao_steps: 4,
         },
         bloom: BloomSettings {
             enabled: true,
-            threshold: 1.60,
             intensity: 0.06,
-            radius: 0.40,
+            spread: 0.40,
         },
         sharpen: SharpenSettings {
             enabled: true,
             strength: 0.32,
             clamp: 0.075,
+        },
+        temporal_aa: TemporalAntiAliasingSettings {
+            enabled: true,
+            feedback: 0.12,
+            jitter_scale: 1.0,
+            history_clamp: 0.025,
+            sharpen_amount: 0.06,
         },
         tonemap: ToneMapSettings {
             enabled: true,
@@ -1088,7 +1167,12 @@ fn main() {
             gamma: 2.2,
         },
         ..Default::default()
-    });
+    };
+    apply_render_debug_overrides(&mut render_settings);
+    if render_debug_log_enabled() {
+        eprintln!("[three_d_demo][startup] render_settings={render_settings:?}");
+    }
+    world.insert_resource(render_settings);
     world.spawn((
         Transform::default(),
         CameraMarker::new(),

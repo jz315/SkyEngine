@@ -19,6 +19,8 @@ pub struct TemporalAntiAliasingParams {
     pub reset: bool,
     pub feedback: f32,
     pub history_clamp: f32,
+    pub jitter: [f32; 2],
+    pub previous_jitter: [f32; 2],
     pub near: f32,
     pub far: f32,
 }
@@ -29,6 +31,8 @@ impl Default for TemporalAntiAliasingParams {
             reset: true,
             feedback: 0.05,
             history_clamp: 0.0,
+            jitter: [0.0, 0.0],
+            previous_jitter: [0.0, 0.0],
             near: 0.1,
             far: 1000.0,
         }
@@ -129,6 +133,10 @@ impl TemporalAntiAliasing {
     ) {
         let width = output.width().max(1);
         let height = output.height().max(1);
+        let jitter_velocity_uv = [
+            0.5 * (params.previous_jitter[0] - params.jitter[0]),
+            -0.5 * (params.previous_jitter[1] - params.jitter[1]),
+        ];
         let uniform = TaaUniform {
             resolution: [
                 width as f32,
@@ -138,15 +146,15 @@ impl TemporalAntiAliasing {
             ],
             params0: [
                 if params.reset { 1.0 } else { 0.0 },
-                params.feedback.max(0.0),
-                0.8,
+                params.feedback.clamp(0.0, 1.0),
+                0.95,
                 params.history_clamp.max(0.0),
             ],
             params1: [
-                0.0,
+                jitter_velocity_uv[0],
                 params.near.max(0.0001),
                 params.far.max(params.near + 0.0001),
-                0.0,
+                jitter_velocity_uv[1],
             ],
         };
         ctx.queue()
@@ -258,5 +266,44 @@ mod tests {
         device.poll(wgpu::Maintain::Wait);
         let error = pollster::block_on(device.pop_error_scope());
         assert!(error.is_none(), "TAA shader should validate: {error:?}");
+    }
+
+    #[test]
+    fn taa_tile_cache_loader_covers_full_neighborhood() {
+        const TILE_SIZE: usize = 10;
+        const THREADCOUNT: usize = TAA_WORKGROUP_SIZE as usize;
+
+        let mut covered = [[false; TILE_SIZE]; TILE_SIZE];
+        for lid_y in 0..THREADCOUNT {
+            for lid_x in 0..THREADCOUNT {
+                let mut y = lid_y;
+                while y < TILE_SIZE {
+                    let mut x = lid_x;
+                    while x < TILE_SIZE {
+                        covered[y][x] = true;
+                        x += THREADCOUNT;
+                    }
+                    y += THREADCOUNT;
+                }
+            }
+        }
+
+        for (y, row) in covered.iter().enumerate() {
+            for (x, is_covered) in row.iter().copied().enumerate() {
+                assert!(is_covered, "TAA tile cache missed ({x}, {y})");
+            }
+        }
+    }
+
+    #[test]
+    fn taa_shader_uses_pixel_space_disocclusion_threshold() {
+        assert!(
+            TAA_SHADER.contains("stable_velocity_pixels > 0.25"),
+            "TAA disocclusion should use pixel-space velocity, not raw UV length"
+        );
+        assert!(
+            !TAA_SHADER.contains("length(stable_velocity) > 0.01"),
+            "raw UV velocity threshold is resolution-dependent and causes ghosting"
+        );
     }
 }

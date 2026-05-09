@@ -8,16 +8,15 @@ use crate::render::postfx::PostFx;
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct BloomUniform {
-    params: [f32; 4],    // threshold, intensity, radius, _
+    params: [f32; 4],    // intensity, spread, _, _
     texel_dir: [f32; 4], // texel_x, texel_y, dir_x, dir_y
 }
 
 const BLOOM_SHADER: &str = include_str!("../shaders/postfx/bloom.wgsl");
-const BLOOM_LEVELS: usize = 4;
+const BLOOM_LEVELS: usize = 6;
 pub(crate) const DRAW_CALLS_PER_APPLY: usize = 4 * BLOOM_LEVELS;
 
 pub struct Bloom {
-    bright_pipeline: FullscreenPipeline,
     downsample_pipeline: FullscreenPipeline,
     blur_pipeline: FullscreenPipeline,
     upsample_pipeline: FullscreenPipeline,
@@ -27,10 +26,9 @@ pub struct Bloom {
     params_buffer: wgpu::Buffer,
     params_bind_group: wgpu::BindGroup,
     mip_chain: Vec<RenderTarget>,
-    temp_targets: Vec<RenderTarget>,
-    pub threshold: f32,
+    scratch_chain: Vec<RenderTarget>,
     pub intensity: f32,
-    pub radius: f32,
+    pub spread: f32,
 }
 
 fn texture_sampler_bgl(device: &wgpu::Device, label: &str) -> wgpu::BindGroupLayout {
@@ -152,15 +150,6 @@ impl Bloom {
             },
         };
 
-        let bright_pipeline = FullscreenPipeline::new(
-            ctx,
-            BLOOM_SHADER,
-            "fs_bright",
-            &[&sample_bgl, &params_bgl],
-            target_format,
-            None,
-            "bloom_bright",
-        );
         let downsample_pipeline = FullscreenPipeline::new(
             ctx,
             BLOOM_SHADER,
@@ -198,31 +187,9 @@ impl Bloom {
             "bloom_combine",
         );
 
-        // Build mip chain
-        let mut mip_chain = Vec::new();
-        let mut temp_targets = Vec::new();
-        for level in 0..BLOOM_LEVELS {
-            let scale = 1u32 << (level as u32 + 1);
-            let lw = (width / scale).max(1);
-            let lh = (height / scale).max(1);
-            mip_chain.push(RenderTarget::new(
-                ctx,
-                lw,
-                lh,
-                target_format,
-                format!("bloom_mip_{level}"),
-            ));
-            temp_targets.push(RenderTarget::new(
-                ctx,
-                lw,
-                lh,
-                target_format,
-                format!("bloom_tmp_{level}"),
-            ));
-        }
+        let (mip_chain, scratch_chain) = create_chains(ctx, width, height, target_format);
 
         Self {
-            bright_pipeline,
             downsample_pipeline,
             blur_pipeline,
             upsample_pipeline,
@@ -232,10 +199,9 @@ impl Bloom {
             params_buffer,
             params_bind_group,
             mip_chain,
-            temp_targets,
-            threshold: 0.8,
-            intensity: 0.3,
-            radius: 1.0,
+            scratch_chain,
+            intensity: 1.0,
+            spread: 1.0,
         }
     }
 
@@ -247,24 +213,15 @@ impl Bloom {
         target_format: wgpu::TextureFormat,
     ) {
         for level in 0..BLOOM_LEVELS {
-            let scale = 1u32 << (level as u32 + 1);
-            let lw = (width / scale).max(1);
-            let lh = (height / scale).max(1);
+            let [lw, lh] = bloom_level_size(width, height, level);
             self.mip_chain[level].resize(ctx, lw, lh, target_format);
-            self.temp_targets[level].resize(ctx, lw, lh, target_format);
+            self.scratch_chain[level].resize(ctx, lw, lh, target_format);
         }
     }
 
-    fn update_uniform(
-        &self,
-        ctx: &GpuContext,
-        threshold: f32,
-        intensity: f32,
-        texel: [f32; 2],
-        dir: [f32; 2],
-    ) {
+    fn update_uniform(&self, ctx: &GpuContext, texel: [f32; 2], dir: [f32; 2]) {
         let uniform = BloomUniform {
-            params: [threshold, intensity, self.radius, 0.0],
+            params: [self.intensity.max(0.0), self.spread.max(0.0), 0.0, 0.0],
             texel_dir: [texel[0], texel[1], dir[0], dir[1]],
         };
         ctx.queue()
@@ -324,91 +281,68 @@ impl Bloom {
 
     pub fn apply(&mut self, ctx: &mut GpuContext, input: &RenderTarget, output: &RenderTarget) {
         self.resize(ctx, input.width(), input.height(), output.format());
-        let bright_pipeline = self.bright_pipeline.pipeline(ctx, output.format());
         let downsample_pipeline = self.downsample_pipeline.pipeline(ctx, output.format());
         let blur_pipeline = self.blur_pipeline.pipeline(ctx, output.format());
         let upsample_pipeline = self.upsample_pipeline.pipeline(ctx, output.format());
         let combine_pipeline = self.combine_pipeline.pipeline(ctx, output.format());
 
-        // Bright pass
-        self.update_uniform(
+        let input_bg = self.create_sample_bg(ctx, input);
+        self.update_uniform(ctx, texel(input), [0.0, 0.0]);
+        self.run_single_input(
             ctx,
-            self.threshold,
-            self.intensity,
-            [1.0 / input.width() as f32, 1.0 / input.height() as f32],
-            [0.0, 0.0],
+            downsample_pipeline.as_ref(),
+            &input_bg,
+            &self.mip_chain[0],
+            true,
         );
-        let bright_bg = ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("bloom_bright_bg"),
-            layout: &self.sample_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(input.view()),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(ctx.sampler_linear()),
-                },
-            ],
-        });
-        {
-            let mip0 = &self.mip_chain[0];
-            self.run_single_input(ctx, bright_pipeline.as_ref(), &bright_bg, mip0, true);
-        }
 
-        // Downsample
         for level in 1..BLOOM_LEVELS {
             let bg = self.create_sample_bg(ctx, &self.mip_chain[level - 1]);
-            let src = &self.mip_chain[level - 1];
-            self.update_uniform(
+            self.update_uniform(ctx, texel(&self.mip_chain[level - 1]), [0.0, 0.0]);
+            self.run_single_input(
                 ctx,
-                self.threshold,
-                self.intensity,
-                [1.0 / src.width() as f32, 1.0 / src.height() as f32],
-                [0.0, 0.0],
+                downsample_pipeline.as_ref(),
+                &bg,
+                &self.mip_chain[level],
+                true,
             );
-            let target = &self.mip_chain[level];
-            self.run_single_input(ctx, downsample_pipeline.as_ref(), &bg, target, true);
         }
 
-        // Blur (horizontal then vertical)
         for level in 0..BLOOM_LEVELS {
-            let texel = [
-                1.0 / self.mip_chain[level].width() as f32,
-                1.0 / self.mip_chain[level].height() as f32,
-            ];
-
-            // Horizontal
-            self.update_uniform(ctx, self.threshold, self.intensity, texel, [1.0, 0.0]);
-            let h_bg = self.create_sample_bg(ctx, &self.mip_chain[level]);
-            let temp = &self.temp_targets[level];
-            self.run_single_input(ctx, blur_pipeline.as_ref(), &h_bg, temp, true);
-
-            // Vertical
-            self.update_uniform(ctx, self.threshold, self.intensity, texel, [0.0, 1.0]);
-            let v_bg = self.create_sample_bg(ctx, &self.temp_targets[level]);
-            let mip = &self.mip_chain[level];
-            self.run_single_input(ctx, blur_pipeline.as_ref(), &v_bg, mip, true);
-        }
-
-        // Upsample
-        for level in (1..BLOOM_LEVELS).rev() {
-            let src = &self.mip_chain[level];
-            self.update_uniform(
+            self.update_uniform(ctx, texel(&self.mip_chain[level]), [1.0, 0.0]);
+            let horizontal_bg = self.create_sample_bg(ctx, &self.mip_chain[level]);
+            self.run_single_input(
                 ctx,
-                self.threshold,
-                self.intensity,
-                [1.0 / src.width() as f32, 1.0 / src.height() as f32],
-                [0.0, 0.0],
+                blur_pipeline.as_ref(),
+                &horizontal_bg,
+                &self.scratch_chain[level],
+                true,
             );
-            let bg = self.create_sample_bg(ctx, &self.mip_chain[level]);
-            let target = &self.mip_chain[level - 1];
-            self.run_single_input(ctx, upsample_pipeline.as_ref(), &bg, target, false);
+
+            self.update_uniform(ctx, texel(&self.scratch_chain[level]), [0.0, 1.0]);
+            let vertical_bg = self.create_sample_bg(ctx, &self.scratch_chain[level]);
+            self.run_single_input(
+                ctx,
+                blur_pipeline.as_ref(),
+                &vertical_bg,
+                &self.mip_chain[level],
+                true,
+            );
         }
 
-        // Combine
-        self.update_uniform(ctx, self.threshold, self.intensity, [0.0, 0.0], [0.0, 0.0]);
+        for level in (1..BLOOM_LEVELS).rev() {
+            let bg = self.create_sample_bg(ctx, &self.mip_chain[level]);
+            self.update_uniform(ctx, texel(&self.mip_chain[level]), [0.0, 0.0]);
+            self.run_single_input(
+                ctx,
+                upsample_pipeline.as_ref(),
+                &bg,
+                &self.mip_chain[level - 1],
+                false,
+            );
+        }
+
+        self.update_uniform(ctx, [0.0, 0.0], [0.0, 0.0]);
         let combine_bg = ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("bloom_combine_bg"),
             layout: &self.dual_bgl,
@@ -453,6 +387,43 @@ impl Bloom {
     }
 }
 
+fn create_chains(
+    ctx: &GpuContext,
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+) -> (Vec<RenderTarget>, Vec<RenderTarget>) {
+    let mut mip_chain = Vec::with_capacity(BLOOM_LEVELS);
+    let mut scratch_chain = Vec::with_capacity(BLOOM_LEVELS);
+    for level in 0..BLOOM_LEVELS {
+        let [lw, lh] = bloom_level_size(width, height, level);
+        mip_chain.push(RenderTarget::new(
+            ctx,
+            lw,
+            lh,
+            format,
+            format!("bloom_mip_{level}"),
+        ));
+        scratch_chain.push(RenderTarget::new(
+            ctx,
+            lw,
+            lh,
+            format,
+            format!("bloom_scratch_{level}"),
+        ));
+    }
+    (mip_chain, scratch_chain)
+}
+
+fn bloom_level_size(width: u32, height: u32, level: usize) -> [u32; 2] {
+    let scale = 1u32 << (level as u32 + 1);
+    [(width / scale).max(1), (height / scale).max(1)]
+}
+
+fn texel(target: &RenderTarget) -> [f32; 2] {
+    [1.0 / target.width() as f32, 1.0 / target.height() as f32]
+}
+
 impl PostFx for Bloom {
     fn apply_to_target(
         &mut self,
@@ -490,6 +461,31 @@ mod tests {
     }
 
     #[test]
+    fn constructs_all_shader_pipelines() {
+        let (device, queue) = create_test_device();
+        let ctx = crate::gpu::GpuContext::new_headless(
+            device,
+            queue,
+            wgpu::TextureFormat::Bgra8Unorm,
+            [64, 64],
+        );
+
+        let bloom = Bloom::new(&ctx, 64, 64, wgpu::TextureFormat::Rgba16Float);
+
+        assert_eq!(bloom.mip_chain.len(), BLOOM_LEVELS);
+        assert_eq!(bloom.scratch_chain.len(), BLOOM_LEVELS);
+    }
+
+    #[test]
+    fn draw_call_accounting_matches_rebuilt_pass_count() {
+        assert_eq!(DRAW_CALLS_PER_APPLY, 24);
+        assert_eq!(
+            DRAW_CALLS_PER_APPLY,
+            BLOOM_LEVELS + BLOOM_LEVELS * 2 + (BLOOM_LEVELS - 1) + 1
+        );
+    }
+
+    #[test]
     fn resize_reformats_internal_targets() {
         let (device, queue) = create_test_device();
         let ctx = crate::gpu::GpuContext::new_headless(
@@ -500,15 +496,41 @@ mod tests {
         );
         let mut bloom = Bloom::new(&ctx, 64, 64, wgpu::TextureFormat::Rgba16Float);
 
-        bloom.resize(&ctx, 64, 64, wgpu::TextureFormat::Rgba8Unorm);
+        bloom.resize(&ctx, 96, 64, wgpu::TextureFormat::Rgba8Unorm);
 
         assert!(bloom
             .mip_chain
             .iter()
             .all(|target| target.format() == wgpu::TextureFormat::Rgba8Unorm));
         assert!(bloom
-            .temp_targets
+            .scratch_chain
             .iter()
             .all(|target| target.format() == wgpu::TextureFormat::Rgba8Unorm));
+        for level in 0..BLOOM_LEVELS {
+            let [width, height] = bloom_level_size(96, 64, level);
+            assert_eq!(bloom.mip_chain[level].width(), width);
+            assert_eq!(bloom.mip_chain[level].height(), height);
+            assert_eq!(bloom.scratch_chain[level].width(), width);
+            assert_eq!(bloom.scratch_chain[level].height(), height);
+        }
+    }
+
+    #[test]
+    fn apply_runs_in_headless_frame() {
+        let (device, queue) = create_test_device();
+        let mut ctx = crate::gpu::GpuContext::new_headless(
+            device,
+            queue,
+            wgpu::TextureFormat::Bgra8Unorm,
+            [64, 64],
+        );
+        let input = RenderTarget::new(&ctx, 64, 64, wgpu::TextureFormat::Rgba16Float, "input");
+        let output = RenderTarget::new(&ctx, 64, 64, wgpu::TextureFormat::Rgba16Float, "output");
+        let mut bloom = Bloom::new(&ctx, 64, 64, wgpu::TextureFormat::Rgba16Float);
+
+        ctx.begin_frame()
+            .expect("headless begin_frame should succeed");
+        bloom.apply(&mut ctx, &input, &output);
+        ctx.end_frame();
     }
 }

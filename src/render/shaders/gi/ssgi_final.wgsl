@@ -31,6 +31,10 @@ fn saturate(v: f32) -> f32 {
     return clamp(v, 0.0, 1.0);
 }
 
+fn luminance(color: vec3<f32>) -> f32 {
+    return dot(max(color, vec3<f32>(0.0)), vec3<f32>(0.2126, 0.7152, 0.0722));
+}
+
 fn clamped_pixel(pixel: vec2<i32>, dims: vec2<u32>) -> vec2<i32> {
     return clamp(pixel, vec2<i32>(0), vec2<i32>(dims) - vec2<i32>(1));
 }
@@ -43,9 +47,10 @@ fn decode_view_normal(encoded: vec3<f32>) -> vec3<f32> {
     let normal = encoded * 2.0 - vec3<f32>(1.0);
     let len_sq = dot(normal, normal);
     if (len_sq <= 0.000001) {
-        return vec3<f32>(0.0, 0.0, 1.0);
+        return vec3<f32>(0.0, 0.0, -1.0);
     }
-    return normal * inverseSqrt(len_sq);
+    let unit = normal * inverseSqrt(len_sq);
+    return vec3<f32>(unit.x, unit.y, -unit.z);
 }
 
 fn reconstruct_position_from_depth(pixel: vec2<i32>, dims: vec2<u32>, depth: f32) -> vec3<f32> {
@@ -96,6 +101,19 @@ fn upsample_diffuse(output_pixel: vec2<i32>, high_dims: vec2<u32>) -> vec3<f32> 
     return max(result, vec3<f32>(0.0));
 }
 
+fn stabilize_indirect(diffuse: vec3<f32>, scene_color: vec3<f32>) -> vec3<f32> {
+    let diffuse_luma = luminance(diffuse);
+    if (diffuse_luma <= 0.00001) {
+        return vec3<f32>(0.0);
+    }
+
+    let desaturated = mix(vec3<f32>(diffuse_luma), diffuse, 0.35);
+    let desaturated_luma = max(luminance(desaturated), 0.00001);
+    let scene_luma = luminance(scene_color);
+    let max_luma = max(0.04, scene_luma * 0.28 + 0.06);
+    return desaturated * min(1.0, max_luma / desaturated_luma);
+}
+
 @fragment
 fn fs_final_upsample(input: FullscreenOutput) -> @location(0) vec4<f32> {
     let dims = textureDimensions(t_scene_color);
@@ -106,6 +124,6 @@ fn fs_final_upsample(input: FullscreenOutput) -> @location(0) vec4<f32> {
     if (center_depth >= 0.99999) {
         return scene_color;
     }
-    let diffuse = upsample_diffuse(pixel, dims) * ssgi.params0.x;
+    let diffuse = stabilize_indirect(upsample_diffuse(pixel, dims), scene_color.rgb) * ssgi.params0.x;
     return vec4<f32>(scene_color.rgb + diffuse, scene_color.a);
 }

@@ -41,6 +41,7 @@
 
 pub mod action;
 pub mod actions;
+pub mod interaction;
 pub mod raw;
 pub mod source;
 
@@ -50,4 +51,5 @@ pub use raw::{Input, KeyCode, MouseButton};
 // ── Re-exports: action layer ────────────────────────────────────────────────
 pub use action::{ActionKind, ActionMap, ActionValue};
 pub use actions::InputActions;
+pub use interaction::{InteractionCapture, InteractionContext, InteractionOwner};
 pub use source::{InputSource, MouseAxisKind};

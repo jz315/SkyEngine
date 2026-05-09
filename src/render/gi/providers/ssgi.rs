@@ -8,26 +8,31 @@
 
 use crate::gpu::GpuContext;
 use crate::math::Mat4;
-use crate::render::component::RenderSettings;
+use crate::render::component::GlobalIllumination;
 use crate::render::execution::{
-    pass_first_write_texture, pass_nth_read_texture, require_render_target, PreparedFrame,
-    PreparedView,
+    pass_first_write_texture, pass_nth_read_texture, require_render_target,
+};
+use crate::render::gi::{
+    downcast_settings, GiCompositeDescriptor, GiProviderFactory, GiProviderId, GiProviderRuntime,
+    GiSamplingBinding, GiSceneInput, GiSettings, GiShaderDescriptor,
 };
 use crate::render::gpu::{ComputePipelineCache, FullscreenPass, FullscreenPipeline};
 use crate::render::graph::{
     CompiledPass, PassFlags, RenderGraph, RenderGraphError, ResourceRef, TargetSize, TextureHandle,
     TextureSubresource,
 };
-use crate::render::pipeline::{
-    PostFxPass, PostFxPassExecuteContext, PostFxPassSetupContext, TextureSpec,
-};
+use crate::render::pipeline::{PostFxPassExecuteContext, PostFxPassSetupContext, TextureSpec};
 use crate::render::view::SceneView;
+use std::sync::OnceLock;
 
-const SSGI_FINAL_SHADER: &str = include_str!("../shaders/gi/ssgi_final.wgsl");
+pub const SSGI_PROVIDER_ID: GiProviderId = "sky.ssgi";
+
+const SSGI_FINAL_SHADER: &str = include_str!("../../shaders/gi/ssgi_final.wgsl");
 const SSGI_DEINTERLEAVE_COMPUTE_SHADER: &str =
-    include_str!("../shaders/gi/ssgi_deinterleave_compute.wgsl");
-const SSGI_COMPUTE_SHADER: &str = include_str!("../shaders/gi/ssgi_compute.wgsl");
-const SSGI_UPSAMPLE_COMPUTE_SHADER: &str = include_str!("../shaders/gi/ssgi_upsample_compute.wgsl");
+    include_str!("../../shaders/gi/ssgi_deinterleave_compute.wgsl");
+const SSGI_COMPUTE_SHADER: &str = include_str!("../../shaders/gi/ssgi_compute.wgsl");
+const SSGI_UPSAMPLE_COMPUTE_SHADER: &str =
+    include_str!("../../shaders/gi/ssgi_upsample_compute.wgsl");
 const SSGI_MIP_COUNT: usize = 4;
 const SSGI_ATLAS_LAYERS: u32 = 16;
 const SSGI_INTERNAL_ALIGNMENT: u32 = 64;
@@ -45,6 +50,41 @@ const SSGI_TEXTURE_DEPTH_MIPS: &str = "ssgi_texture_depth_mips";
 const SSGI_TEXTURE_NORMAL_MIPS: &str = "ssgi_texture_normal_mips";
 const SSGI_TEXTURE_DIFFUSE_MIPS: &str = "ssgi_texture_diffuse_mips";
 const SSGI_FINAL_PASS: &str = "ssgi_final_upsample";
+
+/// Screen-space GI controls for the Wicked-inspired provider.
+#[derive(Clone, Copy, Debug)]
+pub struct SsgiSettings {
+    /// Final composite strength. Wicked applies SSGI as a separate indirect term;
+    /// `1.0` preserves that energy in SkyEngine's current post-composite path.
+    pub intensity: f32,
+    /// Public radius hint. The current WGSL pass maps `8.0` to Wicked's narrow
+    /// `range = 2, spread = 2` SSGI sampling pass.
+    pub radius_pixels: f32,
+    /// Wicked's SSGI depth rejection distance; the shader uses its reciprocal.
+    pub depth_rejection: f32,
+    /// Wicked's bilateral normal threshold for SSGI upsample-style rejection.
+    pub normal_power: f32,
+}
+
+impl Default for SsgiSettings {
+    fn default() -> Self {
+        Self {
+            intensity: 1.0,
+            radius_pixels: 8.0,
+            depth_rejection: 8.0,
+            normal_power: 64.0,
+        }
+    }
+}
+
+#[inline]
+pub fn global_illumination(settings: SsgiSettings) -> GlobalIllumination {
+    GlobalIllumination::provider(crate::render::gi::GiProviderConfig::new(
+        SSGI_PROVIDER_ID,
+        settings,
+    ))
+}
+
 const SSGI_COMPUTE_DEINTERLEAVE_PASSES: [&str; SSGI_MIP_COUNT] = [
     "ssgi_compute_deinterleave_2x",
     "ssgi_compute_deinterleave_4x",
@@ -94,10 +134,28 @@ const SSGI_UPSAMPLE_PARAMS: [SsgiSampleParams; SSGI_MIP_COUNT] = [
         spread: 2.0,
     },
     SsgiSampleParams {
-        range: 1.0,
+        range: 2.0,
         spread: 1.0,
     },
 ];
+
+fn render_debug_log_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("SKY_RENDER_DEBUG_LOG")
+            .map(|value| {
+                matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false)
+    })
+}
+
+fn should_log_scene_view(scene_view: &SceneView) -> bool {
+    render_debug_log_enabled() && scene_view.temporal.frame_index % 120 == 0
+}
 
 #[derive(Clone, Copy)]
 struct SsgiSampleParams {
@@ -888,18 +946,20 @@ impl SsgiPass {
         pass: &CompiledPass,
         resources: &crate::render::graph::PhysicalResources<'_>,
         execution: &crate::render::execution::ViewExecutionContext<'_>,
-        settings: crate::render::component::SsgiSettings,
+        settings: SsgiSettings,
         pass_kind: SsgiComputePassKind,
     ) -> Result<(), RenderGraphError> {
         self.ensure_compute_gpu_objects(gpu);
         let scene_view = execution.view_payload::<SceneView>().ok_or_else(|| {
             RenderGraphError::ExecutionFailed("ssgi compute missing SceneView payload".into())
         })?;
-        let inverse_projection = Mat4::from_cols_array(scene_view.projection_matrix)
+        let inverse_projection = Mat4::from_cols_array(scene_view.unjittered_projection_matrix)
             .inverse()
             .to_cols_array();
         let pass_settings = pass_kind.settings();
-        let range = pass_settings.range;
+        let range = pass_settings
+            .range
+            .max((settings.radius_pixels * 0.25).clamp(1.0, 3.0));
         let spread = pass_settings.spread;
         let range_spread = (range * spread).max(1.0);
         let uniform = SsgiUniform {
@@ -1040,6 +1100,19 @@ impl SsgiPass {
         if dispatch_size[0] == 0 || dispatch_size[1] == 0 {
             return Ok(());
         }
+        if should_log_scene_view(scene_view) {
+            eprintln!(
+                "[ssgi][compute][frame={}] pass={} kind={:?} dispatch={:?} settings={:?} uniform.params0={:?} params1={:?} params2={:?}",
+                scene_view.temporal.frame_index,
+                pass.name,
+                pass_kind,
+                dispatch_size,
+                settings,
+                uniform.params0,
+                uniform.params1,
+                uniform.params2
+            );
+        }
         let mut frame = gpu.frame();
         let mut compute = frame.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some(pass.name.as_ref()),
@@ -1058,31 +1131,20 @@ impl SsgiPass {
     }
 }
 
-impl PostFxPass for SsgiPass {
+impl SsgiPass {
     fn name(&self) -> &'static str {
         "ssgi"
-    }
-
-    fn is_enabled(&self, frame: &PreparedFrame<'_>, view: &PreparedView<'_>) -> bool {
-        if view
-            .payload::<SceneView>()
-            .is_some_and(SceneView::is_shadow)
-        {
-            return false;
-        }
-        frame
-            .payload::<RenderSettings>()
-            .copied()
-            .unwrap_or_default()
-            .global_illumination
-            .uses_ssgi()
     }
 
     fn requires_hdr_input(&self) -> bool {
         true
     }
 
-    fn setup(&mut self, ctx: &mut PostFxPassSetupContext<'_, '_>) {
+    fn setup_with_settings(
+        &mut self,
+        ctx: &mut PostFxPassSetupContext<'_, '_>,
+        settings: SsgiSettings,
+    ) {
         let Some(current) = ctx.state().current_color() else {
             return;
         };
@@ -1095,6 +1157,22 @@ impl PostFxPass for SsgiPass {
 
         let target_size = ctx.view().target_size();
         self.resources.resize(target_size[0], target_size[1]);
+        if let Some(scene_view) = ctx.view_payload::<SceneView>() {
+            if should_log_scene_view(scene_view) {
+                eprintln!(
+                    "[ssgi][setup][frame={}] target={:?} current={:?} depth={:?} normal={:?} resources={:?} settings={:?} jitter={:?} prev_jitter={:?}",
+                    scene_view.temporal.frame_index,
+                    target_size,
+                    current.format(),
+                    depth.format(),
+                    normal.format(),
+                    self.resources,
+                    settings,
+                    scene_view.temporal.jitter,
+                    scene_view.temporal.previous_jitter
+                );
+            }
+        }
         let compute_resources = create_ssgi_compute_resources(ctx.graph(), self.resources);
         declare_ssgi_compute_passes(
             ctx.graph(),
@@ -1125,17 +1203,12 @@ impl PostFxPass for SsgiPass {
         });
     }
 
-    fn execute(
+    fn execute_with_settings(
         &mut self,
         ctx: &mut PostFxPassExecuteContext<'_, '_>,
+        settings: SsgiSettings,
     ) -> Result<(), RenderGraphError> {
         let (gpu, pass, resources, execution) = ctx.split();
-        let settings = execution
-            .frame_payload::<RenderSettings>()
-            .copied()
-            .unwrap_or_default()
-            .global_illumination
-            .ssgi;
         if let Some(pass_kind) = ssgi_compute_pass_kind(pass.name.as_ref()) {
             return self.execute_compute_pass(gpu, pass, resources, execution, settings, pass_kind);
         }
@@ -1152,7 +1225,7 @@ impl PostFxPass for SsgiPass {
         let scene_view = execution.view_payload::<SceneView>().ok_or_else(|| {
             RenderGraphError::ExecutionFailed("ssgi missing SceneView payload".into())
         })?;
-        let inverse_projection = Mat4::from_cols_array(scene_view.projection_matrix)
+        let inverse_projection = Mat4::from_cols_array(scene_view.unjittered_projection_matrix)
             .inverse()
             .to_cols_array();
         let pass_settings = SSGI_UPSAMPLE_PARAMS[SSGI_MIP_COUNT - 1];
@@ -1212,6 +1285,22 @@ impl PostFxPass for SsgiPass {
             scene_normal.view(),
             scene_color.view(),
         );
+        if should_log_scene_view(scene_view) {
+            eprintln!(
+                "[ssgi][final][frame={}] output={}x{} format={:?} scene_color={:?} scene_depth={:?} scene_normal={:?} settings={:?} uniform.params0={:?} params1={:?} params2={:?}",
+                scene_view.temporal.frame_index,
+                output.width(),
+                output.height(),
+                output.format(),
+                scene_color.format(),
+                scene_depth.format(),
+                scene_normal.format(),
+                settings,
+                uniform.params0,
+                uniform.params1,
+                uniform.params2
+            );
+        }
         let pipeline = self
             .final_pipeline
             .as_mut()
@@ -1231,17 +1320,106 @@ impl PostFxPass for SsgiPass {
         FullscreenPass::draw(&mut pass);
         Ok(())
     }
+}
 
-    fn draw_calls(&self, _execution: &crate::render::execution::ViewExecutionContext<'_>) -> usize {
-        SSGI_MIP_COUNT * 4
+pub struct SsgiProviderFactory;
+
+impl GiProviderFactory for SsgiProviderFactory {
+    fn id(&self) -> GiProviderId {
+        SSGI_PROVIDER_ID
     }
 
-    fn resize(&mut self, _ctx: &GpuContext, width: u32, height: u32) {
-        self.resources.resize(width, height);
+    fn create(&self, _gpu: &GpuContext) -> Box<dyn GiProviderRuntime> {
+        Box::new(SsgiRuntime {
+            pass: SsgiPass::default(),
+            settings: SsgiSettings::default(),
+            layout: None,
+            bind_group: None,
+        })
     }
 }
 
-#[derive(Clone, Copy)]
+struct SsgiRuntime {
+    pass: SsgiPass,
+    settings: SsgiSettings,
+    layout: Option<wgpu::BindGroupLayout>,
+    bind_group: Option<wgpu::BindGroup>,
+}
+
+impl SsgiRuntime {
+    fn ensure_sampling_binding(&mut self, gpu: &GpuContext) {
+        if self.layout.is_none() {
+            self.layout = Some(gpu.device().create_bind_group_layout(
+                &wgpu::BindGroupLayoutDescriptor {
+                    label: Some("ssgi_sampling_bgl"),
+                    entries: &[],
+                },
+            ));
+        }
+        if self.bind_group.is_none() {
+            let layout = self
+                .layout
+                .as_ref()
+                .expect("SSGI sampling layout should exist");
+            self.bind_group = Some(gpu.device().create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("ssgi_sampling_bg"),
+                layout,
+                entries: &[],
+            }));
+        }
+    }
+}
+
+impl GiProviderRuntime for SsgiRuntime {
+    fn prepare(&mut self, gpu: &GpuContext, _scene: &GiSceneInput<'_>, settings: &dyn GiSettings) {
+        if let Some(settings) = downcast_settings::<SsgiSettings>(settings, SSGI_PROVIDER_ID) {
+            self.settings = *settings;
+        }
+        self.ensure_sampling_binding(gpu);
+    }
+
+    fn setup_composite(&mut self, ctx: &mut PostFxPassSetupContext<'_, '_>) {
+        self.pass.setup_with_settings(ctx, self.settings);
+    }
+
+    fn execute_composite(
+        &mut self,
+        ctx: &mut PostFxPassExecuteContext<'_, '_>,
+    ) -> Result<(), RenderGraphError> {
+        self.pass.execute_with_settings(ctx, self.settings)
+    }
+
+    fn sampling_binding(&self) -> GiSamplingBinding {
+        GiSamplingBinding {
+            layout: self
+                .layout
+                .as_ref()
+                .expect("SSGI sampling layout should be initialized during prepare")
+                .clone(),
+            bind_group: self
+                .bind_group
+                .as_ref()
+                .expect("SSGI sampling bind group should be initialized during prepare")
+                .clone(),
+        }
+    }
+
+    fn shader_descriptor(&self) -> GiShaderDescriptor {
+        GiShaderDescriptor {
+            key: "ssgi",
+            source: crate::render::gi::NULL_GI_SHADER,
+        }
+    }
+
+    fn composite_descriptor(&self) -> Option<GiCompositeDescriptor> {
+        Some(GiCompositeDescriptor {
+            label: "gi_composite",
+            requires_hdr_input: self.pass.requires_hdr_input(),
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 enum SsgiComputePassKind {
     Deinterleave {
         mip_index: usize,
@@ -1493,13 +1671,13 @@ mod tests {
         ];
         let len_sq = normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2];
         if len_sq <= 0.000001 {
-            return [0.0, 0.0, 1.0];
+            return [0.0, 0.0, -1.0];
         }
         let inv_len = len_sq.sqrt().recip();
         [
             normal[0] * inv_len,
             normal[1] * inv_len,
-            normal[2] * inv_len,
+            -normal[2] * inv_len,
         ]
     }
 
@@ -1712,12 +1890,12 @@ mod tests {
     }
 
     #[test]
-    fn ssgi_decode_keeps_scene_view_normal_z_direction() {
+    fn ssgi_decode_flips_normal_z_to_match_positive_view_z() {
         let facing_camera = decode_scene_normal_like_ssgi([0.5, 0.5, 1.0]);
-        assert_eq!(facing_camera, [0.0, 0.0, 1.0]);
+        assert_eq!(facing_camera, [0.0, 0.0, -1.0]);
 
         let facing_away = decode_scene_normal_like_ssgi([0.5, 0.5, 0.0]);
-        assert_eq!(facing_away, [0.0, 0.0, -1.0]);
+        assert_eq!(facing_away, [0.0, 0.0, 1.0]);
 
         for source in [
             SSGI_COMPUTE_SHADER,
@@ -1725,8 +1903,8 @@ mod tests {
             SSGI_FINAL_SHADER,
         ] {
             assert!(
-                !source.contains("normal.z = -normal.z"),
-                "SSGI view-normal decode should not flip z after SceneNormalPrepass already writes view-space normals"
+                source.contains("unit.x, unit.y, -unit.z"),
+                "SSGI normal decode must mirror z because reconstructed positions use Wicked-style positive view z"
             );
         }
     }

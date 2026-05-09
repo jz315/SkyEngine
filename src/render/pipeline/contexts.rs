@@ -103,7 +103,6 @@ impl<'graph, 'frame> ComputePassSetupContext<'graph, 'frame> {
         self.state.set_scene_shadows(resources)
     }
 
-    #[inline]
     pub fn blackboard(&mut self) -> &mut Blackboard {
         self.graph.blackboard()
     }
@@ -353,6 +352,11 @@ impl<'gpu, 'frame> ComputePassExecuteContext<'gpu, 'frame> {
     ) {
         (self.gpu, self.pass, self.resources, self.execution)
     }
+
+    #[inline]
+    pub fn execution(&self) -> &'frame ViewExecutionContext<'frame> {
+        self.execution
+    }
 }
 
 pub struct GraphPassSetupContext<'graph, 'frame> {
@@ -434,7 +438,6 @@ impl<'graph, 'frame> GraphPassSetupContext<'graph, 'frame> {
         self.state.set_scene_shadows(resources)
     }
 
-    #[inline]
     pub fn blackboard(&mut self) -> &mut Blackboard {
         self.graph.blackboard()
     }
@@ -649,6 +652,11 @@ impl<'gpu, 'frame> GraphPassExecuteContext<'gpu, 'frame> {
     ) {
         (self.gpu, self.pass, self.resources, self.execution)
     }
+
+    #[inline]
+    pub fn execution(&self) -> &'frame ViewExecutionContext<'frame> {
+        self.execution
+    }
 }
 
 fn nth_texture(resources: &[ResourceRef], index: usize, access: &str) -> TextureHandle {
@@ -755,7 +763,7 @@ fn scene_lighting_for_view<'frame>(
     let gpu_scene = frame.payload::<GpuScene>()?;
     let settings = frame
         .payload::<RenderSettings>()
-        .copied()
+        .cloned()
         .unwrap_or_default();
     let mut lighting = SceneLightingResources::new(
         gpu_scene.table::<LightTable>(),
@@ -871,7 +879,6 @@ impl<'graph, 'frame> PostFxPassSetupContext<'graph, 'frame> {
         self.state.set_scene_shadows(resources)
     }
 
-    #[inline]
     pub fn blackboard(&mut self) -> &mut Blackboard {
         self.graph.blackboard()
     }
@@ -1065,6 +1072,11 @@ impl<'gpu, 'frame> PostFxPassExecuteContext<'gpu, 'frame> {
         &ViewExecutionContext<'frame>,
     ) {
         (self.gpu, self.pass, self.resources, self.execution)
+    }
+
+    #[inline]
+    pub fn execution(&self) -> &'frame ViewExecutionContext<'frame> {
+        self.execution
     }
 }
 

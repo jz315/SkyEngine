@@ -36,7 +36,7 @@ const PLAYER_ACCEL: f32 = 2400.0;
 const PLAYER_FRICTION: f32 = 1900.0;
 const PLAYER_MAX_SPEED: f32 = 330.0;
 const GRAVITY: f32 = -1850.0;
-const JUMP_SPEED: f32 = 720.0;
+const JUMP_SPEED: f32 = 900.0;
 const SPRING_SPEED: f32 = 980.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

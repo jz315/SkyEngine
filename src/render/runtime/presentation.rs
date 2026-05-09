@@ -80,7 +80,7 @@ impl FrameViewNode for ViewportBlitNode {
         }
         let settings = frame
             .payload::<RenderSettings>()
-            .copied()
+            .cloned()
             .unwrap_or_default();
         let input = require_current_color(state, self.name());
         graph.add_render_pass("viewport_blit", |s| {
@@ -112,7 +112,7 @@ impl FrameViewNode for ViewportBlitNode {
         let settings = execution
             .frame()
             .payload::<RenderSettings>()
-            .copied()
+            .cloned()
             .unwrap_or_default();
         let input = pass_first_read_texture(pass, self.name(), "input");
         let input_rt = require_render_target(resources, input, self.name(), "input");

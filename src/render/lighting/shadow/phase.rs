@@ -10,17 +10,15 @@ use crate::render::phase::{
     DrawFunctionRegistry, MeshDrawData, OpaquePhase, PhaseItem, TransparentPhase,
 };
 use crate::render::pipeline::{RenderPhase, RenderPhaseExecuteContext, RenderPhaseSetupContext};
-use crate::render::resources::material::{
-    Material, MaterialBindContext, MaterialError, MaterialHandle, MaterialRegistry,
-};
+use crate::render::resources::material::{MaterialError, MaterialHandle, MaterialRegistry};
 use crate::render::resources::mesh::{VertexLayout, VertexSemantic};
 use crate::render::view::SceneView;
 use crate::render::StandardMaterial;
 
 use super::view::{ShadowRasterBias, ShadowViewBinding, IDENTITY_MATRIX};
 use super::{
-    SceneShadowResources, ShadowPassBindingLayout, ShadowSceneBindingLayout,
-    TRANSPARENT_SHADOW_FORMAT,
+    SceneShadowGraphResources, SceneShadowResources, ShadowPassBindingLayout,
+    ShadowSceneBindingLayout, TRANSPARENT_SHADOW_FORMAT,
 };
 
 pub struct DirectionalShadowPhase {
@@ -295,7 +293,12 @@ impl DirectionalShadowPhase {
                     compilation_options: Default::default(),
                 },
                 fragment: match kind {
-                    ShadowPipelineKind::Opaque => None,
+                    ShadowPipelineKind::Opaque => Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some("fs_main"),
+                        targets: &[],
+                        compilation_options: Default::default(),
+                    }),
                     ShadowPipelineKind::AlphaTest => Some(wgpu::FragmentState {
                         module: &shader,
                         entry_point: Some("fs_main"),
@@ -393,6 +396,7 @@ impl RenderPhase for DirectionalShadowPhase {
             "directional_shadow_atlas_{}",
             scene_view.shadow_binding().unwrap_or(0)
         );
+        let graph_texture_name = format!("{slot_name}_cascade_{cascade_index}");
         let depth_handle = ctx
             .state()
             .texture_slot(&slot_name)
@@ -400,7 +404,7 @@ impl RenderPhase for DirectionalShadowPhase {
             .unwrap_or_else(|| {
                 let handle = ctx.graph().create_texture(|builder| {
                     builder
-                        .name(slot_name.clone())
+                        .name(graph_texture_name)
                         .import_external(import_shadow_target(shadow_view));
                 });
                 ctx.state()
@@ -411,6 +415,8 @@ impl RenderPhase for DirectionalShadowPhase {
             "directional_transparent_shadow_atlas_{}",
             scene_view.shadow_binding().unwrap_or(0)
         );
+        let transparent_graph_texture_name =
+            format!("{transparent_slot_name}_cascade_{cascade_index}");
         let transparent_handle = ctx
             .state()
             .texture_slot(&transparent_slot_name)
@@ -418,7 +424,7 @@ impl RenderPhase for DirectionalShadowPhase {
             .unwrap_or_else(|| {
                 let handle = ctx.graph().create_texture(|builder| {
                     builder
-                        .name(transparent_slot_name.clone())
+                        .name(transparent_graph_texture_name)
                         .import_external(import_transparent_shadow_target(shadow_view));
                 });
                 ctx.state().set_texture_slot(
@@ -428,6 +434,15 @@ impl RenderPhase for DirectionalShadowPhase {
                 );
                 handle
             });
+        if let Some(resources) = SceneShadowGraphResources::from_directional_shadow(
+            shadow_view,
+            depth_handle,
+            transparent_handle,
+        ) {
+            let key =
+                SceneShadowGraphResources::blackboard_key(scene_view.shadow_binding().unwrap_or(0));
+            ctx.blackboard_set(key, resources);
+        }
         if !shadow_view.should_update_cascade(cascade_index) {
             return;
         }
@@ -452,7 +467,7 @@ impl RenderPhase for DirectionalShadowPhase {
             draw_functions,
             material_registry,
             mesh_registry,
-            fallback_texture,
+            _fallback_texture,
         ) = ctx.split();
         let draw_functions = &*draw_functions;
         let material_registry = &*material_registry;
@@ -495,8 +510,6 @@ impl RenderPhase for DirectionalShadowPhase {
             .handle;
 
         let device = gpu.device().clone();
-        let sampler_linear = gpu.sampler_linear().clone();
-        let sampler_nearest = gpu.sampler_nearest().clone();
         let standard_material_layout = material_registry
             .pipeline_cache()
             .layout::<StandardMaterial>()
@@ -593,13 +606,6 @@ impl RenderPhase for DirectionalShadowPhase {
                             .into(),
                     )
                 })?;
-            let bind_context = MaterialBindContext::new(
-                &device,
-                &sampler_linear,
-                &sampler_nearest,
-                material_layout,
-                Some(fallback_texture),
-            );
             let mut bind_group_keepalive = Vec::new();
             let mut cursor = 0usize;
             while cursor < transparent_phase.items().len() {
@@ -635,10 +641,10 @@ impl RenderPhase for DirectionalShadowPhase {
                     cursor = batch_end;
                     continue;
                 };
-                let Some(material) = materials.get(material_handle) else {
+                if materials.get(material_handle).is_none() {
                     cursor = batch_end;
                     continue;
-                };
+                }
                 let Some(mesh) = mesh_registry.get(mesh_handle) else {
                     cursor = batch_end;
                     continue;
@@ -651,7 +657,13 @@ impl RenderPhase for DirectionalShadowPhase {
                     shadow_view.raster_bias(),
                     ShadowPipelineKind::Transparent,
                 )?;
-                bind_group_keepalive.push(material.create_bind_group(&bind_context));
+                bind_group_keepalive.push(
+                    material_registry
+                        .prepared(material_handle)
+                        .map_err(shadow_pipeline_material_error)?
+                        .bind_group()
+                        .clone(),
+                );
                 let instances: Vec<[f32; 16]> = transparent_phase.items()[cursor..batch_end]
                     .iter()
                     .map(|item| {
@@ -818,19 +830,18 @@ impl RenderPhase for DirectionalShadowPhase {
                                 .into(),
                         )
                     })?;
-                let material = materials.get(material_handle).ok_or_else(|| {
+                let _ = materials.get(material_handle).ok_or_else(|| {
                     RenderGraphError::ExecutionFailed(
                         "alpha-test shadow caster material handle no longer resolves".into(),
                     )
                 })?;
-                let bind_context = MaterialBindContext::new(
-                    &device,
-                    &sampler_linear,
-                    &sampler_nearest,
-                    material_layout.expect("alpha-test caster resolved a material layout above"),
-                    Some(fallback_texture),
+                bind_group_keepalive.push(
+                    material_registry
+                        .prepared(material_handle)
+                        .map_err(shadow_pipeline_material_error)?
+                        .bind_group()
+                        .clone(),
                 );
-                bind_group_keepalive.push(material.create_bind_group(&bind_context));
             }
             let instances: Vec<[f32; 16]> = opaque_phase.items()[cursor..batch_end]
                 .iter()
@@ -996,15 +1007,23 @@ fn shadow_caster_kind(
     }
 
     let draw = *item.data::<MeshDrawData>();
-    let material_handle = draw.material_handle::<StandardMaterial>();
+    let raw_material_handle = draw.material_handle::<StandardMaterial>();
     let Some(materials) = material_registry.try_materials::<StandardMaterial>() else {
         return ShadowCasterKind::Opaque;
     };
-    let Some(material) = materials.get(material_handle) else {
+    let Some(material) = materials.get(raw_material_handle) else {
         return ShadowCasterKind::Opaque;
     };
+    let Some(model_id) = material_registry.model_id::<StandardMaterial>() else {
+        return ShadowCasterKind::Opaque;
+    };
+    let material_handle =
+        crate::render::resources::material::TypedMaterialHandle::<StandardMaterial>::new(
+            model_id,
+            raw_material_handle.id(),
+        );
     if material.casts_alpha_test_shadow() {
-        ShadowCasterKind::AlphaTest(material_handle)
+        ShadowCasterKind::AlphaTest(material_handle.into())
     } else {
         ShadowCasterKind::Opaque
     }
@@ -1022,10 +1041,19 @@ fn transparent_shadow_material_handle(
     }
 
     let draw = *item.data::<MeshDrawData>();
-    let material_handle = draw.material_handle::<StandardMaterial>();
+    let raw_material_handle = draw.material_handle::<StandardMaterial>();
     let materials = material_registry.try_materials::<StandardMaterial>()?;
-    let material = materials.get(material_handle)?;
-    material.is_transparent().then_some(material_handle)
+    let material = materials.get(raw_material_handle)?;
+    let model_id = material_registry.model_id::<StandardMaterial>()?;
+    let material_handle =
+        crate::render::resources::material::TypedMaterialHandle::<StandardMaterial>::new(
+            model_id,
+            raw_material_handle.id(),
+        );
+    material
+        .alpha_mode
+        .is_transparent()
+        .then_some(material_handle.into())
 }
 
 fn count_phase_shadow_batches(items: &[PhaseItem]) -> usize {
@@ -1086,8 +1114,7 @@ mod tests {
     use crate::ecs::{EntityId, World};
     use crate::gpu::GpuContext;
     use crate::render::execution::{PhaseState, PreparedFrame, PreparedView};
-    use crate::render::gi::DdgiRuntime;
-    use crate::render::graph::RenderGraph;
+    use crate::render::graph::{RenderGraph, ResourceRef, TargetSize};
     use crate::render::lighting::shadow::{
         append_directional_shadow_views, create_shadow_compare_sampler, sync_shadow_views,
         ShadowResourceKind,
@@ -1164,7 +1191,10 @@ mod tests {
     fn alpha_test_shadow_pipeline_compiles_with_standard_material_layout() {
         let (device, _queue) = create_test_device();
         let shadow_layout = ShadowPassBindingLayout::new(&device);
-        let material_layout = StandardMaterial::bind_group_layout(&device);
+        let material_layout =
+            <StandardMaterial as crate::render::resources::material::MaterialModel>::interface()
+                .bindings
+                .create_bind_group_layout(&device, "standard_material_shadow_test_bgl");
         let layout = VertexLayout::new(
             20,
             [
@@ -1190,7 +1220,10 @@ mod tests {
     fn transparent_shadow_pipeline_compiles_with_standard_material_layout() {
         let (device, _queue) = create_test_device();
         let shadow_layout = ShadowPassBindingLayout::new(&device);
-        let material_layout = StandardMaterial::bind_group_layout(&device);
+        let material_layout =
+            <StandardMaterial as crate::render::resources::material::MaterialModel>::interface()
+                .bindings
+                .create_bind_group_layout(&device, "standard_material_shadow_test_bgl");
         let layout = VertexLayout::new(
             20,
             [
@@ -1225,13 +1258,40 @@ mod tests {
     }
 
     #[test]
+    fn shadow_depth_shaders_keep_raster_and_depth_projection_separate() {
+        for source in [
+            include_str!("../../shaders/lighting/shadow_depth.wgsl"),
+            include_str!("../../shaders/lighting/shadow_depth_alpha_test.wgsl"),
+            include_str!("../../shaders/lighting/shadow_transparent.wgsl"),
+        ] {
+            assert!(source.contains("raster_view_proj: mat4x4<f32>"));
+            assert!(source.contains("depth_view_proj: mat4x4<f32>"));
+            assert!(source.contains("shadow_pass.raster_view_proj * world_position"));
+            assert!(source.contains("shadow_pass.depth_view_proj * world_position"));
+            assert!(
+                !source.contains("clip_position.z = clamp"),
+                "vertex-stage depth clamping bends shadow triangles and can stamp bands into the atlas"
+            );
+        }
+
+        let opaque = include_str!("../../shaders/lighting/shadow_depth.wgsl");
+        let alpha_test = include_str!("../../shaders/lighting/shadow_depth_alpha_test.wgsl");
+        let transparent = include_str!("../../shaders/lighting/shadow_transparent.wgsl");
+        assert!(opaque.contains("@builtin(frag_depth)"));
+        assert!(alpha_test.contains("@builtin(frag_depth)"));
+        assert!(transparent.contains("@builtin(frag_depth)"));
+    }
+
+    #[test]
     fn standard_mask_material_routes_to_alpha_test_shadow_caster() {
         let (device, _queue) = create_test_device();
         let mut draw_functions = DrawFunctionRegistry::new();
         let draw_mesh =
             draw_functions.register(crate::render::phase::DrawMesh::<StandardMaterial>::new());
         let mut material_registry = MaterialRegistry::new();
-        material_registry.register_material::<StandardMaterial>(&device);
+        material_registry
+            .register_material::<StandardMaterial>(&device)
+            .expect("standard material should register");
         let opaque = material_registry
             .materials_mut::<StandardMaterial>()
             .insert(StandardMaterial::default());
@@ -1259,7 +1319,7 @@ mod tests {
         );
         assert_eq!(
             shadow_caster_kind(&mask_item, &draw_functions, &material_registry),
-            ShadowCasterKind::AlphaTest(mask)
+            ShadowCasterKind::AlphaTest(mask.into())
         );
     }
 
@@ -1270,7 +1330,9 @@ mod tests {
         let draw_mesh =
             draw_functions.register(crate::render::phase::DrawMesh::<StandardMaterial>::new());
         let mut material_registry = MaterialRegistry::new();
-        material_registry.register_material::<StandardMaterial>(&device);
+        material_registry
+            .register_material::<StandardMaterial>(&device)
+            .expect("standard material should register");
         let blend = material_registry
             .materials_mut::<StandardMaterial>()
             .insert(StandardMaterial::default().alpha_mode(crate::render::AlphaMode::Blend));
@@ -1284,7 +1346,7 @@ mod tests {
 
         assert_eq!(
             transparent_shadow_material_handle(&item, &draw_functions, &material_registry),
-            Some(blend)
+            Some(blend.into())
         );
     }
 
@@ -1340,7 +1402,6 @@ mod tests {
         let scene_layout = ShadowSceneBindingLayout::new(gpu.device());
         let pass_layout = ShadowPassBindingLayout::new(gpu.device());
         let sampler = create_shadow_compare_sampler(gpu.device());
-        let ddgi = DdgiRuntime::new(&gpu);
         let mut shadow_bindings = Vec::new();
         sync_shadow_views(
             &mut shadow_bindings,
@@ -1354,7 +1415,6 @@ mod tests {
             &pass_layout,
             &sampler,
             gpu_scene.table::<LightTable>(),
-            ddgi.scene_resources(),
             crate::render::component::RenderDebugView::DirectionalShadowCoverage,
         );
         assert_eq!(shadow_bindings.len(), 1);
@@ -1396,6 +1456,16 @@ mod tests {
             .texture_slot("directional_transparent_shadow_atlas_0")
             .expect("enabled shadow setup should publish the imported transparent atlas");
         assert_eq!(transparent_slot.format(), TRANSPARENT_SHADOW_FORMAT);
+        let graph_resources_key = SceneShadowGraphResources::blackboard_key(0);
+        let graph_resources = graph
+            .blackboard_ref()
+            .get::<SceneShadowGraphResources>(&graph_resources_key)
+            .expect("enabled shadow setup should publish graph handles for sampling passes");
+        assert_eq!(graph_resources.directional_shadow_atlas(), slot.handle());
+        assert_eq!(
+            graph_resources.directional_transparent_shadow_atlas(),
+            transparent_slot.handle()
+        );
         let scene_shadows = state
             .scene_shadows()
             .expect("enabled shadow setup should publish scene shadow resources");
@@ -1426,6 +1496,152 @@ mod tests {
         assert!(
             transparent_pass.depth_stencil.is_some(),
             "transparent shadow pass should depth-test against the directional atlas"
+        );
+    }
+
+    #[test]
+    fn opaque_phase_reads_exact_shadow_graph_handles() {
+        let (device, queue) = create_test_device();
+        let gpu =
+            GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [64, 64]);
+        let projection = Projection::orthographic_fixed(16.0, 16.0);
+        let main_view = SceneView::new(
+            0,
+            ViewportRect::from_surface_size([64, 64]),
+            [64, 64],
+            false,
+            u32::MAX,
+            Transform::default(),
+            projection,
+            projection.view_uniform(Transform::default(), [64, 64]),
+            true,
+        );
+        let mut world = World::new();
+        world.spawn((DirectionalLight::new([0.3, -1.0, 0.2]).shadow_map_size(64),));
+
+        let mut scene_views = vec![main_view];
+        let shadow_setups = append_directional_shadow_views(&world, &mut scene_views);
+        assert_eq!(scene_views.len(), 2);
+        assert_eq!(scene_views[0].shadow_binding(), Some(0));
+        assert!(scene_views[1].is_shadow());
+
+        let mut opaque_phases = vec![OpaquePhase::new(), OpaquePhase::new()];
+        opaque_phases[0].add_item(PhaseItem::new(
+            0,
+            DrawFunctionId::from_raw(0),
+            EntityId::new(0, 0),
+            0,
+            MeshDrawData::new(
+                crate::render::expert::Mesh::QUAD,
+                MaterialHandle::new::<crate::render::StandardMaterial>(0, 0),
+                0,
+            ),
+        ));
+        opaque_phases[1].add_item(PhaseItem::new(
+            0,
+            DrawFunctionId::from_raw(0),
+            EntityId::new(1, 0),
+            0,
+            MeshDrawData::new(
+                crate::render::expert::Mesh::QUAD,
+                MaterialHandle::new::<crate::render::StandardMaterial>(0, 0),
+                0,
+            ),
+        ));
+        let transparent_phases = vec![TransparentPhase::new(), TransparentPhase::new()];
+
+        let mut gpu_scene = GpuScene::new(&gpu);
+        gpu_scene.table_mut::<LightTable>().set_all(&gpu, &[]);
+        gpu_scene.upload_all(gpu.queue());
+        let scene_layout = ShadowSceneBindingLayout::new(gpu.device());
+        let pass_layout = ShadowPassBindingLayout::new(gpu.device());
+        let sampler = create_shadow_compare_sampler(gpu.device());
+        let mut shadow_bindings = Vec::new();
+        sync_shadow_views(
+            &mut shadow_bindings,
+            &gpu,
+            &scene_views,
+            &opaque_phases,
+            &transparent_phases,
+            &[IDENTITY_MATRIX],
+            &shadow_setups,
+            &scene_layout,
+            &pass_layout,
+            &sampler,
+            gpu_scene.table::<LightTable>(),
+            crate::render::component::RenderDebugView::None,
+        );
+        assert_eq!(shadow_bindings.len(), 1);
+        assert!(shadow_bindings[0].enabled());
+
+        let mut frame = PreparedFrame::new(wgpu::TextureFormat::Bgra8Unorm, false);
+        frame.insert_payload(&scene_layout);
+        let shadow_prepared_view = PreparedView::new(
+            scene_views[1].order,
+            scene_views[1].viewport,
+            scene_views[1].target_size,
+            scene_views[1].clear_surface,
+        )
+        .with_payload(&scene_views[1])
+        .with_payload(&shadow_bindings[0]);
+        let main_prepared_view = PreparedView::new(
+            scene_views[0].order,
+            scene_views[0].viewport,
+            scene_views[0].target_size,
+            scene_views[0].clear_surface,
+        )
+        .with_payload(&scene_views[0])
+        .with_payload(&opaque_phases[0]);
+        let mut graph = RenderGraph::new();
+        let mut state = PhaseState::new(frame.surface_format(), frame.has_surface());
+        let mut shadow_phase = DirectionalShadowPhase::new();
+
+        {
+            let mut setup =
+                RenderPhaseSetupContext::new(&mut graph, &mut state, &frame, &shadow_prepared_view);
+            shadow_phase.setup(&mut setup);
+        }
+
+        let graph_resources_key = SceneShadowGraphResources::blackboard_key(0);
+        let graph_resources = graph
+            .blackboard_ref()
+            .get::<SceneShadowGraphResources>(&graph_resources_key)
+            .cloned()
+            .expect("shadow setup should publish graph handles before opaque setup");
+        let scene_color = graph.create_texture(|builder| {
+            builder
+                .name("opaque_phase_shadow_dependency_color")
+                .size(TargetSize::Exact(64, 64))
+                .format(frame.surface_format())
+                .persistent();
+        });
+        state.set_current_color(scene_color, frame.surface_format());
+
+        let mut opaque_phase = OpaquePhase::new();
+        {
+            let mut setup =
+                RenderPhaseSetupContext::new(&mut graph, &mut state, &frame, &main_prepared_view);
+            opaque_phase.setup(&mut setup);
+        }
+
+        let passes = graph
+            .compile()
+            .expect("shadow and opaque dependency graph should compile");
+        let opaque_pass = passes
+            .iter()
+            .find(|pass| pass.name.as_ref() == "opaque_phase")
+            .expect("opaque setup should declare a live opaque pass");
+        assert!(
+            opaque_pass.reads.contains(&ResourceRef::Texture(
+                graph_resources.directional_shadow_atlas()
+            )),
+            "opaque pass must read the exact directional shadow atlas handle from shadow setup"
+        );
+        assert!(
+            opaque_pass.reads.contains(&ResourceRef::Texture(
+                graph_resources.directional_transparent_shadow_atlas()
+            )),
+            "opaque pass must read the exact transparent shadow atlas handle from shadow setup"
         );
     }
 
@@ -1483,7 +1699,6 @@ mod tests {
         let scene_layout = ShadowSceneBindingLayout::new(gpu.device());
         let pass_layout = ShadowPassBindingLayout::new(gpu.device());
         let sampler = create_shadow_compare_sampler(gpu.device());
-        let ddgi = DdgiRuntime::new(&gpu);
         let mut shadow_bindings = Vec::new();
         sync_shadow_views(
             &mut shadow_bindings,
@@ -1497,7 +1712,6 @@ mod tests {
             &pass_layout,
             &sampler,
             gpu_scene.table::<LightTable>(),
-            ddgi.scene_resources(),
             crate::render::component::RenderDebugView::None,
         );
         assert!(shadow_bindings[0].should_update_cascade(0));
@@ -1515,7 +1729,6 @@ mod tests {
             &pass_layout,
             &sampler,
             gpu_scene.table::<LightTable>(),
-            ddgi.scene_resources(),
             crate::render::component::RenderDebugView::None,
         );
         assert!(!shadow_bindings[0].should_update_cascade(0));

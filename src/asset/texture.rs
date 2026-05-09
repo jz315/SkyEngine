@@ -261,9 +261,11 @@ pub(crate) fn decode_texture_cooked(
     } else {
         [0, 0, width, height]
     };
-    let data_len =
-        u64::from_le_bytes(bytes[offset..offset + 8].try_into().expect("slice length checked"))
-            as usize;
+    let data_len = u64::from_le_bytes(
+        bytes[offset..offset + 8]
+            .try_into()
+            .expect("slice length checked"),
+    ) as usize;
     let payload = &bytes[offset + 8..];
 
     if payload.len() != data_len {
@@ -329,15 +331,26 @@ fn alpha_visible_rect(image: &image::RgbaImage) -> [u32; 4] {
     let mut max_x = 0;
     let mut max_y = 0;
     let mut found = false;
+    let row_stride = width as usize * 4;
+    let pixels = image.as_raw();
 
-    for (x, y, pixel) in image.enumerate_pixels() {
-        if pixel.0[3] == 0 {
+    for y in 0..height {
+        let row_start = y as usize * row_stride;
+        let row = &pixels[row_start..row_start + row_stride];
+        let first = row.chunks_exact(4).position(|pixel| pixel[3] != 0);
+        let Some(first) = first else {
             continue;
-        }
+        };
+        let last = row
+            .chunks_exact(4)
+            .rposition(|pixel| pixel[3] != 0)
+            .expect("first non-transparent pixel was found");
+        let first = first as u32;
+        let last = last as u32;
         found = true;
-        min_x = min_x.min(x);
+        min_x = min_x.min(first);
         min_y = min_y.min(y);
-        max_x = max_x.max(x);
+        max_x = max_x.max(last);
         max_y = max_y.max(y);
     }
 

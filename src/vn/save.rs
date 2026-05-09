@@ -211,4 +211,62 @@ Hello. #line:start.1
             1
         );
     }
+
+    #[test]
+    fn save_data_restores_runtime_progress_and_variables() {
+        let script = YarnScript::parse_str(
+            r#"
+title: Start
+---
+Hello. #line:start.1
+-> A
+    <<set $route = "a">>
+    A route. #line:a.1
+-> B
+    <<set $route = "b">>
+    B route. #line:b.1
+===
+"#,
+        )
+        .unwrap();
+        let mut runtime = VnRuntime::from_script(script, "Start").unwrap();
+        assert!(matches!(
+            runtime.advance().unwrap(),
+            VnRuntimeEvent::Line(_)
+        ));
+        runtime.dialogue_mut().complete_line();
+        assert!(matches!(
+            runtime.advance().unwrap(),
+            VnRuntimeEvent::Choices(_)
+        ));
+
+        let mut store = VnSaveStore::default();
+        store.save_runtime("quick", "memory", &runtime, VnPreferences::default());
+
+        runtime.choose(1).unwrap();
+        assert!(matches!(
+            runtime.advance().unwrap(),
+            VnRuntimeEvent::Line(_)
+        ));
+        assert_eq!(
+            runtime.variable("route"),
+            Some(&crate::vn::script::VnValue::String("b".to_owned()))
+        );
+
+        let save = store.get("quick").unwrap().clone();
+        runtime.restore_snapshot(save.runtime).unwrap();
+
+        assert_eq!(runtime.status(), &crate::vn::runtime::VnStatus::Choice);
+        assert!(runtime.variable("route").is_none());
+        assert_eq!(runtime.active_choices().len(), 2);
+        assert_eq!(runtime.dialogue().backlog.len(), 1);
+        assert_eq!(
+            runtime
+                .dialogue()
+                .backlog
+                .last()
+                .map(|line| line.text.as_str()),
+            Some("Hello.")
+        );
+    }
 }

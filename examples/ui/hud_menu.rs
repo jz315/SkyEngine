@@ -69,13 +69,13 @@ impl AppState for HudMenuDemo {
     }
 
     fn update(&mut self, ctx: &mut FrameContext<'_>) {
-        ctx.update_ui();
+        ctx.ui().update();
         self.handle_ui_events(ctx);
         self.animate(ctx.dt);
         self.sync_ui(ctx.world);
 
         ctx.render();
-        ctx.render_ui();
+        ctx.ui().render_overlays();
     }
 }
 

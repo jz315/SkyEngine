@@ -1,6 +1,16 @@
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 use crate::vn::script::YarnCommand;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum VnAssetUsePolicy {
+    #[default]
+    NonBlocking,
+    WaitCpu,
+    WaitGpu,
+    WaitGpuTimeout(Duration),
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VnAssetState {

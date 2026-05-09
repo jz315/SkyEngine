@@ -1,62 +1,101 @@
 <p align="center">
   <h1 align="center">🚀 SkyEngine</h1>
   <p align="center">
-    <strong>高性能 · 块列式 ECS · wgpu 2D 渲染 · Rust 原生</strong>
+    <strong>High Performance · Chunk-Columnar ECS · wgpu 2D Rendering · Pure Rust</strong>
   </p>
   <p align="center">
     <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/Rust-2021_Edition-orange?logo=rust&logoColor=white" alt="Rust"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
     <a href="https://github.com/nicories/wgpu"><img src="https://img.shields.io/badge/GPU-wgpu_24-green?logo=webgpu" alt="wgpu"></a>
-    <a href="benches/BENCHMARKS_CN.md"><img src="https://img.shields.io/badge/Bench-Criterion-purple" alt="Criterion"></a>
+    <a href="benches/BENCHMARKS.md"><img src="https://img.shields.io/badge/Bench-Criterion-purple" alt="Criterion"></a>
   </p>
 </p>
 
 <p align="center">
-  <a href="README_EN.md">English</a> · <a href="#-快速上手">快速上手</a> · <a href="#-性能基准">性能基准</a> · <a href="docs/api.md">API 文档</a> · <a href="docs/scene.md">Scene 文档</a> · <a href="docs/physics.md">Physics 文档</a> · <a href="#-示例展示">示例展示</a>
+  <a href="README.md">中文</a> · <a href="#-quick-start">Quick Start</a> · <a href="#-benchmarks">Benchmarks</a> · <a href="docs/api.md">API Docs</a> · <a href="docs/scene.md">Scene Docs</a> · <a href="docs/physics.md">Physics Docs</a> · <a href="#-examples">Examples</a>
 </p>
 
 ---
 
-## 📖 简介
+## 📖 Introduction
 
-**SkyEngine** 是一款 Rust 原生 2D 游戏引擎。核心特性包括：
+**SkyEngine** is a high-performance game engine built from scratch in Rust, standing on two pillars:
 
-- **ECS 架构**：高性能的实体组件系统
-- **现代渲染**：基于 `RenderPipelineAsset + RenderComposer` 的高层可编程场景管线，以及基于 `wgpu` 的专家级 RenderGraph
-- **Scene / Prefab**：`scene` feature 提供实体树文档、稳定 ID、层级和 prefab spawn
-- **可选 2D 物理**：`physics` feature 提供 top-down/Tiled 2D 物理、事件、查询和 debug draw
-- **数学模块**：提供 engine-owned 的 `sky_engine::math` 公共数学层，当前内部基于 `glam`
-- **简单易用**：用户友好的API，详细的文档
+1. **Chunk-Columnar Archetype ECS** — Components of the same type are stored contiguously within fixed-size memory chunks, naturally aligning with hardware prefetching for extreme iteration performance.
+2. **Programmable Scene Rendering** — A high-level `RenderPipelineAsset + RenderComposer` model coordinates ECS 2D, Live2D, and future renderer features on top of a declarative render graph, with built-in SpriteBatch, dynamic lighting, Bloom/ToneMap/Vignette post-processing, and Live2D Cubism SDK integration.
 
-🚧 项目目前处于快速开发阶段，欢迎贡献！
+SkyEngine takes the **library approach**: no proc macros, no global state, no imposed application structure. Use just the ECS, or combine it with the full rendering pipeline — everything is opt-in.
 
----
-
-### 为什么选择 SkyEngine？
-- 在性能测试中，我们ECS处于领先地位。
-  - 迭代性能 **2.7x–4.2x 优于 hecs**
-  - 完整帧模拟 **领先 hecs 14%、领先 Bevy 19%**
-- 精心设计的接口，API 简洁直观
-- 原生支持AI协作
-
+> **Why SkyEngine?**
+> - In fair benchmarks, iteration performance is **2.7x–4.2x faster than hecs**, with overall frame simulation **14% ahead of hecs, 19% ahead of Bevy**.
+> - Pure Rust, zero-unsafe typed query API while retaining a low-level raw API for tooling and scripting.
+> - Batteries-included rendering: RenderGraph with automatic resource aliasing, transient allocation, and dead-pass culling — no manual GPU resource lifetime management.
+> - An engine-owned `sky_engine::math` layer now fronts shared math types while the current backend remains `glam`.
 
 ---
 
+## ✨ Key Features
 
-## 🚀 快速上手
+### 🏗️ ECS Core
 
-### 前置条件
+| Feature | Description |
+|---------|-------------|
+| **Chunk-Columnar Storage** | Each archetype organized into fixed-size chunks with per-type contiguous columns, aligning iteration with hardware prefetch |
+| **Typed Queries** | `world.query::<(&mut Pos, &Vel)>()` returns a `PreparedQuery` with automatic archetype caching |
+| **Optional Components** | Queries support `Option<&T>` / `Option<&mut T>` for optional component access |
+| **Compile-Time Filters** | `With<T>` / `Without<T>` and tuple combinations with zero runtime overhead |
+| **Batch Insert** | `spawn_batch()` skips per-entity lookups — 2x faster than hecs at 10K entities |
+| **Deferred Commands** | `Commands` schedules structural changes during active queries, coalesced and batch-applied |
+| **System Scheduling** | Groups + fixed-timestep policy, `world.tick()` drives a complete frame |
+| **Generational Entities** | `EntityId` with generation tracking — stale handles auto-invalidate on slot reuse |
+| **Chunk Iteration** | `for_each_chunk()` yields contiguous slices for manual SIMD vectorization |
+| **Scene / Prefab** | Optional `scene` feature for entity-tree documents, stable IDs, hierarchy, and prefab spawning |
 
-- [Rust](https://www.rust-lang.org/tools/install) 稳定版（推荐 1.80+）
+### 🎨 Rendering Framework (feature = `"app"`)
 
-### 安装
+| Feature | Description |
+|---------|-------------|
+| **Declarative RenderGraph** | Compile-time topological sort + resource aliasing + transient allocation + dead-pass culling |
+| **SpriteBatch** | High-performance 2D sprite batch rendering with texture atlases and material instances |
+| **Dynamic Lighting** | `LightPass` + `Light2D` point lights with color temperature, radius, and intensity |
+| **Post-Processing** | `Bloom` · `ToneMap` · `Vignette` — composable PostFx chain |
+| **Material System** | `MaterialInstance` + `MaterialPipelineCache` for data-driven pipelines |
+| **Texture Atlas** | `TextureAtlas` + `AtlasPacker` auto-packing to reduce draw calls |
+| **2D Camera** | `Camera2D` orthographic projection with zoom / pan / viewport fitting |
+| **Live2D Integration** | Cubism SDK v5 native bindings, per-drawable GPU rendering (feature = `"live2d"`) |
+
+---
+
+## 🛠️ Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Language | Rust 2021 Edition |
+| Global Allocator | mimalloc |
+| Hashing | rustc-hash (FxHashMap) |
+| GPU Backend | wgpu 24 |
+| Windowing | winit 0.30 |
+| Shaders | WGSL |
+| Benchmarking | Criterion 0.8 |
+| Comparison Engines | hecs · bevy_ecs · flecs_ecs |
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+- [Rust](https://www.rust-lang.org/tools/install) stable (1.80+ recommended)
+- GPU rendering examples require Vulkan / DX12 / Metal capable drivers
+
+### Installation
 
 ```bash
-git clone https://github.com/jz315/SkyEngine.git
+git clone https://github.com/your-username/SkyEngine.git
 cd SkyEngine
 ```
 
-### 最小 ECS 示例
+### Minimal ECS Example
 
 ```rust
 use sky_engine::ecs::World;
@@ -70,25 +109,24 @@ struct Velocity { x: f32, y: f32 }
 fn main() {
     let mut world = World::new();
 
-    // 创建单个实体
     let entity = world.spawn((
         Position { x: 0.0, y: 0.0 },
         Velocity { x: 1.0, y: 2.0 },
     ));
 
-    // 批量创建 10,000 个实体
+    // Batch-spawn 10,000 entities
     world.spawn_batch((0..10_000).map(|i| {
         (Position { x: i as f32, y: 0.0 }, Velocity { x: 1.0, y: 1.0 })
     }));
 
-    // 类型化查询 — 自动缓存匹配 Archetype
+    // Typed query — auto-cached archetype matching
     let mut query = world.query::<(&mut Position, &Velocity)>();
     query.for_each(&world, |(pos, vel)| {
         pos.x += vel.x * 0.016;
         pos.y += vel.y * 0.016;
     });
 
-    // Chunk 级迭代 — 返回连续切片，适合 SIMD
+    // Chunk-level iteration — contiguous slices for SIMD
     query.for_each_chunk(&world, |(positions, velocities)| {
         for (p, v) in positions.iter_mut().zip(velocities.iter()) {
             p.x += v.x * 0.016;
@@ -102,130 +140,290 @@ fn main() {
 
 ---
 
-## 📊 性能基准
+## 📊 Benchmarks
 
-所有数据来自 `cargo bench --bench fair` 公平横向对比，使用 Criterion 框架在同一台 Windows 机器上采集。详细历史记录见 [BENCHMARKS.md](benches\BENCHMARKS_CN.md)。
+All data from `cargo bench --bench fair` — apples-to-apples comparison using Criterion on the same Windows machine. Full history in [benches/BENCHMARKS.md](benches/BENCHMARKS.md).
 
-### 迭代性能
+### Iteration Performance
 
-| 工作负载 | Sky 🚀 | hecs | Bevy | Sky 优势 |
-|---------|--------|------|------|----------|
-| 简单迭代 10K | **1.98 µs** | 5.56 µs | 8.15 µs | ⚡ 2.8x |
-| 碎片化迭代 10K | **1.06 µs** | 3.20 µs | 6.14 µs | ⚡ 3.0x |
-| 矩阵计算 100K | **1.90 ms** | 2.37 ms | 2.03 ms | ⚡ 1.2x |
+| Workload | Sky 🚀 | hecs | Bevy | Sky Advantage |
+|----------|--------|------|------|---------------|
+| Simple Iteration 10K | **1.98 µs** | 5.56 µs | 8.15 µs | ⚡ 2.8x |
+| Fragmented Iteration 10K | **1.06 µs** | 3.20 µs | 6.14 µs | ⚡ 3.0x |
+| Heavy Compute 100K | **1.90 ms** | 2.37 ms | 2.03 ms | ⚡ 1.2x |
 
-### 结构操作
+### Structural Operations
 
-| 工作负载 | Sky 🚀 | hecs | Bevy | Sky 优势 |
-|---------|--------|------|------|----------|
-| 批量插入 10K | **135 µs** | 290 µs | 274 µs | ⚡ 2.1x |
-| 创建/销毁 1K | **26.3 µs** | 25.2 µs | 58.8 µs | ≈ hecs |
-| 组件增删 1K | **58.8 µs** | 59.1 µs | 88.2 µs | ≈ hecs |
+| Workload | Sky 🚀 | hecs | Bevy | Sky Advantage |
+|----------|--------|------|------|---------------|
+| Batch Insert 10K | **135 µs** | 290 µs | 274 µs | ⚡ 2.1x |
+| Spawn/Despawn 1K | **26.3 µs** | 25.2 µs | 58.8 µs | ≈ hecs |
+| Add/Remove Component 1K | **58.8 µs** | 59.1 µs | 88.2 µs | ≈ hecs |
 
-### 综合帧模拟
+### Full Frame Simulation
 
-| 工作负载 | Sky 🚀 | hecs | Bevy |
-|---------|--------|------|------|
-| **完整游戏帧** | **181 µs** | 211 µs | 223 µs |
+| Workload | Sky 🚀 | hecs | Bevy |
+|----------|--------|------|------|
+| **Complete Game Frame** | **181 µs** | 211 µs | 223 µs |
 
-> 💡 Sky 在完整帧模拟中 **领先 hecs 14%、领先 Bevy 19%**
+> 💡 Sky leads by **14% over hecs, 19% over Bevy** in full frame simulation
 
 ```bash
-# 运行公平对比基准
-cargo bench --bench fair
-
-# 运行指定引擎
-cargo bench --bench fair -- sky
-cargo bench --bench fair -- hecs
-cargo bench --bench fair -- bevy
-cargo bench --bench fair -- flecs
+cargo bench --bench fair          # fair cross-engine comparison
+cargo bench --bench fair -- sky   # Sky only
+cargo bench --bench fair -- hecs  # hecs only
+cargo bench --bench fair -- bevy  # Bevy only
 ```
 
 ---
 
-## 🎮 示例展示
+## 🎮 Examples
 
-完整示例索引见 [`examples/README.md`](examples/README.md)。如果你是第一次接触这个仓库，建议按“ECS 入门 → Render API → 完整 Demo”的顺序阅读。
+See [`examples/README.md`](examples/README.md) for the full example index and recommended learning order. If you're new to the repo, start with ECS tutorials, then move to render showcases, then the full demos.
 
-Physics 文档见 [`docs/physics.md`](docs/physics.md)。相关示例：
+Recommended high-level render workflow:
+
+- `clear_screen` and similar minimal samples stay on the no-pipeline `ctx.gpu()` path
+- install the default unified scene pipeline with `App::with_render_pipeline(RenderPipelineAsset::forward_2d())`
+- call `ctx.render()` inside `update()`
+- customize the high-level flow by registering your own `phase / compute / pass / postfx / feature` steps
+- combine multiple renderer families by composing multiple features, extractors, and draw functions into one pipeline
+- add a brand new renderer type by implementing a `RenderFeature`, `Extractor`, `DrawFunction`, or custom pipeline step
+- `StandardMaterial` normal maps now use tangent-space shading, and `Mesh::from_gltf(...)` prepares tangent data for that path
+- `RenderPipelineAsset::forward_3d()` now runs a directional shadow-map phase automatically for perspective views with shadow-casting `DirectionalLight`s
+- drop to `render::expert::*` only when you need direct graph / pass / target control
+
+### 1. ECS Tutorials (no GPU required)
 
 ```bash
-cargo run --example physics_arcade_demo --features "app physics" --release
-cargo run --example tiled_physics_demo --features "app physics" --release
+cargo run --example hello_ecs       # minimal starting point
+cargo run --example queries         # typed queries
+cargo run --example commands        # deferred structural changes
+cargo run --example systems         # system scheduling
+cargo run --example tiny_defense    # ECS-only complete mini game
 ```
 
-Scene / Prefab 文档见 [`docs/scene.md`](docs/scene.md)：
+### 2. Render Learning Path (`--features app`)
+
+Recommended order:
+
+1. `clear_screen` — understand the window, GPU context, and per-frame clear pass
+2. `sprite_demo` — add `Camera` and the default high-level scene pipeline path
+3. `textured_demo` — move from flat-color sprites to textures and mixed drawing on the same pipeline-driven path
+4. `lighting_demo` — introduce normals, lighting composition, bloom, and tonemapping through `App::with_render_pipeline(...)`
+5. `render_graph_showcase` — study how the declarative `RenderGraph` organizes resources and passes
+6. `frame_pipeline_showcase` — inspect the expert-only `FramePipeline` setup/view/finalize backbone directly
+7. `perf_test` — inspect throughput and scaling after the main path is clear
+8. `renderer_probe` — inspect scene-pipeline workload and timing stats on the default universal path
+
+`live2d_demo` is the first multi-feature branch and is best read after the main path.
 
 ```bash
-cargo run --example scene_basic --features scene
+cargo run --example clear_screen          --features app
+cargo run --example sprite_demo           --features app
+cargo run --example textured_demo         --features app
+cargo run --example lighting_demo         --features app
+cargo run --example render_graph_showcase --features app
+cargo run --example frame_pipeline_showcase --features app
+cargo run --example perf_test             --features app --release
+cargo run --example renderer_probe        --features app --release
 ```
 
-高层渲染推荐工作流：
+### Render Path Map
 
-- `clear_screen` 这类最小示例直接走 `ctx.gpu()`，不安装高层管线
-- `App::with_render_pipeline(RenderPipelineAsset::forward_2d())` 安装默认统一场景管线
-- 在 `update()` 里调用 `ctx.render()`
-- 想改高层执行顺序，就自定义 builder 注册和有序步骤：`phase / compute / pass / postfx / feature`
-- 需要组合更多渲染类型时，在同一条 pipeline 里组合多个 feature、extractor、draw function 和 pipeline step
-- 需要新增一种渲染类型时，优先实现新的 `RenderFeature`、`Extractor`、`DrawFunction` 或自定义 step
-- `StandardMaterial` 的 normal map 现在走切线空间；`Mesh::from_gltf(...)` 会自动准备 tangent 数据
-- `RenderPipelineAsset::forward_3d()` 现在会为透视视图和可投影的 `DirectionalLight` 自动执行 directional shadow map
-- 只有在需要直接控制 graph / pass / target 时，才下潜到 `render::expert::*`
-- 专家级 backend 示例看 `render_graph_showcase` / `frame_pipeline_showcase`，性能统计看 `renderer_probe`
+```text
+clear_screen
+  ↓
+sprite_demo
+  ↓
+textured_demo
+  ↓
+lighting_demo
+  ↓
+render_graph_showcase
+  ↓
+frame_pipeline_showcase
+  ↓
+perf_test
+  ↓
+renderer_probe
+
+specialized branch: live2d_demo
+```
+
+### 3. Full Showcase Demos (`--features app`)
+
+```bash
+cargo run --example boids            --features app --release
+cargo run --example boids_classic    --features app --release
+cargo run --example cosmic_jellyfish --features app --release
+cargo run --example neon_galaxy      --features app --release
+```
+
+### 4. Live2D (`--features live2d`)
+
+```bash
+cargo run --example live2d_demo --features live2d --release -- <path-to-model3.json>
+```
+
+### 5. Compare / Legacy Examples (not part of the main learning path)
+
+```bash
+# Cross-engine comparison
+cargo run --example boids_bevy_gpu --features compare-bevy --release
+cargo run --example boids_hecs     --features compare --release
+cargo run --example boids_bevy     --features compare --release
+
+# Historical CPU-rendered demos
+cargo run --example particles --features demo-legacy
+cargo run --example asteroids --features demo-legacy
+cargo run --example snake     --features demo-legacy
+```
+
+---
+
+## 📁 Project Structure
+
+```
+SkyEngine/
+├── src/
+│   ├── lib.rs                  # Crate root, global allocator, module exports
+│   ├── ecs/                    # 🏗️ ECS core
+│   │   ├── world.rs            #   World: entities, archetypes, resources, scheduling
+│   │   ├── archetype.rs        #   Archetype definition and builder
+│   │   ├── chunk.rs            #   Chunk allocation and columnar storage
+│   │   ├── query/              #   Typed queries, filters, dynamic queries
+│   │   ├── bundle.rs           #   Tuple Bundle trait
+│   │   ├── commands.rs         #   Deferred command buffer
+│   │   ├── system.rs           #   System trait and group scheduling
+│   │   ├── entity.rs           #   Generational EntityId
+│   │   ├── resource.rs         #   Typed singleton resources
+│   │   └── raw.rs              #   Low-level tooling API
+│   ├── gpu/                    # 🖥️ GPU context (feature: app)
+│   ├── render/                 # 🎨 2D rendering framework (feature: app)
+│   │   ├── core/               #   Camera2D, Color, Texture, RenderTarget
+│   │   ├── graph/              #   Declarative RenderGraph
+│   │   ├── passes/             #   SpriteBatch, LightPass, CompositePass
+│   │   ├── postfx/             #   Bloom, ToneMap, Vignette
+│   │   ├── resources/          #   TextureAtlas, Blackboard, Material
+│   │   ├── shaders/            #   WGSL shaders (8)
+│   │   ├── light.rs            #   Light2D point lights
+│   │   └── live2d/             #   Live2D Cubism renderer (feature: live2d)
+│   ├── app/                    # 🚀 Application framework (feature: app)
+│   └── reflect/                # 🔍 Runtime type registry
+├── examples/                   # 📚 Runnable examples
+│   ├── README.md               #   Example index and learning path
+│   ├── ecs/                    #   ECS tutorials
+│   ├── render/                 #   Render API showcases + Live2D
+│   ├── demo/                   #   Full showcase demos
+│   ├── compare/                #   Cross-engine comparisons
+│   └── legacy/                 #   CPU-only SkyEngine demos
+├── benches/                    # 📊 Criterion benchmarks
+├── docs/                       # 📖 Documentation
+├── benches/BENCHMARKS.md       # Benchmark methodology and history
+├── Cargo.toml
+└── LICENSE                     # MIT
+```
+
+---
+
+## ⚙️ Feature Flags
+
+| Feature | Description | Dependencies |
+|---------|-------------|-------------|
+| `app` | Full application framework (window + GPU + input) | wgpu, winit, pollster, bytemuck |
+| `asset` | Asset loading (textures, etc.) | image |
+| `demo` | GPU-accelerated demos | app + asset + rand |
+| `live2d` | Live2D Cubism SDK integration | app + asset + cubism-sys + serde_json |
+| `demo-legacy` | CPU-rendered demos | minifb + rand |
+| `compare` | Cross-engine comparison examples | demo-legacy + hecs + bevy_ecs |
+| `compare-bevy` | Full Bevy GPU comparison | bevy |
+
+```bash
+# ECS only — zero external dependencies
+cargo test
+
+# ECS + rendering
+cargo test --features app
+
+# Full demo
+cargo run --example boids --features app --release
+```
 
 ---
 
 ## 🗺️ Roadmap
 
-- [x] 块列式 Archetype ECS
-- [x] 类型化查询 + 编译期过滤
-- [x] 延迟命令与批量 Spawn
-- [x] 系统分组调度
-- [x] wgpu GPU 上下文
-- [x] 声明式 RenderGraph
-- [x] SpriteBatch 2D 渲染
-- [x] 动态光照 + 后处理管线
-- [x] Live2D Cubism 集成
-- [ ] 并行化系统调度
-- [ ] 资产管线热重载
-- [ ] 场景序列化 / 反序列化
-- [ ] 粒子系统 GPU 加速
-- [ ] 编辑器 GUI
-- [ ] 音频系统
+- [x] Chunk-columnar Archetype ECS
+- [x] Typed queries + compile-time filters
+- [x] Deferred commands and batch spawn
+- [x] System group scheduling
+- [x] wgpu GPU context
+- [x] Declarative RenderGraph
+- [x] SpriteBatch 2D rendering
+- [x] Dynamic lighting + post-processing pipeline
+- [x] Live2D Cubism integration
+- [ ] Parallel system scheduling
+- [ ] Hot-reloading asset pipeline
+- [ ] Scene serialization / deserialization
+- [ ] GPU-accelerated particle system
+- [ ] Editor GUI
+- [ ] Audio system
 
 ---
 
-## 📄 文档
+## 🤝 Contributing
 
-| 文档 | 说明 |
-|------|------|
-| [文档索引](docs/api.md) | 模块文档入口 |
-| [ECS](docs/ecs.md) | World、Query、Commands、Schedule |
-| [Reflect](docs/reflect.md) | Type layout 反射与 derive Inspector 反射 |
-| [Render](docs/render.md) | 高层渲染模块导览 |
-| [Scene](docs/scene.md) | Scene / Prefab / Save |
-| [Physics](docs/physics.md) | 2D physics 和 Tiled physics |
-| [benches/BENCHMARKS_CN.md](benches/BENCHMARKS_CN.md) | 基准测试方法论与历史记录 |
-| [src/render/AGENTS.md](src/render/AGENTS.md) | 渲染模块架构指南 |
-| [src/render/graph/AGENTS.md](src/render/graph/AGENTS.md) | RenderGraph 详细设计文档 |
+Contributions are welcome! Please follow this workflow:
 
----
+1. **Fork** the repository
+2. Create a feature branch: `git checkout -b feature/amazing-feature`
+3. Commit your changes: `git commit -m 'feat: add amazing feature'`
+4. Push the branch: `git push origin feature/amazing-feature`
+5. Open a **Pull Request**
 
-## 🙏 致谢
+### Development Guidelines
 
-- [SakuraEngine](https://github.com/SakuraEngine/SakuraEngine)  — 图形学部分参考了 SakuraEngine 的实现，特此感谢。
-- [hecs](https://github.com/Ralith/hecs) 
-- [Bevy](https://github.com/bevyengine/bevy) 
-- [wgpu](https://github.com/gfx-rs/wgpu) 
+- Run `cargo test` to ensure all tests pass
+- Run `cargo bench --bench fair` to confirm no performance regressions
+- Follow existing code style — avoid unnecessary abstractions in hot paths
+- Read `src/render/AGENTS.md` before modifying the rendering framework
 
 ---
 
-## 📜 许可证
+## 📄 Documentation
 
-本项目采用 [MIT 许可证](LICENSE) 开源。
+| Document | Description |
+|----------|-------------|
+| [Documentation Index](docs/api.md) | Entry point for module docs |
+| [ECS](docs/ecs.md) | World, queries, commands, schedule |
+| [Reflect](docs/reflect.md) | Type layout reflection and derive-based inspector reflection |
+| [Render](docs/render.md) | High-level rendering module guide |
+| [Scene](docs/scene.md) | Scene / prefab / save |
+| [Physics](docs/physics.md) | 2D physics and Tiled physics |
+| [benches/BENCHMARKS.md](benches/BENCHMARKS.md) | Benchmark methodology and history |
+| [src/render/AGENTS.md](src/render/AGENTS.md) | Rendering module architecture guide |
+| [src/render/graph/AGENTS.md](src/render/graph/AGENTS.md) | RenderGraph detailed design docs |
+
+---
+
+## 🔗 See Also
+
+| Project | Description |
+|---------|-------------|
+| [hecs](https://github.com/Ralith/hecs) | Minimal archetype ECS |
+| [Bevy](https://github.com/bevyengine/bevy) | Full game engine with plugin ecosystem |
+| [flecs](https://github.com/SanderMertens/flecs) | Feature-rich ECS in C99 |
+| [wgpu](https://github.com/gfx-rs/wgpu) | Cross-platform GPU abstraction layer |
+
+---
+
+## 📜 License
+
+This project is licensed under the [MIT License](LICENSE).
 
 ---
 
 <p align="center">
-  使用 Rust 🦀 和 ❤️ 构建
+  Built with Rust 🦀 and ❤️
 </p>

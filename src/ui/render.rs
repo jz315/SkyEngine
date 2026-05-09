@@ -1,17 +1,17 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
+use glyphon::cosmic_text::Align as TextAlign;
 use glyphon::{
     Attrs, Buffer, Cache, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache, TextArea,
     TextAtlas, TextBounds, TextRenderer, Viewport,
 };
-use glyphon::cosmic_text::Align as TextAlign;
 use rustc_hash::FxHashMap;
 
 use crate::asset::{AssetId, AssetServer, Handle, TextureAsset};
 use crate::ecs::{EntityId, World};
 use crate::gpu::GpuContext;
-use crate::render::{Color as SkyColor, Texture};
+use crate::render::{Color as SkyColor, SharedRenderAssetCache};
 
 use super::{
     resolve_world_layout, UiAlign, UiButton, UiFontBook, UiFontSource, UiImage, UiInteraction,
@@ -159,8 +159,7 @@ pub(crate) struct UiRenderer {
     screen_buffer: wgpu::Buffer,
     screen_bind_group: wgpu::BindGroup,
     image_texture_layout: wgpu::BindGroupLayout,
-    image_textures: FxHashMap<AssetId, CachedUiTexture>,
-    image_bind_groups: FxHashMap<AssetId, wgpu::BindGroup>,
+    image_bind_groups: FxHashMap<AssetId, CachedUiImageBindGroup>,
     font_revision: u64,
     font_system: FontSystem,
     swash_cache: SwashCache,
@@ -171,9 +170,9 @@ pub(crate) struct UiRenderer {
     text_buffers: Vec<Buffer>,
 }
 
-struct CachedUiTexture {
-    source: std::sync::Arc<TextureAsset>,
-    _texture: Texture,
+struct CachedUiImageBindGroup {
+    texture_key: usize,
+    bind_group: wgpu::BindGroup,
 }
 
 impl UiRenderer {
@@ -358,7 +357,6 @@ impl UiRenderer {
             screen_buffer,
             screen_bind_group,
             image_texture_layout,
-            image_textures: FxHashMap::default(),
             image_bind_groups: FxHashMap::default(),
             font_revision,
             font_system,
@@ -440,8 +438,8 @@ impl UiRenderer {
             .iter()
             .zip(text_items.iter())
             .map(|(buffer, item)| {
-                let text_height = laid_out_text_height(buffer)
-                    .unwrap_or(item.font_size * text_scale * 1.25);
+                let text_height =
+                    laid_out_text_height(buffer).unwrap_or(item.font_size * text_scale * 1.25);
                 let rect_height = item.rect.height * scale_y;
                 let y_offset = ((rect_height - text_height) * 0.5).max(0.0);
                 let left = item.rect.x * scale_x;
@@ -484,53 +482,48 @@ impl UiRenderer {
         &mut self,
         gpu: &GpuContext,
         assets: Option<&AssetServer>,
+        render_assets: Option<&SharedRenderAssetCache>,
         handle: Handle<TextureAsset>,
     ) -> Option<wgpu::BindGroup> {
         let id = handle.id();
-        let source = assets.and_then(|assets| assets.try_get(&handle))?;
-        let cached_is_current = self
-            .image_textures
-            .get(&id)
-            .is_some_and(|cached| std::sync::Arc::ptr_eq(&cached.source, &source));
+        let texture = match (assets, render_assets) {
+            (Some(assets), Some(cache)) => cache.borrow_mut().texture(gpu, assets, handle),
+            (_, Some(cache)) => {
+                cache.borrow_mut().mark_texture_missing(handle);
+                None
+            }
+            _ => None,
+        }?;
+        let texture_key = std::ptr::from_ref(texture.texture()) as usize;
 
-        if !cached_is_current {
-            let format = match source.color_space() {
-                crate::asset::TextureColorSpace::Linear => wgpu::TextureFormat::Rgba8Unorm,
-                crate::asset::TextureColorSpace::Srgb => wgpu::TextureFormat::Rgba8UnormSrgb,
-            };
-            let texture = Texture::from_rgba8_with_format(
-                gpu,
-                source.width(),
-                source.height(),
-                source.pixels(),
-                format,
-                "ui_image_texture",
-            );
-            let bind_group = gpu.device().create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("sky_ui_image_texture_bg"),
-                layout: &self.image_texture_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(texture.view()),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(gpu.sampler_linear()),
-                    },
-                ],
-            });
-            self.image_textures.insert(
-                id,
-                CachedUiTexture {
-                    source,
-                    _texture: texture,
-                },
-            );
-            self.image_bind_groups.insert(id, bind_group);
+        if let Some(cached) = self.image_bind_groups.get(&id) {
+            if cached.texture_key == texture_key {
+                return Some(cached.bind_group.clone());
+            }
         }
 
-        self.image_bind_groups.get(&id).cloned()
+        let bind_group = gpu.device().create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("sky_ui_image_texture_bg"),
+            layout: &self.image_texture_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(texture.view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(gpu.sampler_linear()),
+                },
+            ],
+        });
+        self.image_bind_groups.insert(
+            id,
+            CachedUiImageBindGroup {
+                texture_key,
+                bind_group: bind_group.clone(),
+            },
+        );
+        Some(bind_group)
     }
 }
 
@@ -539,7 +532,7 @@ pub fn render_ui(world: &mut World, gpu: &mut GpuContext) {
     if !gpu.has_surface() || !gpu.has_active_frame() {
         return;
     }
-    super::ensure_ui_resources(world);
+    super::ensure_legacy_ui_resources(world);
 
     let physical_size = gpu.surface_size();
     let state = world.get_resource::<UiState>().cloned().unwrap_or_default();
@@ -676,6 +669,9 @@ pub fn render_ui(world: &mut World, gpu: &mut GpuContext) {
 
     let font_book = world.get_resource::<UiFontBook>().cloned();
     let asset_server = world.get_resource::<AssetServer>().cloned();
+    if !world.contains_resource::<SharedRenderAssetCache>() {
+        world.insert_resource(SharedRenderAssetCache::default());
+    }
     let mut renderer = world
         .remove_resource::<UiRenderer>()
         .filter(|renderer| renderer.matches_surface(gpu.surface_format()))
@@ -703,10 +699,19 @@ pub fn render_ui(world: &mut World, gpu: &mut GpuContext) {
         Some(gpu.upload_vertices(&image_vertices))
     };
     let text_ready = renderer.prepare_text(gpu, &text_items, logical_size);
-    let image_bind_groups: Vec<_> = images
-        .iter()
-        .map(|image| renderer.image_bind_group(gpu, asset_server.as_ref(), image.texture))
-        .collect();
+    let image_bind_groups: Vec<_> = {
+        let render_assets = world.get_resource::<SharedRenderAssetCache>();
+        let bind_groups: Vec<_> = images
+            .iter()
+            .map(|image| {
+                renderer.image_bind_group(gpu, asset_server.as_ref(), render_assets, image.texture)
+            })
+            .collect();
+        if let Some(cache) = render_assets {
+            cache.borrow_mut().prepare_queued_textures(gpu);
+        }
+        bind_groups
+    };
 
     {
         let mut frame = gpu.frame();

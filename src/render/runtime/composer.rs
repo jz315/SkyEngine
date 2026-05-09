@@ -10,7 +10,7 @@ use crate::render::lighting::shadow::{
 use crate::render::phase::DrawFunctionRegistry;
 use crate::render::pipeline::{MaterialRegistration, RenderPipelineAsset};
 use crate::render::resources::material::{
-    Material, MaterialRegistry, MaterialStorage, PipelineCache,
+    Material, MaterialRegistry, MaterialStorage, MaterialStorageMut, PipelineCache,
 };
 use crate::render::resources::mesh::{Mesh, MeshHandle};
 use crate::render::view::{RenderStats, ResolvedSceneTransforms, SceneView};
@@ -46,16 +46,16 @@ impl RenderComposer {
                 mesh_registry: crate::render::resources::mesh::MeshRegistry::default(),
             },
             runtime: ComposerRuntime {
+                pipeline_initialized: false,
                 last_stats: RenderStats::default(),
                 surface_size: [1, 1],
                 frame_settings: RenderSettings::default(),
                 view_collector: WorldViewCollector::default(),
                 temporal: crate::render::runtime::TemporalViewTracker::default(),
                 gpu_scene: None,
-                ddgi: None,
+                gi: None,
                 fallback_texture: None,
                 history: crate::render::runtime::HistoryTextureStore::new(),
-                render_assets: crate::render::resources::assets::RenderAssetCache::new(),
                 asset_event_cursor: crate::asset::AssetEventCursor::default(),
                 previous_model_by_entity: rustc_hash::FxHashMap::default(),
             },
@@ -103,28 +103,29 @@ impl RenderComposer {
     }
 
     pub fn register_material<M: Material>(&mut self, gpu: &GpuContext) {
-        self.resources
+        let _ = self
+            .resources
             .material_registry
             .register_material::<M>(gpu.device());
     }
 
     #[inline]
-    pub fn try_materials<M: Material>(&self) -> Option<&MaterialStorage<M>> {
+    pub fn try_materials<M: Material>(&self) -> Option<MaterialStorage<'_, M>> {
         self.resources.material_registry.try_materials::<M>()
     }
 
     #[inline]
-    pub fn materials<M: Material>(&self) -> &MaterialStorage<M> {
+    pub fn materials<M: Material>(&self) -> MaterialStorage<'_, M> {
         self.resources.material_registry.materials::<M>()
     }
 
     #[inline]
-    pub fn try_materials_mut<M: Material>(&mut self) -> Option<&mut MaterialStorage<M>> {
+    pub fn try_materials_mut<M: Material>(&mut self) -> Option<MaterialStorageMut<'_, M>> {
         self.resources.material_registry.try_materials_mut::<M>()
     }
 
     #[inline]
-    pub fn materials_mut<M: Material>(&mut self) -> &mut MaterialStorage<M> {
+    pub fn materials_mut<M: Material>(&mut self) -> MaterialStorageMut<'_, M> {
         self.resources.material_registry.ensure_storage::<M>()
     }
 
@@ -147,6 +148,19 @@ impl RenderComposer {
         {
             register(&mut self.resources.material_registry, gpu.device());
         }
+    }
+
+    /// Realize the pipeline declarations that depend on a live GPU device.
+    ///
+    /// After this runs, material models declared by the pipeline builder are
+    /// available through `materials()` / `materials_mut()` even before the
+    /// first frame is rendered. Per-frame resources stay lazy.
+    pub(crate) fn initialize_for_gpu(&mut self, gpu: &GpuContext) {
+        if self.runtime.pipeline_initialized {
+            return;
+        }
+        self.ensure_registered_materials(gpu);
+        self.runtime.pipeline_initialized = true;
     }
 
     pub(crate) fn ensure_builtin_meshes(&mut self, gpu: &GpuContext) {
@@ -175,6 +189,12 @@ impl RenderComposer {
         }
         if self.shadows.compare_sampler.is_none() {
             self.shadows.compare_sampler = Some(create_shadow_compare_sampler(gpu.device()));
+        }
+    }
+
+    pub(crate) fn ensure_gi_runtime(&mut self, gpu: &GpuContext) {
+        if self.runtime.gi.is_none() {
+            self.runtime.gi = Some(crate::render::gi::GiRuntime::new(gpu));
         }
     }
 

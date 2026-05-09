@@ -1,6 +1,7 @@
 //! Post-processing effects.
 
 pub mod bloom;
+pub mod contact_shadows;
 pub mod debug_view;
 pub mod sharpen;
 pub mod taa;

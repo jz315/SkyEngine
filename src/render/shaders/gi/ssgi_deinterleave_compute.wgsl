@@ -48,9 +48,10 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let regular_pixel = vec2<i32>(regular_pixel_u);
     let scene_dims = textureDimensions(t_scene_color);
     let scale = max(i32(round(ssgi.params2.x)), 1);
+    let center_offset = scale / 2;
     // Wicked's deinterleave picks the same lattice points that its 16x16
     // groupshared tile fans out to 2x/4x/8x/16x outputs.
-    let scene_pixel = clamped_pixel(regular_pixel * scale, scene_dims);
+    let scene_pixel = clamped_pixel(regular_pixel * scale + vec2<i32>(center_offset), scene_dims);
 
     var color = textureLoad(t_scene_color, scene_pixel, 0).rgb;
     if (all(color <= vec3<f32>(ssgi.params1.w))) {

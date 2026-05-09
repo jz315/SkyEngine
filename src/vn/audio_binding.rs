@@ -13,7 +13,7 @@ use crate::audio::{
 };
 use crate::ecs::World;
 use crate::vn::audio::{VnAudioIntent, VnAudioVolumes, VnBgmState, VnSfxEvent, VnVoiceState};
-use crate::vn::runtime::VnRuntime;
+use crate::vn::resource::VnResource;
 
 #[derive(Clone, Debug, Default)]
 pub struct VnAudioBindings {
@@ -357,7 +357,7 @@ impl Error for VnAudioSystemError {
 pub fn sync_runtime_audio_to_world(
     world: &mut World,
 ) -> Result<VnAudioSyncReport, VnAudioSystemError> {
-    if !world.contains_resource::<VnRuntime>() {
+    if !world.contains_resource::<VnResource>() {
         return Ok(VnAudioSyncReport::default());
     }
 
@@ -370,22 +370,16 @@ pub fn sync_runtime_audio_to_world(
         .cloned()
         .ok_or(VnAudioSystemError::MissingAudioServer)?;
 
-    let Some((volumes, intents)) = world.get_resource_mut::<VnRuntime>().map(|runtime| {
-        let audio = runtime.audio_mut();
-        (
-            audio.volumes.clone(),
-            audio.drain_intents().collect::<Vec<_>>(),
-        )
-    }) else {
+    let Some(vn) = world.get_resource_mut::<VnResource>() else {
         return Ok(VnAudioSyncReport::default());
     };
-
-    let mut bindings = world
-        .remove_resource::<VnAudioBindings>()
-        .unwrap_or_default();
-    let result = bindings.sync(&assets, &audio, &volumes, intents);
-    world.insert_resource(bindings);
-    result
+    let Some(runtime) = vn.runtime_mut() else {
+        return Ok(VnAudioSyncReport::default());
+    };
+    let audio_state = runtime.audio_mut();
+    let volumes = audio_state.volumes.clone();
+    let intents = audio_state.drain_intents().collect::<Vec<_>>();
+    vn.audio_bindings.sync(&assets, &audio, &volumes, intents)
 }
 
 pub fn sync_audio_intents_to_world(
@@ -401,12 +395,10 @@ pub fn sync_audio_intents_to_world(
         .get_resource::<AudioServer>()
         .cloned()
         .ok_or(VnAudioSystemError::MissingAudioServer)?;
-    let mut bindings = world
-        .remove_resource::<VnAudioBindings>()
-        .unwrap_or_default();
-    let result = bindings.sync(&assets, &audio, volumes, intents);
-    world.insert_resource(bindings);
-    result
+    let Some(vn) = world.get_resource_mut::<VnResource>() else {
+        return Ok(VnAudioSyncReport::default());
+    };
+    vn.audio_bindings.sync(&assets, &audio, volumes, intents)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

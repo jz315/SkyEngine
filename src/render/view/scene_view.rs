@@ -52,6 +52,8 @@ pub struct SceneView {
     pub projection: Projection,
     pub view_matrix: [f32; 16],
     pub projection_matrix: [f32; 16],
+    pub unjittered_view_proj_matrix: [f32; 16],
+    pub unjittered_projection_matrix: [f32; 16],
     pub inverse_view: [f32; 16],
     pub camera_position: [f32; 3],
     pub near: f32,
@@ -122,6 +124,8 @@ impl SceneView {
             projection,
             view_matrix: view_uniform.view,
             projection_matrix: view_uniform.projection,
+            unjittered_view_proj_matrix: view_uniform.view_proj,
+            unjittered_projection_matrix: view_uniform.projection,
             inverse_view: view_uniform.inverse_view,
             camera_position: [
                 view_uniform.camera_position[0],
@@ -188,7 +192,12 @@ impl SceneView {
     }
 
     #[inline]
-    pub(crate) fn set_view_uniform(&mut self, view_uniform: ViewUniform) {
+    pub(crate) fn set_jittered_view_uniform(&mut self, view_uniform: ViewUniform) {
+        self.set_active_view_uniform(view_uniform);
+    }
+
+    #[inline]
+    fn set_active_view_uniform(&mut self, view_uniform: ViewUniform) {
         self.view_matrix = view_uniform.view;
         self.projection_matrix = view_uniform.projection;
         self.inverse_view = view_uniform.inverse_view;

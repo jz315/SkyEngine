@@ -53,6 +53,10 @@ fn is_saturated_uv(uv: vec2<f32>) -> bool {
     return all(uv >= vec2<f32>(0.0)) && all(uv <= vec2<f32>(1.0));
 }
 
+fn saturate(v: f32) -> f32 {
+    return clamp(v, 0.0, 1.0);
+}
+
 fn tonemap(x: vec3<f32>) -> vec3<f32> {
     return x / (x + vec3<f32>(1.0));
 }
@@ -83,12 +87,12 @@ fn cs_main(
     let dims = vec2<u32>(u32(taa.resolution.x), u32(taa.resolution.y));
     let tile_upperleft = vec2<i32>(wid.xy * vec2<u32>(THREADCOUNT)) - vec2<i32>(TILE_BORDER);
 
-    var y = lid.y * 2u;
+    var y = lid.y;
     loop {
         if (y >= TILE_SIZE) {
             break;
         }
-        var x = lid.x * 2u;
+        var x = lid.x;
         loop {
             if (x >= TILE_SIZE) {
                 break;
@@ -96,9 +100,9 @@ fn cs_main(
             let local = vec2<i32>(i32(x), i32(y));
             let pixel = tile_upperleft + local;
             tile_cache[cache_index(local)] = load_cached_sample(pixel, dims);
-            x = x + THREADCOUNT * 2u;
+            x = x + THREADCOUNT;
         }
-        y = y + THREADCOUNT * 2u;
+        y = y + THREADCOUNT;
     }
     workgroupBarrier();
 
@@ -136,16 +140,24 @@ fn cs_main(
     let velocity = textureLoad(t_velocity, velocity_pixel, 0).xy;
     let prev_uv_unclamped = uv + velocity;
     let prev_uv = clamp(prev_uv_unclamped, vec2<f32>(0.0), vec2<f32>(1.0));
+    let jitter_velocity = vec2<f32>(taa.params1.x, taa.params1.w);
+    let stable_velocity = velocity - jitter_velocity;
+    let stable_velocity_pixels =
+        max(abs(stable_velocity.x) * taa.resolution.x, abs(stable_velocity.y) * taa.resolution.y);
 
     let depth_current = linear_depth(textureLoad(t_depth, pixel, 0));
     let depth_history = linear_depth(textureLoad(t_depth_history, uv_to_pixel(prev_uv, dims), 0));
+    let base_current_weight = clamp(taa.params0.y, 0.0, 1.0);
+    let motion_current_weight = max(base_current_weight, clamp(taa.params0.z, 0.0, 1.0));
     var blendfactor = mix(
-        clamp(taa.params0.y, 0.0, 1.0),
-        clamp(taa.params0.z, 0.0, 1.0),
-        fract(max(abs(velocity.x) * taa.resolution.x, abs(velocity.y) * taa.resolution.y)) * 0.5,
+        base_current_weight,
+        motion_current_weight,
+        saturate((stable_velocity_pixels - 0.1) * 0.65),
     );
 
-    if (length(velocity) > 0.01 && abs(depth_current - depth_history) > 1.0) {
+    let depth_delta = abs(depth_current - depth_history);
+    let depth_threshold = max(0.08, depth_current * 0.03);
+    if (stable_velocity_pixels > 0.25 && depth_delta > depth_threshold) {
         blendfactor = 1.0;
     }
     if (!is_saturated_uv(prev_uv_unclamped) || taa.params0.x > 0.5) {

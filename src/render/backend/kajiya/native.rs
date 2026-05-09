@@ -4,11 +4,11 @@ use winit::window::Window;
 
 use crate::{asset::AssetServer, math::Projection};
 
-use super::kajiya_assets::{KajiyaAssetSyncStats, KajiyaRenderAssetCache};
-use super::kajiya_cache;
-use super::kajiya_config::KajiyaRendererConfig;
-use super::kajiya_error::KajiyaBackendError;
-use super::{SceneCamera, SceneSnapshot};
+use super::super::{SceneCamera, SceneSnapshot};
+use super::assets::{KajiyaAssetSyncStats, KajiyaRenderAssetCache};
+use super::cache;
+use super::config::KajiyaRendererConfig;
+use super::error::KajiyaBackendError;
 
 pub(crate) struct NativeKajiyaRuntime {
     config: KajiyaRendererConfig,
@@ -33,7 +33,7 @@ impl NativeKajiyaRuntime {
         surface_size: [u32; 2],
         triangle_only: bool,
     ) -> Result<Self, KajiyaBackendError> {
-        kajiya_cache::configure_vfs(config.vendor_root(), config.cache_dir());
+        cache::configure_vfs(config.vendor_root(), config.cache_dir());
         std::env::set_var("SMOL_THREADS", "64");
 
         let window_handle = KajiyaWindowHandle03::from_window(window)?;
@@ -420,11 +420,10 @@ fn kajiya_perspective_infinite_reverse_z(
 
 #[cfg(test)]
 mod tests {
-    use super::super::SceneSnapshotExtractor;
     use super::*;
     use crate::{
         ecs::World,
-        render::backend::kajiya_config,
+        render::backend::SceneSnapshotExtractor,
         render::{DirectionalLight, Transform},
     };
     use kajiya::camera::LookThroughCamera;
@@ -477,14 +476,14 @@ mod tests {
     #[test]
     fn render_extent_follows_temporal_upsampling() {
         assert_eq!(
-            kajiya_config::render_extent_for([1280, 720], 1.0),
+            super::super::config::render_extent_for([1280, 720], 1.0),
             [1280, 720]
         );
         assert_eq!(
-            kajiya_config::render_extent_for([1280, 720], 2.0),
+            super::super::config::render_extent_for([1280, 720], 2.0),
             [640, 360]
         );
-        assert_eq!(kajiya_config::render_extent_for([1, 1], 8.0), [1, 1]);
+        assert_eq!(super::super::config::render_extent_for([1, 1], 8.0), [1, 1]);
     }
 }
 

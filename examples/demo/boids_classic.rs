@@ -591,9 +591,8 @@ impl RenderState {
         let hdr = wgpu::TextureFormat::Rgba16Float;
 
         let mut bloom = Bloom::new(gpu, sw, sh, hdr);
-        bloom.threshold = 0.4;
         bloom.intensity = 0.55;
-        bloom.radius = 1.2;
+        bloom.spread = 1.2;
 
         let mut tonemap = ToneMap::new(gpu, gpu.surface_format());
         tonemap.exposure = 1.6;

@@ -7,28 +7,32 @@ use crate::ecs::EntityId;
 use crate::ecs::World;
 use crate::gpu::GpuContext;
 use crate::render::execution::{PreparedFrame, PreparedView};
-use crate::render::expert::{Mesh, MeshDescriptor, MeshIndexData, RenderGraphError, TargetSize};
+use crate::render::expert::{
+    BoundingSphere, Mesh, MeshDescriptor, MeshIndexData, RenderGraphError, TargetSize,
+};
+use crate::render::gpu::{read_render_target, RenderTarget, RenderTargetDescriptor};
+use crate::render::graph::ImportedTexture;
+#[cfg(feature = "live2d")]
+use crate::render::live2d::{
+    live2d_instance_visible_in_view, sort_live2d_scene_instances, Live2DSceneInstance,
+};
 use crate::render::pipeline::{
     ComputePass, GraphPass, GraphPassExecuteContext, GraphPassSetupContext, PostFxPass, RenderPass,
     RenderPhase, RenderPhaseExecuteContext, RenderPhaseSetupContext,
 };
+use crate::render::resources::assets::SharedRenderAssetCache;
 use crate::render::view::Projection;
 use crate::render::{
     CameraMarker, CameraViewport, Color, ComputePassExecuteContext, ComputePassSetupContext,
-    DirectionalLight, MainCamera, PostFxPassExecuteContext, PostFxPassSetupContext, RenderComposer,
-    RenderPassExecuteContext, RenderPassSetupContext, RenderPipelineAsset, RenderPipelineBuilder,
-    RenderSettings, StandardMaterial, Transform, UnlitMaterial, ViewportRect, WgpuMeshRenderer,
+    DirectionalLight, MainCamera, MaterialError, PostFxPassExecuteContext, PostFxPassSetupContext,
+    RenderComposer, RenderPassExecuteContext, RenderPassSetupContext, RenderPipelineAsset,
+    RenderPipelineBuilder, RenderSettings, StandardMaterial, Transform, UnlitMaterial,
+    ViewportRect, WgpuMeshRenderer,
 };
 #[cfg(feature = "live2d")]
 use crate::render::{RenderQueueSort, SceneView, SortingLayer};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use wgpu::util::DeviceExt;
-
-#[cfg(feature = "live2d")]
-use crate::render::live2d::{
-    live2d_instance_visible_in_view, sort_live2d_scene_instances, Live2DSceneInstance,
-};
 
 fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
@@ -49,6 +53,23 @@ fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
         None,
     ))
     .expect("Failed to create test GPU device")
+}
+
+#[test]
+fn declared_materials_are_available_after_gpu_initialization_before_first_render() {
+    let (device, queue) = create_test_device();
+    let ctx = GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [64, 64]);
+    let mut renderer = RenderComposer::from_asset(RenderPipelineAsset::modern_3d());
+
+    renderer.initialize_for_gpu(&ctx);
+
+    let material = renderer
+        .materials_mut::<StandardMaterial>()
+        .insert(StandardMaterial::default());
+    assert!(renderer
+        .materials::<StandardMaterial>()
+        .get(material)
+        .is_some());
 }
 
 #[test]
@@ -186,6 +207,7 @@ fn sprite_texture_asset_handle_uploads_into_render_cache() {
     ));
     let mut world = World::new();
     world.insert_resource(asset_server.clone());
+    world.insert_resource(SharedRenderAssetCache::default());
     world.spawn((
         Transform::default(),
         CameraMarker::new(),
@@ -202,26 +224,331 @@ fn sprite_texture_asset_handle_uploads_into_render_cache() {
     renderer.render_world(&mut ctx, &world);
     ctx.end_frame();
 
-    assert!(renderer.runtime.render_assets.contains_texture(texture));
+    let cache = world
+        .get_resource::<SharedRenderAssetCache>()
+        .expect("render asset cache should exist");
+    assert_eq!(
+        cache
+            .borrow_mut()
+            .texture_readiness(Some(&asset_server), texture),
+        crate::render::TextureReadiness::GpuReady
+    );
     let stats = renderer.stats();
     assert_eq!(stats.resident_render_assets, 1);
     assert_eq!(stats.uploaded_render_assets, 1);
+    assert_eq!(stats.loading_render_assets, 1);
+    assert_eq!(stats.fallback_render_assets, 1);
     assert_eq!(stats.missing_render_assets, 0);
     assert_eq!(stats.failed_render_assets, 0);
+
+    ctx.begin_frame()
+        .expect("second headless begin_frame should succeed");
+    renderer.render_world(&mut ctx, &world);
+    ctx.end_frame();
+
+    assert!(cache.borrow_mut().contains_texture(texture));
+    assert_eq!(
+        cache
+            .borrow_mut()
+            .texture_readiness(Some(&asset_server), texture),
+        crate::render::TextureReadiness::GpuReady
+    );
+    let stats = renderer.stats();
+    assert_eq!(stats.resident_render_assets, 1);
+    assert_eq!(stats.uploaded_render_assets, 0);
+    assert_eq!(stats.loading_render_assets, 0);
 
     asset_server.unload(&texture);
     asset_server
         .update()
         .expect("runtime asset unload should update");
     ctx.begin_frame()
+        .expect("third headless begin_frame should succeed");
+    renderer.render_world(&mut ctx, &world);
+    ctx.end_frame();
+
+    assert!(!cache.borrow_mut().contains_texture(texture));
+    let stats = renderer.stats();
+    assert_eq!(stats.resident_render_assets, 0);
+    assert_eq!(stats.missing_render_assets, 1);
+}
+
+#[test]
+fn texture_asset_gpu_queue_uploads_requested_textures_on_following_frame() {
+    let (device, queue) = create_test_device();
+    let mut ctx =
+        GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [64, 64]);
+    let mut renderer = RenderComposer::from_asset(
+        RenderPipelineAsset::builder()
+            .add_feature(crate::render::SpriteFeature::unlit())
+            .add_phase(crate::render::TransparentPhase::new())
+            .build(),
+    );
+
+    let asset_server = AssetServer::with_empty_manifest(AssetConfig::default());
+    let first = asset_server.insert_runtime(TextureAsset::white_pixel());
+    let second = asset_server.insert_runtime(TextureAsset::checkerboard(
+        2,
+        1,
+        [255, 255, 255, 255],
+        [32, 32, 32, 255],
+    ));
+    let mut world = World::new();
+    world.insert_resource(asset_server.clone());
+    world.insert_resource(SharedRenderAssetCache::default());
+    world.spawn((
+        Transform::default(),
+        CameraMarker::new(),
+        Projection::orthographic_fixed(64.0, 64.0),
+        MainCamera,
+    ));
+    world.spawn((
+        Transform::default(),
+        crate::render::SpriteRenderer::new(8.0, 8.0).texture(first),
+    ));
+    world.spawn((
+        Transform::from_xyz(12.0, 0.0, 0.0),
+        crate::render::SpriteRenderer::new(8.0, 8.0).texture(second),
+    ));
+
+    ctx.begin_frame()
+        .expect("headless begin_frame should succeed");
+    renderer.render_world(&mut ctx, &world);
+    ctx.end_frame();
+
+    let stats = renderer.stats();
+    assert_eq!(stats.uploaded_render_assets, 2);
+    assert_eq!(stats.resident_render_assets, 2);
+    assert_eq!(stats.loading_render_assets, 2);
+    assert_eq!(stats.fallback_render_assets, 2);
+    let cache = world
+        .get_resource::<SharedRenderAssetCache>()
+        .expect("render asset cache should exist");
+    assert_eq!(
+        cache
+            .borrow_mut()
+            .texture_readiness(Some(&asset_server), first),
+        crate::render::TextureReadiness::GpuReady
+    );
+    assert_eq!(
+        cache
+            .borrow_mut()
+            .texture_readiness(Some(&asset_server), second),
+        crate::render::TextureReadiness::GpuReady
+    );
+
+    ctx.begin_frame()
         .expect("second headless begin_frame should succeed");
     renderer.render_world(&mut ctx, &world);
     ctx.end_frame();
 
-    assert!(!renderer.runtime.render_assets.contains_texture(texture));
     let stats = renderer.stats();
-    assert_eq!(stats.resident_render_assets, 0);
-    assert_eq!(stats.missing_render_assets, 1);
+    assert_eq!(stats.uploaded_render_assets, 0);
+    assert_eq!(stats.resident_render_assets, 2);
+    assert_eq!(stats.loading_render_assets, 0);
+}
+
+#[test]
+fn visible_texture_gpu_requests_are_prepared_before_preloads() {
+    let (device, queue) = create_test_device();
+    let mut ctx =
+        GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [64, 64]);
+    let mut renderer = RenderComposer::from_asset(
+        RenderPipelineAsset::builder()
+            .add_feature(crate::render::SpriteFeature::unlit())
+            .add_phase(crate::render::TransparentPhase::new())
+            .build(),
+    );
+
+    let asset_server = AssetServer::with_empty_manifest(AssetConfig::default());
+    let preloads = [
+        asset_server.insert_runtime(TextureAsset::checkerboard(
+            4,
+            4,
+            [255, 255, 255, 255],
+            [32, 32, 32, 255],
+        )),
+        asset_server.insert_runtime(TextureAsset::checkerboard(
+            4,
+            4,
+            [255, 255, 255, 255],
+            [48, 48, 48, 255],
+        )),
+        asset_server.insert_runtime(TextureAsset::checkerboard(
+            4,
+            4,
+            [255, 255, 255, 255],
+            [64, 64, 64, 255],
+        )),
+        asset_server.insert_runtime(TextureAsset::checkerboard(
+            4,
+            4,
+            [255, 255, 255, 255],
+            [80, 80, 80, 255],
+        )),
+    ];
+    let visible = asset_server.insert_runtime(TextureAsset::white_pixel());
+    let mut world = World::new();
+    world.insert_resource(asset_server.clone());
+    world.insert_resource(SharedRenderAssetCache::default());
+    world.spawn((
+        Transform::default(),
+        CameraMarker::new(),
+        Projection::orthographic_fixed(64.0, 64.0),
+        MainCamera,
+    ));
+    world.spawn((
+        Transform::default(),
+        crate::render::SpriteRenderer::new(8.0, 8.0).texture(visible),
+    ));
+
+    let cache = world
+        .get_resource::<SharedRenderAssetCache>()
+        .expect("render asset cache should exist");
+    for preload in preloads {
+        assert_eq!(
+            cache
+                .borrow_mut()
+                .request_texture_gpu(&ctx, &asset_server, preload),
+            crate::render::TextureReadiness::GpuQueued
+        );
+    }
+
+    ctx.begin_frame()
+        .expect("headless begin_frame should succeed");
+    renderer.render_world(&mut ctx, &world);
+    ctx.end_frame();
+
+    let stats = renderer.stats();
+    assert_eq!(stats.uploaded_render_assets, 4);
+    assert_eq!(stats.queued_render_assets, 1);
+    assert_eq!(stats.visible_queued_render_assets, 0);
+    assert_eq!(stats.fallback_render_assets, 1);
+    assert!(cache.borrow_mut().contains_texture(visible));
+    let resident_preloads = preloads
+        .into_iter()
+        .filter(|preload| cache.borrow_mut().contains_texture(*preload))
+        .count();
+    assert_eq!(resident_preloads, 3);
+    assert_eq!(stats.uploaded_render_asset_bytes, 3 * 4 * 4 * 4 + 4);
+
+    ctx.begin_frame()
+        .expect("second headless begin_frame should succeed");
+    renderer.render_world(&mut ctx, &world);
+    ctx.end_frame();
+
+    assert!(cache.borrow_mut().contains_texture(visible));
+    for preload in preloads {
+        assert!(cache.borrow_mut().contains_texture(preload));
+    }
+}
+
+#[test]
+fn runtime_texture_replace_invalidates_gpu_texture_and_queues_reupload() {
+    let (device, queue) = create_test_device();
+    let mut ctx =
+        GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [64, 64]);
+    let mut renderer = RenderComposer::from_asset(
+        RenderPipelineAsset::builder()
+            .add_feature(crate::render::SpriteFeature::unlit())
+            .add_phase(crate::render::TransparentPhase::new())
+            .build(),
+    );
+
+    let asset_server = AssetServer::with_empty_manifest(AssetConfig::default());
+    let texture = asset_server.insert_runtime(TextureAsset::white_pixel());
+    let mut world = World::new();
+    world.insert_resource(asset_server.clone());
+    world.insert_resource(SharedRenderAssetCache::default());
+    world.spawn((
+        Transform::default(),
+        CameraMarker::new(),
+        Projection::orthographic_fixed(64.0, 64.0),
+        MainCamera,
+    ));
+    world.spawn((
+        Transform::default(),
+        crate::render::SpriteRenderer::new(8.0, 8.0).texture(texture),
+    ));
+
+    ctx.begin_frame()
+        .expect("headless begin_frame should succeed");
+    renderer.render_world(&mut ctx, &world);
+    ctx.end_frame();
+    ctx.begin_frame()
+        .expect("second headless begin_frame should succeed");
+    renderer.render_world(&mut ctx, &world);
+    ctx.end_frame();
+
+    let cache = world
+        .get_resource::<SharedRenderAssetCache>()
+        .expect("render asset cache should exist");
+    assert!(cache.borrow_mut().contains_texture(texture));
+
+    asset_server
+        .replace_runtime(
+            texture,
+            TextureAsset::checkerboard(2, 1, [255, 255, 255, 255], [32, 32, 32, 255]),
+        )
+        .expect("runtime texture replace should succeed");
+
+    ctx.begin_frame()
+        .expect("third headless begin_frame should succeed");
+    renderer.render_world(&mut ctx, &world);
+    ctx.end_frame();
+
+    assert!(cache.borrow_mut().contains_texture(texture));
+    assert_eq!(
+        cache
+            .borrow_mut()
+            .texture_readiness(Some(&asset_server), texture),
+        crate::render::TextureReadiness::GpuReady
+    );
+    let stats = renderer.stats();
+    assert_eq!(stats.resident_render_assets, 1);
+    assert_eq!(stats.uploaded_render_assets, 1);
+    assert_eq!(stats.loading_render_assets, 1);
+    assert_eq!(stats.fallback_render_assets, 1);
+
+    ctx.begin_frame()
+        .expect("fourth headless begin_frame should succeed");
+    renderer.render_world(&mut ctx, &world);
+    ctx.end_frame();
+
+    assert!(cache.borrow_mut().contains_texture(texture));
+    assert_eq!(renderer.stats().resident_render_assets, 1);
+}
+
+#[test]
+fn wait_texture_gpu_prepares_queued_texture_immediately() {
+    let (device, queue) = create_test_device();
+    let ctx = GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [64, 64]);
+    let asset_server = AssetServer::with_empty_manifest(AssetConfig::default());
+    let texture = asset_server.insert_runtime(TextureAsset::checkerboard(
+        2,
+        1,
+        [255, 255, 255, 255],
+        [32, 32, 32, 255],
+    ));
+    let cache = SharedRenderAssetCache::default();
+    assert_eq!(
+        cache
+            .borrow_mut()
+            .request_texture_gpu(&ctx, &asset_server, texture),
+        crate::render::TextureReadiness::GpuQueued
+    );
+    assert!(!cache.borrow_mut().contains_texture(texture));
+
+    assert_eq!(
+        cache.borrow_mut().wait_texture_gpu(
+            &ctx,
+            &asset_server,
+            texture,
+            std::time::Duration::from_millis(1),
+        ),
+        crate::render::TextureReadiness::GpuReady
+    );
+    assert!(cache.borrow_mut().contains_texture(texture));
 }
 
 #[test]
@@ -239,6 +566,7 @@ fn missing_sprite_texture_asset_is_reported_in_render_stats() {
     let mut world = World::new();
     world.insert_resource(Diagnostics::default());
     world.insert_resource(AssetServer::with_empty_manifest(AssetConfig::default()));
+    world.insert_resource(SharedRenderAssetCache::default());
     world.spawn((
         Transform::default(),
         CameraMarker::new(),
@@ -291,7 +619,7 @@ fn forward_3d_descriptor_includes_directional_shadow_phase() {
     )));
     assert!(descriptor.step_names.iter().any(|step| matches!(
         step,
-        crate::render::PipelineStepDescriptor::Compute("ddgi_update")
+        crate::render::PipelineStepDescriptor::Compute("gi_update")
     )));
     assert!(!descriptor.step_names.iter().any(|step| matches!(
         step,
@@ -309,9 +637,10 @@ fn modern_3d_descriptor_uses_wicked_style_pass_order() {
         Phase("scene_normal_prepass"),
         Phase("scene_material_prepass"),
         Phase("directional_shadow"),
-        Compute("ddgi_update"),
+        Compute("gi_update"),
         Phase("opaque"),
-        PostFx("ssgi"),
+        PostFx("contact_shadows"),
+        PostFx("gi_composite"),
         Phase("transparent"),
         PostFx("taa"),
         PostFx("sharpen"),
@@ -397,6 +726,750 @@ fn forward_3d_enables_shadow_view_for_perspective_directional_light() {
     assert!(renderer.shadows.views[0].enabled());
     assert!(renderer.shadows.views[0].caster_count() > 0);
     assert!((renderer.shadows.views[0].radius() - 0.05).abs() < 0.0001);
+}
+
+#[test]
+fn forward_3d_directional_shadow_atlas_writes_depth_for_casters() {
+    #[repr(C)]
+    #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+    struct Vertex {
+        position: [f32; 3],
+        normal: [f32; 3],
+        uv: [f32; 2],
+    }
+
+    let (device, queue) = create_test_device();
+    let mut ctx =
+        GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [96, 96]);
+    let mut renderer = RenderComposer::from_asset(RenderPipelineAsset::forward_3d());
+    renderer.register_material::<StandardMaterial>(&ctx);
+
+    let vertices = [
+        Vertex {
+            position: [-0.5, -0.5, 0.5],
+            normal: [0.0, 0.0, 1.0],
+            uv: [0.0, 1.0],
+        },
+        Vertex {
+            position: [0.5, -0.5, 0.5],
+            normal: [0.0, 0.0, 1.0],
+            uv: [1.0, 1.0],
+        },
+        Vertex {
+            position: [0.5, 0.5, 0.5],
+            normal: [0.0, 0.0, 1.0],
+            uv: [1.0, 0.0],
+        },
+        Vertex {
+            position: [-0.5, 0.5, 0.5],
+            normal: [0.0, 0.0, 1.0],
+            uv: [0.0, 0.0],
+        },
+        Vertex {
+            position: [0.5, -0.5, -0.5],
+            normal: [0.0, 0.0, -1.0],
+            uv: [0.0, 1.0],
+        },
+        Vertex {
+            position: [-0.5, -0.5, -0.5],
+            normal: [0.0, 0.0, -1.0],
+            uv: [1.0, 1.0],
+        },
+        Vertex {
+            position: [-0.5, 0.5, -0.5],
+            normal: [0.0, 0.0, -1.0],
+            uv: [1.0, 0.0],
+        },
+        Vertex {
+            position: [0.5, 0.5, -0.5],
+            normal: [0.0, 0.0, -1.0],
+            uv: [0.0, 0.0],
+        },
+        Vertex {
+            position: [-1.0, -1.0, 0.0],
+            normal: [-1.0, 0.0, 0.0],
+            uv: [0.0, 1.0],
+        },
+        Vertex {
+            position: [-0.5, -0.5, 0.5],
+            normal: [-1.0, 0.0, 0.0],
+            uv: [1.0, 1.0],
+        },
+        Vertex {
+            position: [-0.5, 0.5, 0.5],
+            normal: [-1.0, 0.0, 0.0],
+            uv: [1.0, 0.0],
+        },
+        Vertex {
+            position: [-0.5, 0.5, -0.5],
+            normal: [-1.0, 0.0, 0.0],
+            uv: [0.0, 0.0],
+        },
+        Vertex {
+            position: [0.5, -0.5, 0.5],
+            normal: [1.0, 0.0, 0.0],
+            uv: [0.0, 1.0],
+        },
+        Vertex {
+            position: [0.5, -0.5, -0.5],
+            normal: [1.0, 0.0, 0.0],
+            uv: [1.0, 1.0],
+        },
+        Vertex {
+            position: [0.5, 0.5, -0.5],
+            normal: [1.0, 0.0, 0.0],
+            uv: [1.0, 0.0],
+        },
+        Vertex {
+            position: [0.5, 0.5, 0.5],
+            normal: [1.0, 0.0, 0.0],
+            uv: [0.0, 0.0],
+        },
+        Vertex {
+            position: [-0.5, 0.5, 0.5],
+            normal: [0.0, 1.0, 0.0],
+            uv: [0.0, 1.0],
+        },
+        Vertex {
+            position: [0.5, 0.5, 0.5],
+            normal: [0.0, 1.0, 0.0],
+            uv: [1.0, 1.0],
+        },
+        Vertex {
+            position: [0.5, 0.5, -0.5],
+            normal: [0.0, 1.0, 0.0],
+            uv: [1.0, 0.0],
+        },
+        Vertex {
+            position: [-0.5, 0.5, -0.5],
+            normal: [0.0, 1.0, 0.0],
+            uv: [0.0, 0.0],
+        },
+        Vertex {
+            position: [-0.5, -0.5, -0.5],
+            normal: [0.0, -1.0, 0.0],
+            uv: [0.0, 1.0],
+        },
+        Vertex {
+            position: [0.5, -0.5, -0.5],
+            normal: [0.0, -1.0, 0.0],
+            uv: [1.0, 1.0],
+        },
+        Vertex {
+            position: [0.5, -0.5, 0.5],
+            normal: [0.0, -1.0, 0.0],
+            uv: [1.0, 0.0],
+        },
+        Vertex {
+            position: [-0.5, -0.5, 0.5],
+            normal: [0.0, -1.0, 0.0],
+            uv: [0.0, 0.0],
+        },
+    ];
+    let indices: [u16; 36] = [
+        0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7, 8, 9, 10, 8, 10, 11, 12, 13, 14, 12, 14, 15, 16, 17,
+        18, 16, 18, 19, 20, 21, 22, 20, 22, 23,
+    ];
+    let mesh_handle = renderer.insert_mesh(Mesh::from_raw(
+        &ctx,
+        MeshDescriptor::new(
+            bytemuck::cast_slice(&vertices),
+            vertices.len() as u32,
+            Mesh::vertex_layout_position_normal_uv(),
+            "shadow_depth_readback_cube",
+        )
+        .with_indices(MeshIndexData::U16(&indices))
+        .with_bounding_sphere(BoundingSphere::new(
+            [0.0, 0.0, 0.0],
+            (0.5f32 * 0.5 + 0.5 * 0.5 + 0.5 * 0.5).sqrt(),
+        )),
+    ));
+    let material = renderer
+        .materials_mut::<StandardMaterial>()
+        .insert(StandardMaterial::default());
+
+    let mut world = World::new();
+    world.spawn((
+        Transform::default(),
+        CameraMarker::new(),
+        Projection::perspective(60.0f32.to_radians(), 0.1, 32.0),
+        MainCamera,
+    ));
+    world.spawn((
+        Transform::from_xyz(0.0, 0.0, -3.0),
+        WgpuMeshRenderer::new(mesh_handle, material),
+    ));
+    world.spawn((DirectionalLight::new([0.3, -1.0, 0.2]).shadow_map_size(64),));
+
+    ctx.begin_frame()
+        .expect("headless begin_frame should succeed");
+    renderer.render_world(&mut ctx, &world);
+    ctx.end_frame();
+
+    let stats = renderer.stats();
+    assert_eq!(stats.shadow_cascade_count, 1);
+    assert_eq!(stats.shadow_caster_count, 1);
+    assert_eq!(stats.shadow_draw_calls, 1);
+
+    let shadow_view = renderer
+        .shadows
+        .views
+        .first()
+        .expect("directional shadow binding should exist");
+    assert!(shadow_view.enabled());
+    let readback =
+        read_render_target(&ctx, shadow_view.target()).expect("shadow atlas readback should work");
+    let mut min_depth = f32::INFINITY;
+    let mut max_depth = f32::NEG_INFINITY;
+    let mut below_clear_depth_count = 0usize;
+    let mut written_depth_count = 0usize;
+    for bytes in readback.data().chunks_exact(4) {
+        let depth = f32::from_le_bytes(bytes.try_into().unwrap());
+        if !depth.is_finite() {
+            continue;
+        }
+        min_depth = min_depth.min(depth);
+        max_depth = max_depth.max(depth);
+        if depth < 1.0 {
+            below_clear_depth_count += 1;
+        }
+        if depth < 0.999 {
+            written_depth_count += 1;
+        }
+    }
+
+    assert!(
+        written_depth_count > 0,
+        "shadow atlas should contain caster depth values below the clear depth; min_depth={min_depth}, max_depth={max_depth}, below_clear_depth_count={below_clear_depth_count}"
+    );
+}
+
+#[test]
+fn directional_shadow_atlas_draws_caster_between_light_and_near_cascade() {
+    #[repr(C)]
+    #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+    struct Vertex {
+        position: [f32; 3],
+        normal: [f32; 3],
+        uv: [f32; 2],
+    }
+
+    let (device, queue) = create_test_device();
+    let mut ctx =
+        GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [96, 96]);
+    let mut renderer = RenderComposer::from_asset(
+        RenderPipelineAsset::builder()
+            .register_material::<StandardMaterial>()
+            .add_phase(crate::render::lighting::shadow::DirectionalShadowPhase::new())
+            .add_phase(crate::render::OpaquePhase::new())
+            .build(),
+    );
+    renderer.register_material::<StandardMaterial>(&ctx);
+
+    let vertices = [
+        Vertex {
+            position: [-0.5, -0.5, 0.5],
+            normal: [0.0, 0.0, 1.0],
+            uv: [0.0, 1.0],
+        },
+        Vertex {
+            position: [0.5, -0.5, 0.5],
+            normal: [0.0, 0.0, 1.0],
+            uv: [1.0, 1.0],
+        },
+        Vertex {
+            position: [0.5, 0.5, 0.5],
+            normal: [0.0, 0.0, 1.0],
+            uv: [1.0, 0.0],
+        },
+        Vertex {
+            position: [-0.5, 0.5, 0.5],
+            normal: [0.0, 0.0, 1.0],
+            uv: [0.0, 0.0],
+        },
+        Vertex {
+            position: [0.5, -0.5, -0.5],
+            normal: [0.0, 0.0, -1.0],
+            uv: [0.0, 1.0],
+        },
+        Vertex {
+            position: [-0.5, -0.5, -0.5],
+            normal: [0.0, 0.0, -1.0],
+            uv: [1.0, 1.0],
+        },
+        Vertex {
+            position: [-0.5, 0.5, -0.5],
+            normal: [0.0, 0.0, -1.0],
+            uv: [1.0, 0.0],
+        },
+        Vertex {
+            position: [0.5, 0.5, -0.5],
+            normal: [0.0, 0.0, -1.0],
+            uv: [0.0, 0.0],
+        },
+    ];
+    let indices: [u16; 12] = [0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7];
+    let mesh_handle = renderer.insert_mesh(Mesh::from_raw(
+        &ctx,
+        MeshDescriptor::new(
+            bytemuck::cast_slice(&vertices),
+            vertices.len() as u32,
+            Mesh::vertex_layout_position_normal_uv(),
+            "near_cascade_light_ray_caster",
+        )
+        .with_indices(MeshIndexData::U16(&indices))
+        .with_bounding_sphere(BoundingSphere::new([0.0, 0.0, 0.0], 0.87)),
+    ));
+    let material = renderer
+        .materials_mut::<StandardMaterial>()
+        .insert(StandardMaterial::default());
+
+    let mut world = World::new();
+    world.insert_resource(RenderSettings {
+        clear_color: Color::BLACK,
+        ambient_color: Color::BLACK,
+        global_illumination: crate::render::GlobalIllumination::Off,
+        ..RenderSettings::default()
+    });
+    world.spawn((
+        Transform::default(),
+        CameraMarker::new(),
+        Projection::perspective(60.0f32.to_radians(), 0.1, 120.0),
+        MainCamera,
+    ));
+    world.spawn((
+        Transform::from_xyz(-2.8, 8.0, -3.5),
+        WgpuMeshRenderer::new(mesh_handle, material).shadow_lod_cascades(1),
+    ));
+    world.spawn((DirectionalLight::new([0.35, -1.0, -0.25])
+        .cascade_count(4)
+        .cascade_distances([8.0, 24.0, 60.0, 120.0])
+        .shadow_map_size(128)
+        .shadow_bias(0.0)
+        .shadow_depth_bias(0)
+        .shadow_slope_bias(0.0)
+        .shadow_normal_bias(0.0)
+        .shadow_filter_radius(0.0),));
+
+    ctx.begin_frame()
+        .expect("headless begin_frame should succeed");
+    renderer.render_world(&mut ctx, &world);
+    ctx.end_frame();
+
+    let stats = renderer.stats();
+    assert_eq!(stats.shadow_cascade_count, 4);
+    assert_eq!(stats.shadow_caster_count_by_cascade[0], 1);
+    assert_eq!(stats.shadow_draw_calls_by_cascade[0], 1);
+    let shadow_view = renderer
+        .shadows
+        .views
+        .first()
+        .expect("directional shadow binding should exist");
+    let readback =
+        read_render_target(&ctx, shadow_view.target()).expect("shadow atlas readback should work");
+    let cascade_width = readback.width() / stats.shadow_cascade_count.max(1) as u32;
+    let mut written_first_cascade = 0usize;
+    for y in 0..readback.height() {
+        for x in 0..cascade_width {
+            let index = ((y * readback.width() + x) * readback.bytes_per_pixel()) as usize;
+            let depth = f32::from_le_bytes(readback.data()[index..index + 4].try_into().unwrap());
+            if depth < 0.999 {
+                written_first_cascade += 1;
+            }
+        }
+    }
+    assert!(
+        written_first_cascade > 0,
+        "first cascade should contain depth from the light-ray caster"
+    );
+}
+
+#[derive(Clone)]
+struct CaptureCurrentColorPass {
+    target: Arc<RenderTarget>,
+}
+
+impl CaptureCurrentColorPass {
+    fn import_target(&self) -> ImportedTexture {
+        ImportedTexture {
+            texture: Arc::new(self.target.texture().clone()),
+            view: Arc::new(self.target.view().clone()),
+            size: [self.target.width(), self.target.height()],
+            format: self.target.format(),
+            usage: self.target.usage(),
+            sample_count: self.target.sample_count(),
+            mip_level_count: self.target.mip_level_count(),
+            array_layer_count: self.target.array_layer_count(),
+        }
+    }
+}
+
+impl PostFxPass for CaptureCurrentColorPass {
+    fn name(&self) -> &'static str {
+        "capture_current_color"
+    }
+
+    fn setup(&mut self, ctx: &mut PostFxPassSetupContext<'_, '_>) {
+        let Some(current) = ctx.state().current_color() else {
+            return;
+        };
+        let capture = ctx.graph().create_texture(|builder| {
+            builder
+                .name("captured_current_color")
+                .import_external(self.import_target());
+        });
+        ctx.graph().add_copy_pass(self.name(), |setup| {
+            setup.texture_to_texture(current.handle(), capture);
+        });
+        ctx.state().set_current_color(capture, current.format());
+    }
+}
+
+#[test]
+fn standard_material_directional_shadow_darkens_final_color() {
+    #[repr(C)]
+    #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+    struct Vertex {
+        position: [f32; 3],
+        normal: [f32; 3],
+        uv: [f32; 2],
+    }
+
+    fn plane_mesh(ctx: &GpuContext, label: &'static str) -> Mesh {
+        let vertices = [
+            Vertex {
+                position: [-1.0, -1.0, 0.0],
+                normal: [0.0, 0.0, 1.0],
+                uv: [0.0, 1.0],
+            },
+            Vertex {
+                position: [1.0, -1.0, 0.0],
+                normal: [0.0, 0.0, 1.0],
+                uv: [1.0, 1.0],
+            },
+            Vertex {
+                position: [1.0, 1.0, 0.0],
+                normal: [0.0, 0.0, 1.0],
+                uv: [1.0, 0.0],
+            },
+            Vertex {
+                position: [-1.0, 1.0, 0.0],
+                normal: [0.0, 0.0, 1.0],
+                uv: [0.0, 0.0],
+            },
+        ];
+        Mesh::from_raw(
+            ctx,
+            MeshDescriptor::new(
+                bytemuck::cast_slice(&vertices),
+                vertices.len() as u32,
+                Mesh::vertex_layout_position_normal_uv(),
+                label,
+            )
+            .with_indices(MeshIndexData::U16(&[0, 1, 2, 0, 2, 3]))
+            .with_bounding_sphere(BoundingSphere::new([0.0, 0.0, 0.0], (2.0f32).sqrt())),
+        )
+    }
+
+    fn box_mesh(ctx: &GpuContext, label: &'static str) -> Mesh {
+        let vertices = [
+            Vertex {
+                position: [-0.5, -0.5, 0.5],
+                normal: [0.0, 0.0, 1.0],
+                uv: [0.0, 1.0],
+            },
+            Vertex {
+                position: [0.5, -0.5, 0.5],
+                normal: [0.0, 0.0, 1.0],
+                uv: [1.0, 1.0],
+            },
+            Vertex {
+                position: [0.5, 0.5, 0.5],
+                normal: [0.0, 0.0, 1.0],
+                uv: [1.0, 0.0],
+            },
+            Vertex {
+                position: [-0.5, 0.5, 0.5],
+                normal: [0.0, 0.0, 1.0],
+                uv: [0.0, 0.0],
+            },
+            Vertex {
+                position: [0.5, -0.5, -0.5],
+                normal: [0.0, 0.0, -1.0],
+                uv: [0.0, 1.0],
+            },
+            Vertex {
+                position: [-0.5, -0.5, -0.5],
+                normal: [0.0, 0.0, -1.0],
+                uv: [1.0, 1.0],
+            },
+            Vertex {
+                position: [-0.5, 0.5, -0.5],
+                normal: [0.0, 0.0, -1.0],
+                uv: [1.0, 0.0],
+            },
+            Vertex {
+                position: [0.5, 0.5, -0.5],
+                normal: [0.0, 0.0, -1.0],
+                uv: [0.0, 0.0],
+            },
+            Vertex {
+                position: [-0.5, -0.5, -0.5],
+                normal: [-1.0, 0.0, 0.0],
+                uv: [0.0, 1.0],
+            },
+            Vertex {
+                position: [-0.5, -0.5, 0.5],
+                normal: [-1.0, 0.0, 0.0],
+                uv: [1.0, 1.0],
+            },
+            Vertex {
+                position: [-0.5, 0.5, 0.5],
+                normal: [-1.0, 0.0, 0.0],
+                uv: [1.0, 0.0],
+            },
+            Vertex {
+                position: [-0.5, 0.5, -0.5],
+                normal: [-1.0, 0.0, 0.0],
+                uv: [0.0, 0.0],
+            },
+            Vertex {
+                position: [0.5, -0.5, 0.5],
+                normal: [1.0, 0.0, 0.0],
+                uv: [0.0, 1.0],
+            },
+            Vertex {
+                position: [0.5, -0.5, -0.5],
+                normal: [1.0, 0.0, 0.0],
+                uv: [1.0, 1.0],
+            },
+            Vertex {
+                position: [0.5, 0.5, -0.5],
+                normal: [1.0, 0.0, 0.0],
+                uv: [1.0, 0.0],
+            },
+            Vertex {
+                position: [0.5, 0.5, 0.5],
+                normal: [1.0, 0.0, 0.0],
+                uv: [0.0, 0.0],
+            },
+            Vertex {
+                position: [-0.5, 0.5, 0.5],
+                normal: [0.0, 1.0, 0.0],
+                uv: [0.0, 1.0],
+            },
+            Vertex {
+                position: [0.5, 0.5, 0.5],
+                normal: [0.0, 1.0, 0.0],
+                uv: [1.0, 1.0],
+            },
+            Vertex {
+                position: [0.5, 0.5, -0.5],
+                normal: [0.0, 1.0, 0.0],
+                uv: [1.0, 0.0],
+            },
+            Vertex {
+                position: [-0.5, 0.5, -0.5],
+                normal: [0.0, 1.0, 0.0],
+                uv: [0.0, 0.0],
+            },
+            Vertex {
+                position: [-0.5, -0.5, -0.5],
+                normal: [0.0, -1.0, 0.0],
+                uv: [0.0, 1.0],
+            },
+            Vertex {
+                position: [0.5, -0.5, -0.5],
+                normal: [0.0, -1.0, 0.0],
+                uv: [1.0, 1.0],
+            },
+            Vertex {
+                position: [0.5, -0.5, 0.5],
+                normal: [0.0, -1.0, 0.0],
+                uv: [1.0, 0.0],
+            },
+            Vertex {
+                position: [-0.5, -0.5, 0.5],
+                normal: [0.0, -1.0, 0.0],
+                uv: [0.0, 0.0],
+            },
+        ];
+        let indices: [u16; 36] = [
+            0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7, 8, 9, 10, 8, 10, 11, 12, 13, 14, 12, 14, 15, 16,
+            17, 18, 16, 18, 19, 20, 21, 22, 20, 22, 23,
+        ];
+        Mesh::from_raw(
+            ctx,
+            MeshDescriptor::new(
+                bytemuck::cast_slice(&vertices),
+                vertices.len() as u32,
+                Mesh::vertex_layout_position_normal_uv(),
+                label,
+            )
+            .with_indices(MeshIndexData::U16(&indices))
+            .with_bounding_sphere(BoundingSphere::new([0.0, 0.0, 0.0], (0.75f32).sqrt())),
+        )
+    }
+
+    fn render_scene(
+        receive_shadows: bool,
+    ) -> (Vec<[f32; 3]>, u32, u32, crate::render::view::RenderStats) {
+        let (device, queue) = create_test_device();
+        let mut ctx =
+            GpuContext::new_headless(device, queue, wgpu::TextureFormat::Rgba8Unorm, [96, 96]);
+        let capture = Arc::new(RenderTarget::from_descriptor(
+            &ctx,
+            RenderTargetDescriptor::new(96, 96, wgpu::TextureFormat::Rgba8Unorm)
+                .label("standard_material_shadow_capture"),
+        ));
+        let mut renderer = RenderComposer::from_asset(
+            RenderPipelineAsset::builder()
+                .register_material::<StandardMaterial>()
+                .add_phase(crate::render::lighting::shadow::DirectionalShadowPhase::new())
+                .add_compute(crate::render::GiUpdateCompute::default())
+                .add_phase(crate::render::OpaquePhase::new())
+                .add_postfx(CaptureCurrentColorPass {
+                    target: capture.clone(),
+                })
+                .build(),
+        );
+        renderer.register_material::<StandardMaterial>(&ctx);
+
+        let plane = renderer.insert_mesh(plane_mesh(&ctx, "shadow_receiver_plane"));
+        let cube = renderer.insert_mesh(box_mesh(&ctx, "shadow_caster_cube"));
+        let receiver_material =
+            renderer
+                .materials_mut::<StandardMaterial>()
+                .insert(StandardMaterial {
+                    albedo: Color::WHITE,
+                    roughness: 0.8,
+                    receive_shadows,
+                    ..StandardMaterial::default()
+                });
+        let caster_material =
+            renderer
+                .materials_mut::<StandardMaterial>()
+                .insert(StandardMaterial {
+                    albedo: Color::BLACK,
+                    roughness: 1.0,
+                    receive_shadows: false,
+                    ..StandardMaterial::default()
+                });
+
+        let mut world = World::new();
+        world.insert_resource(RenderSettings {
+            clear_color: Color::BLACK,
+            ambient_color: Color::BLACK,
+            global_illumination: crate::render::GlobalIllumination::Off,
+            bloom: crate::render::BloomSettings {
+                enabled: false,
+                ..Default::default()
+            },
+            tonemap: crate::render::ToneMapSettings {
+                enabled: false,
+                ..Default::default()
+            },
+            temporal_aa: crate::render::TemporalAntiAliasingSettings {
+                enabled: false,
+                ..Default::default()
+            },
+            vignette: crate::render::VignetteSettings {
+                enabled: false,
+                ..Default::default()
+            },
+            contact_shadows: crate::render::ContactShadowsSettings {
+                enabled: false,
+                ..Default::default()
+            },
+            ..RenderSettings::default()
+        });
+        world.spawn((
+            Transform::default(),
+            CameraMarker::new(),
+            Projection::perspective(60.0f32.to_radians(), 0.1, 32.0),
+            MainCamera,
+        ));
+        world.spawn((
+            Transform::from_xyz(0.0, 0.0, -5.0).with_scale3(2.4, 2.4, 1.0),
+            WgpuMeshRenderer::new(plane, receiver_material).casts_shadows(false),
+        ));
+        world.spawn((
+            Transform::from_xyz(-0.65, 0.0, -4.0).with_scale3(0.7, 0.7, 0.7),
+            WgpuMeshRenderer::new(cube, caster_material),
+        ));
+        world.spawn((DirectionalLight::new([0.65, 0.0, -1.0])
+            .intensity(8.0)
+            .color(Color::WHITE)
+            .shadow_map_size(256)
+            .shadow_bias(0.0)
+            .shadow_depth_bias(0)
+            .shadow_slope_bias(0.0)
+            .shadow_normal_bias(0.0)
+            .shadow_filter_radius(0.0),));
+
+        ctx.begin_frame()
+            .expect("headless begin_frame should succeed");
+        renderer.render_world(&mut ctx, &world);
+        ctx.end_frame();
+
+        let readback =
+            read_render_target(&ctx, &capture).expect("captured color readback should work");
+        assert_eq!(readback.format(), wgpu::TextureFormat::Rgba8Unorm);
+        let pixels = readback
+            .data()
+            .chunks_exact(readback.bytes_per_pixel() as usize)
+            .map(|pixel| {
+                [
+                    pixel[0] as f32 / 255.0,
+                    pixel[1] as f32 / 255.0,
+                    pixel[2] as f32 / 255.0,
+                ]
+            })
+            .collect();
+        (
+            pixels,
+            readback.width(),
+            readback.height(),
+            renderer.stats(),
+        )
+    }
+
+    let (shadowed, width, height, shadowed_stats) = render_scene(true);
+    let (unshadowed, unshadowed_width, unshadowed_height, unshadowed_stats) = render_scene(false);
+    assert_eq!([width, height], [unshadowed_width, unshadowed_height]);
+    let center_index = (48 * width + 48) as usize;
+    let shadowed_center = shadowed[center_index];
+    let unshadowed_center = unshadowed[center_index];
+    let center_delta = (unshadowed_center[0] + unshadowed_center[1] + unshadowed_center[2])
+        - (shadowed_center[0] + shadowed_center[1] + shadowed_center[2]);
+    let mut max_delta = f32::NEG_INFINITY;
+    let mut max_delta_pixel = [0u32; 2];
+    let mut max_shadowed = [0.0; 3];
+    let mut max_unshadowed = [0.0; 3];
+    for y in 16..(height - 16) {
+        for x in 16..(width - 16) {
+            let index = (y * width + x) as usize;
+            let shadowed_luma = shadowed[index][0] + shadowed[index][1] + shadowed[index][2];
+            let unshadowed_luma =
+                unshadowed[index][0] + unshadowed[index][1] + unshadowed[index][2];
+            let delta = unshadowed_luma - shadowed_luma;
+            if delta > max_delta {
+                max_delta = delta;
+                max_delta_pixel = [x, y];
+                max_shadowed = shadowed[index];
+                max_unshadowed = unshadowed[index];
+            }
+        }
+    }
+
+    assert_eq!(shadowed_stats.shadow_caster_count, 1);
+    assert_eq!(shadowed_stats.shadow_draw_calls, 1);
+    assert_eq!(unshadowed_stats.shadow_caster_count, 1);
+    assert_eq!(unshadowed_stats.shadow_draw_calls, 1);
+    assert!(
+        max_delta > 0.25,
+        "expected receive_shadows=true to darken at least one receiver pixel; center_delta={center_delta}, max_delta={max_delta} at {max_delta_pixel:?}, shadowed={max_shadowed:?}, unshadowed={max_unshadowed:?}"
+    );
 }
 
 #[test]
@@ -740,31 +1813,29 @@ struct TestHologramMaterial {
 }
 
 impl crate::render::Material for TestHologramMaterial {
-    fn shader_source(&self) -> crate::render::ShaderSource {
-        crate::render::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(TEST_HOLOGRAM_SHADER))
+    type Data = TestHologramMaterial;
+
+    fn interface() -> crate::render::resources::material::MaterialInterface {
+        crate::render::resources::material::MaterialInterface::builder("test_hologram")
+            .shader(crate::render::resources::material::MaterialShaderSet::wgsl(
+                TEST_HOLOGRAM_SHADER,
+            ))
+            .vertex(crate::render::expert::Mesh::vertex_layout_position_uv())
+            .binding(
+                crate::render::resources::material::MaterialBinding::uniform(
+                    0,
+                    std::num::NonZeroU64::new(32).expect("hologram uniform has non-zero size"),
+                ),
+            )
+            .main_pass(crate::render::resources::material::MainPassMode::Transparent)
+            .render_state(crate::render::MaterialRenderState::transparent())
+            .build()
     }
 
-    fn vertex_layout(&self) -> crate::render::expert::VertexLayout {
-        crate::render::expert::Mesh::vertex_layout_position_uv()
-    }
-
-    fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("test_hologram_material_bgl"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        })
-    }
-
-    fn create_bind_group(&self, ctx: &crate::render::MaterialBindContext<'_>) -> wgpu::BindGroup {
+    fn prepare(
+        data: &Self::Data,
+        ctx: &mut crate::render::resources::material::MaterialPrepareContext<'_>,
+    ) -> Result<crate::render::resources::material::PreparedMaterial, MaterialError> {
         #[repr(C)]
         #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
         struct HologramUniform {
@@ -773,27 +1844,15 @@ impl crate::render::Material for TestHologramMaterial {
         }
 
         let uniform = HologramUniform {
-            tint: self.tint.to_array(),
-            params: [self.intensity, self.stripe_scale, 0.0, 0.0],
+            tint: data.tint.to_array(),
+            params: [data.intensity, data.stripe_scale, 0.0, 0.0],
         };
-        let buffer = ctx
-            .device()
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("test_hologram_material_uniform"),
-                contents: bytemuck::bytes_of(&uniform),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            });
-        ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("test_hologram_material_bg"),
-            layout: ctx.layout(),
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: buffer.as_entire_binding(),
-            }],
-        })
+        ctx.bindings()
+            .uniform(0, "test_hologram_material_uniform", &uniform)
+            .build()
     }
 
-    fn render_state(&self) -> crate::render::MaterialRenderState {
+    fn render_state(_data: &Self::Data) -> crate::render::MaterialRenderState {
         crate::render::MaterialRenderState::transparent()
     }
 }
@@ -804,67 +1863,64 @@ struct TestScenePrepassMaterial {
 }
 
 impl crate::render::Material for TestScenePrepassMaterial {
-    fn shader_source(&self) -> crate::render::ShaderSource {
-        crate::render::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(TEST_SCENE_PREPASS_SHADER))
+    type Data = TestScenePrepassMaterial;
+
+    fn interface() -> crate::render::resources::material::MaterialInterface {
+        crate::render::resources::material::MaterialInterface::builder("test_scene_prepass")
+            .shader(crate::render::resources::material::MaterialShaderSet::wgsl(
+                TEST_SCENE_PREPASS_SHADER,
+            ))
+            .vertex(crate::render::expert::Mesh::vertex_layout_position_uv())
+            .binding(
+                crate::render::resources::material::MaterialBinding::uniform(
+                    0,
+                    std::num::NonZeroU64::new(16)
+                        .expect("scene prepass material uniform has non-zero size"),
+                ),
+            )
+            .render_state(crate::render::MaterialRenderState::opaque())
+            .passes(crate::render::resources::material::MaterialPassSet {
+                main: crate::render::resources::material::MainPassMode::Opaque,
+                prepass: Some(
+                    crate::render::resources::material::MaterialPrepassMode::SceneMaterial,
+                ),
+                shadow: crate::render::resources::material::ShadowPassMode::None,
+            })
+            .build()
     }
 
-    fn vertex_layout(&self) -> crate::render::expert::VertexLayout {
-        crate::render::expert::Mesh::vertex_layout_position_uv()
-    }
-
-    fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("test_scene_prepass_material_bgl"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        })
-    }
-
-    fn create_bind_group(&self, ctx: &crate::render::MaterialBindContext<'_>) -> wgpu::BindGroup {
+    fn prepare(
+        data: &Self::Data,
+        ctx: &mut crate::render::resources::material::MaterialPrepareContext<'_>,
+    ) -> Result<crate::render::resources::material::PreparedMaterial, MaterialError> {
         #[repr(C)]
         #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
         struct MaterialUniform {
             color: [f32; 4],
         }
 
-        let buffer = ctx
-            .device()
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("test_scene_prepass_material_uniform"),
-                contents: bytemuck::bytes_of(&MaterialUniform {
-                    color: self.color.to_array(),
-                }),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            });
-        ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("test_scene_prepass_material_bg"),
-            layout: ctx.layout(),
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: buffer.as_entire_binding(),
-            }],
-        })
+        ctx.bindings()
+            .uniform(
+                0,
+                "test_scene_prepass_material_uniform",
+                &MaterialUniform {
+                    color: data.color.to_array(),
+                },
+            )
+            .build()
     }
 
-    fn render_state(&self) -> crate::render::MaterialRenderState {
+    fn render_state(_data: &Self::Data) -> crate::render::MaterialRenderState {
         crate::render::MaterialRenderState::opaque()
     }
 
-    fn scene_prepass_shader_source(&self) -> Option<crate::render::ShaderSource> {
-        Some(crate::render::ShaderSource::Wgsl(
-            std::borrow::Cow::Borrowed(TEST_SCENE_PREPASS_GBUFFER_SHADER),
+    fn scene_prepass_shader_source(_data: &Self::Data) -> Option<crate::render::ShaderSource> {
+        Some(crate::render::ShaderSource::wgsl(
+            TEST_SCENE_PREPASS_GBUFFER_SHADER,
         ))
     }
 
-    fn scene_prepass_vertex_layout(&self) -> crate::render::expert::VertexLayout {
+    fn scene_prepass_vertex_layout(_data: &Self::Data) -> crate::render::expert::VertexLayout {
         crate::render::expert::Mesh::vertex_layout_position_uv()
     }
 }
@@ -886,6 +1942,7 @@ fn custom_material_registration_renders_mesh_without_engine_changes() {
         .add_phase(crate::render::TransparentPhase::new())
         .build();
     let mut renderer = RenderComposer::from_asset(pipeline);
+    renderer.register_material::<TestHologramMaterial>(&ctx);
 
     let vertices = [
         Vertex {
@@ -967,6 +2024,7 @@ fn custom_material_scene_prepass_runs_in_opaque_3d_pipeline() {
         .add_phase(crate::render::expert::OpaquePhase::new())
         .build();
     let mut renderer = RenderComposer::from_asset(pipeline);
+    renderer.register_material::<TestScenePrepassMaterial>(&ctx);
 
     let vertices = [
         Vertex {
@@ -1086,10 +2144,9 @@ fn forward_3d_ddgi_executes_with_standard_material_geometry() {
 
     let mut world = World::new();
     world.insert_resource(RenderSettings {
-        global_illumination: crate::render::GlobalIlluminationSettings {
-            enabled: true,
-            ddgi: crate::render::DdgiSettings {
-                volume: crate::render::DdgiVolumeSettings {
+        global_illumination: crate::render::gi::providers::ddgi::global_illumination(
+            crate::render::gi::providers::ddgi::DdgiSettings {
+                volume: crate::render::gi::providers::ddgi::DdgiVolumeSettings {
                     origin: [-6.0, -4.0, -6.0],
                     spacing: 3.0,
                     counts: [6, 4, 6],
@@ -1102,8 +2159,7 @@ fn forward_3d_ddgi_executes_with_standard_material_geometry() {
                 max_ray_distance: 16.0,
                 ..Default::default()
             },
-            ..crate::render::GlobalIlluminationSettings::default()
-        },
+        ),
         bloom: crate::render::BloomSettings {
             enabled: false,
             ..Default::default()
@@ -1210,17 +2266,14 @@ fn modern_3d_ssgi_executes_with_standard_material_geometry() {
 
     let mut world = World::new();
     world.insert_resource(RenderSettings {
-        global_illumination: crate::render::GlobalIlluminationSettings {
-            enabled: true,
-            mode: crate::render::GlobalIlluminationMode::Ssgi,
-            ssgi: crate::render::SsgiSettings {
+        global_illumination: crate::render::gi::providers::ssgi::global_illumination(
+            crate::render::gi::providers::ssgi::SsgiSettings {
                 intensity: 1.0,
                 radius_pixels: 8.0,
                 depth_rejection: 8.0,
                 normal_power: 64.0,
             },
-            ..Default::default()
-        },
+        ),
         bloom: crate::render::BloomSettings {
             enabled: false,
             ..Default::default()
@@ -1233,7 +2286,6 @@ fn modern_3d_ssgi_executes_with_standard_material_geometry() {
             enabled: false,
             ..Default::default()
         },
-        debug_view: crate::render::RenderDebugView::SsgiDiffuseMip(0),
         ..RenderSettings::default()
     });
     world.spawn((

@@ -2,21 +2,22 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use crate::ecs::World;
-use crate::vn::action::{VnAction, VnInputState, VnPlaybackState};
-use crate::vn::loader::{VnLoadRequest, VnLoader};
+use crate::vn::action::VnAction;
+use crate::vn::loader::VnLoadRequest;
 #[cfg(feature = "app")]
 use crate::vn::presentation::VnSpriteTextureMap;
+use crate::vn::resource::VnResource;
 use crate::vn::runtime::{VnRuntime, VnRuntimeEvent, VnRuntimeResult, VnStatus};
 use crate::vn::script::{
     VnCommandArg, VnValue, YarnCommand, YarnInstruction, YarnProject, YarnScript,
 };
-use crate::vn::ui::{VnConfirmKind, VnUiMode, VnUiState};
+use crate::vn::ui::{VnConfirmKind, VnUiMode};
 
 #[cfg(feature = "app")]
 use crate::asset::{AssetConfig, AssetServer};
 
 #[cfg(feature = "app")]
-use crate::input::{Input, InputActions, KeyCode, MouseButton};
+use crate::input::{Input, InputActions, InteractionContext, KeyCode, MouseButton};
 
 #[cfg(feature = "app")]
 const ACTION_ADVANCE: &str = "vn.advance";
@@ -61,51 +62,72 @@ impl Default for VnSystemConfig {
 }
 
 pub fn vn_load_system(world: &mut World) {
-    let asset_root = world
-        .get_resource::<VnLoader>()
-        .and_then(|loader| loader.asset_root().map(PathBuf::from));
-    let pending = world
-        .get_resource_mut::<VnLoader>()
-        .and_then(VnLoader::take_pending);
+    #[cfg(feature = "app")]
+    refresh_vn_texture_metadata(world);
+
+    let (asset_root, pending) = {
+        let Some(vn) = world.get_resource_mut::<VnResource>() else {
+            return;
+        };
+        (
+            vn.loader.asset_root().map(PathBuf::from),
+            vn.take_pending_load(),
+        )
+    };
     let Some(pending) = pending else {
         return;
     };
 
     match load_pending_vn(world, pending, asset_root) {
-        Ok(image_count) => {
-            if let Some(loader) = world.get_resource_mut::<VnLoader>() {
-                loader.mark_loaded(image_count);
+        Ok(loaded) => {
+            if let Some(vn) = world.get_resource_mut::<VnResource>() {
+                #[cfg(feature = "app")]
+                vn.mark_loaded(
+                    loaded.project,
+                    loaded.runtime,
+                    loaded.image_count,
+                    loaded.textures,
+                );
+                #[cfg(not(feature = "app"))]
+                vn.mark_loaded(loaded.project, loaded.runtime, loaded.image_count);
             }
         }
         Err(message) => {
             eprintln!("[SkyEngine][VN] load failed: {message}");
-            if let Some(loader) = world.get_resource_mut::<VnLoader>() {
-                loader.mark_failed(message);
+            if let Some(vn) = world.get_resource_mut::<VnResource>() {
+                vn.mark_failed(message);
             }
         }
     }
 }
 
 pub fn vn_input_system(world: &mut World) {
-    #[cfg(feature = "app")]
-    queue_vn_actions_from_app_input(world);
-
     let mut actions = Vec::new();
-    if let Some(input) = world.get_resource_mut::<VnInputState>() {
-        actions.extend(input.drain());
-    }
-    if actions.is_empty() {
-        return;
+
+    #[cfg(feature = "app")]
+    actions.extend(collect_vn_actions(world));
+
+    #[cfg(feature = "vn-ui")]
+    match crate::vn::ui_binding::drain_vn_ui_actions(world) {
+        Ok(ui_actions) => actions.extend(ui_actions),
+        Err(error) => {
+            eprintln!("[SkyEngine][VN] UI event failed: {error}");
+        }
     }
 
-    apply_vn_actions(world, actions);
+    let Some(vn) = world.get_resource_mut::<VnResource>() else {
+        return;
+    };
+    actions.extend(vn.input.drain());
+    vn.actions.extend(actions);
+    apply_queued_vn_actions(vn);
 }
 
 fn load_pending_vn(
     world: &mut World,
     pending: VnLoadRequest,
     asset_root: Option<PathBuf>,
-) -> Result<usize, String> {
+) -> Result<LoadedVn, String> {
     let project = match pending {
         VnLoadRequest::Project(project) => project,
         VnLoadRequest::Script { script, start_node } => {
@@ -114,11 +136,29 @@ fn load_pending_vn(
     };
     let runtime = VnRuntime::from_project(project.clone()).map_err(|error| error.to_string())?;
     let root = asset_root.unwrap_or_else(|| project.root.clone());
-    let image_count = prepare_vn_images(world, &project.script, root)?;
+    let prepared = prepare_vn_images(world, &project.script, root)?;
 
-    world.insert_resource(project);
-    world.insert_resource(runtime);
-    Ok(image_count)
+    Ok(LoadedVn {
+        project,
+        runtime,
+        image_count: prepared.image_count,
+        #[cfg(feature = "app")]
+        textures: prepared.textures,
+    })
+}
+
+struct LoadedVn {
+    project: YarnProject,
+    runtime: VnRuntime,
+    image_count: usize,
+    #[cfg(feature = "app")]
+    textures: VnSpriteTextureMap,
+}
+
+struct PreparedVnImages {
+    image_count: usize,
+    #[cfg(feature = "app")]
+    textures: VnSpriteTextureMap,
 }
 
 #[cfg(feature = "app")]
@@ -126,17 +166,21 @@ fn prepare_vn_images(
     world: &mut World,
     script: &YarnScript,
     asset_root: PathBuf,
-) -> Result<usize, String> {
+) -> Result<PreparedVnImages, String> {
     let image_assets = collect_image_assets(script);
     if image_assets.is_empty() {
-        world.insert_resource(VnSpriteTextureMap::default());
-        return Ok(0);
+        return Ok(PreparedVnImages {
+            image_count: 0,
+            textures: VnSpriteTextureMap::default(),
+        });
     }
 
     let asset_server = match world.get_resource::<AssetServer>() {
         Some(assets) => assets.clone(),
         None => {
-            let assets = AssetServer::with_empty_manifest(AssetConfig::default());
+            let assets = AssetServer::with_empty_manifest(
+                AssetConfig::default().with_background_loading(true),
+            );
             world.insert_resource(assets.clone());
             assets
         }
@@ -145,12 +189,25 @@ fn prepare_vn_images(
     let mut texture_map = VnSpriteTextureMap::default();
     for asset in &image_assets {
         texture_map
-            .load_image_file(&asset_server, asset.clone(), asset_root.join(asset))
+            .request_image_file(&asset_server, asset.clone(), asset_root.join(asset))
             .map_err(|error| error.to_string())?;
     }
     let image_count = image_assets.len();
-    world.insert_resource(texture_map);
-    Ok(image_count)
+    Ok(PreparedVnImages {
+        image_count,
+        textures: texture_map,
+    })
+}
+
+#[cfg(feature = "app")]
+fn refresh_vn_texture_metadata(world: &mut World) {
+    let Some(asset_server) = world.get_resource::<AssetServer>().cloned() else {
+        return;
+    };
+    let Some(vn) = world.get_resource_mut::<VnResource>() else {
+        return;
+    };
+    vn.sprite_textures.refresh_metadata(&asset_server);
 }
 
 #[cfg(not(feature = "app"))]
@@ -158,8 +215,10 @@ fn prepare_vn_images(
     _world: &mut World,
     script: &YarnScript,
     _asset_root: PathBuf,
-) -> Result<usize, String> {
-    Ok(collect_image_assets(script).len())
+) -> Result<PreparedVnImages, String> {
+    Ok(PreparedVnImages {
+        image_count: collect_image_assets(script).len(),
+    })
 }
 
 fn collect_image_assets(script: &YarnScript) -> BTreeSet<String> {
@@ -213,13 +272,13 @@ fn image_arg_value(arg: &VnCommandArg) -> Option<&str> {
 }
 
 pub fn vn_script_system(world: &mut World) {
-    let config = world
-        .get_resource::<VnSystemConfig>()
-        .cloned()
-        .unwrap_or_default();
     let dt = world.time.delta;
 
-    let Some(runtime) = world.get_resource_mut::<VnRuntime>() else {
+    let Some(vn) = world.get_resource_mut::<VnResource>() else {
+        return;
+    };
+    let config = vn.system_config.clone();
+    let Some(runtime) = vn.runtime_mut() else {
         return;
     };
 
@@ -236,9 +295,7 @@ pub fn vn_script_system(world: &mut World) {
 pub fn vn_ui_system(world: &mut World) {
     #[cfg(feature = "vn-ui")]
     {
-        if let Err(error) = crate::vn::ui_binding::apply_vn_ui_events(world) {
-            eprintln!("[SkyEngine][VN] UI event failed: {error}");
-        }
+        crate::vn::ui_binding::sync_runtime_ui_to_world(world);
     }
 
     #[cfg(all(feature = "app", not(feature = "vn-ui")))]
@@ -280,52 +337,60 @@ pub fn drain_runtime(
     Ok(events)
 }
 
-fn apply_vn_actions(world: &mut World, actions: Vec<VnAction>) {
+fn apply_vn_actions(vn: &mut VnResource, actions: Vec<VnAction>) {
     for action in actions {
         match action {
             VnAction::Auto => {
-                let mut playback = world
-                    .remove_resource::<VnPlaybackState>()
-                    .unwrap_or_default();
+                let playback = &mut vn.playback;
                 playback.auto_mode = !playback.auto_mode;
                 if playback.auto_mode {
                     playback.skip_mode = false;
                 }
-                world.insert_resource(playback);
             }
             VnAction::Skip => {
-                let mut playback = world
-                    .remove_resource::<VnPlaybackState>()
-                    .unwrap_or_default();
+                let playback = &mut vn.playback;
                 playback.skip_mode = !playback.skip_mode;
                 if playback.skip_mode {
                     playback.auto_mode = false;
                 }
-                world.insert_resource(playback);
             }
             VnAction::HideUi => {
-                toggle_ui_mode(world, VnUiMode::Hidden);
+                toggle_ui_mode(vn, VnUiMode::Hidden);
             }
             VnAction::Menu => {
-                toggle_ui_mode(world, VnUiMode::Menu);
+                toggle_ui_mode(vn, VnUiMode::Menu);
             }
             VnAction::Backlog => {
-                toggle_ui_mode(world, VnUiMode::Backlog);
+                toggle_ui_mode(vn, VnUiMode::Backlog);
             }
             VnAction::QuickLoad => {
-                enter_ui_mode(world, VnUiMode::Confirm(VnConfirmKind::QuickLoad));
+                enter_ui_mode(vn, VnUiMode::Confirm(VnConfirmKind::QuickLoad));
             }
             VnAction::Cancel => {
-                cancel_ui_mode(world);
+                cancel_ui_mode(vn);
             }
             VnAction::QuickSave => {
-                // Full save persistence is wired through VnSaveStore. This action
-                // is intentionally reserved here so bindings and UI can target it.
+                if let Err(error) = vn.save_slot("quick") {
+                    eprintln!("[SkyEngine][VN] quick save failed: {error}");
+                }
             }
-            VnAction::Advance | VnAction::Confirm | VnAction::Up | VnAction::Down => {
-                if let Some(runtime) = world.get_resource_mut::<VnRuntime>() {
-                    if let Err(error) = runtime.apply_action(action) {
-                        eprintln!("[SkyEngine][VN] action failed: {error}");
+            VnAction::Advance
+            | VnAction::Choice(_)
+            | VnAction::Confirm
+            | VnAction::Up
+            | VnAction::Down => {
+                if let Some(runtime) = vn.runtime_mut() {
+                    match runtime.apply_action(action) {
+                        Ok(Some(VnRuntimeEvent::Command(_))) => {
+                            let mut events = Vec::new();
+                            if let Err(error) = drain_runtime_commands(runtime, &mut events) {
+                                eprintln!("[SkyEngine][VN] command drain failed: {error}");
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            eprintln!("[SkyEngine][VN] action failed: {error}");
+                        }
                     }
                 }
             }
@@ -333,44 +398,62 @@ fn apply_vn_actions(world: &mut World, actions: Vec<VnAction>) {
     }
 }
 
-fn toggle_ui_mode(world: &mut World, mode: VnUiMode) {
-    let mut ui = world.remove_resource::<VnUiState>().unwrap_or_default();
+fn drain_runtime_commands(
+    runtime: &mut VnRuntime,
+    output: &mut Vec<VnRuntimeEvent>,
+) -> VnRuntimeResult<()> {
+    for _ in 0..16 {
+        let event = runtime.advance()?;
+        let keep_draining = matches!(event, VnRuntimeEvent::Command(_));
+        output.push(event);
+        if !keep_draining {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn apply_queued_vn_actions(vn: &mut VnResource) {
+    let actions: Vec<_> = vn.actions.drain().collect();
+    if !actions.is_empty() {
+        apply_vn_actions(vn, actions);
+    }
+}
+
+fn toggle_ui_mode(vn: &mut VnResource, mode: VnUiMode) {
+    let ui = &mut vn.ui;
     if ui.mode == mode {
         ui.back();
     } else {
         ui.enter(mode);
     }
-    world.insert_resource(ui);
 }
 
-fn enter_ui_mode(world: &mut World, mode: VnUiMode) {
-    let mut ui = world.remove_resource::<VnUiState>().unwrap_or_default();
-    ui.enter(mode);
-    world.insert_resource(ui);
+fn enter_ui_mode(vn: &mut VnResource, mode: VnUiMode) {
+    vn.ui.enter(mode);
 }
 
-fn cancel_ui_mode(world: &mut World) {
-    let mut ui = world.remove_resource::<VnUiState>().unwrap_or_default();
+fn cancel_ui_mode(vn: &mut VnResource) {
+    let ui = &mut vn.ui;
     if ui.mode == VnUiMode::Reading {
         ui.enter(VnUiMode::Menu);
     } else {
         ui.back();
     }
-    world.insert_resource(ui);
 }
 
 #[cfg(feature = "app")]
-fn queue_vn_actions_from_app_input(world: &mut World) {
-    let actions = collect_vn_actions(world);
-    if actions.is_empty() {
-        return;
-    }
-    let Some(input) = world.get_resource_mut::<VnInputState>() else {
-        return;
-    };
-    for action in actions {
-        input.push(action);
-    }
+fn input_consumed(world: &World, button: MouseButton) -> bool {
+    world
+        .get_resource::<InteractionContext>()
+        .is_some_and(|interaction| interaction.pointer_consumed(button))
+}
+
+#[cfg(feature = "app")]
+fn key_consumed(world: &World, key: KeyCode) -> bool {
+    world
+        .get_resource::<InteractionContext>()
+        .is_some_and(|interaction| interaction.key_consumed(key))
 }
 
 #[cfg(feature = "app")]
@@ -419,37 +502,42 @@ fn collect_vn_actions(world: &World) -> Vec<VnAction> {
     }
 
     if let Some(input) = world.get_resource::<Input>() {
-        if input.key_pressed(KeyCode::Enter)
-            || input.key_pressed(KeyCode::Space)
-            || input.mouse_button_pressed(MouseButton::Left)
-        {
+        let keyboard_advance = (input.key_pressed(KeyCode::Enter)
+            && !key_consumed(world, KeyCode::Enter))
+            || (input.key_pressed(KeyCode::Space) && !key_consumed(world, KeyCode::Space));
+        let pointer_advance = input.mouse_button_pressed(MouseButton::Left)
+            && !input_consumed(world, MouseButton::Left);
+        if keyboard_advance || pointer_advance {
             actions.push(VnAction::Advance);
         }
-        if input.key_pressed(KeyCode::ArrowUp) {
+        if input.key_pressed(KeyCode::ArrowUp) && !key_consumed(world, KeyCode::ArrowUp) {
             actions.push(VnAction::Up);
         }
-        if input.key_pressed(KeyCode::ArrowDown) {
+        if input.key_pressed(KeyCode::ArrowDown) && !key_consumed(world, KeyCode::ArrowDown) {
             actions.push(VnAction::Down);
         }
-        if input.key_pressed(KeyCode::Escape) || input.mouse_button_pressed(MouseButton::Right) {
+        if (input.key_pressed(KeyCode::Escape) && !key_consumed(world, KeyCode::Escape))
+            || (input.mouse_button_pressed(MouseButton::Right)
+                && !input_consumed(world, MouseButton::Right))
+        {
             actions.push(VnAction::Cancel);
         }
-        if input.key_pressed(KeyCode::Tab) {
+        if input.key_pressed(KeyCode::Tab) && !key_consumed(world, KeyCode::Tab) {
             actions.push(VnAction::Skip);
         }
-        if input.key_pressed(KeyCode::KeyA) {
+        if input.key_pressed(KeyCode::KeyA) && !key_consumed(world, KeyCode::KeyA) {
             actions.push(VnAction::Auto);
         }
-        if input.key_pressed(KeyCode::KeyH) {
+        if input.key_pressed(KeyCode::KeyH) && !key_consumed(world, KeyCode::KeyH) {
             actions.push(VnAction::HideUi);
         }
-        if input.key_pressed(KeyCode::KeyB) {
+        if input.key_pressed(KeyCode::KeyB) && !key_consumed(world, KeyCode::KeyB) {
             actions.push(VnAction::Backlog);
         }
-        if input.key_pressed(KeyCode::KeyS) {
+        if input.key_pressed(KeyCode::KeyS) && !key_consumed(world, KeyCode::KeyS) {
             actions.push(VnAction::QuickSave);
         }
-        if input.key_pressed(KeyCode::KeyL) {
+        if input.key_pressed(KeyCode::KeyL) && !key_consumed(world, KeyCode::KeyL) {
             actions.push(VnAction::QuickLoad);
         }
     }
@@ -472,7 +560,17 @@ fn push_action_binding(
 mod tests {
     use super::*;
     use crate::vn::script::YarnScript;
-    use crate::vn::{VnLoaderStatus, VnPlugin};
+    use crate::vn::{VnLoaderStatus, VnPlugin, VnResource};
+
+    fn insert_vn_runtime(world: &mut World, runtime: VnRuntime) {
+        let mut vn = VnResource::default();
+        vn.runtime = Some(runtime);
+        world.insert_resource(vn);
+    }
+
+    fn vn_resource(world: &World) -> &VnResource {
+        world.get_resource::<VnResource>().unwrap()
+    }
 
     #[test]
     fn script_system_drains_commands_and_reveals_line() {
@@ -487,15 +585,17 @@ Hello. #line:start.1
         )
         .unwrap();
         let mut world = World::new();
-        world.insert_resource(VnRuntime::from_script(script, "Start").unwrap());
-        world.insert_resource(VnSystemConfig {
+        let mut vn = VnResource::default();
+        vn.runtime = Some(VnRuntime::from_script(script, "Start").unwrap());
+        vn.system_config = VnSystemConfig {
             reveal_chars_per_second: 10.0,
             ..Default::default()
-        });
+        };
+        world.insert_resource(vn);
         world.group("vn/script").add(vn_script_system);
 
         world.tick_with_delta(0.1);
-        let runtime = world.get_resource::<VnRuntime>().unwrap();
+        let runtime = vn_resource(&world).runtime().unwrap();
         assert_eq!(runtime.status(), &VnStatus::Line);
         assert_eq!(runtime.dialogue().visible_text(), "H");
     }
@@ -512,17 +612,16 @@ Hello. #line:start.1
         )
         .unwrap();
         let mut world = World::new();
-        world.insert_resource(VnRuntime::from_script(script, "Start").unwrap());
-        world.insert_resource(VnInputState::default());
+        insert_vn_runtime(&mut world, VnRuntime::from_script(script, "Start").unwrap());
         world
-            .get_resource_mut::<VnInputState>()
+            .get_resource_mut::<VnResource>()
             .unwrap()
-            .push(VnAction::Advance);
+            .push_action(VnAction::Advance);
 
         vn_input_system(&mut world);
 
         assert_eq!(
-            world.get_resource::<VnRuntime>().unwrap().status(),
+            vn_resource(&world).runtime().unwrap().status(),
             &VnStatus::Line
         );
     }
@@ -530,26 +629,110 @@ Hello. #line:start.1
     #[test]
     fn ui_mode_actions_toggle_shell_state() {
         let mut world = World::new();
-        world.insert_resource(VnInputState::default());
+        world.insert_resource(VnResource::default());
         world
-            .get_resource_mut::<VnInputState>()
+            .get_resource_mut::<VnResource>()
             .unwrap()
-            .push(VnAction::Backlog);
+            .push_action(VnAction::Backlog);
 
         vn_input_system(&mut world);
-        assert_eq!(
-            world.get_resource::<VnUiState>().unwrap().mode,
-            VnUiMode::Backlog
-        );
+        assert_eq!(vn_resource(&world).ui().mode, VnUiMode::Backlog);
 
         world
-            .get_resource_mut::<VnInputState>()
+            .get_resource_mut::<VnResource>()
             .unwrap()
-            .push(VnAction::Cancel);
+            .push_action(VnAction::Cancel);
         vn_input_system(&mut world);
+        assert_eq!(vn_resource(&world).ui().mode, VnUiMode::Reading);
+    }
+
+    #[cfg(feature = "app")]
+    #[test]
+    fn consumed_mouse_left_does_not_become_vn_advance() {
+        let script = YarnScript::parse_str(
+            r#"
+title: Start
+---
+Hello. #line:start.1
+-> A
+    <<set $route = "a">>
+    <<jump Ending>>
+-> B
+    <<set $route = "b">>
+    <<jump Ending>>
+===
+
+title: Ending
+---
+Done. #line:end.1
+===
+"#,
+        )
+        .unwrap();
+        let mut runtime = VnRuntime::from_script(script, "Start").unwrap();
+        runtime.advance().unwrap();
+        runtime.dialogue_mut().complete_line();
+        runtime.advance().unwrap();
+
+        let mut input = Input::new();
+        input.set_mouse_position(100.0, 100.0);
+        input.mouse_button_down(MouseButton::Left.index());
+
+        let mut world = World::new();
+        insert_vn_runtime(&mut world, runtime);
+        world.insert_resource(input);
+        let mut interaction = InteractionContext::default();
+        interaction.consume_pointer(MouseButton::Left);
+        world.insert_resource(interaction);
+
+        vn_input_system(&mut world);
+
+        let runtime = vn_resource(&world).runtime().unwrap();
+        assert_eq!(runtime.status(), &VnStatus::Choice);
+        assert!(runtime.variable("route").is_none());
+    }
+
+    #[cfg(feature = "app")]
+    #[test]
+    fn unconsumed_mouse_left_can_advance_vn() {
+        let script = YarnScript::parse_str(
+            r#"
+title: Start
+---
+Hello. #line:start.1
+-> A
+    <<set $route = "a">>
+    <<jump Ending>>
+-> B
+    <<set $route = "b">>
+    <<jump Ending>>
+===
+
+title: Ending
+---
+Done. #line:end.1
+===
+"#,
+        )
+        .unwrap();
+        let mut runtime = VnRuntime::from_script(script, "Start").unwrap();
+        runtime.advance().unwrap();
+        runtime.dialogue_mut().complete_line();
+        runtime.advance().unwrap();
+
+        let mut input = Input::new();
+        input.set_mouse_position(100.0, 100.0);
+        input.mouse_button_down(MouseButton::Left.index());
+
+        let mut world = World::new();
+        insert_vn_runtime(&mut world, runtime);
+        world.insert_resource(input);
+
+        vn_input_system(&mut world);
+
         assert_eq!(
-            world.get_resource::<VnUiState>().unwrap().mode,
-            VnUiMode::Reading
+            vn_resource(&world).runtime().unwrap().variable("route"),
+            Some(&VnValue::String("a".to_owned()))
         );
     }
 
@@ -567,21 +750,22 @@ Hello. #line:start.1
         let mut world = World::new();
         VnPlugin::default().install(&mut world).unwrap();
         world
-            .get_resource_mut::<VnLoader>()
+            .get_resource_mut::<VnResource>()
             .unwrap()
-            .load_script(script, "Start");
+            .load_script(script, "Start")
+            .unwrap();
 
         world.tick_with_delta(0.016);
 
-        assert!(world.contains_resource::<VnRuntime>());
+        assert!(vn_resource(&world).runtime().is_some());
         assert_eq!(
-            world.get_resource::<VnLoader>().unwrap().status(),
+            vn_resource(&world).load_status(),
             &VnLoaderStatus::Loaded { image_count: 0 }
         );
     }
 
     #[test]
-    fn load_system_keeps_current_runtime_when_request_fails() {
+    fn load_script_rejects_missing_start_without_replacing_runtime() {
         let original = YarnScript::parse_str(
             r#"
 title: Start
@@ -602,23 +786,22 @@ Replacement. #line:start.1
         .unwrap();
         let mut world = World::new();
         VnPlugin::default().install(&mut world).unwrap();
-        world.insert_resource(VnRuntime::from_script(original, "Start").unwrap());
-        world
-            .get_resource_mut::<VnLoader>()
+        world.get_resource_mut::<VnResource>().unwrap().runtime =
+            Some(VnRuntime::from_script(original, "Start").unwrap());
+        let result = world
+            .get_resource_mut::<VnResource>()
             .unwrap()
             .load_script(replacement, "Missing");
+        assert!(result.is_err());
 
         world.tick_with_delta(0.016);
 
-        let runtime = world.get_resource::<VnRuntime>().unwrap();
+        let runtime = vn_resource(&world).runtime().unwrap();
         assert_eq!(
             runtime.dialogue().current_line.as_ref().unwrap().text,
             "Original."
         );
-        assert!(matches!(
-            world.get_resource::<VnLoader>().unwrap().status(),
-            VnLoaderStatus::Failed { .. }
-        ));
+        assert_eq!(vn_resource(&world).load_status(), &VnLoaderStatus::Idle);
     }
 
     #[cfg(feature = "app")]
@@ -665,21 +848,42 @@ title: Start
         let mut world = World::new();
         VnPlugin::default().install(&mut world).unwrap();
         world
-            .get_resource_mut::<VnLoader>()
+            .get_resource_mut::<VnResource>()
             .unwrap()
             .set_asset_root(temp.path())
-            .load_script(script, "Start");
+            .load_script(script, "Start")
+            .unwrap();
 
         world.tick_with_delta(0.016);
 
         assert_eq!(
-            world.get_resource::<VnLoader>().unwrap().status(),
+            vn_resource(&world).load_status(),
             &VnLoaderStatus::Loaded { image_count: 3 }
         );
-        let textures = world.get_resource::<VnSpriteTextureMap>().unwrap();
+        let textures = vn_resource(&world).sprite_textures();
+        assert!(textures.get("white.png").is_some());
+        assert!(textures.get("alice.png").is_some());
+        assert!(textures.get("cg.png").is_some());
+        assert_eq!(textures.size("white.png"), None);
+        assert!(textures.get("smile").is_none());
+
+        let assets = world.get_resource::<AssetServer>().unwrap().clone();
+        for _ in 0..64 {
+            assets.update().unwrap();
+            world.tick_with_delta(0.016);
+            let textures = vn_resource(&world).sprite_textures();
+            if textures.size("white.png").is_some()
+                && textures.size("alice.png").is_some()
+                && textures.size("cg.png").is_some()
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        let textures = vn_resource(&world).sprite_textures();
         assert_eq!(textures.size("white.png"), Some([1, 1]));
         assert_eq!(textures.size("alice.png"), Some([1, 1]));
         assert_eq!(textures.size("cg.png"), Some([1, 1]));
-        assert!(textures.get("smile").is_none());
     }
 }

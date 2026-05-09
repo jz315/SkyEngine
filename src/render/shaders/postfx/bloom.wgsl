@@ -10,56 +10,74 @@ var input_sampler: sampler;
 @group(1) @binding(0)
 var<uniform> bloom: BloomUniform;
 
-@fragment
-fn fs_bright(in: FullscreenOutput) -> @location(0) vec4<f32> {
-    let threshold = bloom.params.x;
-    let color = textureSample(input_tex, input_sampler, in.uv);
-    let brightness = dot(color.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
-    let soft = max(brightness - threshold, 0.0);
-    let contribution = soft / (soft + 1.0);
-    return vec4<f32>(color.rgb * contribution, 1.0);
+fn sample_input(uv: vec2<f32>, offset: vec2<f32>) -> vec3<f32> {
+    return max(
+        textureSample(input_tex, input_sampler, uv + offset * bloom.texel_dir.xy).rgb,
+        vec3<f32>(0.0),
+    );
 }
 
 @fragment
 fn fs_downsample(in: FullscreenOutput) -> @location(0) vec4<f32> {
-    let texel = bloom.texel_dir.xy;
-    let a = textureSample(input_tex, input_sampler, in.uv + texel * vec2<f32>(-0.5, -0.5));
-    let b = textureSample(input_tex, input_sampler, in.uv + texel * vec2<f32>(0.5, -0.5));
-    let c = textureSample(input_tex, input_sampler, in.uv + texel * vec2<f32>(-0.5, 0.5));
-    let d = textureSample(input_tex, input_sampler, in.uv + texel * vec2<f32>(0.5, 0.5));
-    return (a + b + c + d) * 0.25;
+    let uv = in.uv;
+
+    let a = sample_input(uv, vec2<f32>(-2.0,  2.0));
+    let b = sample_input(uv, vec2<f32>( 0.0,  2.0));
+    let c = sample_input(uv, vec2<f32>( 2.0,  2.0));
+    let d = sample_input(uv, vec2<f32>(-2.0,  0.0));
+    let e = sample_input(uv, vec2<f32>( 0.0,  0.0));
+    let f = sample_input(uv, vec2<f32>( 2.0,  0.0));
+    let g = sample_input(uv, vec2<f32>(-2.0, -2.0));
+    let h = sample_input(uv, vec2<f32>( 0.0, -2.0));
+    let i = sample_input(uv, vec2<f32>( 2.0, -2.0));
+    let j = sample_input(uv, vec2<f32>(-1.0,  1.0));
+    let k = sample_input(uv, vec2<f32>( 1.0,  1.0));
+    let l = sample_input(uv, vec2<f32>(-1.0, -1.0));
+    let m = sample_input(uv, vec2<f32>( 1.0, -1.0));
+
+    let color =
+        e * 0.125 +
+        (a + c + g + i) * 0.03125 +
+        (b + d + f + h) * 0.0625 +
+        (j + k + l + m) * 0.125;
+    return vec4<f32>(color, 1.0);
 }
 
 @fragment
 fn fs_blur(in: FullscreenOutput) -> @location(0) vec4<f32> {
-    let texel = bloom.texel_dir.xy * bloom.params.z;
-    let dir = bloom.texel_dir.zw;
-    let w0 = 0.227027;
-    let w1 = 0.1945946;
-    let w2 = 0.1216216;
-    let w3 = 0.054054;
-    let w4 = 0.016216;
+    let spread = max(bloom.params.y, 0.0);
+    let step_uv = bloom.texel_dir.xy * bloom.texel_dir.zw * spread;
 
-    let o1 = dir * texel * 1.0;
-    let o2 = dir * texel * 2.0;
-    let o3 = dir * texel * 3.0;
-    let o4 = dir * texel * 4.0;
-
-    var result = textureSample(input_tex, input_sampler, in.uv) * w0;
-    result += textureSample(input_tex, input_sampler, in.uv + o1) * w1;
-    result += textureSample(input_tex, input_sampler, in.uv - o1) * w1;
-    result += textureSample(input_tex, input_sampler, in.uv + o2) * w2;
-    result += textureSample(input_tex, input_sampler, in.uv - o2) * w2;
-    result += textureSample(input_tex, input_sampler, in.uv + o3) * w3;
-    result += textureSample(input_tex, input_sampler, in.uv - o3) * w3;
-    result += textureSample(input_tex, input_sampler, in.uv + o4) * w4;
-    result += textureSample(input_tex, input_sampler, in.uv - o4) * w4;
-    return result;
+    var color = textureSample(input_tex, input_sampler, in.uv - step_uv * 4.0).rgb * 0.00390625;
+    color += textureSample(input_tex, input_sampler, in.uv - step_uv * 3.0).rgb * 0.03125;
+    color += textureSample(input_tex, input_sampler, in.uv - step_uv * 2.0).rgb * 0.109375;
+    color += textureSample(input_tex, input_sampler, in.uv - step_uv).rgb * 0.21875;
+    color += textureSample(input_tex, input_sampler, in.uv).rgb * 0.2734375;
+    color += textureSample(input_tex, input_sampler, in.uv + step_uv).rgb * 0.21875;
+    color += textureSample(input_tex, input_sampler, in.uv + step_uv * 2.0).rgb * 0.109375;
+    color += textureSample(input_tex, input_sampler, in.uv + step_uv * 3.0).rgb * 0.03125;
+    color += textureSample(input_tex, input_sampler, in.uv + step_uv * 4.0).rgb * 0.00390625;
+    return vec4<f32>(max(color, vec3<f32>(0.0)), 1.0);
 }
 
 @fragment
 fn fs_upsample(in: FullscreenOutput) -> @location(0) vec4<f32> {
-    return textureSample(input_tex, input_sampler, in.uv);
+    let spread = max(bloom.params.y, 0.0);
+    let texel = bloom.texel_dir.xy * max(spread, 0.001);
+    let weight = mix(0.25, 0.90, clamp(0.5 * spread, 0.0, 1.0));
+
+    var color = textureSample(input_tex, input_sampler, in.uv).rgb * 4.0;
+    color += textureSample(input_tex, input_sampler, in.uv + texel * vec2<f32>( 1.0,  0.0)).rgb * 2.0;
+    color += textureSample(input_tex, input_sampler, in.uv + texel * vec2<f32>(-1.0,  0.0)).rgb * 2.0;
+    color += textureSample(input_tex, input_sampler, in.uv + texel * vec2<f32>( 0.0,  1.0)).rgb * 2.0;
+    color += textureSample(input_tex, input_sampler, in.uv + texel * vec2<f32>( 0.0, -1.0)).rgb * 2.0;
+    color += textureSample(input_tex, input_sampler, in.uv + texel * vec2<f32>( 1.0,  1.0)).rgb;
+    color += textureSample(input_tex, input_sampler, in.uv + texel * vec2<f32>(-1.0,  1.0)).rgb;
+    color += textureSample(input_tex, input_sampler, in.uv + texel * vec2<f32>( 1.0, -1.0)).rgb;
+    color += textureSample(input_tex, input_sampler, in.uv + texel * vec2<f32>(-1.0, -1.0)).rgb;
+    color = max(color * 0.0625, vec3<f32>(0.0));
+
+    return vec4<f32>(color * weight, 1.0);
 }
 
 @group(0) @binding(2)
@@ -69,8 +87,9 @@ var bloom_sampler: sampler;
 
 @fragment
 fn fs_combine(in: FullscreenOutput) -> @location(0) vec4<f32> {
-    let intensity = bloom.params.y;
+    let intensity = max(bloom.params.x, 0.0);
     let base = textureSample(input_tex, input_sampler, in.uv);
-    let blur = textureSample(bloom_tex, bloom_sampler, in.uv);
-    return vec4<f32>(base.rgb + blur.rgb * intensity, base.a);
+    let blur = max(textureSample(bloom_tex, bloom_sampler, in.uv).rgb, vec3<f32>(0.0));
+    let blend = clamp(0.12 * intensity, 0.0, 1.0);
+    return vec4<f32>(mix(base.rgb, blur, blend), base.a);
 }

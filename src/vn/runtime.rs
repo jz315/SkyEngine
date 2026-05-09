@@ -299,6 +299,15 @@ impl VnRuntime {
                 VnStatus::Ready | VnStatus::Line => Ok(Some(self.advance()?)),
                 VnStatus::Ended => Ok(Some(VnRuntimeEvent::End)),
             },
+            VnAction::Choice(index) => {
+                if self.status == VnStatus::Choice {
+                    self.dialogue.selected_choice = index;
+                    self.choose(index)?;
+                    Ok(Some(self.advance()?))
+                } else {
+                    Ok(None)
+                }
+            }
             VnAction::Up => {
                 self.dialogue.select_previous_choice();
                 Ok(None)
@@ -774,6 +783,8 @@ enum InstructionSource {
 #[derive(Debug)]
 pub enum VnRuntimeError {
     Compile(VnCompileError),
+    RuntimeUnavailable,
+    MissingSaveSlot(String),
     MissingNode(String),
     ChoiceNotActive,
     InvalidChoiceIndex { index: usize, len: usize },
@@ -789,6 +800,8 @@ impl fmt::Display for VnRuntimeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Compile(error) => write!(f, "{error}"),
+            Self::RuntimeUnavailable => f.write_str("VN runtime is not loaded"),
+            Self::MissingSaveSlot(slot) => write!(f, "VN save slot `{slot}` does not exist"),
             Self::MissingNode(node) => write!(f, "VN node `{node}` does not exist"),
             Self::ChoiceNotActive => f.write_str("no VN choice is currently active"),
             Self::InvalidChoiceIndex { index, len } => {

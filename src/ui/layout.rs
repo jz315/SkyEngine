@@ -15,6 +15,7 @@ pub(crate) struct ResolvedUiNode {
     pub clip_rect: UiRect,
     pub visible: bool,
     pub enabled: bool,
+    pub blocks_input: bool,
     stack_path: Vec<(i32, u32)>,
 }
 
@@ -59,11 +60,20 @@ pub(crate) fn rect_map(nodes: &[ResolvedUiNode]) -> FxHashMap<EntityId, UiRect> 
     rects
 }
 
-pub(crate) fn hit_test(nodes: &[ResolvedUiNode], point: [f32; 2]) -> Option<ResolvedUiNode> {
+pub(crate) fn hit_test_input(nodes: &[ResolvedUiNode], point: [f32; 2]) -> Option<ResolvedUiNode> {
+    hit_test_with(nodes, point, |node| node.blocks_input)
+}
+
+fn hit_test_with(
+    nodes: &[ResolvedUiNode],
+    point: [f32; 2],
+    accepts: impl Fn(&ResolvedUiNode) -> bool,
+) -> Option<ResolvedUiNode> {
     nodes
         .iter()
         .filter(|node| {
-            node.visible
+            accepts(node)
+                && node.visible
                 && node.enabled
                 && node.rect.contains(point)
                 && node.clip_rect.contains(point)
@@ -182,6 +192,7 @@ fn resolve_snapshots(nodes: &[NodeSnapshot], surface_size: [f32; 2]) -> Vec<Reso
                 clip_rect,
                 visible,
                 enabled,
+                blocks_input: snapshot.node.blocks_input,
                 stack_path,
             });
         }
@@ -520,7 +531,7 @@ mod tests {
     use crate::ecs::World;
 
     use super::super::{UiAlign, UiAnchor, UiLayout, UiLength, UiNode, UiPanel, UiRect, UiScroll};
-    use super::hit_test;
+    use super::hit_test_input;
     use super::resolve_world_layout;
     use crate::render::Color;
 
@@ -661,7 +672,7 @@ mod tests {
         let child_node = nodes.iter().find(|node| node.entity == child).unwrap();
         assert_eq!(child_node.rect, UiRect::new(10.0, 50.0, 100.0, 30.0));
         assert_eq!(child_node.clip_rect, UiRect::new(0.0, 0.0, 120.0, 80.0));
-        assert_eq!(hit_test(&nodes, [20.0, 60.0]).unwrap().entity, child);
+        assert_eq!(hit_test_input(&nodes, [20.0, 60.0]).unwrap().entity, child);
     }
 
     #[test]
@@ -671,7 +682,7 @@ mod tests {
         world.spawn((UiNode::panel(100.0, 30.0).child_of(parent).at(10.0, 90.0),));
 
         let nodes = resolve_world_layout(&world, [800.0, 600.0]);
-        assert!(hit_test(&nodes, [20.0, 95.0]).is_none());
+        assert!(hit_test_input(&nodes, [20.0, 95.0]).is_none());
     }
 
     #[test]
@@ -680,8 +691,20 @@ mod tests {
         world.spawn((UiNode::panel(100.0, 100.0).z(1),));
         let top = world.spawn((UiNode::panel(100.0, 100.0).z(2),));
         let nodes = resolve_world_layout(&world, [800.0, 600.0]);
-        let hit = hit_test(&nodes, [20.0, 20.0]).unwrap();
+        let hit = hit_test_input(&nodes, [20.0, 20.0]).unwrap();
         assert_eq!(hit.entity, top);
+    }
+
+    #[test]
+    fn input_transparent_nodes_pass_hit_test_to_lower_nodes() {
+        let mut world = World::new();
+        let bottom = world.spawn((UiNode::panel(100.0, 100.0).z(1),));
+        world.spawn((UiNode::panel(100.0, 100.0).z(2).input_transparent(),));
+
+        let nodes = resolve_world_layout(&world, [800.0, 600.0]);
+        let hit = hit_test_input(&nodes, [20.0, 20.0]).unwrap();
+
+        assert_eq!(hit.entity, bottom);
     }
 
     #[test]
@@ -700,7 +723,7 @@ mod tests {
             vec![(40, parent.index()), (0, child.index())]
         );
 
-        let hit = hit_test(&nodes, [20.0, 20.0]).unwrap();
+        let hit = hit_test_input(&nodes, [20.0, 20.0]).unwrap();
         assert_eq!(hit.entity, child);
     }
 
@@ -718,7 +741,7 @@ mod tests {
             vec![(10, parent.index()), (5, child.index())]
         );
 
-        let hit = hit_test(&nodes, [20.0, 20.0]).unwrap();
+        let hit = hit_test_input(&nodes, [20.0, 20.0]).unwrap();
         assert_eq!(hit.entity, sibling);
     }
 
@@ -730,7 +753,7 @@ mod tests {
         let sibling = world.spawn((UiNode::panel(100.0, 100.0).z(10),));
 
         let nodes = resolve_world_layout(&world, [800.0, 600.0]);
-        let hit = hit_test(&nodes, [20.0, 20.0]).unwrap();
+        let hit = hit_test_input(&nodes, [20.0, 20.0]).unwrap();
         assert_eq!(hit.entity, sibling);
     }
 
@@ -741,29 +764,29 @@ mod tests {
         world.spawn((UiNode::panel(100.0, 100.0).z(2).disabled(),));
         let active = world.spawn((UiNode::panel(100.0, 100.0).z(1),));
         let nodes = resolve_world_layout(&world, [800.0, 600.0]);
-        let hit = hit_test(&nodes, [20.0, 20.0]).unwrap();
+        let hit = hit_test_input(&nodes, [20.0, 20.0]).unwrap();
         assert_eq!(hit.entity, active);
     }
 
     #[test]
-    fn hidden_parent_hides_children_from_hit_test() {
+    fn hidden_parent_hides_children_from_hit_test_input() {
         let mut world = World::new();
         let parent = world.spawn((UiNode::panel(100.0, 100.0).z(10).hidden(),));
         world.spawn((UiNode::panel(100.0, 100.0).child_of(parent).z(11),));
         let active = world.spawn((UiNode::panel(100.0, 100.0).z(1),));
         let nodes = resolve_world_layout(&world, [800.0, 600.0]);
-        let hit = hit_test(&nodes, [20.0, 20.0]).unwrap();
+        let hit = hit_test_input(&nodes, [20.0, 20.0]).unwrap();
         assert_eq!(hit.entity, active);
     }
 
     #[test]
-    fn disabled_parent_disables_children_from_hit_test() {
+    fn disabled_parent_disables_children_from_hit_test_input() {
         let mut world = World::new();
         let parent = world.spawn((UiNode::panel(100.0, 100.0).z(10).disabled(),));
         world.spawn((UiNode::panel(100.0, 100.0).child_of(parent).z(100),));
         let active = world.spawn((UiNode::panel(100.0, 100.0).z(1),));
         let nodes = resolve_world_layout(&world, [800.0, 600.0]);
-        let hit = hit_test(&nodes, [20.0, 20.0]).unwrap();
+        let hit = hit_test_input(&nodes, [20.0, 20.0]).unwrap();
         assert_eq!(hit.entity, active);
     }
 }

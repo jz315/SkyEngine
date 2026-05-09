@@ -45,6 +45,7 @@ extern crate self as sky_engine;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
+pub mod action_queue;
 pub mod diagnostics;
 pub mod ecs;
 pub mod math;

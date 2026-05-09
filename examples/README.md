@@ -17,8 +17,9 @@ If you're new to the project, read and run examples in this order:
 9. `custom_feature_demo` — a public zero-engine-modification `RenderFeature` extension example
 10. `custom_material_demo` — a public user-defined `Material` + `MeshRenderer` example
 11. `hud_menu` — native retained UI for HUD/menu/buttons/text/progress
-12. `physics_arcade_demo` / `tiled_physics_demo` — optional `app + physics` demos
-13. `boids` / `boids_classic` / `cosmic_jellyfish` / `neon_galaxy`
+12. `last_light_guild` — an 8-bit-style rendered RPG-sim prototype
+13. `physics_arcade_demo` / `tiled_physics_demo` — optional `app + physics` demos
+14. `boids` / `boids_classic` / `cosmic_jellyfish` / `neon_galaxy`
 
 ## Render Learning Path
 
@@ -160,10 +161,12 @@ Playable vertical slices that combine multiple engine modules into a small game 
 ```bash
 cargo run --example neon_dungeon_game --features "app physics" --release
 cargo run --example lawn_defense_game --features ui --release
+cargo run --example last_light_guild --features ui --release
 ```
 
 - `neon_dungeon_game` — top-down arena action game with menu/gameover/victory states, player movement, auto-fire, enemies, pickups, a locked exit portal, physics walls, and event-driven hits.
 - `lawn_defense_game` — lane-defense garden game with plant cards, sun economy, rows, projectiles, blockers, advancing enemies, mowers, waves, victory/game-over states, and native UI HUD/menu.
+- `last_light_guild` — tilemap-based 8-bit guild simulation with rooms, pawns, contracts, injuries, and relationships.
 
 ### `examples/demo/`
 

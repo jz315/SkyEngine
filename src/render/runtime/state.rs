@@ -2,7 +2,7 @@ use crate::asset::AssetEventCursor;
 use crate::ecs::EntityId;
 use crate::render::component::RenderSettings;
 use crate::render::extract::Extractor;
-use crate::render::gi::DdgiRuntime;
+use crate::render::gi::GiRuntime;
 use crate::render::gpu::GpuScene;
 use crate::render::gpu::Texture;
 use crate::render::lighting::shadow::{
@@ -10,7 +10,6 @@ use crate::render::lighting::shadow::{
 };
 use crate::render::phase::DrawFunctionRegistry;
 use crate::render::pipeline::{AnyRenderFeature, MaterialRegistration, PipelineStep};
-use crate::render::resources::assets::RenderAssetCache;
 use crate::render::resources::material::MaterialRegistry;
 use crate::render::resources::mesh::MeshRegistry;
 use crate::render::view::RenderStats;
@@ -33,16 +32,16 @@ pub(crate) struct ComposerResources {
 }
 
 pub(crate) struct ComposerRuntime {
+    pub(crate) pipeline_initialized: bool,
     pub(crate) last_stats: RenderStats,
     pub(crate) surface_size: [u32; 2],
     pub(crate) frame_settings: RenderSettings,
     pub(crate) view_collector: WorldViewCollector,
     pub(crate) temporal: TemporalViewTracker,
     pub(crate) gpu_scene: Option<GpuScene>,
-    pub(crate) ddgi: Option<DdgiRuntime>,
+    pub(crate) gi: Option<GiRuntime>,
     pub(crate) fallback_texture: Option<Texture>,
     pub(crate) history: HistoryTextureStore,
-    pub(crate) render_assets: RenderAssetCache,
     pub(crate) asset_event_cursor: AssetEventCursor,
     pub(crate) previous_model_by_entity: rustc_hash::FxHashMap<EntityId, [f32; 16]>,
 }

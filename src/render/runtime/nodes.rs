@@ -5,13 +5,14 @@ use crate::render::execution::{
     FrameFinalizeNode, FrameViewNode, PhaseState, PreparedFrame, PreparedView, SceneTexture,
     ViewExecutionContext,
 };
+use crate::render::gi::GiRuntime;
 use crate::render::gpu::GpuScene;
 use crate::render::gpu::Texture;
 use crate::render::graph::{
     CompiledPass, LoadOp, PhysicalResources, RenderGraph, RenderGraphError, TargetSize,
 };
 use crate::render::lighting::shadow::{
-    SceneShadowResources, ShadowSceneBindingLayout, ShadowViewBinding,
+    SceneShadowGraphResources, SceneShadowResources, ShadowSceneBindingLayout, ShadowViewBinding,
 };
 use crate::render::phase::{
     DrawContext, DrawFunctionRegistry, OpaquePhase, StandaloneDrawContext, TransparentPhase,
@@ -84,7 +85,7 @@ impl FrameViewNode for SceneColorSeedNode {
     ) -> Result<(), RenderGraphError> {
         let color = execution
             .frame_payload::<RenderSettings>()
-            .copied()
+            .cloned()
             .unwrap_or_default()
             .clear_color
             .to_wgpu();
@@ -195,7 +196,23 @@ fn built_in_phase_setup(kind: BuiltInPhaseKind, ctx: &mut RenderPhaseSetupContex
         }),
         BuiltInPhaseKind::Transparent => ctx.state().scene_depth().map(|slot| slot.handle()),
     };
+    let shadow_graph_resources = if matches!(kind, BuiltInPhaseKind::Opaque) {
+        ctx.view()
+            .payload::<SceneView>()
+            .and_then(|scene_view| scene_view.shadow_binding())
+            .and_then(|binding| {
+                let key = SceneShadowGraphResources::blackboard_key(binding);
+                ctx.blackboard_get::<SceneShadowGraphResources>(&key)
+                    .cloned()
+            })
+    } else {
+        None
+    };
     ctx.graph().add_render_pass(phase_name, |setup| {
+        if let Some(shadows) = shadow_graph_resources.as_ref() {
+            setup.read(shadows.directional_shadow_atlas());
+            setup.read(shadows.directional_transparent_shadow_atlas());
+        }
         setup.write_color_loaded(0, current.handle());
         match kind {
             BuiltInPhaseKind::Opaque => {
@@ -363,6 +380,12 @@ fn built_in_phase_execute(
                         _ => None,
                     }
                 });
+            let gi_descriptor = execution
+                .frame_payload::<GiRuntime>()
+                .map(GiRuntime::shader_descriptor);
+            let gi_sampling = execution
+                .frame_payload::<GiRuntime>()
+                .map(GiRuntime::sampling_binding);
             let mut draw_ctx = DrawContext::new(
                 &device,
                 &sampler_linear,
@@ -376,6 +399,11 @@ fn built_in_phase_execute(
                     .map(std::vec::Vec::as_slice),
                 Some(gpu_scene),
                 scene_shadows,
+                gi_sampling,
+                gi_descriptor.as_ref().map(|descriptor| descriptor.source),
+                gi_descriptor
+                    .as_ref()
+                    .map_or(0, |descriptor| gi_shader_key(descriptor.key)),
                 material_registry,
                 mesh_registry,
                 Some(fallback_texture),
@@ -448,6 +476,14 @@ fn built_in_phase_draw_calls(
         cursor = batch_end;
     }
     draw_calls
+}
+
+fn gi_shader_key(key: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = rustc_hash::FxHasher::default();
+    key.hash(&mut hasher);
+    hasher.finish()
 }
 
 impl FrameViewNode for PhaseStepNode {

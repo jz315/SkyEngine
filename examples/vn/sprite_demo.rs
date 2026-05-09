@@ -14,8 +14,7 @@ use sky_engine::render::{
     TransparentPhase,
 };
 use sky_engine::vn::{
-    sync_runtime_scene_to_world, VnAction, VnLoader, VnPlugin, VnRuntime, VnRuntimeEvent,
-    VnSpritePresentationConfig, YarnScript,
+    sync_runtime_scene_to_world, VnAction, VnPlugin, VnResource, VnRuntimeEvent, YarnScript,
 };
 
 struct VnSpriteDemo {
@@ -36,7 +35,10 @@ impl AppState for VnSpriteDemo {
 }
 
 fn advance_vn(world: &mut World) {
-    let Some(runtime) = world.get_resource_mut::<VnRuntime>() else {
+    let Some(runtime) = world
+        .get_resource_mut::<VnResource>()
+        .and_then(VnResource::runtime_mut)
+    else {
         return;
     };
 
@@ -96,10 +98,10 @@ Alice: Done. #line:ending.alice.0001
         .install(&mut world)
         .expect("VN plugin should install");
     world
-        .get_resource_mut::<VnLoader>()
-        .expect("VN loader should be installed")
-        .load_script(script, "Start");
-    world.insert_resource(VnSpritePresentationConfig::default());
+        .get_resource_mut::<VnResource>()
+        .expect("VnPlugin should install VnResource")
+        .load_script(script, "Start")
+        .expect("demo script should queue for loading");
 
     App::new(AppConfig::new("SkyEngine VN Sprite Demo", 1280, 720), world)
         .with_render_pipeline(

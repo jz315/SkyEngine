@@ -1,5 +1,6 @@
 struct ShadowPassUniform {
-    light_view_proj: mat4x4<f32>,
+    raster_view_proj: mat4x4<f32>,
+    depth_view_proj: mat4x4<f32>,
 };
 
 @group(0) @binding(0)
@@ -31,6 +32,7 @@ struct VertexInput {
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
+    @location(1) depth_clip: vec4<f32>,
     @location(0) uv: vec2<f32>,
 };
 
@@ -44,15 +46,22 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         input.model_col3,
     );
     let world_position = model * vec4<f32>(input.position, 1.0);
-    output.clip_position = shadow_pass.light_view_proj * world_position;
+    output.clip_position = shadow_pass.raster_view_proj * world_position;
+    output.depth_clip = shadow_pass.depth_view_proj * world_position;
     output.uv = input.uv;
     return output;
 }
 
+fn depth_from_clip(clip_position: vec4<f32>) -> f32 {
+    let inv_w = select(1.0, 1.0 / clip_position.w, abs(clip_position.w) > 0.000001);
+    return clamp(clip_position.z * inv_w, 0.0, 1.0);
+}
+
 @fragment
-fn fs_main(input: VertexOutput) {
+fn fs_main(input: VertexOutput) -> @builtin(frag_depth) f32 {
     let base = textureSample(t_albedo, s_albedo, input.uv) * material.albedo;
     if (material.shadow.z > 0.5 && base.a < material.shadow.y) {
         discard;
     }
+    return depth_from_clip(input.depth_clip);
 }

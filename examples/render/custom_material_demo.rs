@@ -12,12 +12,11 @@ use sky_engine::app::{App, AppConfig, AppState, FrameContext};
 use sky_engine::ecs::World;
 use sky_engine::render::expert::{Mesh, MeshDescriptor, MeshIndexData};
 use sky_engine::render::{
-    CameraMarker, Color, MainCamera, Material, MaterialBindContext, MaterialHandle,
-    MaterialRenderState, Projection, RenderPipelineAsset, ShaderSource, Transform,
-    TransparentPhase, WgpuMeshRenderer,
+    CameraMarker, Color, MainCamera, Material, MaterialBinding, MaterialError, MaterialHandle,
+    MaterialInterface, MaterialPrepareContext, MaterialRenderState, MaterialShaderSet,
+    PreparedMaterial, Projection, RenderPipelineAsset, Transform, TransparentPhase,
+    WgpuMeshRenderer,
 };
-use std::borrow::Cow;
-use wgpu::util::DeviceExt;
 
 const HOLOGRAM_SHADER: &str = r#"
 struct ViewUniform {
@@ -97,31 +96,25 @@ impl HologramMaterial {
 }
 
 impl Material for HologramMaterial {
-    fn shader_source(&self) -> ShaderSource {
-        ShaderSource::Wgsl(Cow::Borrowed(HOLOGRAM_SHADER))
+    type Data = HologramMaterial;
+
+    fn interface() -> MaterialInterface {
+        MaterialInterface::builder("hologram")
+            .shader(MaterialShaderSet::wgsl(HOLOGRAM_SHADER))
+            .vertex(Mesh::vertex_layout_position_uv())
+            .binding(MaterialBinding::uniform(
+                0,
+                std::num::NonZeroU64::new(32).expect("hologram uniform has non-zero size"),
+            ))
+            .main_pass(sky_engine::render::MainPassMode::Transparent)
+            .render_state(MaterialRenderState::transparent())
+            .build()
     }
 
-    fn vertex_layout(&self) -> sky_engine::render::expert::VertexLayout {
-        Mesh::vertex_layout_position_uv()
-    }
-
-    fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("custom_material_demo_bgl"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        })
-    }
-
-    fn create_bind_group(&self, ctx: &MaterialBindContext<'_>) -> wgpu::BindGroup {
+    fn prepare(
+        data: &Self::Data,
+        ctx: &mut MaterialPrepareContext<'_>,
+    ) -> Result<PreparedMaterial, MaterialError> {
         #[repr(C)]
         #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
         struct HologramUniform {
@@ -130,27 +123,15 @@ impl Material for HologramMaterial {
         }
 
         let uniform = HologramUniform {
-            tint: self.tint.to_array(),
-            params: [self.intensity, self.stripe_scale, 0.0, 0.0],
+            tint: data.tint.to_array(),
+            params: [data.intensity, data.stripe_scale, 0.0, 0.0],
         };
-        let buffer = ctx
-            .device()
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("custom_material_demo_uniform"),
-                contents: bytemuck::bytes_of(&uniform),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            });
-        ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("custom_material_demo_bg"),
-            layout: ctx.layout(),
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: buffer.as_entire_binding(),
-            }],
-        })
+        ctx.bindings()
+            .uniform(0, "custom_material_demo_uniform", &uniform)
+            .build()
     }
 
-    fn render_state(&self) -> MaterialRenderState {
+    fn render_state(_data: &Self::Data) -> MaterialRenderState {
         MaterialRenderState::transparent()
     }
 }
@@ -226,9 +207,36 @@ impl AppState for CustomMaterialDemo {
                 })
                 .expect("custom_material_demo requires App::with_render_pipeline(...)");
 
-            spawn_hologram(ctx.world, mesh_handle, cyan, -1.4, 0.0, -0.8, 0.8, 0.0);
-            spawn_hologram(ctx.world, mesh_handle, gold, 1.5, 0.4, 0.6, -0.65, 1.7);
-            spawn_hologram(ctx.world, mesh_handle, cyan, 0.0, -1.2, 1.2, 0.55, 3.2);
+            spawn_hologram(
+                ctx.world,
+                mesh_handle,
+                cyan.into(),
+                -1.4,
+                0.0,
+                -0.8,
+                0.8,
+                0.0,
+            );
+            spawn_hologram(
+                ctx.world,
+                mesh_handle,
+                gold.into(),
+                1.5,
+                0.4,
+                0.6,
+                -0.65,
+                1.7,
+            );
+            spawn_hologram(
+                ctx.world,
+                mesh_handle,
+                cyan.into(),
+                0.0,
+                -1.2,
+                1.2,
+                0.55,
+                3.2,
+            );
             self.initialized = true;
         }
 

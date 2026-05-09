@@ -43,9 +43,10 @@ fn decode_view_normal(encoded: vec3<f32>) -> vec3<f32> {
     let normal = encoded * 2.0 - vec3<f32>(1.0);
     let len_sq = dot(normal, normal);
     if (len_sq <= 0.000001) {
-        return vec3<f32>(0.0, 0.0, 1.0);
+        return vec3<f32>(0.0, 0.0, -1.0);
     }
-    return normal * inverseSqrt(len_sq);
+    let unit = normal * inverseSqrt(len_sq);
+    return vec3<f32>(unit.x, unit.y, -unit.z);
 }
 
 fn reconstruct_position_from_depth(pixel: vec2<i32>, dims: vec2<u32>, depth: f32) -> vec3<f32> {

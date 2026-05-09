@@ -6,7 +6,8 @@
 - Backend-specific state must remain inside `src/render/backend/`.
 
 ## Kajiya Boundary
-- Kajiya types may only appear in `src/render/backend/kajiya*.rs` and vendored Kajiya code.
+- SkyEngine's Kajiya adapter lives in `src/render/backend/kajiya/`; vendored upstream code stays in `crates/vendor/kajiya/`.
+- Kajiya types may only appear in `src/render/backend/kajiya/` and vendored Kajiya code.
 - User code, examples, scenes, and public docs use SkyEngine components and assets.
 - Public entry remains `RenderPipelineAsset::kajiya_3d()`; do not expose `kajiya::...`.
 

@@ -6,6 +6,7 @@ use crate::asset::{AssetId, AssetServer, Handle, TextureAsset};
 use crate::gpu::GpuContext;
 use crate::render::assets::{MeshAsset, StandardMaterialAsset};
 use crate::render::gpu::Texture;
+use crate::render::resources::assets::SharedRenderAssetCache;
 use crate::render::resources::material::{MaterialHandle, StandardMaterial};
 use crate::render::resources::mesh::MeshHandle;
 use crate::render::runtime::RenderComposer;
@@ -14,7 +15,6 @@ use crate::render::runtime::RenderComposer;
 pub(crate) struct WgpuRenderAssetCache {
     meshes: FxHashMap<AssetId, CachedWgpuMesh>,
     standard_materials: FxHashMap<AssetId, CachedWgpuStandardMaterial>,
-    textures: FxHashMap<AssetId, CachedWgpuTexture>,
 }
 
 struct CachedWgpuMesh {
@@ -24,12 +24,15 @@ struct CachedWgpuMesh {
 
 struct CachedWgpuStandardMaterial {
     source: Arc<StandardMaterialAsset>,
+    texture_keys: StandardMaterialTextureKeys,
     handle: MaterialHandle,
 }
 
-struct CachedWgpuTexture {
-    source: Arc<TextureAsset>,
-    texture: Texture,
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct StandardMaterialTextureKeys {
+    albedo: Option<usize>,
+    normal: Option<usize>,
+    emissive: Option<usize>,
 }
 
 impl WgpuRenderAssetCache {
@@ -77,12 +80,25 @@ impl WgpuRenderAssetCache {
         gpu: &GpuContext,
         composer: &mut RenderComposer,
         assets: &AssetServer,
+        render_assets: &SharedRenderAssetCache,
         handle: Handle<StandardMaterialAsset>,
     ) -> Option<MaterialHandle> {
         let source = assets.try_get(&handle)?;
         composer.register_material::<StandardMaterial>(gpu);
+        let albedo_texture = source
+            .albedo_texture
+            .and_then(|texture| sync_texture(gpu, assets, render_assets, texture));
+        let normal_texture = source
+            .normal_texture
+            .and_then(|texture| sync_texture(gpu, assets, render_assets, texture));
+        let emissive_texture = source
+            .emissive_texture
+            .and_then(|texture| sync_texture(gpu, assets, render_assets, texture));
+        let texture_keys =
+            StandardMaterialTextureKeys::new(&albedo_texture, &normal_texture, &emissive_texture);
+
         if let Some(cached) = self.standard_materials.get(&handle.id()) {
-            if Arc::ptr_eq(&cached.source, &source) {
+            if Arc::ptr_eq(&cached.source, &source) && cached.texture_keys == texture_keys {
                 return Some(cached.handle);
             }
         }
@@ -95,67 +111,53 @@ impl WgpuRenderAssetCache {
 
         let material = StandardMaterial {
             albedo: source.albedo,
-            albedo_texture: source
-                .albedo_texture
-                .and_then(|texture| self.sync_texture(gpu, assets, texture)),
+            albedo_texture,
             metallic: source.metallic,
             roughness: source.roughness,
-            normal_texture: source
-                .normal_texture
-                .and_then(|texture| self.sync_texture(gpu, assets, texture)),
+            normal_texture,
             emissive: source.emissive,
-            emissive_texture: source
-                .emissive_texture
-                .and_then(|texture| self.sync_texture(gpu, assets, texture)),
+            emissive_texture,
             alpha_mode: source.alpha_mode,
             alpha_cutoff: source.alpha_cutoff,
             receive_shadows: source.receive_shadows,
         };
         let material_handle = composer
             .materials_mut::<StandardMaterial>()
-            .insert(material);
+            .insert(material)
+            .erased();
         self.standard_materials.insert(
             handle.id(),
             CachedWgpuStandardMaterial {
                 source,
+                texture_keys,
                 handle: material_handle,
             },
         );
         Some(material_handle)
     }
+}
 
-    fn sync_texture(
-        &mut self,
-        gpu: &GpuContext,
-        assets: &AssetServer,
-        handle: Handle<TextureAsset>,
-    ) -> Option<Texture> {
-        let source = assets.try_get(&handle)?;
-        if let Some(cached) = self.textures.get(&handle.id()) {
-            if Arc::ptr_eq(&cached.source, &source) {
-                return Some(cached.texture.clone());
-            }
+impl StandardMaterialTextureKeys {
+    fn new(albedo: &Option<Texture>, normal: &Option<Texture>, emissive: &Option<Texture>) -> Self {
+        Self {
+            albedo: texture_key(albedo),
+            normal: texture_key(normal),
+            emissive: texture_key(emissive),
         }
-
-        let format = match source.color_space() {
-            crate::asset::TextureColorSpace::Linear => wgpu::TextureFormat::Rgba8Unorm,
-            crate::asset::TextureColorSpace::Srgb => wgpu::TextureFormat::Rgba8UnormSrgb,
-        };
-        let texture = Texture::from_rgba8_with_format(
-            gpu,
-            source.width(),
-            source.height(),
-            source.pixels(),
-            format,
-            "asset_standard_material_texture",
-        );
-        self.textures.insert(
-            handle.id(),
-            CachedWgpuTexture {
-                source,
-                texture: texture.clone(),
-            },
-        );
-        Some(texture)
     }
+}
+
+fn texture_key(texture: &Option<Texture>) -> Option<usize> {
+    texture
+        .as_ref()
+        .map(|texture| std::ptr::from_ref(texture.texture()) as usize)
+}
+
+fn sync_texture(
+    gpu: &GpuContext,
+    assets: &AssetServer,
+    render_assets: &SharedRenderAssetCache,
+    handle: Handle<TextureAsset>,
+) -> Option<crate::render::Texture> {
+    render_assets.borrow_mut().texture(gpu, assets, handle)
 }

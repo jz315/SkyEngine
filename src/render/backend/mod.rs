@@ -7,16 +7,6 @@ mod wgpu_assets;
 
 #[cfg(feature = "kajiya-renderer")]
 mod kajiya;
-#[cfg(feature = "kajiya-renderer")]
-mod kajiya_assets;
-#[cfg(feature = "kajiya-renderer")]
-mod kajiya_cache;
-#[cfg(feature = "kajiya-renderer")]
-mod kajiya_config;
-#[cfg(feature = "kajiya-renderer")]
-mod kajiya_error;
-#[cfg(feature = "kajiya-renderer")]
-mod kajiya_native;
 #[cfg(feature = "renderling-renderer")]
 mod renderling;
 
@@ -95,10 +85,10 @@ mod tests {
         MeshAsset, MeshAssetDescriptor, MeshVertexLayout, StandardMaterialAsset,
     };
     use crate::render::component::{
-        Camera, DirectionalLight, GlobalIlluminationMode, MeshRenderer, PointLight, RenderSettings,
-        SpotLight, Transform,
+        Camera, DirectionalLight, MeshRenderer, PointLight, RenderSettings, SpotLight, Transform,
     };
     use crate::render::pipeline::RenderPipelineAsset;
+    use crate::render::resources::assets::SharedRenderAssetCache;
     use crate::render::resources::material::StandardMaterial;
     use crate::render::runtime::RenderComposer;
 
@@ -164,6 +154,7 @@ mod tests {
         let mesh = assets.insert_runtime(triangle_mesh("backend_triangle"));
         let texture = assets.insert_runtime(TextureAsset::white_pixel());
         let material = assets.insert_runtime(StandardMaterialAsset::new().albedo_texture(texture));
+        let render_assets = SharedRenderAssetCache::default();
 
         let mut cache = super::wgpu_assets::WgpuRenderAssetCache::default();
         let first = cache
@@ -176,16 +167,37 @@ mod tests {
         assert_eq!(first, second);
         assert!(composer.mesh(first).is_some());
 
-        let material_first = cache
-            .sync_standard_material(&gpu, &mut composer, &assets, material)
-            .expect("material should upload");
+        let material_first =
+            cache.sync_standard_material(&gpu, &mut composer, &assets, &render_assets, material);
+        assert!(
+            material_first.is_some(),
+            "material shell should sync even when texture waits for the GPU queue"
+        );
+        assert_eq!(
+            render_assets
+                .borrow_mut()
+                .texture_readiness(Some(&assets), texture),
+            crate::render::TextureReadiness::GpuQueued
+        );
+        render_assets.borrow_mut().prepare_queued_textures(&gpu);
+        assert_eq!(
+            render_assets
+                .borrow_mut()
+                .texture_readiness(Some(&assets), texture),
+            crate::render::TextureReadiness::GpuReady
+        );
+        assets
+            .replace_runtime(
+                material,
+                StandardMaterialAsset::new().albedo_texture(texture),
+            )
+            .expect("runtime material replace should work");
         let material_second = cache
-            .sync_standard_material(&gpu, &mut composer, &assets, material)
+            .sync_standard_material(&gpu, &mut composer, &assets, &render_assets, material)
             .expect("material should stay resident");
-        assert_eq!(material_first, material_second);
         assert!(composer
             .materials::<StandardMaterial>()
-            .get(material_first)
+            .get(material_second)
             .is_some());
     }
 
@@ -222,11 +234,9 @@ mod tests {
             Projection::perspective(60.0f32.to_radians(), 0.1, 100.0),
         ));
         world.insert_resource(RenderSettings {
-            global_illumination: crate::render::GlobalIlluminationSettings {
-                enabled: true,
-                mode: GlobalIlluminationMode::Ssgi,
-                ..Default::default()
-            },
+            global_illumination: crate::render::gi::providers::ssgi::global_illumination(
+                crate::render::gi::providers::ssgi::SsgiSettings::default(),
+            ),
             ..Default::default()
         });
 
@@ -243,7 +253,11 @@ mod tests {
                 cameras: 1,
             }
         );
-        assert!(snapshot.render_settings().global_illumination.uses_ssgi());
+        assert!(matches!(
+            &snapshot.render_settings().global_illumination,
+            crate::render::GlobalIllumination::Provider(config)
+                if config.id == crate::render::gi::providers::ssgi::SSGI_PROVIDER_ID
+        ));
         assert!(
             (snapshot
                 .directional_light(directional_light)

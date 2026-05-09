@@ -7,13 +7,15 @@ use crate::render::component::{
 };
 use crate::render::execution::{PreparedFrame, PreparedView};
 use crate::render::extract::ExtractContext;
-use crate::render::gi::DdgiRuntime;
+use crate::render::gi::{first_lit_view, GiMaterial, GiRenderable, GiSceneInput};
 use crate::render::lighting::shadow::{
     append_directional_shadow_views, sync_shadow_views, ShadowDebugResources,
 };
 use crate::render::lighting::Light2D;
 use crate::render::phase::{MeshDrawData, OpaquePhase, PhaseItem, TransparentPhase};
-use crate::render::resources::material::SpriteMaterial;
+use crate::render::resources::assets::SharedRenderAssetCache;
+use crate::render::resources::material::{AlphaMode, SpriteMaterial, StandardMaterial};
+use crate::render::resources::mesh::Mesh;
 use crate::render::view::{fallback_scene_view, RenderStats, SceneView};
 use crate::render::{GpuLight, LightTable, ModelMatrixTable};
 use rustc_hash::FxHashMap;
@@ -61,10 +63,11 @@ impl PreparedFrameBuilder {
 
 impl RenderComposer {
     pub fn render_world(&mut self, gpu: &mut GpuContext, world: &World) {
-        self.ensure_registered_materials(gpu);
+        self.initialize_for_gpu(gpu);
         self.ensure_builtin_meshes(gpu);
         self.ensure_phase_runtime(gpu);
         self.ensure_shadow_runtime(gpu);
+        self.ensure_gi_runtime(gpu);
         {
             let pipeline_cache = self.material_pipeline_cache_mut();
             pipeline_cache.new_frame();
@@ -74,10 +77,13 @@ impl RenderComposer {
         self.runtime.history.begin_frame(gpu);
         self.runtime.frame_settings = world
             .get_resource::<RenderSettings>()
-            .copied()
+            .cloned()
             .unwrap_or_default();
-        self.runtime.render_assets.begin_frame();
-        if let Some(sprite_materials) = self
+        let asset_cache = world.get_resource::<SharedRenderAssetCache>();
+        if let Some(asset_cache) = asset_cache {
+            asset_cache.borrow_mut().begin_frame();
+        }
+        if let Some(mut sprite_materials) = self
             .resources
             .material_registry
             .try_materials_mut::<SpriteMaterial>()
@@ -111,7 +117,11 @@ impl RenderComposer {
         let asset_server = world.get_resource::<AssetServer>().cloned();
         if let Some(asset_server) = asset_server.as_ref() {
             for event in asset_server.events_since(&mut self.runtime.asset_event_cursor) {
-                self.runtime.render_assets.handle_asset_event(event);
+                if let Some(asset_cache) = asset_cache {
+                    asset_cache
+                        .borrow_mut()
+                        .handle_asset_event(event, Some(asset_server));
+                }
             }
         }
 
@@ -129,7 +139,7 @@ impl RenderComposer {
                         &mut ExtractContext {
                             gpu,
                             asset_server: asset_server.as_ref(),
-                            render_assets: &mut self.runtime.render_assets,
+                            render_assets: asset_cache,
                             material_registry: &mut self.resources.material_registry,
                             mesh_registry: &self.resources.mesh_registry,
                             opaque_phase: &mut opaque_phase,
@@ -147,6 +157,14 @@ impl RenderComposer {
             opaque_phases.push(opaque_phase);
             transparent_phases.push(transparent_phase);
         }
+
+        if let Some(asset_cache) = asset_cache {
+            asset_cache.borrow_mut().prepare_queued_textures(gpu);
+        }
+        self.resources
+            .material_registry
+            .prepare_dirty(gpu, self.runtime.fallback_texture.as_ref())
+            .expect("material preparation should succeed before draw");
 
         let mut entity_to_model_slot = FxHashMap::default();
         let mut model_matrices = vec![IDENTITY_MODEL_MATRIX];
@@ -188,30 +206,36 @@ impl RenderComposer {
             gpu_scene.table_mut::<LightTable>().set_all(gpu, &lights);
             gpu_scene.upload_all(gpu.queue());
         }
+        let gi_renderables = collect_gi_renderables(
+            &opaque_phases,
+            &transparent_phases,
+            &self.resources.draw_functions,
+            &model_matrices,
+            &self.resources.material_registry,
+            &self.resources.mesh_registry,
+        );
+        let (primary_view_index, primary_view) =
+            first_lit_view(&views).map_or((None, None), |(index, view)| (Some(index), Some(view)));
         {
-            let ddgi = self
-                .runtime
-                .ddgi
-                .get_or_insert_with(|| DdgiRuntime::new(gpu));
-            ddgi.prepare(
-                gpu,
-                self.runtime.frame_settings.global_illumination,
-                &views,
-                &opaque_phases,
-                &self.resources.draw_functions,
-                &model_matrices,
-                &lights,
-                &self.resources.material_registry,
-                &self.resources.mesh_registry,
-                self.runtime.frame_settings.ambient_color,
-            );
+            let gi_scene = GiSceneInput {
+                primary_view_index,
+                primary_view,
+                views: &views,
+                lights: &lights,
+                ambient_color: self.runtime.frame_settings.ambient_color,
+                frame_index: 0,
+                renderables: &gi_renderables,
+            };
+            self.runtime
+                .gi
+                .as_mut()
+                .expect("GI runtime should initialize before frame build")
+                .prepare(
+                    gpu,
+                    &self.runtime.frame_settings.global_illumination,
+                    gi_scene,
+                );
         }
-        let ddgi_resources = self
-            .runtime
-            .ddgi
-            .as_ref()
-            .expect("DDGI runtime should be initialized before shadow bindings")
-            .scene_resources();
         sync_shadow_views(
             &mut self.shadows.views,
             gpu,
@@ -237,7 +261,6 @@ impl RenderComposer {
                 .as_ref()
                 .expect("phase runtime should initialize a GpuScene")
                 .table::<LightTable>(),
-            ddgi_resources,
             self.runtime.frame_settings.debug_view,
         );
         let shadow_debug_resources = self
@@ -254,10 +277,11 @@ impl RenderComposer {
         );
 
         let mut pipeline = self.build_runtime_pipeline(gpu);
-        let render_asset_stats = self
-            .runtime
-            .render_assets
-            .finish_frame(world.get_resource::<Diagnostics>());
+        let render_asset_stats = asset_cache.map_or(Default::default(), |asset_cache| {
+            asset_cache
+                .borrow_mut()
+                .finish_frame(world.get_resource::<Diagnostics>())
+        });
         let execution = {
             let builder = PreparedFrameBuilder::new(gpu);
             let gpu_scene = self
@@ -273,9 +297,9 @@ impl RenderComposer {
             let _ = frame.insert_payload(&previous_model_matrices);
             let _ = frame.insert_payload(
                 self.runtime
-                    .ddgi
+                    .gi
                     .as_ref()
-                    .expect("DDGI runtime should be initialized before frame build"),
+                    .expect("GI runtime should be initialized before frame build"),
             );
             let _ = frame.insert_payload(
                 self.shadows
@@ -345,12 +369,17 @@ impl RenderComposer {
             passes: execution.0.passes,
             resident_render_assets: render_asset_stats.resident_assets,
             uploaded_render_assets: render_asset_stats.uploaded_assets,
+            uploaded_render_asset_bytes: render_asset_stats.uploaded_bytes,
+            queued_render_assets: render_asset_stats.queued_assets,
+            visible_queued_render_assets: render_asset_stats.visible_queued_assets,
             loading_render_assets: render_asset_stats.loading_assets,
+            fallback_render_assets: render_asset_stats.fallback_assets,
             missing_render_assets: render_asset_stats.missing_assets,
             failed_render_assets: render_asset_stats.failed_assets,
             timings: RenderTimingStats {
                 frame_ms: elapsed_ms(frame_start),
                 execute_ms: execution.1,
+                upload_ms: render_asset_stats.upload_ms,
                 ..Default::default()
             },
             ..Default::default()
@@ -497,6 +526,132 @@ fn count_shadow_batches(items: &[PhaseItem]) -> usize {
         cursor = batch_end;
     }
     draws
+}
+
+fn collect_gi_renderables<'a>(
+    opaque_phases: &[OpaquePhase],
+    transparent_phases: &[TransparentPhase],
+    draw_functions: &crate::render::phase::DrawFunctionRegistry,
+    model_matrices: &[[f32; 16]],
+    material_registry: &'a crate::render::resources::material::MaterialRegistry,
+    mesh_registry: &'a crate::render::resources::mesh::MeshRegistry,
+) -> Vec<GiRenderable<'a>> {
+    let mut renderables = Vec::new();
+    collect_standard_gi_renderables(
+        opaque_phases,
+        true,
+        draw_functions,
+        model_matrices,
+        material_registry,
+        mesh_registry,
+        &mut renderables,
+    );
+    collect_standard_gi_renderables(
+        transparent_phases,
+        false,
+        draw_functions,
+        model_matrices,
+        material_registry,
+        mesh_registry,
+        &mut renderables,
+    );
+    renderables
+}
+
+trait PhaseItems {
+    fn phase_items(&self) -> &[PhaseItem];
+}
+
+impl PhaseItems for OpaquePhase {
+    fn phase_items(&self) -> &[PhaseItem] {
+        self.items()
+    }
+}
+
+impl PhaseItems for TransparentPhase {
+    fn phase_items(&self) -> &[PhaseItem] {
+        self.items()
+    }
+}
+
+fn collect_standard_gi_renderables<'a, P>(
+    phases: &[P],
+    opaque: bool,
+    draw_functions: &crate::render::phase::DrawFunctionRegistry,
+    model_matrices: &[[f32; 16]],
+    material_registry: &'a crate::render::resources::material::MaterialRegistry,
+    mesh_registry: &'a crate::render::resources::mesh::MeshRegistry,
+    out: &mut Vec<GiRenderable<'a>>,
+) where
+    P: PhaseItems,
+{
+    let Some(materials) = material_registry.try_materials::<StandardMaterial>() else {
+        return;
+    };
+    let standard_type = std::any::TypeId::of::<StandardMaterial>();
+    for phase in phases {
+        for item in phase.phase_items() {
+            if draw_functions.material_type_id(item.draw_function_id) != Some(standard_type) {
+                continue;
+            }
+            let draw = *item.data::<MeshDrawData>();
+            let Some(mesh) = mesh_registry.get(draw.mesh_handle()) else {
+                continue;
+            };
+            let Some(ray_mesh) = mesh.ray_mesh() else {
+                continue;
+            };
+            let Some(triangle_range) = ray_triangle_range_for_sub_mesh(mesh, draw.sub_mesh_index())
+            else {
+                continue;
+            };
+            let Some(material) = materials.get(draw.material_handle::<StandardMaterial>()) else {
+                continue;
+            };
+            let is_opaque =
+                opaque && !matches!(material.alpha_mode, AlphaMode::Blend | AlphaMode::Additive);
+            out.push(GiRenderable {
+                model: crate::math::Mat4::from_cols_array(
+                    *model_matrices
+                        .get(draw.model_slot() as usize)
+                        .unwrap_or(&IDENTITY_MODEL_MATRIX),
+                ),
+                layer_mask: u32::MAX,
+                opaque: is_opaque,
+                ray_triangles: ray_mesh.triangles(),
+                triangle_range,
+                material: GiMaterial {
+                    albedo: material.albedo,
+                    emissive: material.emissive,
+                    metallic: material.metallic,
+                },
+            });
+        }
+    }
+}
+
+fn ray_triangle_range_for_sub_mesh(
+    mesh: &Mesh,
+    sub_mesh_index: u32,
+) -> Option<std::ops::Range<usize>> {
+    let ray_mesh = mesh.ray_mesh()?;
+    let sub_mesh = mesh.sub_meshes().get(sub_mesh_index as usize)?;
+    if !mesh.has_indices() {
+        return Some(0..ray_mesh.triangles().len());
+    }
+    let index_offset = if sub_mesh.index_count == 0 {
+        0
+    } else {
+        sub_mesh.index_offset
+    };
+    let index_count = if sub_mesh.index_count == 0 {
+        mesh.index_count()
+    } else {
+        sub_mesh.index_count
+    };
+    let start = (index_offset / 3) as usize;
+    let end = ((index_offset + index_count) / 3) as usize;
+    Some(start.min(ray_mesh.triangles().len())..end.min(ray_mesh.triangles().len()))
 }
 
 fn collect_gpu_lights(

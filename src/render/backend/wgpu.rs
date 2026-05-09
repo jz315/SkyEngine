@@ -7,6 +7,7 @@ use crate::ecs::World;
 use crate::gpu::GpuContext;
 use crate::render::assets::{MeshAsset, StandardMaterialAsset};
 use crate::render::pipeline::{RenderBackendKind, RenderPipelineAsset};
+use crate::render::resources::assets::SharedRenderAssetCache;
 use crate::render::resources::material::MaterialHandle;
 use crate::render::resources::mesh::MeshHandle;
 use crate::render::runtime::RenderComposer;
@@ -32,9 +33,13 @@ impl WgpuSceneRenderer {
             debug_assert_eq!(asset.backend_kind(), RenderBackendKind::Wgpu);
         }
         let gpu = GpuContext::try_new(window, vsync)?;
+        let mut composer = pipeline.map(RenderComposer::from_asset);
+        if let Some(composer) = composer.as_mut() {
+            composer.initialize_for_gpu(&gpu);
+        }
         Ok(Self {
             gpu,
-            composer: pipeline.map(RenderComposer::from_asset),
+            composer,
             asset_cache: WgpuRenderAssetCache::default(),
         })
     }
@@ -72,11 +77,12 @@ impl WgpuSceneRenderer {
     pub fn sync_standard_material_asset(
         &mut self,
         assets: &AssetServer,
+        render_assets: &SharedRenderAssetCache,
         handle: Handle<StandardMaterialAsset>,
     ) -> Option<MaterialHandle> {
         let composer = self.composer.as_mut()?;
         self.asset_cache
-            .sync_standard_material(&self.gpu, composer, assets, handle)
+            .sync_standard_material(&self.gpu, composer, assets, render_assets, handle)
     }
 }
 

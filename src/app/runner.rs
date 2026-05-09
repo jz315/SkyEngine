@@ -21,7 +21,7 @@
 //! ```
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
@@ -29,6 +29,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::app::config::{AppConfig, RedrawMode};
+use crate::asset::{AssetServer, Handle, TextureAsset};
 use crate::diagnostics::{
     write_diagnostic_events, DiagnosticConsole, DiagnosticCursor, Diagnostics,
 };
@@ -38,7 +39,7 @@ use crate::input::raw::{Input, KeyCode, MouseButton};
 use crate::render::backend::{create_scene_renderer, SceneRendererError};
 use crate::render::{
     RenderAssets, RenderBackendKind, RenderComposer, RenderPipelineAsset, RenderStats,
-    SceneRenderer,
+    SceneRenderer, SharedRenderAssetCache, TextureReadiness,
 };
 
 fn update_input_from_window_event(
@@ -301,10 +302,154 @@ pub struct FrameContext<'a> {
     egui: &'a mut Option<crate::app::egui_integration::EguiIntegration>,
 }
 
+/// Short-lived UI facade for backend-neutral UI operations.
+#[cfg(feature = "ui")]
+pub struct UiFrame<'ctx, 'frame> {
+    ctx: &'ctx mut FrameContext<'frame>,
+}
+
 impl<'a> FrameContext<'a> {
+    /// Manually advance the ECS schedule for this frame.
+    ///
+    /// This is useful when an app wants to run frame-local work before systems,
+    /// such as updating UI interaction state before domain input systems drain
+    /// semantic actions.
+    pub fn tick(&mut self) {
+        self.world.tick_with_delta(self.dt);
+    }
+
     /// Execute the installed render pipeline.
     pub fn render(&mut self) {
         self.renderer.render_world(self.world);
+    }
+
+    /// Return the current CPU/GPU readiness state for a texture handle.
+    ///
+    /// This is a non-blocking query. If the CPU asset is unloaded but known to
+    /// the asset server, the query may request CPU loading and report
+    /// [`TextureReadiness::CpuLoading`].
+    pub fn texture_readiness(&mut self, handle: Handle<TextureAsset>) -> TextureReadiness {
+        let asset_server = self.world.get_resource::<AssetServer>().cloned();
+        self.ensure_render_asset_cache();
+        self.world
+            .get_resource::<SharedRenderAssetCache>()
+            .expect("render asset cache should be installed")
+            .borrow_mut()
+            .texture_readiness(asset_server.as_ref(), handle)
+    }
+
+    /// Ensure a CPU-ready texture is queued for GPU upload, without waiting for it.
+    pub fn request_texture_gpu(&mut self, handle: Handle<TextureAsset>) -> TextureReadiness {
+        let Some(asset_server) = self.world.get_resource::<AssetServer>().cloned() else {
+            return TextureReadiness::MissingCpu;
+        };
+        self.ensure_render_asset_cache();
+        let cache = self
+            .world
+            .get_resource::<SharedRenderAssetCache>()
+            .expect("render asset cache should be installed");
+        let gpu = self.renderer.wgpu_mut().expect(
+            "FrameContext::request_texture_gpu is only available for the wgpu render backend",
+        );
+        cache
+            .borrow_mut()
+            .request_texture_gpu(gpu, &asset_server, handle)
+    }
+
+    /// Wait for the CPU-side texture asset to finish loading/decoding.
+    pub fn wait_texture_cpu(
+        &mut self,
+        handle: Handle<TextureAsset>,
+        timeout: Duration,
+    ) -> TextureReadiness {
+        let Some(asset_server) = self.world.get_resource::<AssetServer>().cloned() else {
+            return TextureReadiness::MissingCpu;
+        };
+        let deadline = Instant::now().checked_add(timeout);
+        loop {
+            if let Err(error) = asset_server.update() {
+                eprintln!(
+                    "[SkyEngine] Asset update failed while waiting for texture CPU data: {error}"
+                );
+            }
+            let readiness = self.cpu_texture_readiness(&asset_server, handle);
+            if !matches!(readiness, TextureReadiness::CpuLoading) || timeout.is_zero() {
+                return readiness;
+            }
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return readiness;
+            }
+            std::thread::yield_now();
+        }
+    }
+
+    /// Wait for a texture to become resident on the GPU.
+    ///
+    /// This advances the shared GPU texture queue on the current render thread.
+    /// Normal rendering never calls this; use it only for explicit blocking
+    /// transitions such as loading screens.
+    pub fn wait_texture_gpu(
+        &mut self,
+        handle: Handle<TextureAsset>,
+        timeout: Duration,
+    ) -> TextureReadiness {
+        let Some(asset_server) = self.world.get_resource::<AssetServer>().cloned() else {
+            return TextureReadiness::MissingCpu;
+        };
+        let deadline = Instant::now().checked_add(timeout);
+        loop {
+            if let Err(error) = asset_server.update() {
+                eprintln!(
+                    "[SkyEngine] Asset update failed while waiting for texture GPU data: {error}"
+                );
+            }
+            match self.cpu_texture_readiness(&asset_server, handle) {
+                TextureReadiness::CpuReady
+                | TextureReadiness::GpuQueued
+                | TextureReadiness::GpuReady => {}
+                readiness @ (TextureReadiness::MissingCpu | TextureReadiness::Failed) => {
+                    return readiness;
+                }
+                TextureReadiness::CpuLoading => {
+                    if timeout.is_zero()
+                        || deadline.is_some_and(|deadline| Instant::now() >= deadline)
+                    {
+                        return TextureReadiness::CpuLoading;
+                    }
+                    std::thread::yield_now();
+                    continue;
+                }
+            }
+
+            self.ensure_render_asset_cache();
+            let cache = self
+                .world
+                .get_resource::<SharedRenderAssetCache>()
+                .expect("render asset cache should be installed");
+            let gpu = self.renderer.wgpu_mut().expect(
+                "FrameContext::wait_texture_gpu is only available for the wgpu render backend",
+            );
+            let remaining = deadline
+                .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+                .unwrap_or(timeout);
+            let readiness =
+                cache
+                    .borrow_mut()
+                    .wait_texture_gpu(gpu, &asset_server, handle, remaining);
+            if matches!(
+                readiness,
+                TextureReadiness::GpuReady
+                    | TextureReadiness::MissingCpu
+                    | TextureReadiness::Failed
+            ) || timeout.is_zero()
+            {
+                return readiness;
+            }
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return readiness;
+            }
+            std::thread::yield_now();
+        }
     }
 
     /// Current surface size in physical pixels `[width, height]`.
@@ -394,12 +539,30 @@ impl<'a> FrameContext<'a> {
         Some(f(renderer, gpu))
     }
 
+    /// Backend-neutral UI facade.
+    ///
+    /// This is the preferred shape for new pluggable UI backend work.
+    /// Existing `update_ui` / `render_ui` calls remain available for the
+    /// retained ECS UI path.
+    #[cfg(feature = "ui")]
+    pub fn ui(&mut self) -> UiFrame<'_, 'a> {
+        UiFrame { ctx: self }
+    }
+
     /// Update native retained UI layout and interaction state.
     ///
     /// Requires `--features ui`.
     #[cfg(feature = "ui")]
     pub fn update_ui(&mut self) {
         crate::ui::update_ui(self.world, self.input, self.logical_surface_size());
+    }
+
+    /// Update all installed game UI backends.
+    ///
+    /// Requires `--features ui`.
+    #[cfg(feature = "ui")]
+    pub fn update_ui_backends(&mut self) {
+        crate::ui::update_ui_backends(self.world, self.input, self.logical_surface_size());
     }
 
     /// Render native retained UI on top of the current surface frame.
@@ -415,12 +578,45 @@ impl<'a> FrameContext<'a> {
         crate::ui::render_ui(self.world, gpu);
     }
 
+    /// Render all installed game UI backend overlays on top of the current surface frame.
+    ///
+    /// Call this after `ctx.render()` for the common scene + overlay order.
+    /// Requires `--features ui`.
+    #[cfg(feature = "ui")]
+    pub fn render_ui_overlays(&mut self) {
+        let gpu = self.renderer.wgpu_mut().expect(
+            "FrameContext::render_ui_overlays is only available for the wgpu render backend",
+        );
+        if let Err(error) = crate::ui::render_ui_overlays(self.world, gpu) {
+            eprintln!("[SkyEngine] UI overlay rendering failed: {error}");
+        }
+    }
+
     /// Access native UI state if it has been installed.
     ///
     /// Requires `--features ui`.
     #[cfg(feature = "ui")]
     pub fn ui_state(&self) -> Option<&crate::ui::UiState> {
         self.world.get_resource::<crate::ui::UiState>()
+    }
+
+    /// Returns true when any installed game UI backend wants pointer input.
+    ///
+    /// Requires `--features ui`.
+    #[cfg(feature = "ui")]
+    pub fn ui_wants_pointer(&self) -> bool {
+        crate::ui::ui_wants_pointer(self.world)
+            || self
+                .ui_state()
+                .is_some_and(crate::ui::UiState::wants_pointer)
+    }
+
+    /// Returns true when any installed game UI backend wants keyboard input.
+    ///
+    /// Requires `--features ui`.
+    #[cfg(feature = "ui")]
+    pub fn ui_wants_keyboard(&self) -> bool {
+        crate::ui::ui_wants_keyboard(self.world)
     }
 
     /// Request the application to exit after this frame.
@@ -460,6 +656,57 @@ impl<'a> FrameContext<'a> {
             .as_mut()
             .expect("FrameContext::egui is only available for the wgpu render backend")
             .run(self.window, ui_fn);
+    }
+
+    fn ensure_render_asset_cache(&mut self) {
+        if !self.world.contains_resource::<SharedRenderAssetCache>() {
+            self.world
+                .insert_resource(SharedRenderAssetCache::default());
+        }
+    }
+
+    fn cpu_texture_readiness(
+        &mut self,
+        asset_server: &AssetServer,
+        handle: Handle<TextureAsset>,
+    ) -> TextureReadiness {
+        self.ensure_render_asset_cache();
+        self.world
+            .get_resource::<SharedRenderAssetCache>()
+            .expect("render asset cache should be installed")
+            .borrow_mut()
+            .texture_readiness(Some(asset_server), handle)
+    }
+}
+
+#[cfg(feature = "ui")]
+impl<'ctx, 'frame> UiFrame<'ctx, 'frame> {
+    /// Update all installed game UI backends.
+    pub fn update(&mut self) {
+        self.ctx.update_ui_backends();
+    }
+
+    /// Render all installed game UI backend overlays.
+    pub fn render_overlays(&mut self) {
+        self.ctx.render_ui_overlays();
+    }
+
+    /// Returns true when any installed game UI backend wants pointer input.
+    pub fn wants_pointer(&self) -> bool {
+        self.ctx.ui_wants_pointer()
+    }
+
+    /// Returns true when any installed game UI backend wants keyboard input.
+    pub fn wants_keyboard(&self) -> bool {
+        self.ctx.ui_wants_keyboard()
+    }
+
+    /// Mutably access a concrete UI backend for the duration of a closure.
+    pub fn with_backend_mut<B, R>(&mut self, f: impl FnOnce(&mut B) -> R) -> Option<R>
+    where
+        B: crate::ui::UiBackend,
+    {
+        crate::ui::with_ui_backend_mut(self.ctx.world, f)
     }
 }
 
@@ -603,6 +850,11 @@ impl RunnerHandler {
             *resource = input;
         } else {
             world.insert_resource(input);
+        }
+        if let Some(interaction) = world.get_resource_mut::<crate::input::InteractionContext>() {
+            interaction.begin_frame();
+        } else {
+            world.insert_resource(crate::input::InteractionContext::default());
         }
     }
 
@@ -842,9 +1094,13 @@ impl ApplicationHandler for RunnerHandler {
             world.insert_resource(crate::diagnostics::Diagnostics::default());
         }
 
+        if !world.contains_resource::<SharedRenderAssetCache>() {
+            world.insert_resource(SharedRenderAssetCache::default());
+        }
+
         #[cfg(feature = "asset")]
         if !world.contains_resource::<crate::asset::AssetServer>() {
-            let config = crate::asset::AssetConfig::default();
+            let config = crate::asset::AssetConfig::default().with_background_loading(true);
             let asset_server = match crate::asset::AssetServer::new(config.clone()) {
                 Ok(server) => server,
                 Err(error) => {
@@ -861,7 +1117,7 @@ impl ApplicationHandler for RunnerHandler {
                 if let Some(server) = world.get_resource::<crate::asset::AssetServer>().cloned() {
                     server
                 } else {
-                    let config = crate::asset::AssetConfig::default();
+                    let config = crate::asset::AssetConfig::default().with_background_loading(true);
                     let server = match crate::asset::AssetServer::new(config.clone()) {
                         Ok(server) => server,
                         Err(error) => {
@@ -898,7 +1154,7 @@ impl ApplicationHandler for RunnerHandler {
                 if let Some(server) = world.get_resource::<crate::asset::AssetServer>().cloned() {
                     server
                 } else {
-                    let config = crate::asset::AssetConfig::default();
+                    let config = crate::asset::AssetConfig::default().with_background_loading(true);
                     let server = match crate::asset::AssetServer::new(config.clone()) {
                         Ok(server) => server,
                         Err(error) => {

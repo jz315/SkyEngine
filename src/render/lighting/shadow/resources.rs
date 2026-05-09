@@ -1,5 +1,5 @@
 use crate::render::gpu::RenderTarget;
-use crate::render::graph::ImportedTexture;
+use crate::render::graph::{ImportedTexture, TextureHandle};
 
 use super::{ShadowSceneBindingLayout, ShadowViewBinding};
 
@@ -80,6 +80,44 @@ impl SceneShadowResources {
     #[inline]
     pub const fn enabled(&self) -> bool {
         self.enabled
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct SceneShadowGraphResources {
+    directional_shadow_atlas: TextureHandle,
+    directional_transparent_shadow_atlas: TextureHandle,
+}
+
+impl SceneShadowGraphResources {
+    #[inline]
+    pub(crate) fn blackboard_key(binding_index: usize) -> String {
+        format!("directional_shadow_graph_resources_{binding_index}")
+    }
+
+    #[inline]
+    pub(crate) fn from_directional_shadow(
+        shadow: &ShadowViewBinding,
+        directional_shadow_atlas: TextureHandle,
+        directional_transparent_shadow_atlas: TextureHandle,
+    ) -> Option<Self> {
+        if !shadow.enabled() {
+            return None;
+        }
+        Some(Self {
+            directional_shadow_atlas,
+            directional_transparent_shadow_atlas,
+        })
+    }
+
+    #[inline]
+    pub(crate) fn directional_shadow_atlas(&self) -> TextureHandle {
+        self.directional_shadow_atlas
+    }
+
+    #[inline]
+    pub(crate) fn directional_transparent_shadow_atlas(&self) -> TextureHandle {
+        self.directional_transparent_shadow_atlas
     }
 }
 

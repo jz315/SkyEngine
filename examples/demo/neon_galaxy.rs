@@ -106,9 +106,8 @@ impl RenderState {
         vignette.smoothness = 0.50;
 
         let mut bloom = Bloom::new(gpu, sw, sh, hdr);
-        bloom.threshold = 0.85;
         bloom.intensity = 0.25;
-        bloom.radius = 0.70;
+        bloom.spread = 0.70;
 
         let mut tonemap = ToneMap::new(gpu, gpu.surface_format());
         tonemap.exposure = 1.15;
