@@ -334,7 +334,7 @@ fn shadow_debug_name(view: RenderDebugView) -> &'static str {
 
 fn initialize_scene(ctx: &mut FrameContext) {
     let assets = ctx
-        .with_renderer_mut(|renderer, gpu| {
+        .with_render_runtime_mut(|renderer, gpu| {
             let cube_mesh = renderer.insert_mesh(create_box_mesh(gpu, "three_d_demo_cube"));
             let plane_mesh = renderer.insert_mesh(create_ground_mesh(gpu, "three_d_demo_ground"));
 
@@ -347,94 +347,74 @@ fn initialize_scene(ctx: &mut FrameContext) {
             let block_normal_texture =
                 create_normal_texture(gpu, 256, "three_d_demo_block_normal", sample_block_height);
 
-            let floor = renderer
-                .materials_mut::<StandardMaterial>()
-                .insert(StandardMaterial {
-                    albedo: Color::rgb(0.46, 0.48, 0.52),
-                    albedo_texture: Some(ground_texture),
-                    normal_texture: Some(floor_normal_texture.clone()),
-                    roughness: 0.94,
-                    metallic: 0.0,
-                    ..Default::default()
-                });
-            let plaster = renderer
-                .materials_mut::<StandardMaterial>()
-                .insert(StandardMaterial {
-                    albedo_texture: Some(wall_texture.clone()),
-                    normal_texture: Some(wall_normal_texture.clone()),
-                    albedo: Color::rgb(0.67, 0.68, 0.70),
-                    roughness: 0.92,
-                    metallic: 0.0,
-                    ..Default::default()
-                });
-            let warm_wall = renderer
-                .materials_mut::<StandardMaterial>()
-                .insert(StandardMaterial {
-                    albedo_texture: Some(wall_texture.clone()),
-                    normal_texture: Some(wall_normal_texture.clone()),
-                    albedo: Color::rgb(0.56, 0.26, 0.20),
-                    roughness: 0.90,
-                    metallic: 0.0,
-                    ..Default::default()
-                });
-            let cool_wall = renderer
-                .materials_mut::<StandardMaterial>()
-                .insert(StandardMaterial {
-                    albedo_texture: Some(wall_texture.clone()),
-                    normal_texture: Some(wall_normal_texture.clone()),
-                    albedo: Color::rgb(0.18, 0.32, 0.38),
-                    roughness: 0.88,
-                    metallic: 0.0,
-                    ..Default::default()
-                });
-            let charcoal = renderer
-                .materials_mut::<StandardMaterial>()
-                .insert(StandardMaterial {
-                    albedo_texture: Some(wall_texture.clone()),
-                    normal_texture: Some(wall_normal_texture.clone()),
-                    albedo: Color::rgb(0.10, 0.11, 0.12),
-                    roughness: 0.94,
-                    metallic: 0.02,
-                    ..Default::default()
-                });
-            let stone = renderer
-                .materials_mut::<StandardMaterial>()
-                .insert(StandardMaterial {
-                    albedo_texture: Some(wall_texture.clone()),
-                    normal_texture: Some(block_normal_texture),
-                    albedo: Color::rgb(0.49, 0.53, 0.58),
-                    roughness: 0.84,
-                    metallic: 0.02,
-                    ..Default::default()
-                });
-            let bronze = renderer
-                .materials_mut::<StandardMaterial>()
-                .insert(StandardMaterial {
-                    albedo: Color::rgb(0.68, 0.56, 0.34),
-                    roughness: 0.28,
-                    metallic: 0.66,
-                    ..Default::default()
-                });
-            let teal_emissive =
-                renderer
-                    .materials_mut::<StandardMaterial>()
-                    .insert(StandardMaterial {
-                        albedo: Color::rgb(0.03, 0.08, 0.10),
-                        emissive: Color::rgb(0.16, 0.82, 1.08),
-                        roughness: 0.18,
-                        metallic: 0.04,
-                        ..Default::default()
-                    });
-            let amber_emissive =
-                renderer
-                    .materials_mut::<StandardMaterial>()
-                    .insert(StandardMaterial {
-                        albedo: Color::rgb(0.10, 0.07, 0.03),
-                        emissive: Color::rgb(1.25, 0.72, 0.24),
-                        roughness: 0.18,
-                        metallic: 0.04,
-                        ..Default::default()
-                    });
+            let floor = renderer.insert_material::<StandardMaterial>(StandardMaterial {
+                albedo: Color::rgb(0.46, 0.48, 0.52),
+                albedo_texture: Some(ground_texture),
+                normal_texture: Some(floor_normal_texture.clone()),
+                roughness: 0.94,
+                metallic: 0.0,
+                ..Default::default()
+            });
+            let plaster = renderer.insert_material::<StandardMaterial>(StandardMaterial {
+                albedo_texture: Some(wall_texture.clone()),
+                normal_texture: Some(wall_normal_texture.clone()),
+                albedo: Color::rgb(0.67, 0.68, 0.70),
+                roughness: 0.92,
+                metallic: 0.0,
+                ..Default::default()
+            });
+            let warm_wall = renderer.insert_material::<StandardMaterial>(StandardMaterial {
+                albedo_texture: Some(wall_texture.clone()),
+                normal_texture: Some(wall_normal_texture.clone()),
+                albedo: Color::rgb(0.56, 0.26, 0.20),
+                roughness: 0.90,
+                metallic: 0.0,
+                ..Default::default()
+            });
+            let cool_wall = renderer.insert_material::<StandardMaterial>(StandardMaterial {
+                albedo_texture: Some(wall_texture.clone()),
+                normal_texture: Some(wall_normal_texture.clone()),
+                albedo: Color::rgb(0.18, 0.32, 0.38),
+                roughness: 0.88,
+                metallic: 0.0,
+                ..Default::default()
+            });
+            let charcoal = renderer.insert_material::<StandardMaterial>(StandardMaterial {
+                albedo_texture: Some(wall_texture.clone()),
+                normal_texture: Some(wall_normal_texture.clone()),
+                albedo: Color::rgb(0.10, 0.11, 0.12),
+                roughness: 0.94,
+                metallic: 0.02,
+                ..Default::default()
+            });
+            let stone = renderer.insert_material::<StandardMaterial>(StandardMaterial {
+                albedo_texture: Some(wall_texture.clone()),
+                normal_texture: Some(block_normal_texture),
+                albedo: Color::rgb(0.49, 0.53, 0.58),
+                roughness: 0.84,
+                metallic: 0.02,
+                ..Default::default()
+            });
+            let bronze = renderer.insert_material::<StandardMaterial>(StandardMaterial {
+                albedo: Color::rgb(0.68, 0.56, 0.34),
+                roughness: 0.28,
+                metallic: 0.66,
+                ..Default::default()
+            });
+            let teal_emissive = renderer.insert_material::<StandardMaterial>(StandardMaterial {
+                albedo: Color::rgb(0.03, 0.08, 0.10),
+                emissive: Color::rgb(0.16, 0.82, 1.08),
+                roughness: 0.18,
+                metallic: 0.04,
+                ..Default::default()
+            });
+            let amber_emissive = renderer.insert_material::<StandardMaterial>(StandardMaterial {
+                albedo: Color::rgb(0.10, 0.07, 0.03),
+                emissive: Color::rgb(1.25, 0.72, 0.24),
+                roughness: 0.18,
+                metallic: 0.04,
+                ..Default::default()
+            });
 
             SceneAssets {
                 cube_mesh,
@@ -632,8 +612,8 @@ fn initialize_scene(ctx: &mut FrameContext) {
         .shadow_bias(0.0008)
         .shadow_depth_bias(3)
         .shadow_slope_bias(1.8)
-        .shadow_normal_bias(0.007)
-        .shadow_filter_radius(0.09)
+        .shadow_normal_bias(0.002)
+        .shadow_filter_radius(0.055)
         .pcss_shadows(),));
 }
 

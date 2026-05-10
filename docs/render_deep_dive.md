@@ -14,10 +14,10 @@
 
 - `src/render/mod.rs`
 - `src/render/AGENTS.md`
-- `src/render/runtime/composer.rs`
-- `src/render/runtime/frame_builder.rs`
+- `src/render/runtime/runtime.rs`
+- `src/render/runtime/frame_coordinator.rs`
 - `src/render/runtime/pipeline_runtime.rs`
-- `src/render/runtime/nodes.rs`
+- `src/render/execution/step_nodes/`
 - `src/render/execution/`
 - `src/render/graph/`
 - `src/render/pipeline/`
@@ -61,7 +61,7 @@
 
 | 角色 | 负责什么 | 在 SkyEngine 里常见对象 |
 |------|----------|-------------------------|
-| CPU | ECS 查询、排序、剔除、准备 draw item、上传 buffer、组织 pass | `World`、`RenderComposer`、`Extractor`、`FramePipeline`、`RenderGraph` |
+| CPU | ECS 查询、排序、剔除、准备 draw item、上传 buffer、组织 pass | `World`、`RenderRuntime`、`Extractor`、`FramePipeline`、`RenderGraph` |
 | GPU | 跑 shader、画三角形、写 texture、做 compute、采样贴图 | `wgpu::Device`、`wgpu::Queue`、`Texture`、`RenderPass`、`ComputePass` |
 
 CPU 对 GPU 说的不是“帮我画一个游戏场景”，而是一串更底层的命令：
@@ -397,7 +397,7 @@ SkyEngine 的 render 可以理解为：
 
 ```text
 World 里的 ECS 渲染组件
-  -> RenderComposer 每帧读取 World
+  -> RenderRuntime 每帧读取 World
   -> 收集 SceneView
   -> Extractor 把实体变成 PhaseItem
   -> Runtime Feature 准备自有缓存和 payload
@@ -414,12 +414,12 @@ World 里的 ECS 渲染组件
 | 对象 | 角色 | 所在位置 |
 |------|------|----------|
 | `World` | ECS 数据源，保存相机、Transform、Sprite、Mesh、Light、RenderSettings 等 | `src/ecs/` |
-| `RenderPipelineAsset` | 声明一套渲染管线有什么 feature、phase、pass、post-fx、material、draw function | `src/render/pipeline/asset.rs` |
-| `RenderComposer` | 高层 wgpu render 运行时，负责把 `World` 准备成 `PreparedFrame` 并执行 | `src/render/runtime/composer.rs` |
+| `RenderPipelineAsset` | 声明一套渲染管线有什么 feature、phase、pass、post-fx、material、draw function | `src/render/pipeline/pipeline_asset.rs` |
+| `RenderRuntime` | 高层 wgpu render 运行时，负责把 `World` 准备成 `PreparedFrame` 并执行 | `src/render/runtime/runtime.rs` |
 | `RenderFeature` | 一个 renderer family 的注册和每帧 hook，例如 Sprite、Live2D、Tilemap | `src/render/pipeline/features.rs` |
 | `Extractor` | 从 ECS 查询渲染组件，把可见对象写进 `OpaquePhase` 或 `TransparentPhase` | `src/render/extract/` |
 | `PhaseItem` | phase 中的一个可排序、可批处理 draw item | `src/render/phase/item.rs` |
-| `DrawFunction` | 真正把一批 `PhaseItem` 画进 render pass 的执行器 | `src/render/phase/draw.rs` |
+| `DrawFunction` | 真正把一批 `PhaseItem` 画进 render pass 的执行器 | `src/render/phase/mesh_draw.rs / sprite_draw.rs` |
 | `GpuScene` | 共享 GPU 表和 view uniform，例如 model matrix table、light table | `src/render/gpu/scene.rs` |
 | `PreparedFrame` / `PreparedView` | render 组合边界，frame/view 级 typed payload 容器 | `src/render/execution/payload.rs` |
 | `FramePipeline` | 每帧执行引擎，组织 setup/view/finalize node | `src/render/execution/frame_pipeline.rs` |
@@ -432,7 +432,7 @@ World 里的 ECS 渲染组件
 1. World:
    游戏和编辑层看得懂的数据，比如 Transform、Camera、SpriteRenderer、Light。
 
-2. RenderComposer:
+2. RenderRuntime:
    CPU 侧翻译官，把 World 里的实体变成“哪些 view 要画哪些 item”。
 
 3. FramePipeline + RenderGraph:
@@ -478,7 +478,7 @@ World 里的 ECS 渲染组件
 
 ```text
 RenderPipelineAsset
-RenderComposer
+RenderRuntime
 PreparedFrame
 PreparedView
 FramePipeline
@@ -526,18 +526,18 @@ gpu
 
 render public facade
   src/render/mod.rs
-  对外 re-export RenderComposer、RenderPipelineAsset、SpriteFeature、Camera 等
+  对外 re-export RenderRuntime、RenderPipelineAsset、SpriteFeature、Camera 等
 
 render backend
   WgpuSceneRenderer / KajiyaSceneRenderer / RenderlingSceneRenderer
-  App 层通过 SceneRenderer trait 调用，默认 wgpu 后端内部使用 RenderComposer
+  App 层通过 SceneRenderer trait 调用，默认 wgpu 后端内部使用 RenderRuntime
 
 render pipeline
   RenderPipelineBuilder / RenderPipelineAsset / RenderFeature / RenderPhase / Pass traits
   声明“这一套渲染流程由哪些步骤组成”
 
 render runtime
-  RenderComposer / frame_builder / pipeline_runtime / nodes / presentation
+  RenderRuntime / frame_coordinator / pipeline_runtime / nodes / presentation
   每帧把 World 转成 PreparedFrame，再把 PipelineStep 转成 FramePipeline node 执行
 
 render extract
@@ -585,10 +585,10 @@ ctx.render();
 FrameContext::render()
   -> self.renderer.render_world(self.world)
   -> WgpuSceneRenderer::render_world(world)
-  -> RenderComposer::render_world(&mut gpu, world)
+  -> RenderRuntime::render_world(&mut gpu, world)
 ```
 
-其中 `FrameContext` 在 `src/app/runner.rs`，`WgpuSceneRenderer` 在 `src/render/backend/wgpu.rs`，`RenderComposer::render_world` 在 `src/render/runtime/frame_builder.rs`。
+其中 `FrameContext` 在 `src/app/runner.rs`，`WgpuSceneRenderer` 在 `src/render/backend/wgpu.rs`，`RenderRuntime::render_world` 在 `src/render/runtime/frame_coordinator.rs`。
 
 App runner 在调用用户 `update` 之前已经做了这些事：
 
@@ -612,11 +612,11 @@ winit RedrawRequested
        -> surface.present()
 ```
 
-所以 `RenderComposer::render_world` 运行时，一定处于一个 active GPU frame 内。它可以通过 `gpu.frame()` 开 render pass / compute pass，也可以通过 `gpu.encoder()` 走底层路径。
+所以 `RenderRuntime::render_world` 运行时，一定处于一个 active GPU frame 内。它可以通过 `gpu.frame()` 开 render pass / compute pass，也可以通过 `gpu.encoder()` 走底层路径。
 
 ---
 
-## 5. PipelineAsset 是“声明”，RenderComposer 是“运行时”
+## 5. PipelineAsset 是“声明”，RenderRuntime 是“运行时”
 
 `RenderPipelineAsset` 是静态或半静态的配置对象。它描述：
 
@@ -638,31 +638,31 @@ RenderPipelineAsset:
   每道菜大概按什么顺序
   需要哪些厨具和食材类型
 
-RenderComposer:
+RenderRuntime:
   每帧真的进厨房
   看 World 里今天有哪些实体
   准备 GPU 资源
   发起实际绘制
 ```
 
-所以 `RenderPipelineAsset::modern_3d()` 只是说“我要 normal prepass、material prepass、shadow、DDGI、opaque、SSGI、transparent、TAA、bloom、tonemap、debug view 这些步骤”。它不会自己查询 ECS，也不会自己创建本帧的 `scene_color`。这些都发生在 `RenderComposer::render_world` 和后续 `FramePipeline` 执行里。
+所以 `RenderPipelineAsset::modern_3d()` 只是说“我要 normal prepass、material prepass、shadow、DDGI、opaque、SSGI、transparent、TAA、bloom、tonemap、debug view 这些步骤”。它不会自己查询 ECS，也不会自己创建本帧的 `scene_color`。这些都发生在 `RenderRuntime::render_world` 和后续 `FramePipeline` 执行里。
 
-`RenderComposer` 是 wgpu 后端的运行时对象。它拥有：
+`RenderRuntime` 是 wgpu 后端的运行时对象。它拥有：
 
 ```text
-ComposerPlan
+RuntimePlan
   runtime_features
   steps
   extractors
   gpu_tables
   materials
 
-ComposerResources
+RenderResourceHub
   draw_functions
   material_registry
   mesh_registry
 
-ComposerRuntime
+FrameRuntimeState
   last_stats
   surface_size
   frame_settings
@@ -687,7 +687,7 @@ ShadowRuntime
 RenderPipelineAsset::modern_3d()
   -> RenderPipelineBuilder builds asset
   -> WgpuSceneRenderer::try_new(..., Some(asset))
-  -> RenderComposer::from_asset(asset)
+  -> RenderRuntime::from_asset(asset)
 ```
 
 `from_asset` 会把 asset 中的 boxed draw functions 注册进 `DrawFunctionRegistry`，并把 feature、steps、extractors、materials 等转移进 composer。
@@ -696,7 +696,7 @@ RenderPipelineAsset::modern_3d()
 
 ## 6. 内建 Pipeline 预设
 
-当前几个常用预设在 `src/render/pipeline/asset.rs`。
+当前几个常用预设在 `src/render/pipeline/pipeline_asset.rs`。
 
 ### 6.1 `forward_2d()`
 
@@ -779,10 +779,10 @@ DebugView
 ```text
 WgpuSceneRenderer
   -> GpuContext
-  -> RenderComposer
+  -> RenderRuntime
 ```
 
-Kajiya / Renderling 后端不直接使用同一套 wgpu `RenderComposer` 主路径，而是通过 backend-neutral scene snapshot 等方式同步场景。
+Kajiya / Renderling 后端不直接使用同一套 wgpu `RenderRuntime` 主路径，而是通过 backend-neutral scene snapshot 等方式同步场景。
 
 ---
 
@@ -866,7 +866,7 @@ MeshRenderer::new(mesh_asset_handle, material_asset_handle)
 - `SpotLight`
 - `DirectionalLight`
 
-`RenderComposer::render_world` 会通过 typed query 收集它们，转成 `GpuLight` 写进 `LightTable`。
+`RenderRuntime::render_world` 会通过 typed query 收集它们，转成 `GpuLight` 写进 `LightTable`。
 
 ### 7.5 RenderSettings
 
@@ -894,9 +894,9 @@ world.get_resource::<RenderSettings>().copied().unwrap_or_default()
 
 ---
 
-## 8. `RenderComposer::render_world` 每帧步骤
+## 8. `RenderRuntime::render_world` 每帧步骤
 
-这是最重要的函数，位于 `src/render/runtime/frame_builder.rs`。下面按真实执行顺序讲。
+这是最重要的函数，位于 `src/render/runtime/frame_coordinator.rs`。下面按真实执行顺序讲。
 
 ### 8.0 先看一版人话流程
 
@@ -1090,7 +1090,7 @@ shadow_setups = append_directional_shadow_views(world, &mut views)
 ### 8.7 finalize views
 
 ```text
-views = PreparedFrameBuilder::finalize_views(views, surface_size)
+views = finalize_scene_views(views, surface_size)
 ```
 
 它做几件事：
@@ -2278,12 +2278,12 @@ App::new(AppConfig::new("SkyEngine - 3D Demo", 1280, 720), world)
 `initialize_scene(ctx)` 通过：
 
 ```rust
-ctx.with_renderer_mut(|renderer, gpu| { ... })
+ctx.with_render_runtime_mut(|renderer, gpu| { ... })
 ```
 
 拿到：
 
-- `RenderComposer`
+- `RenderRuntime`
 - `GpuContext`
 
 然后创建：
@@ -2298,7 +2298,7 @@ ctx.with_renderer_mut(|renderer, gpu| { ... })
 
 ```rust
 renderer.insert_mesh(mesh)
-renderer.materials_mut::<StandardMaterial>().insert(material)
+renderer.insert_material::<StandardMaterial>(material)
 ```
 
 之后向 `World` spawn：
@@ -2328,7 +2328,7 @@ demo 每帧：
 World:
   camera + mesh renderers + lights + settings
 
-RenderComposer:
+RenderRuntime:
   resolve transforms
   collect main SceneView
   append directional shadow cascade views
@@ -2415,8 +2415,8 @@ shader 需要哪些 texture / sampler / uniform？
 
 - shader source
 - vertex layout requirement
-- bind group layout
-- bind group creation
+- material interface and binding layout
+- prepared material bind group creation
 - render state
 - shader entry names
 - pipeline key
@@ -2425,11 +2425,11 @@ shader 需要哪些 texture / sampler / uniform？
 关键方法：
 
 ```rust
-fn shader_source(&self) -> ShaderSource;
-fn vertex_layout(&self) -> VertexLayout;
-fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout;
-fn create_bind_group(&self, ctx: &MaterialBindContext<'_>) -> wgpu::BindGroup;
-fn render_state(&self) -> MaterialRenderState;
+fn interface() -> MaterialInterface;
+fn shader_source(data: &Self::Data) -> ShaderSource;
+fn vertex_layout(data: &Self::Data) -> VertexLayout;
+fn prepare(data: &Self::Data, ctx: &mut MaterialPrepareContext<'_>) -> Result<PreparedMaterial, MaterialError>;
+fn render_state(data: &Self::Data) -> MaterialRenderState;
 ```
 
 `RenderPipelineBuilder::register_material::<M>()` 会：
@@ -2595,7 +2595,7 @@ TAA 使用：
 - velocity buffer
 - current color
 
-`RenderComposer` 每帧先更新 temporal view state，并把 `HistoryTextureStore` 放进 frame payload。TAA pass 通过 payload 和 scene slots 找到所需资源。
+`RenderRuntime` 每帧先更新 temporal view state，并把 `HistoryTextureStore` 放进 frame payload。TAA pass 通过 payload 和 scene slots 找到所需资源。
 
 TAA 的核心想法是：不要只看当前这一帧，而是把历史帧也拿来平均，减少锯齿和闪烁。难点是物体和相机在动，上一帧的像素不一定对应这一帧同一个位置，所以需要：
 
@@ -2656,7 +2656,7 @@ SSGI atlas 是否有内容？
 9. DrawFunction 执行实际 draw
 ```
 
-不要第一步就改 `RenderComposer::render_world` 塞一个大分支。只有真正跨 renderer 的概念才应该进入 composer 或 shared execution state。
+不要第一步就改 `RenderRuntime::render_world` 塞一个大分支。只有真正跨 renderer 的概念才应该进入 composer 或 shared execution state。
 
 ### 18.1 什么时候用 phase
 
@@ -2793,7 +2793,7 @@ cargo check --examples --features app
 ### 20.1 组合边界
 
 - `RenderPipelineAsset` 是声明配置。
-- `RenderComposer` 是 runtime orchestrator。
+- `RenderRuntime` 是 runtime orchestrator。
 - `PreparedFrame` / `PreparedView` 是异构 renderer 的组合边界。
 - `FramePipeline` 是执行引擎。
 - `RenderGraph` 是 pass/resource 后端。
@@ -2844,20 +2844,20 @@ cargo check --examples --features app
 1. `examples/render/three_d_demo.rs`
 2. `src/app/runner.rs`
 3. `src/render/backend/wgpu.rs`
-4. `src/render/runtime/frame_builder.rs`
+4. `src/render/runtime/frame_coordinator.rs`
 5. `src/render/runtime/view_collection.rs`
 6. `src/render/extract/sprite.rs`
 7. `src/render/extract/mesh.rs`
 8. `src/render/phase/item.rs`
 9. `src/render/phase/containers.rs`
-10. `src/render/phase/draw.rs`
+10. `src/render/phase/mesh_draw.rs / sprite_draw.rs`
 11. `src/render/runtime/pipeline_runtime.rs`
-12. `src/render/runtime/nodes.rs`
+12. `src/render/execution/step_nodes/`
 13. `src/render/execution/payload.rs`
 14. `src/render/execution/frame_pipeline.rs`
 15. `src/render/execution/slots.rs`
 16. `src/render/graph/AGENTS.md`
-17. `src/render/pipeline/builtins.rs`
+17. `src/render/builtins/`
 18. `src/render/gi/ssgi.rs`
 19. `src/render/lighting/shadow/`
 20. `src/gpu/context.rs`
@@ -2884,7 +2884,7 @@ App 管 frame:
 World 管数据:
   Transform / Camera / Renderer / Light / Settings
 
-RenderComposer 管准备:
+RenderRuntime 管准备:
   transforms -> views -> phases -> gpu tables -> prepared frame
 
 PipelineAsset 管声明:

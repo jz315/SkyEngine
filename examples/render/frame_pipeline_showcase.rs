@@ -86,6 +86,7 @@ impl FrameViewNode for ViewCopy {
         _ctx: &mut GpuContext,
         _resources: &PhysicalResources<'_>,
         _execution: &ViewExecutionContext<'_>,
+        _services: &mut (),
     ) -> Result<(), RenderGraphError> {
         Ok(())
     }
@@ -128,7 +129,7 @@ impl FrameFinalizeNode for FinalizeSink {
 }
 
 fn create_device() -> (wgpu::Device, wgpu::Queue) {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::LowPower,
         compatible_surface: None,
@@ -136,15 +137,13 @@ fn create_device() -> (wgpu::Device, wgpu::Queue) {
     }))
     .expect("No suitable GPU adapter found");
 
-    pollster::block_on(adapter.request_device(
-        &wgpu::DeviceDescriptor {
-            label: Some("frame_pipeline_showcase_device"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
-            memory_hints: wgpu::MemoryHints::Performance,
-        },
-        None,
-    ))
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("frame_pipeline_showcase_device"),
+        required_features: wgpu::Features::empty(),
+        required_limits: wgpu::Limits::default(),
+        memory_hints: wgpu::MemoryHints::Performance,
+        ..Default::default()
+    }))
     .expect("Failed to create showcase device")
 }
 

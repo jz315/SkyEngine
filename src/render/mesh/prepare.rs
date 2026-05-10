@@ -72,19 +72,10 @@ impl MeshPass {
                 (None, None) => {}
             }
 
-            let requires_material =
-                draw.pipeline.property_slot().is_some() || draw.pipeline.resource_slot().is_some();
-            if requires_material && draw.material.is_none() {
+            if draw.pipeline.material_slot().is_some() && draw.material.is_none() {
                 return Err(MeshPassError::MissingMaterial {
                     pipeline: draw.pipeline.desc().label.to_string(),
                 });
-            }
-
-            if let Some(material) = draw.material.as_deref_mut() {
-                material.upload(ctx);
-                if draw.pipeline.resource_slot().is_some() {
-                    material.try_resource_bind_group()?;
-                }
             }
 
             let instances = validate_instances(draw.instances.clone())?;

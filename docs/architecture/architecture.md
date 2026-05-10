@@ -98,7 +98,7 @@
 ```text
 App / Example
   -> World / ECS schedule
-  -> RenderComposer / RenderPipelineAsset
+  -> RenderRuntime / RenderPipelineAsset
   -> FramePipeline / RenderGraph
   -> GpuContext / wgpu
 ```
@@ -145,7 +145,7 @@ crate 根部的 feature-gated 模块关系如下：
 | 批量遍历实体 | `PreparedQuery` / `for_each_chunk` | 动态 raw query 作为主路径 |
 | 查询中安排结构变化 | `Commands` | active query 内直接 `insert/remove/despawn` |
 | 创建窗口应用 | `App` + `AppConfig` + `AppState` | 手动绕过 runner 复制事件循环 |
-| 普通渲染 | `RenderPipelineAsset` + `RenderComposer` | 直接把所有东西塞进 `GpuContext` |
+| 普通渲染 | `RenderPipelineAsset` + `RenderRuntime` | 直接把所有东西塞进 `GpuContext` |
 | 新 renderer family | `RenderFeature` + extractor / payload / phase | 修改中心 scene struct 承载全部状态 |
 | 低层 GPU 编排 | `RenderGraph` / `FramePipeline` / `render::expert` | 在 App 层手写跨 pass 资源生命周期 |
 | 资产加载 | `AssetServer` / `Handle<T>` / install context | 在 gameplay 中散落文件 IO 与 GPU 上传 |
@@ -173,7 +173,7 @@ flowchart TB
     end
 
     subgraph RenderLayer[Render 层]
-        Composer[RenderComposer]
+        RenderRt[RenderRuntime]
         Pipeline[RenderPipelineAsset / Builder]
         Runtime[render::runtime / execution]
         Graph[RenderGraph]
@@ -203,7 +203,7 @@ flowchart TB
     App --> Runner
     Runner --> Input
     Runner --> World
-    Runner --> Composer
+    Runner --> RenderRt
     Runner --> GPU
 
     World --> Systems
@@ -211,8 +211,8 @@ flowchart TB
     Systems --> Commands
     World --> Resources
 
-    Composer --> Pipeline
-    Composer --> Runtime
+    RenderRt --> Pipeline
+    RenderRt --> Runtime
     Runtime --> Graph
     Runtime --> GPU
 
@@ -232,7 +232,7 @@ flowchart TB
 这个图表达的是所有主模块的“拥有与调用方向”，不是每个函数调用的逐行关系。最重要的边界是：
 
 - `World` 拥有 ECS 数据，不拥有 GPU 设备。
-- `RenderComposer` 拥有渲染运行时状态，不拥有 gameplay 语义。
+- `RenderRuntime` 拥有渲染运行时状态，不拥有 gameplay 语义。
 - `GpuContext` 拥有 wgpu device / queue / surface / active frame，不解释场景语义。
 - `AssetServer` 管理 asset 状态与加载，不承担完整渲染编排。
 
@@ -273,7 +273,7 @@ flowchart TB
 - 在启用 `egui` 时接入 egui 输入与 overlay 渲染
 - 每帧按配置驱动 `world.tick_with_delta(dt)`
 - 调用用户 `AppState`
-- 在用户调用 `ctx.render()` 时执行安装好的 `RenderComposer`
+- 在用户调用 `ctx.render()` 时执行安装好的 `RenderRuntime`
 - 处理 resize、surface lost、timeout、out-of-memory、occluded、shutdown
 
 应用层不负责：
@@ -361,7 +361,7 @@ App::run(state)
 - `request_redraw()`
 - `feature_mut<T>()`
 - `with_feature_mut<T, R>(...)`
-- `with_renderer_mut(...)`
+- `with_render_runtime_mut(...)`
 - `egui(...)`，仅 `egui` feature
 
 `FrameContext::render()` 要求 `App::with_render_pipeline(...)` 已安装 pipeline，否则会 panic。这是有意的：没有 pipeline 时 App 仍可用于纯 ECS / GPU 自定义流程，但调用高层 render 必须显式安装 renderer。
@@ -392,7 +392,7 @@ resize 链路：
 ```text
 WindowEvent::Resized(size)
   -> GpuContext::resize_surface(width, height)
-  -> RenderComposer::resize(gpu, width, height)
+  -> RenderRuntime::resize(gpu, width, height)
   -> AppState::on_resize(width, height)
   -> request redraw if non-zero
 ```
@@ -736,7 +736,7 @@ Render 层负责把 ECS 世界中的渲染 authoring data 转换为 GPU 可执�
 
 ```rust
 use sky_engine::render::{
-    RenderComposer, RenderPipelineAsset, RenderPipelineBuilder, RenderFeature,
+    RenderRuntime, RenderPipelineAsset, RenderPipelineBuilder, RenderFeature,
     SpriteFeature, OpaquePhase, TransparentPhase, Camera, Color, Texture,
 };
 ```
@@ -757,7 +757,7 @@ flowchart TB
     Extract[extract / feature hooks]
     SceneView[SceneView / Camera / Visibility]
     GpuScene[GpuScene / GPU tables]
-    Composer[RenderComposer]
+    RenderRt[RenderRuntime]
     Pipeline[RenderPipelineAsset]
     FramePipe[FramePipeline]
     Graph[RenderGraph]
@@ -768,9 +768,9 @@ flowchart TB
     ECS --> Extract
     Extract --> SceneView
     Extract --> GpuScene
-    SceneView --> Composer
-    GpuScene --> Composer
-    Composer --> Pipeline
+    SceneView --> RenderRt
+    GpuScene --> RenderRt
+    RenderRt --> Pipeline
     Pipeline --> FramePipe
     FramePipe --> Graph
     Graph --> Passes
@@ -783,7 +783,7 @@ flowchart TB
 | 阶段 | 主要类型 | 发生时机 | 产物 |
 |------|----------|----------|------|
 | 声明期 | `RenderPipelineBuilder`, `RenderPipelineAsset`, `RenderFeature` | app setup / pipeline construction | pipeline 配置、feature 注册、phase/pass/postfx 顺序 |
-| 准备期 | `RenderComposer`, extractors, `GpuScene`, view collection | 每帧 render 前半段 | `PreparedFrame`, `PreparedView`, phase items, typed payload |
+| 准备期 | `RenderRuntime`, extractors, `GpuScene`, view collection | 每帧 render 前半段 | `PreparedFrame`, `PreparedView`, phase items, typed payload |
 | 执行期 | `FramePipeline`, setup/view/finalize nodes | 每帧 render 后半段 | graph pass、draw dispatch、post-fx、presentation |
 | 后端 | `RenderGraph`, `PhysicalResources`, `GpuContext` | pass 编译/执行 | physical texture/buffer、command encoder、queue submit |
 
@@ -797,8 +797,8 @@ flowchart LR
     end
 
     subgraph Runtime[High-Level Runtime]
-        Composer[RenderComposer]
-        FrameBuilder[runtime::frame_builder]
+        RenderRt[RenderRuntime]
+        FrameCoordinator[runtime::frame_coordinator]
         ViewCollection[runtime::view_collection]
         Extract[extract]
     end
@@ -835,12 +835,12 @@ flowchart LR
     Builder --> Asset
     Features --> Builder
     Steps --> Asset
-    Asset --> Composer
-    Composer --> FrameBuilder
-    ViewCollection --> FrameBuilder
-    Extract --> FrameBuilder
-    FrameBuilder --> Prepared
-    Composer --> GpuScene
+    Asset --> RenderRt
+    RenderRt --> FrameCoordinator
+    ViewCollection --> FrameCoordinator
+    Extract --> FrameCoordinator
+    FrameCoordinator --> Prepared
+    RenderRt --> GpuScene
     GpuScene --> Tables
     Prepared --> FramePipe
     FramePipe --> Nodes
@@ -908,7 +908,7 @@ flowchart LR
 
 核心目录与文件：
 
-- `src/render/runtime/frame_builder.rs`
+- `src/render/runtime/frame_coordinator.rs`
 - `src/render/runtime/view_collection.rs`
 - `src/render/runtime/composer.rs`
 - `src/render/extract/`
@@ -983,12 +983,12 @@ flowchart LR
 - `PostFxPass`
 - built-in markers：`Bloom`、`ToneMap`、`Vignette`、`DdgiUpdateCompute`、`SceneNormalPrepass`、`SceneMaterialPrepass`
 
-`RenderPipelineAsset` 与 `RenderComposer` 的区别：
+`RenderPipelineAsset` 与 `RenderRuntime` 的区别：
 
 | 类型 | 生命周期 | 拥有什么 | 不应拥有 |
 |------|----------|----------|----------|
 | `RenderPipelineAsset` | 声明期，可复制配置思想 | feature / phase / pass / postfx / material / draw function / GPU table registrations | live GPU cache、per-frame view state |
-| `RenderComposer` | runtime，随 App 持有 | feature runtime state、pipeline steps、draw registry、material/mesh registry、`GpuScene`、stats | gameplay state、窗口 event loop |
+| `RenderRuntime` | runtime，随 App 持有 | feature runtime state、pipeline steps、draw registry、material/mesh registry、`GpuScene`、stats | gameplay state、窗口 event loop |
 
 典型 builder 能力：
 
@@ -1147,7 +1147,7 @@ RenderGraph::try_execute(ctx, run_pass)
 | Family | 目录 | 输入 | 输出 / 接入点 |
 |--------|------|------|---------------|
 | Sprite | `src/render/sprite/`, `src/render/extract/sprite.rs` | `SpriteRenderer`、sorting、texture/material | transparent / opaque phase items，sprite draw function |
-| Mesh | `src/render/mesh/`, `src/render/resources/mesh.rs` | `MeshRenderer`、`Mesh`、`Material` | mesh prepare / record，material pipelines，scene prepass |
+| Mesh | `src/render/mesh/`, `src/render/resources/mesh/` | `MeshRenderer`、`Mesh`、`Material` | mesh prepare / record，material pipelines，scene prepass |
 | Lighting | `src/render/lighting/` | `PointLight`、`DirectionalLight`、light settings | `LightTable`、`LightPass`、`DirectionalShadowPhase` |
 | Composite | `src/render/composite/` | scene color / light target | composite pass |
 | GI | `src/render/gi/`, `src/render/shaders/gi/` | opaque `StandardMaterial` mesh triangles、light table、DDGI settings | `DdgiUpdateCompute`、DDGI irradiance / visibility atlas sampled by forward materials |
@@ -1156,7 +1156,7 @@ RenderGraph::try_execute(ctx, run_pass)
 
 这些 family 的协作方式不是各自维护一套完整渲染主循环，而是：
 
-- 共享 `RenderComposer`
+- 共享 `RenderRuntime`
 - 共享 `FramePipeline`
 - 共享 `RenderGraph`
 - 共享 `GpuContext`
@@ -1167,7 +1167,7 @@ RenderGraph::try_execute(ctx, run_pass)
 ```text
 AppState::update(...)
   -> ctx.render()
-  -> RenderComposer::render_world(gpu, world)
+  -> RenderRuntime::render_world(gpu, world)
   -> resolve transforms
   -> collect SceneView from cameras / fallback view
   -> feature collect_views hooks
@@ -1196,7 +1196,7 @@ AppState::update(...)
 - `src/render/view/`
   相机、视图、投影、viewport、frustum、transform resolver。
 - `src/render/runtime/`
-  高层 orchestration：`RenderComposer`、frame builder、pipeline runtime、presentation、stats。
+  高层 orchestration：`RenderRuntime`、frame builder、pipeline runtime、presentation、stats。
 - `src/render/pipeline/`
   声明式 pipeline、feature、phase/pass/postfx context。
 - `src/render/extract/`
@@ -1230,9 +1230,9 @@ AppState::update(...)
 
 ### 6.13 Render 设计原则
 
-- 高层入口使用 `RenderComposer + RenderPipelineAsset`。
+- 高层入口使用 `RenderRuntime + RenderPipelineAsset`。
 - 扩展方式优先走注册驱动。
-- 声明期配置放 `RenderPipelineAsset`，运行时状态放 `RenderComposer`。
+- 声明期配置放 `RenderPipelineAsset`，运行时状态放 `RenderRuntime`。
 - 组合边界放在 `PreparedFrame / PreparedView`。
 - 执行顺序由 `FramePipeline` / `PipelineStep` 表达。
 - 底层资源编排后端放在 `RenderGraph`。
@@ -1830,7 +1830,7 @@ World resource AudioCommands
 
 ### 13.2 Render 不变量
 
-- `RenderPipelineAsset` 是声明配置，`RenderComposer` 是运行时状态。
+- `RenderPipelineAsset` 是声明配置，`RenderRuntime` 是运行时状态。
 - 新 renderer family 应通过 feature / extractor / payload / phase / step 接入。
 - `PreparedFrame` / `PreparedView` 是异构 renderer 的组合边界。
 - `GpuScene` 是共享 scene upload，不是 renderer-specific cache 收纳箱。
@@ -1914,7 +1914,7 @@ docs-only 修改通常不需要 `cargo test`。但如果文档修改伴随 API�
 - 假设 bundle 插入顺序就是 archetype component column 顺序。
 - 忘记非 `Copy` component drop 语义，只测 `Copy` 类型。
 - 修改 query abstraction 后只看代码更干净，不验证 hot path codegen / benchmark。
-- 新 renderer family 直接改 `RenderComposer` 大分支，而不是注册 feature / extractor / payload。
+- 新 renderer family 直接改 `RenderRuntime` 大分支，而不是注册 feature / extractor / payload。
 - 把所有 renderer-specific 数据都塞进 `GpuScene`。
 - 在 RenderGraph 中绕过 handle token 直接 index textures / buffers。
 - 在 copy/upload path 忽略 submit boundary 与 active frame encoder。
@@ -1966,7 +1966,7 @@ docs-only 修改通常不需要 `cargo test`。但如果文档修改伴随 API�
 6. `examples/render/frame_pipeline_showcase.rs`
 7. `examples/render/custom_feature_demo.rs`
 8. `src/render/mod.rs`
-9. `src/render/runtime/frame_builder.rs`
+9. `src/render/runtime/frame_coordinator.rs`
 10. `src/render/pipeline/`
 11. `src/render/execution/`
 12. `src/render/graph/`

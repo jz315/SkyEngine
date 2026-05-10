@@ -2,7 +2,7 @@ use crate::asset::AssetServer;
 use crate::ecs::World;
 use crate::gpu::GpuContext;
 use crate::render::phase::{OpaquePhase, TransparentPhase};
-use crate::render::resources::assets::SharedRenderAssetCache;
+use crate::render::resources::texture_cache::SharedRenderAssetCache;
 use crate::render::resources::{
     material::{MaterialError, MaterialRegistry},
     mesh::{MeshHandle, MeshRegistry},

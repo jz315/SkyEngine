@@ -539,6 +539,7 @@ impl<'a> GpuFrame<'a> {
                 label: Some(label),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load,
@@ -568,6 +569,7 @@ impl<'a> GpuFrame<'a> {
                 label: Some(label),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target.color_target_view(),
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load,
@@ -627,10 +629,10 @@ impl GpuContext {
     ///
     /// Blocks on adapter/device creation via `pollster`.
     pub fn try_new(window: Arc<winit::window::Window>, vsync: bool) -> Result<Self, GpuInitError> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN | wgpu::Backends::METAL | wgpu::Backends::DX12,
-            ..Default::default()
-        });
+        let mut instance_desc = wgpu::InstanceDescriptor::new_without_display_handle();
+        instance_desc.backends =
+            wgpu::Backends::VULKAN | wgpu::Backends::METAL | wgpu::Backends::DX12;
+        let instance = wgpu::Instance::new(instance_desc);
 
         let surface = instance
             .create_surface(window.clone())
@@ -641,21 +643,19 @@ impl GpuContext {
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
         }))
-        .ok_or(GpuInitError::AdapterUnavailable)?;
+        .map_err(|_| GpuInitError::AdapterUnavailable)?;
 
         let adapter_info = adapter.get_info();
         let adapter_name = adapter_info.name.clone();
         let backend_name = format!("{:?}", adapter_info.backend);
 
-        let (device, queue) = pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("SkyEngine Device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::Performance,
-            },
-            None,
-        ))
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("SkyEngine Device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            ..Default::default()
+        }))
         .map_err(|e| GpuInitError::DeviceCreation(e.to_string()))?;
 
         let size = window.inner_size();
@@ -689,7 +689,7 @@ impl GpuContext {
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
         let sampler_nearest = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -698,7 +698,7 @@ impl GpuContext {
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Nearest,
             min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
 
@@ -804,14 +804,20 @@ impl GpuContext {
 
         let (surface_texture, surface_view) = if let Some(surface) = self.surface.as_ref() {
             let surface_texture = match surface.get_current_texture() {
-                Ok(st) => st,
-                Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                wgpu::CurrentSurfaceTexture::Success(st)
+                | wgpu::CurrentSurfaceTexture::Suboptimal(st) => st,
+                wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
                     surface.configure(&self.device, &self.surface_config);
                     return Err(GpuError::SurfaceLost);
                 }
-                Err(wgpu::SurfaceError::Timeout) => return Err(GpuError::Timeout),
-                Err(wgpu::SurfaceError::OutOfMemory) => return Err(GpuError::OutOfMemory),
-                Err(e) => return Err(GpuError::Other(e.to_string())),
+                wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                    return Err(GpuError::Timeout);
+                }
+                wgpu::CurrentSurfaceTexture::Validation => {
+                    return Err(GpuError::Other(
+                        "surface texture acquisition failed validation".into(),
+                    ));
+                }
             };
             let surface_view = surface_texture
                 .texture
@@ -1000,7 +1006,7 @@ mod tests {
     use crate::render::gpu::RenderTarget;
 
     fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::LowPower,
             compatible_surface: None,
@@ -1008,15 +1014,13 @@ mod tests {
         }))
         .expect("No suitable GPU adapter found for gpu::context tests");
 
-        pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("gpu_context_test_device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::Performance,
-            },
-            None,
-        ))
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("gpu_context_test_device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            ..Default::default()
+        }))
         .expect("Failed to create test GPU device")
     }
 

@@ -31,9 +31,12 @@ impl EguiIntegration {
         let renderer = egui_wgpu::Renderer::new(
             device,
             surface_format,
-            None,  // no depth
-            1,     // no MSAA
-            false, // dithering
+            egui_wgpu::RendererOptions {
+                msaa_samples: 1,
+                depth_stencil_format: None,
+                dithering: false,
+                ..Default::default()
+            },
         );
 
         Self {
@@ -126,6 +129,7 @@ impl EguiIntegration {
                     label: Some("egui_render_pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: surface_view,
+                        depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Load, // preserve existing content

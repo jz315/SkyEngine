@@ -1,6 +1,6 @@
 use crate::ecs::EntityId;
 use crate::render::resources::{
-    material::{Material, MaterialHandle, TypedMaterialHandle},
+    material::{Material, MaterialHandle},
     mesh::MeshHandle,
 };
 
@@ -52,11 +52,6 @@ impl MeshDrawData {
     #[inline]
     pub fn material_handle<M: Material>(self) -> MaterialHandle {
         MaterialHandle::new::<M>(self.material_index, self.material_generation)
-    }
-
-    #[inline]
-    pub fn typed_material_handle<M: Material>(self) -> Option<TypedMaterialHandle<M>> {
-        self.material_handle::<M>().typed::<M>()
     }
 
     #[inline]

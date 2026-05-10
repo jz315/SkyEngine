@@ -138,7 +138,7 @@ pub trait FrameSetupNode: Send {
     fn resize(&mut self, _ctx: &GpuContext, _width: u32, _height: u32) {}
 }
 
-pub trait FrameViewNode: Send {
+pub trait FrameViewNode<S: ?Sized = ()>: Send {
     fn name(&self) -> &'static str;
 
     fn is_enabled(&self, _frame: &PreparedFrame<'_>) -> bool {
@@ -163,9 +163,10 @@ pub trait FrameViewNode: Send {
         ctx: &mut GpuContext,
         resources: &PhysicalResources<'_>,
         execution: &ViewExecutionContext<'_>,
+        services: &mut S,
     ) -> Result<(), RenderGraphError>;
 
-    fn draw_calls(&self, _execution: &ViewExecutionContext<'_>) -> usize {
+    fn draw_calls(&self, _execution: &ViewExecutionContext<'_>, _services: &S) -> usize {
         0
     }
 

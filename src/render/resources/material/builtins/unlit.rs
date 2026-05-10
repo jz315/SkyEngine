@@ -1,5 +1,5 @@
 use crate::render::gpu::Texture;
-use crate::render::view::Color;
+use crate::render::Color;
 
 use super::super::{
     MaterialError, MaterialModel, MaterialPrepareContext, MaterialRenderState,
@@ -111,35 +111,6 @@ impl MaterialModel for UnlitMaterial {
             .texture(1, texture)
             .sampler(2, ctx.sampler_linear())
             .build()
-    }
-}
-
-pub struct UnlitMaterialModel;
-
-impl MaterialModel for UnlitMaterialModel {
-    type Data = UnlitMaterial;
-
-    fn interface() -> super::super::MaterialInterface {
-        <UnlitMaterial as MaterialModel>::interface()
-    }
-
-    fn variant(data: &Self::Data, ctx: &MaterialVariantContext<'_>) -> ShaderVariantKey {
-        <UnlitMaterial as MaterialModel>::variant(data, ctx)
-    }
-
-    fn render_state(data: &Self::Data) -> MaterialRenderState {
-        <UnlitMaterial as MaterialModel>::render_state(data)
-    }
-
-    fn passes(data: &Self::Data) -> super::super::MaterialPassSet {
-        <UnlitMaterial as MaterialModel>::passes(data)
-    }
-
-    fn prepare(
-        data: &Self::Data,
-        ctx: &mut MaterialPrepareContext<'_>,
-    ) -> Result<PreparedMaterial, MaterialError> {
-        <UnlitMaterial as MaterialModel>::prepare(data, ctx)
     }
 }
 

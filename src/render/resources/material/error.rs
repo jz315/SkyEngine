@@ -5,17 +5,6 @@ use super::{MaterialInstanceId, MaterialModelId, SceneResourceKind};
 /// Errors returned by fallible material APIs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MaterialError {
-    DuplicateProperty {
-        name: String,
-    },
-    MissingProperty {
-        name: String,
-    },
-    PropertyTypeMismatch {
-        name: String,
-        expected: super::PropertyType,
-        actual: super::PropertyType,
-    },
     DuplicateBinding {
         model: &'static str,
         binding: u32,
@@ -28,12 +17,7 @@ pub enum MaterialError {
         expected: usize,
         actual: usize,
     },
-    MissingBindGroup,
-    MissingPropertiesLayout,
-    MissingResourceLayout,
-    ConflictingBindGroupSlot {
-        slot: u32,
-    },
+    MissingMaterialLayout,
     OccupiedBindGroupSlot {
         slot: u32,
     },
@@ -52,9 +36,6 @@ pub enum MaterialError {
     InvalidInterface {
         model: &'static str,
         reason: String,
-    },
-    UnregisteredMaterialModel {
-        type_name: &'static str,
     },
     UnregisteredMaterialType {
         type_name: &'static str,
@@ -91,22 +72,6 @@ pub enum MaterialError {
 impl std::fmt::Display for MaterialError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::DuplicateProperty { name } => {
-                write!(f, "Duplicate material property \"{name}\"")
-            }
-            Self::MissingProperty { name } => {
-                write!(f, "Unknown material property \"{name}\"")
-            }
-            Self::PropertyTypeMismatch {
-                name,
-                expected,
-                actual,
-            } => {
-                write!(
-                    f,
-                    "Material property \"{name}\" has type {actual:?}, expected {expected:?}"
-                )
-            }
             Self::DuplicateBinding { model, binding } => {
                 write!(
                     f,
@@ -125,18 +90,9 @@ impl std::fmt::Display for MaterialError {
                     "Material binding resource count mismatch: expected {expected}, got {actual}"
                 )
             }
-            Self::MissingBindGroup => write!(f, "Material bind group has not been created"),
-            Self::MissingPropertiesLayout => write!(
+            Self::MissingMaterialLayout => write!(
                 f,
-                "Material properties slot was requested without a properties layout"
-            ),
-            Self::MissingResourceLayout => write!(
-                f,
-                "Material resources slot was requested without a resource layout"
-            ),
-            Self::ConflictingBindGroupSlot { slot } => write!(
-                f,
-                "Material properties and resources both use bind group slot {slot}"
+                "Material bind group slot was requested without a material layout"
             ),
             Self::OccupiedBindGroupSlot { slot } => {
                 write!(f, "Bind group slot {slot} is already reserved")
@@ -162,9 +118,6 @@ impl std::fmt::Display for MaterialError {
                     f,
                     "Material model `{model}` has an invalid interface: {reason}"
                 )
-            }
-            Self::UnregisteredMaterialModel { type_name } => {
-                write!(f, "Material model `{type_name}` has not been registered")
             }
             Self::UnregisteredMaterialType { type_name } => {
                 write!(f, "Material model `{type_name}` has not been registered")

@@ -7,7 +7,7 @@ use crate::render::phase::{OpaquePhase, TransparentPhase};
 use crate::render::resources::material::{StandardMaterial, UnlitMaterial};
 use crate::render::view::{ResolvedSceneTransforms, SceneView};
 
-use super::asset::RenderPipelineBuilder;
+use super::RenderPipelineBuilder;
 
 pub struct SpriteFeature;
 

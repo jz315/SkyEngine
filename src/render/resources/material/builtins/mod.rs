@@ -4,6 +4,6 @@ mod standard;
 mod unlit;
 
 pub use common::AlphaMode;
-pub use sprite::{SpriteMaterial, SpriteMaterialModel};
-pub use standard::{StandardMaterial, StandardMaterialModel};
-pub use unlit::{UnlitMaterial, UnlitMaterialModel};
+pub use sprite::SpriteMaterial;
+pub use standard::StandardMaterial;
+pub use unlit::UnlitMaterial;

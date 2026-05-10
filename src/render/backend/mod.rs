@@ -3,7 +3,7 @@
 mod scene_renderer;
 mod snapshot;
 mod wgpu;
-mod wgpu_assets;
+mod wgpu_asset_bridge;
 
 #[cfg(feature = "kajiya-renderer")]
 mod kajiya;
@@ -81,16 +81,16 @@ mod tests {
     use crate::ecs::World;
     use crate::gpu::GpuContext;
     use crate::math::Projection;
-    use crate::render::assets::{
+    use crate::render::asset::{
         MeshAsset, MeshAssetDescriptor, MeshVertexLayout, StandardMaterialAsset,
     };
     use crate::render::component::{
         Camera, DirectionalLight, MeshRenderer, PointLight, RenderSettings, SpotLight, Transform,
     };
     use crate::render::pipeline::RenderPipelineAsset;
-    use crate::render::resources::assets::SharedRenderAssetCache;
     use crate::render::resources::material::StandardMaterial;
-    use crate::render::runtime::RenderComposer;
+    use crate::render::resources::texture_cache::SharedRenderAssetCache;
+    use crate::render::runtime::RenderRuntime;
 
     #[repr(C)]
     #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -100,7 +100,8 @@ mod tests {
     }
 
     fn create_test_device() -> (::wgpu::Device, ::wgpu::Queue) {
-        let instance = ::wgpu::Instance::new(&::wgpu::InstanceDescriptor::default());
+        let instance =
+            ::wgpu::Instance::new(::wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter =
             pollster::block_on(instance.request_adapter(&::wgpu::RequestAdapterOptions {
                 power_preference: ::wgpu::PowerPreference::LowPower,
@@ -109,15 +110,13 @@ mod tests {
             }))
             .expect("No suitable GPU adapter found for backend tests");
 
-        pollster::block_on(adapter.request_device(
-            &::wgpu::DeviceDescriptor {
-                label: Some("backend_test_device"),
-                required_features: ::wgpu::Features::empty(),
-                required_limits: ::wgpu::Limits::default(),
-                memory_hints: ::wgpu::MemoryHints::Performance,
-            },
-            None,
-        ))
+        pollster::block_on(adapter.request_device(&::wgpu::DeviceDescriptor {
+            label: Some("backend_test_device"),
+            required_features: ::wgpu::Features::empty(),
+            required_limits: ::wgpu::Limits::default(),
+            memory_hints: ::wgpu::MemoryHints::Performance,
+            ..Default::default()
+        }))
         .expect("Failed to create test GPU device")
     }
 
@@ -148,7 +147,7 @@ mod tests {
         let (device, queue) = create_test_device();
         let gpu =
             GpuContext::new_headless(device, queue, ::wgpu::TextureFormat::Bgra8Unorm, [32, 32]);
-        let mut composer = RenderComposer::from_asset(RenderPipelineAsset::builder().build());
+        let mut render_runtime = RenderRuntime::from_asset(RenderPipelineAsset::builder().build());
         let assets = AssetServer::with_empty_manifest(AssetConfig::default());
 
         let mesh = assets.insert_runtime(triangle_mesh("backend_triangle"));
@@ -156,19 +155,24 @@ mod tests {
         let material = assets.insert_runtime(StandardMaterialAsset::new().albedo_texture(texture));
         let render_assets = SharedRenderAssetCache::default();
 
-        let mut cache = super::wgpu_assets::WgpuRenderAssetCache::default();
+        let mut cache = super::wgpu_asset_bridge::WgpuRenderAssetCache::default();
         let first = cache
-            .sync_mesh(&gpu, &mut composer, &assets, mesh)
+            .sync_mesh(&gpu, &mut render_runtime, &assets, mesh)
             .expect("mesh should upload");
         let second = cache
-            .sync_mesh(&gpu, &mut composer, &assets, mesh)
+            .sync_mesh(&gpu, &mut render_runtime, &assets, mesh)
             .expect("mesh should stay resident");
 
         assert_eq!(first, second);
-        assert!(composer.mesh(first).is_some());
+        assert!(render_runtime.mesh(first).is_some());
 
-        let material_first =
-            cache.sync_standard_material(&gpu, &mut composer, &assets, &render_assets, material);
+        let material_first = cache.sync_standard_material(
+            &gpu,
+            &mut render_runtime,
+            &assets,
+            &render_assets,
+            material,
+        );
         assert!(
             material_first.is_some(),
             "material shell should sync even when texture waits for the GPU queue"
@@ -193,12 +197,11 @@ mod tests {
             )
             .expect("runtime material replace should work");
         let material_second = cache
-            .sync_standard_material(&gpu, &mut composer, &assets, &render_assets, material)
+            .sync_standard_material(&gpu, &mut render_runtime, &assets, &render_assets, material)
             .expect("material should stay resident");
-        assert!(composer
-            .materials::<StandardMaterial>()
-            .get(material_second)
-            .is_some());
+        assert!(render_runtime
+            .material_erased::<StandardMaterial>(material_second)
+            .is_ok());
     }
 
     #[test]

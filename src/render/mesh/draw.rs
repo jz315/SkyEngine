@@ -1,7 +1,7 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use crate::render::resources::material::{MaterialInstance, MaterialPipelineCache};
+use crate::render::resources::material::{MaterialPipelineCache, PreparedMaterial};
 use crate::render::resources::mesh::Mesh;
 
 use super::errors::MeshPassError;
@@ -10,7 +10,7 @@ use super::errors::MeshPassError;
 pub struct MeshDraw<'a> {
     pub(super) mesh: &'a Mesh,
     pub(super) pipeline: &'a mut MaterialPipelineCache,
-    pub(super) material: Option<&'a mut MaterialInstance>,
+    pub(super) material: Option<&'a PreparedMaterial>,
     pub(super) vertex_range: Option<Range<u32>>,
     pub(super) index_range: Option<Range<u32>>,
     pub(super) base_vertex: i32,
@@ -31,7 +31,7 @@ impl<'a> MeshDraw<'a> {
     }
 
     #[inline]
-    pub fn material(mut self, material: &'a mut MaterialInstance) -> Self {
+    pub fn material(mut self, material: &'a PreparedMaterial) -> Self {
         self.material = Some(material);
         self
     }

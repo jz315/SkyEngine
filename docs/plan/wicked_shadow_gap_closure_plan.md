@@ -396,7 +396,7 @@ Tasks:
 
 Files:
 
-- `src/render/runtime/tests.rs`
+- `src/render/runtime/tests/`
 - `src/render/lighting/shadow/resources.rs`
 - `src/render/postfx/contact_shadows.rs`
 - `docs/render_deep_dive.md`

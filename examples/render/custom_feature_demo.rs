@@ -209,6 +209,7 @@ impl PostFxPass for WarmTintPass {
         let pipeline = runtime.pipeline.pipeline(gpu, output_rt.format());
         let color_attachments = [Some(wgpu::RenderPassColorAttachment {
             view: output_rt.view(),
+            depth_slice: None,
             resolve_target: None,
             ops: wgpu::Operations {
                 load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),

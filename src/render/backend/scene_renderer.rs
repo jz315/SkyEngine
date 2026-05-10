@@ -1,7 +1,7 @@
 use crate::ecs::World;
 use crate::gpu::{GpuContext, GpuError, GpuInitError};
 use crate::render::pipeline::RenderBackendKind;
-use crate::render::runtime::RenderComposer;
+use crate::render::runtime::RenderRuntime;
 use crate::render::view::RenderStats;
 
 /// Error returned when a scene renderer cannot be created.
@@ -77,11 +77,11 @@ pub trait SceneRenderer {
         None
     }
 
-    fn wgpu_composer_mut(&mut self) -> Option<&mut RenderComposer> {
+    fn wgpu_render_runtime_mut(&mut self) -> Option<&mut RenderRuntime> {
         None
     }
 
-    fn wgpu_parts_mut(&mut self) -> Option<(&mut RenderComposer, &mut GpuContext)> {
+    fn wgpu_render_runtime_parts_mut(&mut self) -> Option<(&mut RenderRuntime, &mut GpuContext)> {
         None
     }
 }

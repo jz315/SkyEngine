@@ -33,8 +33,8 @@ use crate::render::gpu::helpers::{
 };
 use crate::render::gpu::RenderTarget;
 use crate::render::gpu::Texture;
-use crate::render::view::Color;
 use crate::render::view::RenderView;
+use crate::render::Color;
 
 use self::commands::{close_pending_draw_cmd, DrawCmd};
 
@@ -425,10 +425,10 @@ impl SpriteBatch {
         let camera_bgl = self.camera.layout.clone();
         let texture_bgl = self.texture_bgl.clone();
         self.pipelines.get_or_create(key, || {
-            let layouts: Vec<&wgpu::BindGroupLayout> = if textured {
-                vec![&camera_bgl, &texture_bgl]
+            let layouts: Vec<Option<&wgpu::BindGroupLayout>> = if textured {
+                vec![Some(&camera_bgl), Some(&texture_bgl)]
             } else {
-                vec![&camera_bgl]
+                vec![Some(&camera_bgl)]
             };
 
             let pipeline_layout =
@@ -436,7 +436,7 @@ impl SpriteBatch {
                     .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                         label: Some("sprite_pipeline_layout"),
                         bind_group_layouts: &layouts,
-                        push_constant_ranges: &[],
+                        immediate_size: 0,
                     });
 
             let alpha_blend = wgpu::BlendState {
@@ -524,7 +524,7 @@ impl SpriteBatch {
                     },
                     depth_stencil: None,
                     multisample: wgpu::MultisampleState::default(),
-                    multiview: None,
+                    multiview_mask: None,
                     cache: None,
                 })
         })

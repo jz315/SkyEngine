@@ -1,6 +1,6 @@
 use crate::render::gpu::Texture;
 use crate::render::resources::mesh::Mesh;
-use crate::render::view::Color;
+use crate::render::Color;
 
 use super::super::{
     MainPassMode, MaterialBinding, MaterialError, MaterialInterface, MaterialModel,
@@ -211,46 +211,6 @@ impl MaterialModel for StandardMaterial {
             .texture(3, emissive_texture)
             .texture(4, normal_texture)
             .build()
-    }
-}
-
-pub struct StandardMaterialModel;
-
-impl MaterialModel for StandardMaterialModel {
-    type Data = StandardMaterial;
-
-    fn interface() -> MaterialInterface {
-        <StandardMaterial as MaterialModel>::interface()
-    }
-
-    fn variant(
-        data: &Self::Data,
-        ctx: &super::super::MaterialVariantContext<'_>,
-    ) -> ShaderVariantKey {
-        <StandardMaterial as MaterialModel>::variant(data, ctx)
-    }
-
-    fn shader_source(data: &Self::Data) -> super::super::ShaderSource {
-        <StandardMaterial as MaterialModel>::shader_source(data)
-    }
-
-    fn vertex_layout(data: &Self::Data) -> crate::render::resources::mesh::VertexLayout {
-        <StandardMaterial as MaterialModel>::vertex_layout(data)
-    }
-
-    fn render_state(data: &Self::Data) -> MaterialRenderState {
-        <StandardMaterial as MaterialModel>::render_state(data)
-    }
-
-    fn passes(data: &Self::Data) -> MaterialPassSet {
-        <StandardMaterial as MaterialModel>::passes(data)
-    }
-
-    fn prepare(
-        data: &Self::Data,
-        ctx: &mut MaterialPrepareContext<'_>,
-    ) -> Result<PreparedMaterial, MaterialError> {
-        <StandardMaterial as MaterialModel>::prepare(data, ctx)
     }
 }
 

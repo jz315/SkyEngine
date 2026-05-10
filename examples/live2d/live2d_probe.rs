@@ -313,7 +313,7 @@ fn run_scenario(
             }
             timings.mask_ms = t2.elapsed().as_secs_f64() * 1000.0;
             ctx.end_frame();
-            let _ = ctx.device().poll(wgpu::MaintainBase::Wait);
+            let _ = ctx.device().poll(wgpu::PollType::wait_indefinitely());
         }
 
         // ── Phase 3b: Actual full render frame ──────────────────
@@ -343,7 +343,7 @@ fn run_scenario(
         timings.model_ms = (full_execute_ms - timings.mask_ms).max(0.0);
 
         ctx.end_frame();
-        let _ = ctx.device().poll(wgpu::MaintainBase::Wait);
+        let _ = ctx.device().poll(wgpu::PollType::wait_indefinitely());
         let frame_ms_sync = frame_start.elapsed().as_secs_f64() * 1000.0;
 
         // Count visible drawables & estimate bind groups
@@ -371,7 +371,7 @@ fn run_scenario(
 }
 
 fn create_probe_device() -> (wgpu::Device, wgpu::Queue) {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: None,
@@ -385,15 +385,13 @@ fn create_probe_device() -> (wgpu::Device, wgpu::Queue) {
         info.name, info.backend
     );
 
-    pollster::block_on(adapter.request_device(
-        &wgpu::DeviceDescriptor {
-            label: Some("live2d_probe_device"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
-            memory_hints: wgpu::MemoryHints::Performance,
-        },
-        None,
-    ))
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("live2d_probe_device"),
+        required_features: wgpu::Features::empty(),
+        required_limits: wgpu::Limits::default(),
+        memory_hints: wgpu::MemoryHints::Performance,
+        ..Default::default()
+    }))
     .expect("Failed to create probe GPU device")
 }
 

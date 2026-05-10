@@ -1,5 +1,5 @@
 use crate::asset::Handle;
-use crate::render::assets::{MeshAsset, StandardMaterialAsset};
+use crate::render::asset::{MeshAsset, StandardMaterialAsset};
 use crate::render::resources::material::MaterialHandle;
 use crate::render::resources::mesh::MeshHandle;
 
@@ -80,7 +80,7 @@ impl MeshRenderer {
 /// wgpu-internal mesh renderer for direct GPU handles.
 ///
 /// Prefer [`MeshRenderer`] for new scene code.  This component exists for the
-/// current wgpu `RenderComposer` path and expert examples that build meshes and
+/// current wgpu `RenderRuntime` path and expert examples that build meshes and
 /// materials directly on the wgpu backend.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WgpuMeshRenderer {

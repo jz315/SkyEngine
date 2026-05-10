@@ -6,7 +6,7 @@ use crate::render::phase::{
     opaque_sort_key, transparent_sort_key, DrawFunctionId, MeshDrawData, PhaseItem,
 };
 use crate::render::resources::{
-    material::{Material, MaterialError, MaterialHandle, MaterialModelExt},
+    material::{Material, MaterialError, MaterialHandle},
     mesh::{BoundingSphere, MeshHandle},
 };
 use crate::render::view::{ResolvedSceneTransforms, SceneView};
@@ -45,11 +45,12 @@ where
         view: &SceneView,
         ctx: &mut ExtractContext<'_>,
     ) -> Result<(), ExtractError> {
-        let material_storage = ctx.material_registry.try_materials::<M>().ok_or(
-            MaterialError::UnregisteredMaterialType {
+        if !ctx.material_registry.is_registered::<M>() {
+            return Err(MaterialError::UnregisteredMaterialType {
                 type_name: std::any::type_name::<M>(),
-            },
-        )?;
+            }
+            .into());
+        }
         let mesh_registry = ctx.mesh_registry;
         let opaque_phase = &mut *ctx.opaque_phase;
         let transparent_phase = &mut *ctx.transparent_phase;
@@ -90,7 +91,8 @@ where
                     if !material_handle.is::<M>() {
                         continue;
                     }
-                    let Some(material) = material_storage.get(material_handle) else {
+                    let Ok(material) = ctx.material_registry.get_erased::<M>(material_handle)
+                    else {
                         continue;
                     };
                     if !sphere_visible(

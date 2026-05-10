@@ -1,9 +1,10 @@
-mod composer;
-mod frame_builder;
+mod executor;
+mod frame;
+mod frame_coordinator;
 mod history;
-mod nodes;
 mod pipeline_runtime;
 mod presentation;
+mod runtime;
 mod state;
 mod stats;
 mod temporal;
@@ -11,11 +12,11 @@ mod temporal;
 mod tests;
 mod view_collection;
 
-pub use composer::RenderComposer;
 pub use history::{HistoryTexture, HistoryTextureRequest, HistoryTextureSize};
+pub use runtime::RenderRuntime;
 pub use stats::RenderTimingStats;
 
-pub(crate) use frame_builder::PreviousModelMatrices;
+pub(crate) use frame::PreviousModelMatrices;
 pub(crate) use history::HistoryTextureStore;
 pub(crate) use presentation::ViewportBlitNode;
 pub(crate) use stats::{elapsed_ms, timing_start};

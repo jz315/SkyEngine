@@ -1,15 +1,15 @@
-# Render God Object Refactor Plan
+# Render God Object Breaking Refactor Plan
 
 ## Purpose
 
-This plan reduces god-object and god-module pressure in SkyEngine's render
-runtime without changing the public render architecture.
+This is an intentionally breaking render-runtime refactor plan.
 
-The goal is not a broad rewrite. The goal is to make the current
-registration-driven renderer easier to evolve by moving responsibilities out of
-large orchestration points and into smaller internal helpers.
+The old goal was to reduce god-object pressure while preserving the current
+public render architecture. That is no longer the goal. The new goal is to make
+the render runtime structurally cleaner even if public names, import paths,
+context types, builder APIs, examples, and downstream app code must be migrated.
 
-The canonical architecture remains:
+The refactor may replace the current shape:
 
 ```text
 RenderPipelineAsset
@@ -19,292 +19,242 @@ RenderPipelineAsset
   -> RenderGraph / wgpu execution
 ```
 
-Keep the existing high-level surface stable unless a later task explicitly
-requests a breaking render API rewrite.
-
-## Current Diagnosis
-
-The render module has several large files, but not every large file is equally
-dangerous. The main risk is concentrated where one object or module knows too
-many domains at once.
-
-### Highest Risk: RenderComposer Frame Flow
-
-Current root:
+with a new shape:
 
 ```text
-src/render/runtime/composer.rs
-src/render/runtime/frame_builder.rs
+RenderPipelineAsset or replacement descriptor
+  -> RenderRuntime
+  -> FrameStages
+  -> RenderExecutor
+  -> RenderGraph / wgpu execution
 ```
 
-`RenderComposer` itself is small, but `RenderComposer::render_world` in
-`frame_builder.rs` currently coordinates almost the entire frame:
+Names are provisional. The important architectural change is that frame
+preparation, extraction, scene upload, lighting, shadows, GI, frame assembly,
+and execution become explicit stages with clear ownership instead of being
+coordinated through one long `RenderComposer::render_world` method.
 
-- material registration and dirty preparation
-- built-in mesh initialization
-- phase, shadow, and GI runtime initialization
-- render settings and render asset frame state
-- transform resolution
-- view collection and ordering
-- feature extraction and preparation
-- extractor execution
-- opaque and transparent phase construction
-- model matrix assignment
-- previous-frame model matrix tracking
-- light collection and GPU table upload
-- GI renderable collection and provider preparation
-- directional shadow view synchronization
-- render pipeline construction
-- `PreparedFrame` and `PreparedView` assembly
-- frame execution
-- render statistics and timing output
+## Current Code Facts
 
-This makes `RenderComposer` more than an orchestrator. It becomes the place that
-understands ECS extraction, assets, materials, lights, GI, shadows, frame
-payloads, phase payloads, execution, and stats.
+This plan is written against the current tree, not the older compatibility plan.
 
-### High Risk: runtime/nodes.rs
+- `src/render/mod.rs` keeps most render internals `pub(crate)` and exposes a
+  curated facade. External imports such as
+  `sky_engine::render::pipeline::builtins::*` are not a compatibility contract
+  today.
+- `src/render/runtime/frame_coordinator.rs` contains the frame recipe that
+  replaced the old god-object pressure: `RenderRuntime::render_world`
+  delegates initialization, extraction, phase population, GPU table upload,
+  GI/shadow preparation, `PreparedFrame` assembly, execution, and stats to
+  explicit stage functions.
+- `src/render/execution/step_nodes/` contains runtime node families and raw pointer
+  dereferencing, but the raw pointers are created in
+  `src/render/runtime/pipeline_runtime.rs`. Fixing only `nodes.rs` is not
+  enough.
+- `src/render/execution/contexts/` is not reducible to one simple setup core
+  and one simple execute core. Current contexts differ by view vs finalize
+  state, phase vs non-phase execution, and extra draw/material/mesh services.
+- `src/render/resources/material/debug.rs` and
+  `src/render/resources/material/prepare.rs` already exist. Material cleanup
+  should target remaining registry responsibilities, not pretend those files
+  are missing.
+- The current worktree is dirty. Existing local changes are user-owned unless
+  the implementation task explicitly targets them.
 
-Current root:
+## Breaking Refactor Rules
+
+- Public render API stability is not a goal.
+- Do not preserve old import paths.
+- It is acceptable to rename or remove `RenderComposer`,
+  `RenderPipelineBuilder`, `PipelineStep`, pass context types, and built-in pass
+  locations.
+- Prefer removing awkward lifetime/unsafe patterns over wrapping them for
+  compatibility.
+- Keep behavior-focused tests meaningful, but update tests and examples to the
+  new API instead of forcing the new implementation through old names.
+- Do not combine this refactor with shader rewrites, benchmark-number updates,
+  or unrelated renderer-family feature work.
+- Keep each implementation slice compiling before starting the next slice.
+
+## Design Quality Bar
+
+The refactor should not merely move code into more files. The new render
+architecture should be modern, decoupled, clear to read, pleasant to use, and
+harder to misuse.
+
+### Modern
+
+- Prefer explicit data flow over hidden mutable global state.
+- Prefer typed stage inputs and outputs over unstructured bags of optional
+  resources.
+- Prefer owned execution plans or short-lived borrows over raw pointers and
+  lifetime workarounds.
+- Prefer capability-specific contexts over one context type that exposes every
+  subsystem.
+
+### Decoupled
+
+- Each stage owns one reason to change:
+  - frame input collection
+  - view collection
+  - ECS extraction
+  - scene upload
+  - lighting
+  - shadows
+  - GI
+  - frame assembly
+  - graph execution
+  - stats
+- Stages communicate through small records, not by reaching back into a shared
+  god runtime.
+- Renderer-family state stays local to that renderer family unless it is truly
+  cross-renderer frame data.
+- Generic execution contexts must not expose material, mesh, sprite, shadow, or
+  GI services unless that execution mode needs them.
+
+### Elegant And Clear
+
+- The top-level frame method should read as a recipe.
+- Public names should describe user intent, not implementation history.
+- Avoid "manager", "helper", and "state" names when a more specific domain name
+  exists.
+- Keep module paths predictable:
+  - public authoring API under the render facade
+  - frame runtime under `runtime`
+  - execution under `executor`
+  - built-in passes under `builtins`
+  - renderer-family internals under their family modules
+
+### Easy To Use
+
+- A minimal app should need only a small set of public concepts:
+  - a render descriptor or builder
+  - a render runtime
+  - features or built-ins
+  - ECS authoring components
+- Advanced users can opt into lower-level execution APIs, but common sprite,
+  mesh, lighting, shadow, GI, and post-fx setup should not require touching
+  internals.
+- Built-in pass ordering should be obvious from the builder or descriptor.
+- Error messages should mention the missing capability, stage, pass, or payload
+  by name.
+
+### Hard To Misuse
+
+- Make invalid states unrepresentable where practical:
+  - no executable runtime before GPU-dependent initialization
+  - no phase execution context without draw services
+  - no finalize context pretending to have a current view
+  - no scene texture access before the graph state declares it
+- Prefer typed payload access and typed handles over stringly typed lookups.
+- Keep unsafe code out of normal frame execution. If unsafe remains, isolate it
+  behind a tiny internal API with documented invariants and tests.
+- Do not introduce service locators that make every subsystem reachable from
+  every stage.
+
+## Target Architecture
+
+### Runtime Ownership
+
+Replace `RenderComposer` as the central owner of every concern with a runtime
+that owns explicit subsystems:
 
 ```text
-src/render/runtime/nodes.rs
+RenderRuntime
+├── pipeline: PipelineRuntime
+├── resources: RenderResourceHub
+├── frame: FrameCoordinator
+├── views: ViewSystem
+├── extraction: ExtractionSystem
+├── scene: SceneUploadSystem
+├── lighting: LightingSystem
+├── shadows: ShadowSystem
+├── gi: GiSystem
+├── executor: RenderExecutor
+└── stats: RenderStatsCollector
 ```
 
-This file owns runtime-installed execution nodes for:
+`RenderRuntime` should remain the app-facing object, but it should delegate
+nearly all work. It should not understand the details of material preparation,
+phase population, shadow cascade synchronization, GI renderable collection, and
+graph execution at the same time.
 
-- scene color seeding
-- phase setup and execution
-- built-in opaque and transparent phase behavior
-- compute pass setup and execution
-- graph pass setup and execution
-- post-fx setup and execution
-- finalize render pass setup and execution
-- headless keep-alive behavior
+### Frame Data
 
-It also holds raw pointers to mutable renderer state:
+Frame stages should pass owned or narrowly borrowed data through explicit
+records:
 
 ```rust
-*mut dyn RenderPhase
-*mut DrawFunctionRegistry
-*mut MaterialRegistry
-*const MeshRegistry
-*const Texture
+pub(crate) struct FrameInputs { /* settings, assets, transforms, frame timing */ }
+pub(crate) struct FrameViews { /* sorted scene and shadow views */ }
+pub(crate) struct ExtractedPhases { /* per-view opaque/transparent/other phases */ }
+pub(crate) struct SceneUploads { /* model slots, matrices, lights, GPU table handles */ }
+pub(crate) struct LightingFrame { /* light resources and frame-visible light data */ }
+pub(crate) struct ShadowFrame { /* shadow bindings, debug resources, stats */ }
+pub(crate) struct GiFrame { /* provider inputs and prepared provider state */ }
+pub(crate) struct FrameAssembly { /* PreparedFrame, PreparedView, payload ownership */ }
 ```
 
-The current model may be workable, but the unsafe lifetime boundary is spread
-through a large mixed-responsibility file. Future changes to the execution
-pipeline should not need to reason through all node families at once.
+Do not force these exact names. The requirement is that `render_world` no
+longer owns a long chain of unrelated local variables whose lifetimes all depend
+on one method body.
 
-### High Risk: pipeline/contexts.rs
+### Execution Model
 
-Current root:
+The executor should not need raw pointers into `RenderRuntime`.
+
+Instead of building a `FramePipeline` from borrowed phase/pass objects and
+storing raw pointers in nodes, build an execution plan that either:
+
+- owns the runtime step objects, or
+- borrows them only for the duration of a single execute call through an
+  explicit `RenderServices` parameter.
+
+Proposed service container:
+
+```rust
+pub(crate) struct RenderServices<'a> {
+    pub(crate) gpu: &'a mut GpuContext,
+    pub(crate) draw_functions: &'a mut DrawFunctionRegistry,
+    pub(crate) materials: &'a mut MaterialRegistry,
+    pub(crate) meshes: &'a MeshRegistry,
+    pub(crate) fallback_texture: &'a Texture,
+}
+```
+
+`RenderServices` is passed into execution. It is not stored inside long-lived
+nodes.
+
+### Context API
+
+Break the current context API. Replace the many overlapping public contexts
+with fewer context families that match real execution modes:
 
 ```text
-src/render/pipeline/contexts.rs
+ViewSetupContext
+ViewExecuteContext
+FinalizeSetupContext
+FinalizeExecuteContext
+PhaseExecuteContext
 ```
 
-The file defines many public setup and execute contexts:
+`PhaseExecuteContext` owns a `PhaseDrawServices` capability for
+draw/material/mesh/fallback access. Generic compute, graph, post-fx, and
+finalize contexts should not expose phase-only services.
 
-- `ComputePassSetupContext`
-- `ComputePassExecuteContext`
-- `GraphPassSetupContext`
-- `GraphPassExecuteContext`
-- `PostFxPassSetupContext`
-- `PostFxPassExecuteContext`
-- `RenderPassSetupContext`
-- `RenderPassExecuteContext`
-- `RenderPhaseSetupContext`
-- `RenderPhaseExecuteContext`
+Compatibility wrappers for the previous phase context names should not be
+added.
 
-Most of these contexts expose overlapping capabilities:
+### Built-In Pass Locations
 
-- frame and view payload access
-- blackboard access
-- scene texture access
-- history texture requests
-- scene lighting access
-- scene shadow access
-- graph/pass/resource access
+Built-in pass families should move out of one mixed file. Since this is a
+breaking refactor, choose public names after the split instead of preserving
+`pipeline::builtins`.
 
-The risk is duplication. Adding one shared frame capability tends to require
-editing several context types.
-
-### Medium Risk: pipeline/builtins.rs
-
-Current root:
+Suggested internal layout:
 
 ```text
-src/render/pipeline/builtins.rs
-```
-
-This is mostly a god-module issue. The file mixes several unrelated built-in
-pipeline step families:
-
-- scene normal prepass
-- scene material prepass
-- GI update and composite wrappers
-- contact shadows
-- bloom
-- tone mapping
-- temporal anti-aliasing
-- debug view
-- sharpening
-- vignette
-
-This is a good first refactor because it can be split with very little behavior
-risk.
-
-### Medium Risk: phase/draw.rs
-
-Current root:
-
-```text
-src/render/phase/draw.rs
-```
-
-This file combines:
-
-- draw function trait and registry
-- draw errors
-- shared draw contexts
-- standalone draw context
-- mesh draw batching
-- mesh material binding and pipeline selection
-- scene prepass draw path
-- sprite draw runtime and pipeline cache
-- sprite batching and draw execution
-
-This is performance-sensitive and should be split after safer runtime and
-module-boundary work is complete.
-
-### Medium Risk: MaterialRegistry
-
-Current root:
-
-```text
-src/render/resources/material/registry.rs
-```
-
-`MaterialRegistry` currently owns:
-
-- material model registration
-- material instance storage
-- generation-checked handles
-- dirty instance tracking
-- material preparation
-- prepared material lookup
-- pipeline cache coordination
-- debug summaries
-
-This is still within the material domain, so it is less urgent than
-`RenderComposer::render_world`. It should remain the public facade while
-internal responsibilities are gradually extracted.
-
-### Lower Priority: tilemap/tiled.rs
-
-Current root:
-
-```text
-src/render/tilemap/tiled.rs
-```
-
-This file is large, but its responsibilities are mostly confined to the Tiled
-import domain:
-
-- TMX parsing
-- JSON/TMJ parsing
-- tileset metadata
-- layer and object decoding
-- compressed tile data
-- coordinate conversion
-- imported map to renderer conversion
-- import tests
-
-It should be split eventually, but it is not a core render-runtime god object.
-
-## Refactor Rules
-
-- Preserve the registration-driven render model.
-- Preserve public app-facing render APIs unless explicitly approved later.
-- Prefer private helper modules over broad trait redesign.
-- Keep `RenderComposer` as the public facade and orchestrator.
-- Do not push renderer-family-specific state into generic execution contexts.
-- Do not turn `GpuScene` into a universal cache for every renderer.
-- Do not mix this cleanup with shader rewrites, benchmark cleanup, or unrelated
-  API changes.
-- Keep each phase compiling before moving to the next phase.
-- Treat the current dirty worktree as user-owned. Only edit files needed for
-  this plan when implementing it.
-
-## Target Shape
-
-The desired end state is:
-
-- `RenderComposer::render_world` reads like a high-level frame recipe.
-- Frame preparation, phase extraction, scene upload, GI preparation, shadow
-  preparation, prepared-frame assembly, and stats finalization live in focused
-  internal helpers.
-- `runtime/nodes.rs` is split by node family.
-- Unsafe raw-pointer access in runtime step nodes is isolated behind a small
-  internal reference wrapper with documented invariants.
-- `pipeline/contexts.rs` uses shared internal context cores to reduce repeated
-  methods while preserving the public context names.
-- `pipeline/builtins.rs` becomes a module tree of built-in pass families.
-- `phase/draw.rs` separates trait/registry, contexts, mesh draw, sprite draw,
-  scene bindings, and batching helpers.
-- `MaterialRegistry` remains the material facade, but debug and preparation
-  helper logic no longer inflate the core registry file.
-
-## Phase 0: Baseline And Safety
-
-### Tasks
-
-1. Capture the current state before refactoring:
-
-   ```bash
-   git status --short
-   ```
-
-2. Identify which existing changes are user-owned and avoid touching them unless
-   they are directly part of the refactor.
-
-3. Use small, mechanical commits or review slices when possible:
-
-   - one slice for `builtins`
-   - one slice for frame flow extraction
-   - one slice for node splitting
-   - one slice for context-core extraction
-   - one slice for draw splitting
-
-4. Prefer mechanical moves before behavior edits.
-
-### Validation
-
-At minimum:
-
-```bash
-cargo fmt --check
-cargo test --features app render::runtime
-cargo test --features app render::pipeline
-cargo test --features app render::phase
-cargo check --examples --features app
-```
-
-If a phase only moves files and imports, run the smallest relevant test first,
-then run the full render example check before considering the phase complete.
-
-## Phase 1: Split pipeline/builtins.rs
-
-### Intent
-
-Reduce a large mixed built-in pass file into a module tree. This is the safest
-first step because it should preserve behavior and public exports.
-
-### Proposed Structure
-
-```text
-src/render/pipeline/builtins/
+src/render/builtins/
 ├── mod.rs
 ├── prepass.rs
 ├── gi.rs
@@ -313,483 +263,261 @@ src/render/pipeline/builtins/
 └── debug.rs
 ```
 
-### Ownership
-
-Move code as follows:
-
-```text
-SceneNormalPrepass        -> prepass.rs
-SceneMaterialPrepass      -> prepass.rs
-GiUpdateCompute           -> gi.rs
-GiCompositePass           -> gi.rs
-ContactShadows            -> shadows.rs
-Bloom                     -> postfx.rs
-ToneMap                   -> postfx.rs
-TemporalAntiAliasing      -> postfx.rs
-Sharpen                   -> postfx.rs
-Vignette                  -> postfx.rs
-DebugView                 -> debug.rs
-DebugViewSource           -> debug.rs
-shared helpers            -> private modules or mod.rs, depending on scope
-```
-
-### Steps
-
-1. Create the `builtins/` directory.
-2. Move one family at a time.
-3. Keep exports stable from `src/render/pipeline/mod.rs`.
-4. Keep user-facing names unchanged.
-5. Do not change pass order in `RenderPipelineAsset` constructors.
-6. Run formatting after imports settle.
-
-### Public Compatibility
-
-Existing code should continue to compile:
+The final facade may expose either:
 
 ```rust
-use sky_engine::render::{Bloom, ToneMap, Vignette};
-use sky_engine::render::pipeline::builtins::SceneNormalPrepass;
+sky_engine::render::builtins::Bloom
 ```
 
-If old imports point directly at `crate::render::pipeline::builtins`, preserve
-them with `pub use`.
+or curated root exports:
+
+```rust
+sky_engine::render::Bloom
+```
+
+but this should be a deliberate new API decision, not a compatibility promise.
+
+## Phase 0: Baseline And Decision Record
+
+### Tasks
+
+1. Capture the current local state:
+
+   ```bash
+   git status --short
+   ```
+
+2. Record the intended breaking API decisions before editing code:
+
+   - new app-facing runtime type name
+   - new pipeline descriptor/builder names
+   - new pass trait names, if any
+   - new context type names
+   - new built-in pass export path
+
+3. Identify user-owned worktree changes and avoid unrelated cleanup.
+
+4. Do not add compatibility shims, aliases, or old-path re-exports.
+
+### Validation
+
+No behavior validation is required in this phase. The output is a written API
+decision record or a short checklist in the implementation task.
+
+## Phase 1: Define The New Public Surface
+
+### Intent
+
+Stop treating the current facade as fixed. Define the new public API first so
+the implementation has a target.
+
+### Tasks
+
+1. Decide the replacement for `RenderComposer`; do not keep it as a type alias
+   for migration.
+2. Decide whether `RenderPipelineAsset` remains the user-authored descriptor or
+   is replaced by a clearer descriptor/runtime split.
+3. Replace the current pass context export set with the new context family.
+4. Move or rename built-in pass exports.
+5. Update `src/render/mod.rs` and `src/render/expert.rs` to expose the new API.
+6. Update examples only after the implementation phases introduce the new
+   behavior.
+
+### Validation
+
+```bash
+cargo check --features app
+```
+
+Temporary example failures are acceptable during this phase only if the next
+phase explicitly migrates them.
+
+## Phase 2: Split Pipeline Declarations From Runtime Steps
+
+### Intent
+
+Remove the lifetime pressure that currently leads to raw pointers in runtime
+nodes.
+
+### Tasks
+
+1. Split declaration-time pipeline data from executable runtime state.
+2. Ensure runtime steps are owned by `PipelineRuntime` or are borrowed only
+   within a single execute call.
+3. Replace `build_runtime_pipeline` pointer capture with an executor call that
+   receives `RenderServices`.
+4. Remove `*mut dyn RenderPhase`, `*mut dyn ComputePass`,
+   `*mut dyn GraphPass`, `*mut dyn PostFxPass`, and `*mut dyn RenderPass` from
+   long-lived nodes.
+5. Decide whether built-in opaque/transparent behavior remains special-cased or
+   becomes ordinary phase implementations.
 
 ### Validation
 
 ```bash
 cargo fmt
+cargo test --features app render::runtime
 cargo test --features app render::pipeline
-cargo check --examples --features app
 ```
 
-## Phase 2: Extract RenderComposer Frame Flow
+## Phase 3: Replace `RenderComposer::render_world` With Frame Stages
 
 ### Intent
 
-Make `RenderComposer::render_world` an orchestration method instead of the home
-of all frame logic.
+Make frame flow explicit and owned by stage objects.
 
 ### Proposed Modules
 
 ```text
 src/render/runtime/
-├── frame_builder.rs
-├── frame_prepare.rs
-├── phase_extract.rs
-├── scene_upload.rs
-├── gi_prepare.rs
-├── shadow_prepare.rs
-└── frame_assemble.rs
+├── runtime.rs
+├── frame/
+│   ├── mod.rs
+│   ├── inputs.rs
+│   ├── views.rs
+│   ├── extract.rs
+│   ├── scene_upload.rs
+│   ├── lighting.rs
+│   ├── shadows.rs
+│   ├── gi.rs
+│   ├── assemble.rs
+│   └── stats.rs
+└── executor/
+    ├── mod.rs
+    ├── plan.rs
+    ├── view.rs
+    └── finalize.rs
 ```
 
-The exact filenames can change if local patterns suggest better names. Keep the
-modules private to `runtime`.
+Use different filenames if the implementation becomes clearer, but keep stage
+ownership visible in the module tree.
 
-### Proposed Data Types
-
-```rust
-pub(crate) struct FramePrelude<'a> {
-    pub(crate) asset_server: Option<crate::asset::AssetServer>,
-    pub(crate) render_assets:
-        Option<&'a crate::render::resources::assets::SharedRenderAssetCache>,
-    pub(crate) resolved_transforms:
-        crate::render::view::ResolvedSceneTransforms,
-}
-```
-
-```rust
-pub(crate) struct ExtractedFramePhases {
-    pub(crate) views: Vec<crate::render::view::SceneView>,
-    pub(crate) opaque: Vec<crate::render::phase::OpaquePhase>,
-    pub(crate) transparent: Vec<crate::render::phase::TransparentPhase>,
-}
-```
-
-```rust
-pub(crate) struct UploadedSceneData {
-    pub(crate) lights: Vec<crate::render::GpuLight>,
-    pub(crate) model_matrices: Vec<[f32; 16]>,
-    pub(crate) previous_model_matrices: PreviousModelMatrices,
-}
-```
-
-```rust
-pub(crate) struct ShadowFrameSummary {
-    pub(crate) debug_resources:
-        Option<crate::render::lighting::shadow::ShadowDebugResources>,
-    pub(crate) stats: FrameShadowStats,
-    pub(crate) draw_calls: usize,
-    pub(crate) draw_calls_by_cascade:
-        [usize; crate::render::component::MAX_DIRECTIONAL_SHADOW_CASCADES],
-}
-```
-
-These types should remain crate-private or module-private. They are internal
-bookkeeping, not API.
-
-### Target render_world Shape
-
-The target method should read close to this:
+### Target Runtime Flow
 
 ```rust
 pub fn render_world(&mut self, gpu: &mut GpuContext, world: &World) {
-    self.ensure_frame_runtime(gpu, world);
-
-    let frame_start = timing_start();
-    let prelude = self.prepare_frame_inputs(gpu, world);
-    let phases = self.extract_frame_phases(gpu, world, &prelude);
-    let uploads = self.upload_scene_data(gpu, world, &prelude, &phases);
-    self.prepare_gi(gpu, &phases, &uploads);
-    let shadows = self.prepare_shadows(gpu, world, &phases, &uploads);
-    let execution = self.execute_prepared_frame(gpu, &phases, &uploads, &shadows);
-
-    self.finish_frame_stats(world, frame_start, &phases, &uploads, &shadows, execution);
+    let frame = self.frame.begin(gpu, world, &mut self.resources);
+    let views = self.views.collect(world, &frame);
+    let phases = self.extraction.extract(gpu, world, &frame, &views, &mut self.resources);
+    let uploads = self.scene.upload(gpu, world, &frame, &phases, &mut self.resources);
+    let lighting = self.lighting.prepare(gpu, world, &frame, &views, &uploads);
+    let shadows = self.shadows.prepare(gpu, world, &frame, &views, &phases, &uploads);
+    let gi = self.gi.prepare(gpu, &frame, &views, &phases, &uploads, &lighting);
+    let assembly = self.frame.assemble(&frame, &views, &phases, &uploads, &lighting, &shadows, &gi);
+    let stats = self.executor.execute(gpu, &self.pipeline, assembly, &mut self.resources);
+    self.stats.finish(frame, stats);
 }
 ```
 
-This is illustrative, not a required exact signature. Borrowing constraints may
-require slightly different ownership boundaries.
-
-### Extraction Boundaries
-
-#### frame_prepare.rs
-
-Own:
-
-- `ensure_registered_materials`
-- `ensure_builtin_meshes`
-- `ensure_phase_runtime`
-- `ensure_shadow_runtime`
-- `ensure_gi_runtime`
-- material pipeline cache frame begin
-- render settings fetch
-- render asset cache frame begin
-- asset event dispatch
-- sprite material frame clear
-
-Do not own:
-
-- view collection
-- phase item creation
-- GI renderable creation
-- shadow atlas sync
-
-#### phase_extract.rs
-
-Own:
-
-- transform resolution
-- world view collection
-- runtime feature `extract`
-- runtime feature `collect_views`
-- directional shadow view append
-- view ordering/finalization
-- temporal view tracking
-- runtime feature `prepare`
-- extractor execution
-- feature phase item append
-- opaque and transparent phase sorting
-
-Do not own:
-
-- GPU table upload
-- material dirty preparation
-- GI provider preparation
-- shadow GPU sync
-
-#### scene_upload.rs
-
-Own:
-
-- model matrix assignment
-- previous model matrix construction
-- entity-to-model-slot map
-- light collection
-- `ModelMatrixTable` upload
-- `LightTable` upload
-- previous model tracking update at frame end
-
-Do not own:
-
-- GI provider resource preparation
-- shadow cascade setup
-- phase extraction
-
-#### gi_prepare.rs
-
-Own:
-
-- standard material GI renderable collection
-- primary lit view selection
-- `GiSceneInput` construction
-- GI provider `prepare`
-
-Do not own:
-
-- GI compute pass execution
-- scene texture allocation
-- generic render graph behavior
-
-#### shadow_prepare.rs
-
-Own:
-
-- `sync_shadow_views`
-- shadow debug resource discovery
-- shadow stats aggregation
-- shadow draw call counting
-- cascade draw call counting
-
-Do not own:
-
-- generic light upload
-- frame stats assembly beyond shadow summary
-
-#### frame_assemble.rs
-
-Own:
-
-- `PreparedFrame` construction
-- frame payload insertion
-- `PreparedView` construction
-- view payload insertion
-- feature frame/view payload insertion
-- pipeline execution wrapper
-
-Do not own:
-
-- extraction
-- upload
-- shadow or GI preparation
+This shape is illustrative. The implementation may use fewer objects, but the
+final method should read as a frame recipe, not as the implementation of every
+stage.
 
 ### Validation
-
-After each extracted helper compiles:
-
-```bash
-cargo test --features app render::runtime
-```
-
-After the phase is complete:
 
 ```bash
 cargo fmt
 cargo test --features app render::runtime
-cargo check --examples --features app
 ```
 
-## Phase 3: Isolate runtime/nodes.rs Unsafe Boundaries
+## Phase 4: Replace Contexts With Mode-Specific APIs
 
 ### Intent
 
-Do not redesign `FramePipeline` yet. First, isolate raw pointer dereferencing and
-document the invariants.
+Break the duplicated context API instead of preserving the old context names.
 
-### Proposed Structure
+### Tasks
 
-```text
-src/render/runtime/nodes/
-├── mod.rs
-├── seed.rs
-├── phase.rs
-├── compute.rs
-├── graph.rs
-├── postfx.rs
-├── finalize.rs
-└── step_refs.rs
-```
+1. Introduce mode-specific setup and execute contexts:
 
-### step_refs.rs
+   - `ViewSetupContext`
+   - `ViewExecuteContext`
+   - `FinalizeSetupContext`
+   - `FinalizeExecuteContext`
+   - `PhaseExecuteContext`
 
-Add small internal wrappers, for example:
-
-```rust
-pub(crate) struct PhaseStepRefs {
-    phase: *mut dyn RenderPhase,
-    draw_functions: *mut DrawFunctionRegistry,
-    materials: *mut MaterialRegistry,
-    mesh_registry: *const MeshRegistry,
-    fallback_texture: *const Texture,
-}
-```
-
-The wrapper should expose safe-looking methods only inside the runtime module:
-
-```rust
-impl PhaseStepRefs {
-    pub(crate) fn phase(&self) -> &dyn RenderPhase;
-    pub(crate) fn phase_mut(&mut self) -> &mut dyn RenderPhase;
-    pub(crate) fn draw_functions_mut(&mut self) -> &mut DrawFunctionRegistry;
-    pub(crate) fn materials_mut(&mut self) -> &mut MaterialRegistry;
-    pub(crate) fn mesh_registry(&self) -> &MeshRegistry;
-    pub(crate) fn fallback_texture(&self) -> &Texture;
-}
-```
-
-Each unsafe block should have a short invariant comment:
-
-```rust
-// SAFETY: These pointers are created while building a FramePipeline from a live
-// RenderComposer. The composer owns the pointed-to state for the duration of
-// pipeline execution, and FramePipeline executes nodes serially.
-```
-
-### Node Split
-
-Move families without changing behavior:
-
-```text
-SceneColorSeedNode       -> seed.rs
-PhaseStepNode            -> phase.rs
-ComputeStepNode          -> compute.rs
-GraphPassStepNode        -> graph.rs
-PostFxStepNode           -> postfx.rs
-RenderPassStepNode       -> finalize.rs
-HeadlessKeepAliveNode    -> finalize.rs or seed.rs
-```
+2. Move shared graph/frame/view helpers into private reusable cores only where
+   lifetimes actually match.
+3. Keep finalize state separate from view state.
+4. Keep phase draw services out of non-phase contexts.
+5. Update all built-in and example pass implementations to the new context API.
+6. Delete old context exports once call sites are migrated.
 
 ### Validation
 
 ```bash
 cargo fmt
-cargo test --features app render::runtime
 cargo test --features app render::pipeline
+cargo test --features app render::runtime
 ```
 
-## Phase 4: Reduce pipeline/contexts.rs Duplication
+## Phase 5: Move Built-Ins Into A New Module Tree
 
 ### Intent
 
-Keep the public context types but share their implementation through internal
-core structs.
+Split the current monolithic `pipeline/builtins.rs` after the new context API is
+defined, so moved code can target the new API immediately.
 
-### Proposed Internal Cores
+### Proposed Ownership
 
-```rust
-pub(crate) struct SetupContextCore<'graph, 'frame> {
-    graph: &'graph mut RenderGraph,
-    state: &'graph mut PhaseState,
-    frame: &'frame PreparedFrame<'frame>,
-    view: &'frame PreparedView<'frame>,
-}
-```
-
-```rust
-pub(crate) struct ExecuteContextCore<'gpu, 'frame> {
-    gpu: &'gpu mut GpuContext,
-    pass: &'frame CompiledPass,
-    resources: &'frame PhysicalResources<'frame>,
-    execution: &'frame ViewExecutionContext<'frame>,
-}
-```
-
-Then keep public contexts as wrappers:
-
-```rust
-pub struct ComputePassSetupContext<'graph, 'frame> {
-    core: SetupContextCore<'graph, 'frame>,
-}
+```text
+SceneNormalPrepass        -> builtins/prepass.rs
+SceneMaterialPrepass      -> builtins/prepass.rs
+GiUpdateCompute           -> builtins/gi.rs
+GiCompositePass           -> builtins/gi.rs
+ContactShadows            -> builtins/shadows.rs
+Bloom                     -> builtins/postfx.rs
+ToneMap                   -> builtins/postfx.rs
+TemporalAntiAliasing      -> builtins/postfx.rs
+Sharpen                   -> builtins/postfx.rs
+Vignette                  -> builtins/postfx.rs
+DebugView                 -> builtins/debug.rs
 ```
 
 ### Rules
 
-- Do not remove public context type names.
-- Do not force user pass implementations through generic traits.
-- Do not make public APIs less discoverable.
-- Do not change lifetime semantics unless required by the compiler.
-- Move common helpers into `impl SetupContextCore` and `impl ExecuteContextCore`.
-- Keep pass-specific methods on the pass-specific context.
-
-### Candidate Shared Setup Methods
-
-- `graph`
-- `state`
-- `frame`
-- `view`
-- `frame_payload`
-- `view_payload`
-- `scene_lighting`
-- `optional_scene_shadows`
-- `require_scene_shadows`
-- `publish_scene_shadows`
-- `blackboard`
-- `blackboard_ref`
-- `blackboard_set`
-- `blackboard_get`
-- `blackboard_get_mut`
-- `optional_scene_texture`
-- `require_scene_texture`
-- `set_scene_texture`
-- `ensure_scene_texture`
-- `create_texture`
-- `history_texture`
-
-### Candidate Shared Execute Methods
-
-- `gpu`
-- `pass`
-- `resources`
-- `frame`
-- `view`
-- `view_index`
-- `frame_payload`
-- `view_payload`
-- `blackboard`
-- `blackboard_get`
-- read/write texture helpers
-- read/write subresource helpers
+- Do not preserve `render::pipeline::builtins`; choose a new built-in export
+  path.
+- Prefer family-local helpers over a large shared `mod.rs`.
+- Update facade exports after the split.
 
 ### Validation
 
 ```bash
 cargo fmt
 cargo test --features app render::pipeline
-cargo test --features app render::runtime
 cargo check --examples --features app
 ```
 
-## Phase 5: Split phase/draw.rs
+## Phase 6: Split Draw Execution
 
 ### Intent
 
-Separate draw registration, contexts, mesh drawing, sprite drawing, and binding
-helpers while preserving hot-path behavior.
+Break up `phase/draw.rs` and separate draw registration from mesh/sprite draw
+backends.
 
 ### Proposed Structure
 
 ```text
 src/render/phase/
-├── draw.rs
 ├── draw_context.rs
 ├── draw_registry.rs
+├── errors.rs
 ├── mesh_draw.rs
 ├── sprite_draw.rs
+├── scene_prepass.rs
 ├── scene_bindings.rs
-└── batching.rs
-```
-
-### Ownership
-
-```text
-DrawError                 -> draw.rs or error.rs
-DrawFunction              -> draw.rs
-DrawFunctionRegistry      -> draw_registry.rs
-DrawContext               -> draw_context.rs
-StandaloneDrawContext     -> draw_context.rs
-DrawMesh<M>               -> mesh_draw.rs
-DrawSprite                -> sprite_draw.rs
-DrawSpriteRuntime         -> sprite_draw.rs
-scene binding resolution  -> scene_bindings.rs
-batch cursor helpers      -> batching.rs
+└── mesh_instance.rs
 ```
 
 ### Rules
 
-- Do not change phase item sorting.
-- Do not change batching keys.
-- Do not introduce per-item allocations in hot loops.
-- Do not alter `DrawFunction` behavior before and after the move.
-- Keep mesh and sprite rendering tests passing after each move.
+- Preserve batching behavior unless a benchmarked follow-up intentionally
+  changes it.
+- Do not introduce per-item allocations in phase execution.
+- Move code family by family and run tests after each family.
+- If the new context API changes draw call signatures, update the draw traits
+  once and migrate all draw implementations together.
 
 ### Validation
 
@@ -797,39 +525,42 @@ batch cursor helpers      -> batching.rs
 cargo fmt
 cargo test --features app render::phase
 cargo test --features app render::runtime
-cargo check --examples --features app
 ```
 
-## Phase 6: Prepare MaterialRegistry For Later Splitting
+## Phase 7: Split Material Registry Internals
 
 ### Intent
 
-Keep `MaterialRegistry` as the material subsystem facade, but stop it from
-growing further.
+Keep or replace the material facade deliberately, but remove remaining registry
+god-object responsibilities.
 
-### Candidate Extracts
+### Current State
+
+`debug.rs` and `prepare.rs` already exist. Do not create a plan that treats them
+as missing.
+
+### Candidate Structure
 
 ```text
 src/render/resources/material/
 ├── registry.rs
+├── records.rs
+├── instance_store.rs
+├── dirty_queue.rs
 ├── debug.rs
-├── prepare_queue.rs
-└── records.rs
+├── prepare.rs
+└── ...
 ```
 
-Move:
+### Tasks
 
-- debug summary construction to `debug.rs`
-- dirty preparation helper logic to `prepare_queue.rs`
-- internal record structs to `records.rs` if it improves readability
-
-### Rules
-
-- Keep typed material storage API stable.
-- Keep handle validation behavior stable.
-- Keep pipeline cache access stable.
-- Do not combine this with material trait redesign.
-- Do not duplicate material instance state.
+1. Move `ModelRecord` into `records.rs`.
+2. Move generational instance slot bookkeeping into `instance_store.rs`.
+3. Move dirty instance queue logic into `dirty_queue.rs`.
+4. Keep debug summary construction near `debug.rs` types or expose a narrow
+   internal helper.
+5. Revisit whether `MaterialRegistry` remains the public facade or becomes an
+   internal service inside `RenderResourceHub`.
 
 ### Validation
 
@@ -837,79 +568,104 @@ Move:
 cargo fmt
 cargo test --features app render::resources::material
 cargo test --features app render::runtime
-cargo check --examples --features app
 ```
 
-## Phase 7: Optional Tilemap Import Split
+## Phase 8: Migrate Examples And Facade Docs
 
 ### Intent
 
-Improve maintainability of the Tiled importer after the core render runtime is
-cleaner.
+Because this refactor is breaking, examples and docs must move to the new API
+instead of being used to constrain the refactor.
 
-### Proposed Structure
+### Tasks
 
-```text
-src/render/tilemap/tiled/
-├── mod.rs
-├── error.rs
-├── types.rs
-├── json.rs
-├── tmx.rs
-├── tileset.rs
-├── layer.rs
-├── data.rs
-└── tests.rs
-```
-
-### Rules
-
-- Keep `TiledImport` as the public entry point.
-- Keep `TiledMapInstance` behavior unchanged.
-- Keep official Tiled sample tests.
-- Do not move Tiled semantics into generic render modules.
+1. Update render examples under `examples/render/`.
+2. Update demo examples under `examples/demo/` if they use the old runtime API.
+3. Update `README.md`, `README_EN.md`, and `docs/api.md` render snippets.
+4. Update `src/render/mod.rs` facade export tests.
+5. Remove obsolete aliases and old-path exports instead of preserving them.
 
 ### Validation
 
 ```bash
 cargo fmt
-cargo test --features app render::tilemap::tiled
+cargo check --examples --features app
+cargo test --features app
+```
+
+## Phase 9: Optional Tilemap Import Split
+
+### Intent
+
+Split the Tiled importer after the core runtime is stable. This is not on the
+critical path for the render god-object refactor.
+
+### Proposed Structure
+
+```text
+src/render/tilemap/tiled/
+├── mod.rs or tiled.rs
+├── data.rs
+├── error.rs
+├── json.rs
+├── layer.rs
+├── object.rs
+├── properties.rs
+├── tmx.rs
+├── tileset.rs
+├── types.rs
+├── util.rs
+└── tests.rs
+```
+
+### Validation
+
+```bash
+cargo fmt
 cargo test --features app render::tilemap
 ```
 
 ## Suggested Implementation Order
 
-1. Split `pipeline/builtins.rs`.
-2. Extract `RenderComposer::render_world` helpers.
-3. Split `runtime/nodes.rs` and isolate unsafe references.
-4. Add shared context cores in `pipeline/contexts.rs`.
-5. Split `phase/draw.rs`.
-6. Extract non-core helpers from `MaterialRegistry`.
-7. Optionally split `tilemap/tiled.rs`.
+1. Define the new public API and delete the old public surface.
+2. Split pipeline declarations from runtime step ownership.
+3. Replace raw-pointer node execution with service-passed execution.
+4. Stage `render_world` into explicit frame systems.
+5. Replace old pass contexts with mode-specific contexts.
+6. Move built-ins to the new module tree.
+7. Split draw execution internals.
+8. Split material registry internals.
+9. Migrate examples and docs.
+10. Optionally split tilemap import.
 
-This order gives the best risk profile:
-
-- Phase 1 is mostly mechanical.
-- Phase 2 removes the largest architectural pressure point.
-- Phase 3 narrows unsafe code after the frame flow is easier to read.
-- Phase 4 reduces future API duplication.
-- Phase 5 touches hot draw paths only after the surrounding runtime is calmer.
-- Phase 6 and Phase 7 are cleanup once the core pressure points are handled.
+This order prioritizes architectural blockers before mechanical file splits.
+Splitting `builtins.rs` first is no longer preferred because the old built-ins
+would otherwise be moved once for the old context API and again for the new one.
 
 ## Acceptance Criteria
 
 The refactor is complete when:
 
-- `RenderComposer::render_world` is a readable orchestration method rather than
-  a full frame implementation.
-- Built-in pipeline passes live in focused modules.
-- Runtime step nodes are split by step family.
-- Raw-pointer dereferencing in runtime nodes is isolated and documented.
-- Pipeline contexts share internal core logic where appropriate.
-- Draw implementation is split without changing batching behavior.
-- `MaterialRegistry` is still the facade, but debug and preparation helpers are
-  not expanding the core file.
-- Public render examples still compile.
+- The app-facing render runtime no longer exposes or depends on the old
+  `RenderComposer` public surface or god-object shape.
+- `render_world` is a short orchestration method over explicit frame stages.
+- Each frame stage has a narrow typed input and output, and no stage reaches
+  through a shared runtime to mutate unrelated subsystems.
+- Runtime execution no longer stores raw pointers to phases, passes, material
+  registry, draw registry, mesh registry, or fallback texture.
+- The old duplicated context family is removed.
+- The new context types are capability-specific; generic compute/graph/post-fx
+  contexts do not expose phase-only draw or material services.
+- Built-in passes live in focused modules and target the new context API.
+- Public render setup has a small happy path for normal apps and a separate
+  expert path for lower-level execution control.
+- Invalid execution modes are rejected by type shape or early named errors, not
+  by late panics from missing payloads.
+- Draw execution is split by registry, context, mesh draw, sprite draw, scene
+  prepass, and batching concerns.
+- Material registry internals no longer mix record storage, dirty queue logic,
+  debug summary construction, and preparation orchestration in one file.
+- Render examples and docs compile against the new API.
 
 ## Final Validation
 
@@ -924,38 +680,36 @@ cargo test --features app render::resources::material
 cargo check --examples --features app
 ```
 
-If render graph internals are touched unexpectedly, also run:
+Then run the broader app feature suite:
+
+```bash
+cargo test --features app
+```
+
+If render graph internals are touched, also run:
 
 ```bash
 cargo test --features app graph
 ```
 
-If tilemap importer splitting is included, also run:
-
-```bash
-cargo test --features app render::tilemap
-```
-
 ## Known Risks
 
-- `RenderComposer::render_world` extraction may hit borrow checker pressure
-  because many helpers need partial access to `self`.
-- `runtime/nodes.rs` uses raw pointers because the pipeline owns node objects
-  while runtime state remains in `RenderComposer`. Do not casually replace this
-  with references without checking lifetime and object-safety constraints.
-- `phase/draw.rs` is hot-path code. File splitting must not introduce extra
-  allocation, dynamic dispatch, or hash lookups in per-item loops.
-- Context deduplication can make public APIs harder to discover if overdone.
-  Keep public context methods explicit even if they forward to internal cores.
-- Existing local changes are extensive. Avoid broad formatting or unrelated file
-  churn when implementing this plan.
+- This is a breaking refactor. Examples, downstream apps, and docs will fail
+  until migrated.
+- Replacing raw-pointer node execution may require changing `FramePipeline` or
+  replacing it with a new executor. This is expected.
+- Context API replacement will touch every built-in pass and any custom example
+  pass implementation.
+- `phase/mesh_draw.rs` and `phase/sprite_draw.rs` contain hot draw paths.
+  Splitting them further must not introduce extra allocation, dispatch, or hash
+  lookups in per-item loops unless a later benchmarked task approves the cost.
+- The dirty worktree is extensive. Avoid formatting or touching files outside
+  the active implementation slice.
 
 ## Non-Goals
 
-- No material system rewrite.
-- No render graph rewrite.
-- No shader rewrite.
+- No shader behavior rewrite.
+- No render graph algorithm rewrite unless required by the new executor.
 - No new renderer family.
-- No public API break unless separately approved.
-- No benchmark number update.
-- No cleanup of unrelated worktree changes.
+- No benchmark result updates.
+- No compatibility promise for the old render API.

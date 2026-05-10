@@ -13,6 +13,7 @@ pub use super::execution::{
     PreparedFrame, PreparedView, ResourceSlotMap, SceneTexture, SetupExecutionContext,
     SlotResource, TextureFormat, TextureSlot, ViewExecutionContext, ViewPayloadStore,
 };
+pub use super::execution::{GraphPassExecuteContext, GraphPassSetupContext};
 pub use super::extract::{
     ExtractContext, ExtractError, ExtractSchedule, ExtractSprites, Extractor,
 };
@@ -41,29 +42,30 @@ pub use super::phase::{
     DrawFunctionId, DrawFunctionRegistry, DrawMesh, DrawSprite, OpaquePhase, PhaseItem,
     TransparentPhase,
 };
-pub use super::pipeline::{GraphPass, GraphPassExecuteContext, GraphPassSetupContext, TextureSpec};
+pub use super::pipeline::{GraphPass, TextureSpec};
 pub use super::postfx::{bloom::Bloom, tonemap::ToneMap, vignette::Vignette, PostFx};
 pub use super::resources::{
     atlas::{AtlasError, AtlasPacker, TextureAtlas, UvRect},
     blackboard::Blackboard,
     material::{
-        AlphaMode, Material, MaterialBindContext, MaterialBindingLayout, MaterialError,
-        MaterialHandle, MaterialInstance, MaterialPipelineCache, MaterialPipelineDesc,
-        MaterialProperties, MaterialRegistry, MaterialRenderState, MaterialResourceBindings,
-        MaterialStorage, PipelineCache, PropertyType, SceneBindingDesc, SceneBindingKind,
-        ShaderSource, SpriteMaterial, StandardMaterial, UnlitMaterial,
+        AlphaMode, Material, MaterialBindingLayout, MaterialError, MaterialHandle,
+        MaterialPipelineCache, MaterialPipelineDesc, MaterialRegistry, MaterialRenderState,
+        PipelineCache, SceneBindingDesc, SceneBindingKind, ShaderSource, SpriteMaterial,
+        StandardMaterial, UnlitMaterial,
     },
     mesh::{
         BoundingSphere, Mesh, MeshDescriptor, MeshError, MeshHandle, MeshIndexData, MeshRegistry,
-        SubMesh, VertexAttribute, VertexLayout, VertexSemantic,
+        Ray, RayAabb, RayBlasNode, RayHit, RayMesh, RayTriangle, SubMesh, VertexAttribute,
+        VertexLayout, VertexSemantic,
     },
 };
 pub use super::runtime::{HistoryTexture, HistoryTextureRequest, HistoryTextureSize};
 pub use super::sprite::batch::SpriteBatch;
 pub use super::sprite::Sprite;
 pub use super::view::{
-    Camera, Color, Frustum, RenderView, SceneView, TemporalViewState, ViewUniform, ViewportRect,
+    Camera, Frustum, RenderView, SceneView, TemporalViewState, ViewUniform, ViewportRect,
 };
+pub use super::Color;
 pub use crate::math::{Projection, Quat, Transform};
 
 #[cfg(feature = "live2d")]

@@ -30,16 +30,16 @@ enum DispatchEntry {
     },
 }
 
-pub struct FramePipeline {
-    setup_nodes: Vec<Box<dyn FrameSetupNode>>,
-    view_nodes: Vec<Box<dyn FrameViewNode>>,
-    finalize_nodes: Vec<Box<dyn FrameFinalizeNode>>,
+pub struct FramePipeline<'nodes, S: ?Sized = ()> {
+    setup_nodes: Vec<Box<dyn FrameSetupNode + 'nodes>>,
+    view_nodes: Vec<Box<dyn FrameViewNode<S> + 'nodes>>,
+    finalize_nodes: Vec<Box<dyn FrameFinalizeNode + 'nodes>>,
     graph: RenderGraph,
     pass_dispatch: FxHashMap<PassHandle, DispatchEntry>,
     completed_views: Vec<CompletedViewState>,
 }
 
-impl FramePipeline {
+impl<'nodes, S: ?Sized> FramePipeline<'nodes, S> {
     pub fn new() -> Self {
         Self {
             setup_nodes: Vec::new(),
@@ -51,17 +51,17 @@ impl FramePipeline {
         }
     }
 
-    pub fn add_setup_node(&mut self, node: Box<dyn FrameSetupNode>) -> &mut Self {
+    pub fn add_setup_node(&mut self, node: Box<dyn FrameSetupNode + 'nodes>) -> &mut Self {
         self.setup_nodes.push(node);
         self
     }
 
-    pub fn add_view_node(&mut self, node: Box<dyn FrameViewNode>) -> &mut Self {
+    pub fn add_view_node(&mut self, node: Box<dyn FrameViewNode<S> + 'nodes>) -> &mut Self {
         self.view_nodes.push(node);
         self
     }
 
-    pub fn add_finalize_node(&mut self, node: Box<dyn FrameFinalizeNode>) -> &mut Self {
+    pub fn add_finalize_node(&mut self, node: Box<dyn FrameFinalizeNode + 'nodes>) -> &mut Self {
         self.finalize_nodes.push(node);
         self
     }
@@ -78,10 +78,11 @@ impl FramePipeline {
         }
     }
 
-    pub fn execute_frame(
+    pub fn execute_frame_with_services(
         &mut self,
         ctx: &mut GpuContext,
         frame: &PreparedFrame<'_>,
+        services: &mut S,
     ) -> FrameExecutionStats {
         self.prepare_frame_graph(frame);
 
@@ -135,9 +136,15 @@ impl FramePipeline {
                         view_index,
                     };
                     if count_draw_calls {
-                        stats.draw_calls += view_nodes[node_index].draw_calls(&execution);
+                        stats.draw_calls += view_nodes[node_index].draw_calls(&execution, services);
                     }
-                    view_nodes[node_index].execute(compiled_pass, ctx, resources, &execution)?;
+                    view_nodes[node_index].execute(
+                        compiled_pass,
+                        ctx,
+                        resources,
+                        &execution,
+                        services,
+                    )?;
                 }
                 DispatchEntry::Finalize { node_index } => {
                     let execution = FinalizeExecutionContext {
@@ -268,7 +275,17 @@ impl FramePipeline {
     }
 }
 
-impl Default for FramePipeline {
+impl<'nodes> FramePipeline<'nodes, ()> {
+    pub fn execute_frame(
+        &mut self,
+        ctx: &mut GpuContext,
+        frame: &PreparedFrame<'_>,
+    ) -> FrameExecutionStats {
+        self.execute_frame_with_services(ctx, frame, &mut ())
+    }
+}
+
+impl<'nodes, S> Default for FramePipeline<'nodes, S> {
     fn default() -> Self {
         Self::new()
     }

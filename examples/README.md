@@ -32,7 +32,7 @@ The `examples/render/` directory now forms a complete path from first window to 
 5. **`render_graph_showcase`** — study the low-level `render::expert::RenderGraph` API and resource scheduling model.
 6. **`frame_pipeline_showcase`** — inspect the expert-only setup/view/finalize execution backbone directly.
 7. **`perf_test`** — low-level `SpriteBatch` throughput / scaling observation.
-8. **`renderer_probe`** — headless `RenderComposer` probe for the default universal scene pipeline.
+8. **`renderer_probe`** — headless `RenderRuntime` probe for the default universal scene pipeline.
 9. **`custom_feature_demo`** — add a custom `RenderFeature` that injects its own post-fx step without changing engine code.
 10. **`custom_material_demo`** — add a custom `Material`, upload a mesh, and render it through the public high-level pipeline.
 11. **`live2d_demo`** — programmable multi-feature example (`SpriteFeature + Live2DFeature`) after you already know the base render stack.
@@ -40,11 +40,11 @@ The `examples/render/` directory now forms a complete path from first window to 
 Render mental model for the example set:
 
 - `clear_screen` teaches the expert/no-pipeline `ctx.gpu()` path.
-- `sprite_demo`, `textured_demo`, and `lighting_demo` teach the default high-level path: `App -> RenderPipelineAsset -> RenderComposer -> SpriteFeature`.
+- `sprite_demo`, `textured_demo`, and `lighting_demo` teach the default high-level path: `App -> RenderPipelineAsset -> RenderRuntime -> SpriteFeature`.
 - If you need to tweak the high-level flow, change builder registrations and ordered steps such as `phase / compute / pass / postfx / feature`.
 - If you need another renderer family, add another `RenderFeature`.
 - `custom_feature_demo` is the first public example that shows a user-defined `RenderFeature` inserting its own post-fx step.
-- `custom_material_demo` is the public end-to-end example for `impl Material`, `register_material::<M>()`, and runtime mesh/material setup through `FrameContext::with_renderer_mut(...)`.
+- `custom_material_demo` is the public end-to-end example for `impl Material`, `register_material::<M>()`, and runtime mesh/material setup through `FrameContext::with_render_runtime_mut(...)`.
 - `render_graph_showcase` and `frame_pipeline_showcase` are expert-facing backend examples, not the default extension path.
 
 Recommended progression:
@@ -115,7 +115,7 @@ cargo run --example custom_material_demo --features app --release
 Suggested study order inside `render/`:
 
 - `clear_screen` — frame lifecycle and surface pass
-- `sprite_demo` — ECS-first `RenderPipelineAsset` + `RenderComposer`
+- `sprite_demo` — ECS-first `RenderPipelineAsset` + `RenderRuntime`
 - `textured_demo` — ECS-driven textured sprites
 - `lighting_demo` — high-level lighting + post-processing
 - `render_graph_showcase` — expert-only graph compilation model

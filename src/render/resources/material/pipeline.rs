@@ -5,7 +5,7 @@ use std::sync::Arc;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::gpu::GpuContext;
-use crate::render::resources::mesh::{VertexLayout, VertexSemantic};
+use crate::render::resources::mesh::VertexLayout;
 
 use super::{
     MaterialError, MaterialInterface, MaterialModel, MaterialModelId, MaterialRenderState,
@@ -225,7 +225,8 @@ fn compile_model_pipeline<M: MaterialModel>(
         bind_group_layouts[*slot as usize] = (*layout).clone();
     }
     bind_group_layouts[MATERIAL_BIND_GROUP_SLOT as usize] = material_layout.clone();
-    let bind_group_layout_refs: Vec<&wgpu::BindGroupLayout> = bind_group_layouts.iter().collect();
+    let bind_group_layout_refs: Vec<Option<&wgpu::BindGroupLayout>> =
+        bind_group_layouts.iter().map(Some).collect();
 
     let source = M::shader_source(material);
     let wgsl = source.wgsl_source();
@@ -247,7 +248,7 @@ fn compile_model_pipeline<M: MaterialModel>(
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("material_pipeline_layout"),
         bind_group_layouts: &bind_group_layout_refs,
-        push_constant_ranges: &[],
+        immediate_size: 0,
     });
     let render_state = M::render_state(material);
     Ok(
@@ -278,13 +279,13 @@ fn compile_model_pipeline<M: MaterialModel>(
             },
             depth_stencil: depth_format.map(|format| wgpu::DepthStencilState {
                 format,
-                depth_write_enabled: render_state.depth_write,
-                depth_compare: render_state.depth_compare,
+                depth_write_enabled: Some(render_state.depth_write),
+                depth_compare: Some(render_state.depth_compare),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         }),
     )
@@ -327,8 +328,7 @@ pub struct MaterialPipelineDesc {
     pub vs_entry: &'static str,
     pub fs_entry: &'static str,
     pub blend: Option<wgpu::BlendState>,
-    pub material_properties_slot: Option<u32>,
-    pub material_resources_slot: Option<u32>,
+    pub material_slot: Option<u32>,
     pub vertex_buffers: Vec<wgpu::VertexBufferLayout<'static>>,
     pub primitive: wgpu::PrimitiveState,
     pub depth_stencil: Option<wgpu::DepthStencilState>,
@@ -349,8 +349,7 @@ impl MaterialPipelineDesc {
             vs_entry,
             fs_entry,
             blend: None,
-            material_properties_slot: None,
-            material_resources_slot: None,
+            material_slot: None,
             vertex_buffers: Vec::new(),
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
@@ -361,42 +360,15 @@ impl MaterialPipelineDesc {
 }
 
 fn resolve_bind_group_slots(
-    property_slot: Option<u32>,
-    has_properties_layout: bool,
-    resource_slot: Option<u32>,
-    has_resource_layout: bool,
+    material_slot: Option<u32>,
+    has_material_layout: bool,
     fixed_slots: &[u32],
-) -> Result<(Option<u32>, Option<u32>, Option<u32>), MaterialError> {
-    if property_slot.is_some() && !has_properties_layout {
-        return Err(MaterialError::MissingPropertiesLayout);
-    }
-    if resource_slot.is_some() && !has_resource_layout {
-        return Err(MaterialError::MissingResourceLayout);
-    }
-    if let (Some(prop_slot), Some(res_slot)) = (property_slot, resource_slot) {
-        if has_properties_layout && has_resource_layout && prop_slot == res_slot {
-            return Err(MaterialError::ConflictingBindGroupSlot { slot: prop_slot });
-        }
+) -> Result<(Option<u32>, Option<u32>), MaterialError> {
+    if material_slot.is_some() && !has_material_layout {
+        return Err(MaterialError::MissingMaterialLayout);
     }
 
     let mut occupied: FxHashSet<u32> = fixed_slots.iter().copied().collect();
-
-    if has_properties_layout {
-        if let Some(slot) = property_slot {
-            if occupied.contains(&slot) {
-                return Err(MaterialError::OccupiedBindGroupSlot { slot });
-            }
-            occupied.insert(slot);
-        }
-    }
-    if has_resource_layout {
-        if let Some(slot) = resource_slot {
-            if occupied.contains(&slot) {
-                return Err(MaterialError::OccupiedBindGroupSlot { slot });
-            }
-            occupied.insert(slot);
-        }
-    }
 
     let mut next_free_slot = || -> u32 {
         let mut slot = 0u32;
@@ -407,31 +379,26 @@ fn resolve_bind_group_slots(
         slot
     };
 
-    let resolved_property_slot = if has_properties_layout {
-        Some(property_slot.unwrap_or_else(&mut next_free_slot))
-    } else {
-        None
-    };
-
-    let resolved_resource_slot = if has_resource_layout {
-        Some(resource_slot.unwrap_or_else(&mut next_free_slot))
-    } else {
-        None
-    };
-
-    if let (Some(prop_slot), Some(res_slot)) = (resolved_property_slot, resolved_resource_slot) {
-        if prop_slot == res_slot {
-            return Err(MaterialError::ConflictingBindGroupSlot { slot: prop_slot });
+    let resolved_material_slot = if has_material_layout {
+        if let Some(slot) = material_slot {
+            if occupied.contains(&slot) {
+                return Err(MaterialError::OccupiedBindGroupSlot { slot });
+            }
+            occupied.insert(slot);
+            Some(slot)
+        } else {
+            Some(next_free_slot())
         }
-    }
+    } else {
+        None
+    };
 
-    let max_slot = resolved_property_slot
+    let max_slot = resolved_material_slot
         .into_iter()
-        .chain(resolved_resource_slot)
         .chain(fixed_slots.iter().copied())
         .max();
 
-    Ok((resolved_property_slot, resolved_resource_slot, max_slot))
+    Ok((resolved_material_slot, max_slot))
 }
 
 pub struct MaterialPipelineCache {
@@ -439,52 +406,41 @@ pub struct MaterialPipelineCache {
     desc: MaterialPipelineDesc,
     pipelines: FxHashMap<wgpu::TextureFormat, Arc<wgpu::RenderPipeline>>,
     bind_group_layouts: Vec<wgpu::BindGroupLayout>,
-    resolved_property_slot: Option<u32>,
-    resolved_resource_slot: Option<u32>,
+    resolved_material_slot: Option<u32>,
 }
 
 impl MaterialPipelineCache {
     pub fn new(
         ctx: &GpuContext,
         desc: MaterialPipelineDesc,
-        properties_layout: Option<&wgpu::BindGroupLayout>,
-        bindings_layout: Option<&wgpu::BindGroupLayout>,
+        material_layout: Option<&wgpu::BindGroupLayout>,
     ) -> Self {
-        Self::new_with_fixed_layouts(ctx, desc, &[], properties_layout, bindings_layout)
+        Self::new_with_fixed_layouts(ctx, desc, &[], material_layout)
     }
 
     pub fn new_with_fixed_layouts(
         ctx: &GpuContext,
         desc: MaterialPipelineDesc,
         fixed_layouts: &[(u32, &wgpu::BindGroupLayout)],
-        properties_layout: Option<&wgpu::BindGroupLayout>,
-        bindings_layout: Option<&wgpu::BindGroupLayout>,
+        material_layout: Option<&wgpu::BindGroupLayout>,
     ) -> Self {
-        Self::try_new_with_fixed_layouts(
-            ctx,
-            desc,
-            fixed_layouts,
-            properties_layout,
-            bindings_layout,
-        )
-        .expect("MaterialPipelineCache::new_with_fixed_layouts failed")
+        Self::try_new_with_fixed_layouts(ctx, desc, fixed_layouts, material_layout)
+            .expect("MaterialPipelineCache::new_with_fixed_layouts failed")
     }
 
     pub fn try_new(
         ctx: &GpuContext,
         desc: MaterialPipelineDesc,
-        properties_layout: Option<&wgpu::BindGroupLayout>,
-        bindings_layout: Option<&wgpu::BindGroupLayout>,
+        material_layout: Option<&wgpu::BindGroupLayout>,
     ) -> Result<Self, MaterialError> {
-        Self::try_new_with_fixed_layouts(ctx, desc, &[], properties_layout, bindings_layout)
+        Self::try_new_with_fixed_layouts(ctx, desc, &[], material_layout)
     }
 
     pub fn try_new_with_fixed_layouts(
         ctx: &GpuContext,
         desc: MaterialPipelineDesc,
         fixed_layouts: &[(u32, &wgpu::BindGroupLayout)],
-        properties_layout: Option<&wgpu::BindGroupLayout>,
-        bindings_layout: Option<&wgpu::BindGroupLayout>,
+        material_layout: Option<&wgpu::BindGroupLayout>,
     ) -> Result<Self, MaterialError> {
         let mut seen_fixed_slots = FxHashSet::default();
         for (slot, _) in fixed_layouts {
@@ -501,13 +457,8 @@ impl MaterialPipelineCache {
             });
 
         let fixed_slots: Vec<u32> = fixed_layouts.iter().map(|(slot, _)| *slot).collect();
-        let (resolved_property_slot, resolved_resource_slot, max_slot) = resolve_bind_group_slots(
-            desc.material_properties_slot,
-            properties_layout.is_some(),
-            desc.material_resources_slot,
-            bindings_layout.is_some(),
-            &fixed_slots,
-        )?;
+        let (resolved_material_slot, max_slot) =
+            resolve_bind_group_slots(desc.material_slot, material_layout.is_some(), &fixed_slots)?;
 
         let bind_group_layouts = if let Some(max_slot) = max_slot {
             let empty_layout =
@@ -521,10 +472,7 @@ impl MaterialPipelineCache {
             for (slot, layout) in fixed_layouts {
                 layouts[*slot as usize] = (*layout).clone();
             }
-            if let (Some(slot), Some(layout)) = (resolved_property_slot, properties_layout) {
-                layouts[slot as usize] = layout.clone();
-            }
-            if let (Some(slot), Some(layout)) = (resolved_resource_slot, bindings_layout) {
+            if let (Some(slot), Some(layout)) = (resolved_material_slot, material_layout) {
                 layouts[slot as usize] = layout.clone();
             }
             layouts
@@ -537,8 +485,7 @@ impl MaterialPipelineCache {
             desc,
             pipelines: FxHashMap::default(),
             bind_group_layouts,
-            resolved_property_slot,
-            resolved_resource_slot,
+            resolved_material_slot,
         })
     }
 
@@ -547,15 +494,15 @@ impl MaterialPipelineCache {
         ctx: &GpuContext,
         target_format: wgpu::TextureFormat,
     ) -> wgpu::RenderPipeline {
-        let bind_group_layout_refs: Vec<&wgpu::BindGroupLayout> =
-            self.bind_group_layouts.iter().collect();
+        let bind_group_layout_refs: Vec<Option<&wgpu::BindGroupLayout>> =
+            self.bind_group_layouts.iter().map(Some).collect();
 
         let pipeline_layout =
             ctx.device()
                 .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some(&format!("{}_layout", self.desc.label)),
                     bind_group_layouts: &bind_group_layout_refs,
-                    push_constant_ranges: &[],
+                    immediate_size: 0,
                 });
 
         ctx.device()
@@ -581,7 +528,7 @@ impl MaterialPipelineCache {
                 primitive: self.desc.primitive,
                 depth_stencil: self.desc.depth_stencil.clone(),
                 multisample: self.desc.multisample,
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             })
     }
@@ -608,13 +555,8 @@ impl MaterialPipelineCache {
     }
 
     #[inline]
-    pub fn property_slot(&self) -> Option<u32> {
-        self.resolved_property_slot
-    }
-
-    #[inline]
-    pub fn resource_slot(&self) -> Option<u32> {
-        self.resolved_resource_slot
+    pub fn material_slot(&self) -> Option<u32> {
+        self.resolved_material_slot
     }
 
     #[inline]
@@ -659,29 +601,4 @@ pub(crate) fn resolve_vertex_attributes(
             })
         })
         .collect()
-}
-
-pub(crate) fn vertex_attribute(
-    mesh_layout: &VertexLayout,
-    semantic: VertexSemantic,
-    expected: wgpu::VertexFormat,
-    shader_location: u32,
-) -> Result<wgpu::VertexAttribute, MaterialError> {
-    let actual = mesh_layout
-        .attributes()
-        .iter()
-        .find(|attribute| attribute.semantic == semantic)
-        .ok_or(MaterialError::MissingVertexAttribute { semantic })?;
-    if actual.format != expected {
-        return Err(MaterialError::VertexAttributeFormatMismatch {
-            semantic,
-            expected,
-            actual: actual.format,
-        });
-    }
-    Ok(wgpu::VertexAttribute {
-        format: actual.format,
-        offset: actual.offset as u64,
-        shader_location,
-    })
 }

@@ -11,12 +11,13 @@ use std::sync::Arc;
 use crate::gpu::GpuContext;
 use crate::math::Mat4;
 use crate::render::component::GlobalIllumination;
-use crate::render::graph::RenderGraphError;
-use crate::render::pipeline::{
+use crate::render::execution::{
     ComputePassExecuteContext, PostFxPassExecuteContext, PostFxPassSetupContext,
 };
+use crate::render::graph::RenderGraphError;
 use crate::render::resources::mesh::RayTriangle;
-use crate::render::view::{Color, SceneView};
+use crate::render::view::SceneView;
+use crate::render::Color;
 use crate::render::GpuLight;
 
 pub type GiProviderId = &'static str;

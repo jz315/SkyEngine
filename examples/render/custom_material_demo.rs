@@ -2,7 +2,7 @@
 //!
 //! Shows the public user-extension path for a custom mesh material:
 //! define a new `Material`, register it with the pipeline builder, then
-//! create material instances and meshes through `FrameContext::with_renderer_mut(...)`.
+//! create material instances and meshes through `FrameContext::with_render_runtime_mut(...)`.
 //!
 //! ```bash
 //! cargo run --example custom_material_demo --features app --release
@@ -160,7 +160,7 @@ impl AppState for CustomMaterialDemo {
 
         if !self.initialized {
             let (mesh_handle, cyan, gold) = ctx
-                .with_renderer_mut(|renderer, gpu| {
+                .with_render_runtime_mut(|renderer, gpu| {
                     #[repr(C)]
                     #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
                     struct Vertex {
@@ -197,12 +197,12 @@ impl AppState for CustomMaterialDemo {
                         )
                         .with_indices(MeshIndexData::U16(&indices)),
                     ));
-                    let cyan = renderer
-                        .materials_mut::<HologramMaterial>()
-                        .insert(HologramMaterial::new(Color::new(0.20, 0.90, 1.00, 0.72)));
-                    let gold = renderer
-                        .materials_mut::<HologramMaterial>()
-                        .insert(HologramMaterial::new(Color::new(1.00, 0.78, 0.22, 0.68)));
+                    let cyan = renderer.insert_material::<HologramMaterial>(HologramMaterial::new(
+                        Color::new(0.20, 0.90, 1.00, 0.72),
+                    ));
+                    let gold = renderer.insert_material::<HologramMaterial>(HologramMaterial::new(
+                        Color::new(1.00, 0.78, 0.22, 0.68),
+                    ));
                     (mesh_handle, cyan, gold)
                 })
                 .expect("custom_material_demo requires App::with_render_pipeline(...)");

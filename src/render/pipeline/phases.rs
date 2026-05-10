@@ -2,7 +2,7 @@ use crate::gpu::GpuContext;
 use crate::render::execution::{PreparedFrame, PreparedView, ViewExecutionContext};
 use crate::render::graph::RenderGraphError;
 
-use super::contexts::{RenderPhaseExecuteContext, RenderPhaseSetupContext};
+use crate::render::execution::{PhaseExecuteContext, PhaseSetupContext};
 
 pub trait RenderPhase: Send + 'static {
     fn name(&self) -> &'static str;
@@ -11,11 +11,11 @@ pub trait RenderPhase: Send + 'static {
         true
     }
 
-    fn setup(&mut self, _ctx: &mut RenderPhaseSetupContext<'_, '_>) {}
+    fn setup(&mut self, _ctx: &mut PhaseSetupContext<'_, '_>) {}
 
     fn execute(
         &mut self,
-        ctx: &mut RenderPhaseExecuteContext<'_, '_, '_>,
+        ctx: &mut PhaseExecuteContext<'_, '_, '_>,
     ) -> Result<(), RenderGraphError>;
 
     fn draw_calls(&self, _execution: &ViewExecutionContext<'_>) -> usize {

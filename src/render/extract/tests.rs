@@ -18,7 +18,7 @@ use crate::render::view::{Projection, SceneView, SceneViewKind};
 use crate::render::{
     expert::{Mesh, MeshRegistry},
     Color, GpuScene, LightTable, Material, MaterialError, MaterialRenderState, ModelMatrixTable,
-    RenderComposer, RenderPipelineAsset, SceneBindingDesc, SortingLayer, SpriteMaterial,
+    RenderPipelineAsset, RenderRuntime, SceneBindingDesc, SortingLayer, SpriteMaterial,
     SpriteRenderer, StandardMaterial, Transform, UnlitMaterial, ViewportRect, WgpuMeshRenderer,
     DEFAULT_DEPTH_FORMAT,
 };
@@ -27,7 +27,7 @@ use wgpu::util::DeviceExt;
 use super::*;
 
 fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::LowPower,
         compatible_surface: None,
@@ -35,15 +35,13 @@ fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
     }))
     .expect("No suitable GPU adapter found for extract tests");
 
-    pollster::block_on(adapter.request_device(
-        &wgpu::DeviceDescriptor {
-            label: Some("extract_test_device"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
-            memory_hints: wgpu::MemoryHints::Performance,
-        },
-        None,
-    ))
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("extract_test_device"),
+        required_features: wgpu::Features::empty(),
+        required_limits: wgpu::Limits::default(),
+        memory_hints: wgpu::MemoryHints::Performance,
+        ..Default::default()
+    }))
     .expect("Failed to create test GPU device")
 }
 
@@ -89,7 +87,7 @@ fn read_pixel_rgba8(
             .send(result.map(|_| ()))
             .expect("map_async callback should send result");
     });
-    ctx.device().poll(wgpu::Maintain::Wait);
+    let _ = ctx.device().poll(wgpu::PollType::wait_indefinitely());
     receiver
         .recv()
         .expect("map_async callback should run")
@@ -291,7 +289,7 @@ fn sprite_extract_schedule_renders_through_transparent_phase() {
     let (device, queue) = create_test_device();
     let mut ctx =
         GpuContext::new_headless(device, queue, wgpu::TextureFormat::Rgba8Unorm, [64, 64]);
-    let mut renderer = RenderComposer::from_asset(RenderPipelineAsset::builder().build());
+    let mut renderer = RenderRuntime::from_asset(RenderPipelineAsset::builder().build());
     renderer.register_material::<SpriteMaterial>(&ctx);
 
     let mut mesh_registry = MeshRegistry::default();
@@ -314,7 +312,7 @@ fn sprite_extract_schedule_renders_through_transparent_phase() {
         SortingLayer(0),
     ));
 
-    let transforms = renderer.resolve_scene_transforms(&world);
+    let transforms = renderer.runtime.view_collector.resolve_transforms(&world);
     let view = make_view([64, 64]);
     let mut opaque_phase = OpaquePhase::new();
     let mut phase = TransparentPhase::new();
@@ -390,7 +388,6 @@ fn sprite_extract_schedule_renders_through_transparent_phase() {
 
     let fallback = Texture::white_pixel(&ctx);
     let device = ctx.device().clone();
-    let sampler_linear = ctx.sampler_linear().clone();
     let sampler_nearest = ctx.sampler_nearest().clone();
     let model_layout = create_model_bind_group_layout(ctx.device());
     let gi_sampling = create_test_gi_sampling_binding(ctx.device());
@@ -410,7 +407,6 @@ fn sprite_extract_schedule_renders_through_transparent_phase() {
         );
         let mut draw_ctx = DrawContext::new(
             &device,
-            &sampler_linear,
             &sampler_nearest,
             &mut pass,
             &view_bind_group,
@@ -467,7 +463,7 @@ fn sprite_extract_schedule_renders_through_transparent_phase() {
 fn sprite_extract_keeps_material_handles_valid_across_multiple_views() {
     let (device, queue) = create_test_device();
     let ctx = GpuContext::new_headless(device, queue, wgpu::TextureFormat::Rgba8Unorm, [64, 64]);
-    let mut renderer = RenderComposer::from_asset(RenderPipelineAsset::builder().build());
+    let mut renderer = RenderRuntime::from_asset(RenderPipelineAsset::builder().build());
     renderer.register_material::<SpriteMaterial>(&ctx);
 
     let mut mesh_registry = MeshRegistry::default();
@@ -483,7 +479,7 @@ fn sprite_extract_keeps_material_handles_valid_across_multiple_views() {
         SpriteRenderer::new(16.0, 16.0).color(Color::RED),
     ));
 
-    let transforms = renderer.resolve_scene_transforms(&world);
+    let transforms = renderer.runtime.view_collector.resolve_transforms(&world);
     let first_view = make_view([64, 64]);
     let second_view = make_view([64, 64]);
     let mut first_opaque = OpaquePhase::new();
@@ -530,9 +526,8 @@ fn sprite_extract_keeps_material_handles_valid_across_multiple_views() {
         .expect("second view sprite extraction should succeed");
 
     assert!(renderer
-        .materials::<SpriteMaterial>()
-        .get(first_material)
-        .is_some());
+        .material_erased::<SpriteMaterial>(first_material)
+        .is_ok());
 }
 
 #[test]
@@ -540,7 +535,7 @@ fn mesh_extract_schedule_renders_opaque_phase_with_depth() {
     let (device, queue) = create_test_device();
     let mut ctx =
         GpuContext::new_headless(device, queue, wgpu::TextureFormat::Rgba8Unorm, [64, 64]);
-    let mut renderer = RenderComposer::from_asset(RenderPipelineAsset::builder().build());
+    let mut renderer = RenderRuntime::from_asset(RenderPipelineAsset::builder().build());
     renderer.register_material::<UnlitMaterial>(&ctx);
 
     let white = Texture::create(
@@ -569,12 +564,12 @@ fn mesh_extract_schedule_renders_opaque_phase_with_depth() {
         },
     );
 
-    let red = renderer.materials_mut::<UnlitMaterial>().insert(
+    let red = renderer.insert_material::<UnlitMaterial>(
         UnlitMaterial::default()
             .color(Color::RED)
             .texture(white.clone()),
     );
-    let blue = renderer.materials_mut::<UnlitMaterial>().insert(
+    let blue = renderer.insert_material::<UnlitMaterial>(
         UnlitMaterial::default()
             .color(Color::BLUE)
             .texture(white.clone()),
@@ -591,7 +586,7 @@ fn mesh_extract_schedule_renders_opaque_phase_with_depth() {
         WgpuMeshRenderer::new(mesh_handle, blue),
     ));
 
-    let transforms = renderer.resolve_scene_transforms(&world);
+    let transforms = renderer.runtime.view_collector.resolve_transforms(&world);
     let view = make_view([64, 64]);
     let mut opaque_phase = OpaquePhase::new();
     let mut transparent_phase = TransparentPhase::new();
@@ -674,16 +669,21 @@ fn mesh_extract_schedule_renders_opaque_phase_with_depth() {
 
     let fallback = Texture::white_pixel(&ctx);
     let device = ctx.device().clone();
-    let sampler_linear = ctx.sampler_linear().clone();
     let sampler_nearest = ctx.sampler_nearest().clone();
     let model_layout = create_model_bind_group_layout(ctx.device());
     let gi_sampling = create_test_gi_sampling_binding(ctx.device());
+    renderer
+        .resources
+        .material_registry
+        .prepare_dirty(&ctx, Some(&fallback))
+        .expect("mesh materials should prepare before direct draw");
     ctx.begin_frame()
         .expect("headless frame should begin for opaque mesh rendering");
     {
         let mut frame = ctx.frame();
         let color_attachment = [Some(wgpu::RenderPassColorAttachment {
             view: target.view(),
+            depth_slice: None,
             resolve_target: None,
             ops: wgpu::Operations {
                 load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
@@ -706,7 +706,6 @@ fn mesh_extract_schedule_renders_opaque_phase_with_depth() {
         });
         let mut draw_ctx = DrawContext::new(
             &device,
-            &sampler_linear,
             &sampler_nearest,
             &mut pass,
             &view_bind_group,
@@ -763,11 +762,10 @@ fn mesh_extract_schedule_renders_opaque_phase_with_depth() {
 fn shadow_view_extract_skips_mesh_renderers_that_do_not_cast_shadows() {
     let (device, queue) = create_test_device();
     let ctx = GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [32, 32]);
-    let mut renderer = RenderComposer::from_asset(RenderPipelineAsset::builder().build());
+    let mut renderer = RenderRuntime::from_asset(RenderPipelineAsset::builder().build());
     renderer.register_material::<UnlitMaterial>(&ctx);
-    let material = renderer
-        .materials_mut::<UnlitMaterial>()
-        .insert(UnlitMaterial::default().color(Color::WHITE));
+    let material =
+        renderer.insert_material::<UnlitMaterial>(UnlitMaterial::default().color(Color::WHITE));
     let mesh_handle = renderer.insert_mesh(Mesh::builtin_quad(&ctx));
 
     let mut world = crate::ecs::World::new();
@@ -776,7 +774,7 @@ fn shadow_view_extract_skips_mesh_renderers_that_do_not_cast_shadows() {
         WgpuMeshRenderer::new(mesh_handle, material).casts_shadows(false),
     ));
 
-    let transforms = renderer.resolve_scene_transforms(&world);
+    let transforms = renderer.runtime.view_collector.resolve_transforms(&world);
     let main_view = make_view([32, 32]);
     let shadow_view = SceneView::from_parts(
         1,
@@ -825,11 +823,10 @@ fn shadow_view_extract_skips_mesh_renderers_that_do_not_cast_shadows() {
 fn shadow_view_extract_respects_shadow_lod_cascade_mask() {
     let (device, queue) = create_test_device();
     let ctx = GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [32, 32]);
-    let mut renderer = RenderComposer::from_asset(RenderPipelineAsset::builder().build());
+    let mut renderer = RenderRuntime::from_asset(RenderPipelineAsset::builder().build());
     renderer.register_material::<UnlitMaterial>(&ctx);
-    let material = renderer
-        .materials_mut::<UnlitMaterial>()
-        .insert(UnlitMaterial::default().color(Color::WHITE));
+    let material =
+        renderer.insert_material::<UnlitMaterial>(UnlitMaterial::default().color(Color::WHITE));
     let mesh_handle = renderer.insert_mesh(Mesh::builtin_quad(&ctx));
 
     let mut world = crate::ecs::World::new();
@@ -838,7 +835,7 @@ fn shadow_view_extract_respects_shadow_lod_cascade_mask() {
         WgpuMeshRenderer::new(mesh_handle, material).shadow_lod_cascades(2),
     ));
 
-    let transforms = renderer.resolve_scene_transforms(&world);
+    let transforms = renderer.runtime.view_collector.resolve_transforms(&world);
     let main_view = make_view([32, 32]);
     let shadow_view_cascade_1 = SceneView::from_parts(
         1,
@@ -990,11 +987,11 @@ fn custom_material_draw_binds_published_shadow_resource() {
         GpuContext::new_headless(device, queue, wgpu::TextureFormat::Rgba8Unorm, [32, 32]);
     let mut material_registry = crate::render::resources::material::MaterialRegistry::new();
     material_registry
-        .register_material::<ShadowBindingTestMaterial>(ctx.device())
+        .register_model::<ShadowBindingTestMaterial>(ctx.device())
         .expect("shadow binding test material should register");
     let material_handle = material_registry
-        .materials_mut::<ShadowBindingTestMaterial>()
-        .insert(ShadowBindingTestMaterial);
+        .insert_material::<ShadowBindingTestMaterial>(ShadowBindingTestMaterial)
+        .expect("shadow binding test material should insert");
     let mut mesh_registry = MeshRegistry::new();
     let mesh_handle = mesh_registry.ensure_builtin_quad(&ctx);
     let mut gpu_scene = GpuScene::new(&ctx);
@@ -1095,7 +1092,6 @@ fn custom_material_draw_binds_published_shadow_resource() {
     let depth_target = RenderTarget::new_depth(&ctx, 32, 32);
     let fallback = Texture::white_pixel(&ctx);
     let device = ctx.device().clone();
-    let sampler_linear = ctx.sampler_linear().clone();
     let sampler_nearest = ctx.sampler_nearest().clone();
     let model_layout = create_model_bind_group_layout(ctx.device());
     let gi_sampling = create_test_gi_sampling_binding(ctx.device());
@@ -1112,6 +1108,7 @@ fn custom_material_draw_binds_published_shadow_resource() {
         let mut frame = ctx.frame();
         let color_attachment = [Some(wgpu::RenderPassColorAttachment {
             view: target.view(),
+            depth_slice: None,
             resolve_target: None,
             ops: wgpu::Operations {
                 load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
@@ -1134,7 +1131,6 @@ fn custom_material_draw_binds_published_shadow_resource() {
         });
         let mut draw_ctx = DrawContext::new(
             &device,
-            &sampler_linear,
             &sampler_nearest,
             &mut pass,
             &view_bind_group,
@@ -1164,7 +1160,7 @@ fn gltf_mesh_extract_schedule_renders_submeshes_with_material_slots_and_depth() 
     let (device, queue) = create_test_device();
     let mut ctx =
         GpuContext::new_headless(device, queue, wgpu::TextureFormat::Rgba8Unorm, [64, 64]);
-    let mut renderer = RenderComposer::from_asset(RenderPipelineAsset::builder().build());
+    let mut renderer = RenderRuntime::from_asset(RenderPipelineAsset::builder().build());
     renderer.register_material::<StandardMaterial>(&ctx);
 
     let white = Texture::create(
@@ -1202,20 +1198,16 @@ fn gltf_mesh_extract_schedule_renders_submeshes_with_material_slots_and_depth() 
     let mesh_handle = renderer
         .insert_mesh(Mesh::from_gltf(&ctx, &gltf_path).expect("temporary gltf mesh should load"));
 
-    let red = renderer
-        .materials_mut::<StandardMaterial>()
-        .insert(StandardMaterial {
-            albedo: Color::RED,
-            albedo_texture: Some(white.clone()),
-            ..Default::default()
-        });
-    let blue = renderer
-        .materials_mut::<StandardMaterial>()
-        .insert(StandardMaterial {
-            albedo: Color::BLUE,
-            albedo_texture: Some(white.clone()),
-            ..Default::default()
-        });
+    let red = renderer.insert_material::<StandardMaterial>(StandardMaterial {
+        albedo: Color::RED,
+        albedo_texture: Some(white.clone()),
+        ..Default::default()
+    });
+    let blue = renderer.insert_material::<StandardMaterial>(StandardMaterial {
+        albedo: Color::BLUE,
+        albedo_texture: Some(white.clone()),
+        ..Default::default()
+    });
 
     let mut world = crate::ecs::World::new();
     world.spawn((
@@ -1223,7 +1215,7 @@ fn gltf_mesh_extract_schedule_renders_submeshes_with_material_slots_and_depth() 
         WgpuMeshRenderer::new(mesh_handle, red).materials(vec![red, blue]),
     ));
 
-    let transforms = renderer.resolve_scene_transforms(&world);
+    let transforms = renderer.runtime.view_collector.resolve_transforms(&world);
     let view = make_view([64, 64]);
     let mut opaque_phase = OpaquePhase::new();
     let mut transparent_phase = TransparentPhase::new();
@@ -1302,7 +1294,6 @@ fn gltf_mesh_extract_schedule_renders_submeshes_with_material_slots_and_depth() 
 
     let fallback = Texture::white_pixel(&ctx);
     let device = ctx.device().clone();
-    let sampler_linear = ctx.sampler_linear().clone();
     let sampler_nearest = ctx.sampler_nearest().clone();
     let model_layout = create_model_bind_group_layout(ctx.device());
     let gi_sampling = create_test_gi_sampling_binding(ctx.device());
@@ -1338,6 +1329,7 @@ fn gltf_mesh_extract_schedule_renders_submeshes_with_material_slots_and_depth() 
         let mut frame = ctx.frame();
         let color_attachment = [Some(wgpu::RenderPassColorAttachment {
             view: target.view(),
+            depth_slice: None,
             resolve_target: None,
             ops: wgpu::Operations {
                 load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
@@ -1360,7 +1352,6 @@ fn gltf_mesh_extract_schedule_renders_submeshes_with_material_slots_and_depth() 
         });
         let mut draw_ctx = DrawContext::new(
             &device,
-            &sampler_linear,
             &sampler_nearest,
             &mut pass,
             &view_bind_group,

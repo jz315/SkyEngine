@@ -14,7 +14,17 @@
 ## File Map
 - `mod.rs` — module exports and tilemap internal wiring.
 - `storage.rs` — `Tile`, `TileId`, `TileFlags`, `Tilemap`, `TilemapStorage`, handles, chunks, and dirty versions.
-- `tiled.rs` — Tiled parsing/import, tileset metadata, layer/object decoding, orientation conversion.
+- `tiled.rs` — Tiled parsing/import orchestration, TMX schema decoding, orientation conversion.
+- `tiled/data.rs` — CSV/base64/compressed tile GID decoding shared by JSON and TMX import.
+- `tiled/error.rs` — `TiledImportError` and error formatting/source wiring.
+- `tiled/json.rs` — raw Tiled JSON/TMJ schema types and serde defaults.
+- `tiled/layer.rs` — raw tile layer cells, GID flag handling, tileset splitting, bounds, and cell-to-tile conversion.
+- `tiled/object.rs` — raw Tiled object parsing, shape decoding, tile-object GID handling, and public object conversion.
+- `tiled/properties.rs` — Tiled property collection and typed value/color/file conversion for JSON and TMX.
+- `tiled/tileset.rs` — embedded/external tileset resolution for TMX/TSX/TSJ, image collection handling, tile animations, and tile rect metadata.
+- `tiled/tmx.rs` — TMX group/layer/object traversal, inherited layer context, and TMX tile layer cell extraction.
+- `tiled/types.rs` — public imported Tiled data types such as `TiledLayer`, `TiledObject`, `TiledProperty`, and `TiledTileset`.
+- `tiled/util.rs` — shared XML attribute parsing and relative path resolution helpers.
 - `instance.rs` — `TiledMapInstance`, spawn/despawn lifecycle, tile object spawning, parallax synchronization.
 - `feature.rs` — `TilemapFeature` registration.
 - `extract.rs` — ECS extraction, visibility culling, tile-to-instance conversion, sort order, frame-cache population.

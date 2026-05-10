@@ -17,7 +17,7 @@ use crate::render::GpuTable;
 
 use super::{HistoryTextureStore, TemporalViewTracker, WorldViewCollector};
 
-pub(crate) struct ComposerPlan {
+pub(crate) struct RuntimePlan {
     pub(crate) runtime_features: Vec<Box<dyn AnyRenderFeature>>,
     pub(crate) steps: Vec<PipelineStep>,
     pub(crate) extractors: Vec<Box<dyn Extractor>>,
@@ -25,13 +25,13 @@ pub(crate) struct ComposerPlan {
     pub(crate) materials: Vec<MaterialRegistration>,
 }
 
-pub(crate) struct ComposerResources {
+pub(crate) struct RenderResourceHub {
     pub(crate) draw_functions: DrawFunctionRegistry,
     pub(crate) material_registry: MaterialRegistry,
     pub(crate) mesh_registry: MeshRegistry,
 }
 
-pub(crate) struct ComposerRuntime {
+pub(crate) struct FrameRuntimeState {
     pub(crate) pipeline_initialized: bool,
     pub(crate) last_stats: RenderStats,
     pub(crate) surface_size: [u32; 2],

@@ -8,7 +8,7 @@
 
 ```rust
 use sky_engine::render::{
-    Camera, Color, RenderComposer, RenderFeature, RenderPhase, RenderPipelineAsset,
+    Camera, Color, RenderFeature, RenderPhase, RenderPipelineAsset, RenderRuntime,
     RenderPipelineBuilder, SpriteFeature, Texture,
 };
 ```
@@ -41,16 +41,16 @@ fn main() {
 
 游戏逻辑只需要 spawn render components，render runtime 会 extract、prepare、draw。
 
-## RenderComposer
+## RenderRuntime
 
-`RenderComposer` 是高层渲染运行时。它负责：
+`RenderRuntime` 是高层渲染运行时。它负责：
 
 - 管理 render features。
 - 执行 frame prepare。
 - 按 phase 排序和 draw。
 - 和 `GpuContext` frame lifecycle 协作。
 
-一般用户通过 `App::with_render_pipeline` 间接使用它；自定义 runner 可以直接持有 `RenderComposer`。
+一般用户通过 `App::with_render_pipeline` 间接使用它；自定义 runner 可以直接持有 `RenderRuntime`。
 
 ## Pipeline Asset / Builder
 
@@ -136,7 +136,7 @@ Sprite references Texture / atlas / material
 - `OpaquePhase`
 - `TransparentPhase`
 
-Phase 负责 draw item 排序和 draw function 调度。自定义 feature 应把自己的 draw items 放进合适 phase，而不是绕过统一 composer。
+Phase 负责 draw item 排序和 draw function 调度。自定义 feature 应把自己的 draw items 放进合适 phase，而不是绕过统一 runtime。
 
 ## RenderFeature
 

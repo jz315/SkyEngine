@@ -2,7 +2,7 @@
 
 ## Overview
 - This module is SkyEngine's `wgpu`-based rendering framework.
-- The public high-level surface is centered on `RenderPipelineAsset` + `RenderPipelineBuilder` + `RenderComposer`.
+- The public high-level surface is centered on `RenderPipelineAsset` + `RenderPipelineBuilder` + `RenderRuntime`.
 - The runtime is registration-driven:
   - `RenderFeature` installs renderer families into the builder/runtime.
   - `Extractor`s pull ECS state into per-view phase data.
@@ -21,6 +21,8 @@
 render/
 ├── mod.rs              — Curated public facade and re-exports
 ├── expert.rs           — Expert-facing low-level facade
+├── asset/              — Backend-neutral CPU-side render asset data
+├── backend/            — Scene renderer backend selection and backend bridges
 ├── component/          — ECS-facing render components and settings
 ├── view/               — Camera/view/projection/frustum/transform types
 ├── gpu/                — Shared GPU resources, targets, textures, tables
@@ -29,13 +31,14 @@ render/
 ├── tilemap/            — Chunked tilemap renderer and Tiled import bridge
 ├── mesh/               — Mesh pass implementation
 ├── composite/          — Scene/light composition pass
-├── runtime/            — High-level orchestration (`RenderComposer`)
+├── runtime/            — High-level orchestration (`RenderRuntime`)
 ├── extract/            — Registered ECS extraction path
 ├── phase/              — `PhaseItem`, sorting, draw dispatch
 ├── pipeline/           — Builder/asset/feature/step definitions
+├── builtins/           — High-level built-in pass implementations
 ├── execution/          — Generic prepared-frame execution backbone
 ├── graph/              — Declarative render graph system
-├── resources/          — Mesh/material/atlas/blackboard resources
+├── resources/          — Runtime registries, texture cache, material/mesh/atlas/blackboard resources
 ├── postfx/             — Reusable effect implementations
 ├── live2d/             — Low-level Cubism runtime/renderer and feature bridge
 └── shaders/            — WGSL sources
@@ -49,7 +52,7 @@ render/
 ## Canonical High-Level Surface
 - Start normal app code from `sky_engine::render::*`.
 - Preferred high-level names are:
-  - `RenderComposer`
+  - `RenderRuntime`
   - `RenderPipelineAsset`
   - `RenderPipelineBuilder`
   - `RenderFeature`
@@ -59,7 +62,7 @@ render/
   - `Camera`, `Color`, `ViewportRect`, `SceneView`
   - `Texture`
   - `GpuScene`, `GpuTable`, `GpuTableManager`
-  - `Material`, `MaterialStorage`, `MaterialHandle`
+  - `Material`, `MaterialHandle`, `MaterialRegistry`
 - Expert entry points live under `sky_engine::render::expert::*`.
 
 ## File Map
@@ -78,6 +81,12 @@ render/
   - `settings.rs` — `RenderSettings`, bloom/tonemap/vignette settings
   - `hierarchy.rs` — `Parent`
 - Keep ECS-facing authoring data here; do not push it down into runtime/execution modules.
+
+### `asset/` and `backend/`
+- `asset/` owns backend-neutral CPU-side render asset data: `MeshAsset`, mesh vertex layout descriptors, material asset descriptors, and the `RenderAssets` authoring collection.
+- `resources/texture_cache.rs` owns the runtime GPU texture cache for `TextureAsset` handles. Do not put semantic asset definitions there.
+- `backend/` owns renderer selection and backend-specific bridges. The `wgpu_asset_bridge.rs` file adapts CPU render assets into the `wgpu` runtime cache; Kajiya and Renderling keep their own backend sync code local to their backend folders.
+- Keep asset authoring, runtime cache lifetime, and backend upload bridges separate. They change for different reasons.
 
 ### `view/`
 - Owns camera/view/projection semantics and scene-view construction.
@@ -120,23 +129,28 @@ render/
 ### `runtime/`
 - Owns the high-level runtime layer.
 - Important files:
-  - `composer.rs` — stores runtime features, pipeline steps, material registry, mesh registry, draw-function registry, and `GpuScene`
-  - `frame_builder.rs` — main frame flow: resolve transforms, collect views, run extractors, populate phases, upload GPU tables, build `PreparedFrame`
+  - `runtime.rs` — app-facing `RenderRuntime`, pipeline descriptor materialization, and public resource accessors
+  - `frame_coordinator.rs` — short frame recipe that sequences explicit frame stages
+  - `frame/` — explicit frame-stage records plus input collection, resource preparation, extraction, scene upload, lighting, GI, shadow preparation/summary, frame assembly, execution bridge, and stats/finalization helpers
+  - `executor.rs` — executes assembled frames through `FramePipeline` and runtime render services
   - `pipeline_runtime.rs` — translates `PipelineStep`s into `FramePipeline` nodes
   - `view_collection.rs` — world camera/view collection
-  - `nodes.rs` — runtime-installed step nodes for phase/compute/pass/post-fx execution
+  - `pipeline_runtime.rs` — adapts declaration-time `PipelineStep`s into execution step nodes
   - `presentation.rs` — `ViewportBlitNode`
   - `stats.rs` — `RenderTimingStats` and timing helpers
-- `RenderComposer` should stay an orchestrator. Put new heavy logic in adjacent helpers rather than turning it into a god object.
+- `RenderRuntime` should stay an orchestrator. Put new heavy logic in adjacent helpers rather than turning it into a god object.
 
 ### `pipeline/`
 - Owns declaration-time configuration, not per-frame execution state.
 - Important files:
-  - `asset.rs` — `RenderPipelineBuilder`, `RenderPipelineAsset`, `PipelineStep`, material registrations
+  - `pipeline_asset.rs` — `RenderPipelineAsset` presets and descriptor materialization
+  - `builder.rs` — `RenderPipelineBuilder` and registration methods
+  - `step.rs` — `PipelineStep` and `PipelineStepDescriptor`
+  - `backend_kind.rs` — `RenderBackendKind` and backend-specific settings
+  - `material_registration.rs` — material registration records used by the runtime plan
   - `features.rs` — `RenderFeature`, runtime feature hooks, built-in `SpriteFeature`, and optional `Live2DFeature`
   - `phases.rs` / `passes.rs` — `RenderPhase`, `RenderPass`, `ComputePass`, and `PostFxPass`
-  - `contexts.rs` — setup/execute context types for phases, passes, compute, and post-fx
-  - `builtins.rs` — built-in `Bloom`, `ToneMap`, and `Vignette` registrations
+- Built-in passes live under `builtins/`; `pipeline/` should depend on them as registrations, not own their implementations.
 - Builder execution order is explicit and linear:
   - `add_phase(...)`
   - `add_compute(...)`
@@ -151,11 +165,15 @@ render/
 ### `extract/`
 - Owns ECS extraction into per-view phase data.
 - Built-in extractors populate sprite and mesh draws into `OpaquePhase` / `TransparentPhase`.
-- New renderer families should normally enter the high-level runtime here or through `RenderFeature` hooks rather than via ad-hoc branches in `RenderComposer`.
+- New renderer families should normally enter the high-level runtime here or through `RenderFeature` hooks rather than via ad-hoc branches in `RenderRuntime`.
 
 ### `phase/`
 - Owns `PhaseItem`, sorting, and draw dispatch.
 - Built-in flow is centered on opaque and transparent phase execution plus `DrawFunctionRegistry`.
+- `mesh_draw.rs` owns the generic material-backed mesh draw function, including scene material prepass batching.
+- `sprite_draw.rs` owns the built-in sprite phase draw function and its pipeline cache.
+- `scene_bindings.rs` owns shared model/view binding helpers used by phase draw paths and standalone tests.
+- `scene_prepass.rs` owns scene material prepass context and pipeline cache.
 - Keep phase payloads generic and sortable; do not sneak renderer-specific global state into shared execution contexts.
 
 ### `execution/`
@@ -165,6 +183,8 @@ render/
   - `PreparedView`
   - `FramePipeline`
   - setup/view/finalize nodes
+  - `contexts/` — setup/execute context types split by phase, compute, graph, render pass, post-fx, and shared scene texture helpers
+  - `step_nodes/` — runtime-installed step nodes split by execution mode: scene seed/keepalive, phase, compute, graph, post-fx, and finalize pass
   - typed frame/view payload stores
   - `PhaseState` / `CompletedViewState` / `FinalizePhaseState`
   - typed scene inputs via `SceneGBufferSlots` (`scene_color`, `scene_depth`, `scene_normal`, `scene_velocity`, and future material buffers)
@@ -176,10 +196,17 @@ render/
 - Read [`graph/AGENTS.md`](graph/AGENTS.md) before changing internals there.
 
 ### `postfx/` and `resources/`
+- `builtins/` owns high-level built-in pipeline pass wrappers and phases.
+- `builtins/debug.rs` owns the debug-view pass and render-debug source selection.
+- `builtins/gi.rs` owns the generic GI update/composite pipeline steps.
+- `builtins/shadows.rs` owns shadow-flavored built-in post effects such as contact shadows.
 - `postfx/` owns reusable effect implementations behind the built-in post-fx markers.
-- `resources/` owns shared material, mesh, atlas, and blackboard systems.
-- `resources/mesh.rs` uploads tangent-capable glTF meshes for `StandardMaterial` normal mapping.
-- `resources/mesh.rs` also extracts CPU ray geometry for meshes with a Float32x3 `Position` attribute; this feeds provider-driven GI tracing while non-position meshes remain renderable but not GI-traceable.
+- `builtins/prepass.rs` owns the high-level scene normal/material prepass pipeline phases and their gbuffer setup policy.
+- `builtins/postfx.rs` owns the high-level image post-fx wrappers (`Bloom`, `ToneMap`, `TemporalAntiAliasing`, `Sharpen`, and `Vignette`) that adapt `RenderSettings` and graph context to the lower-level reusable post-fx implementations.
+- `resources/` owns shared material, mesh, texture-cache, atlas, and blackboard systems.
+- Material internals keep `MaterialRegistry` as the facade. `records.rs` owns model records and erased callbacks, `instance_store.rs` owns generational instance slots, `dirty_queue.rs` owns prepare queue de-duplication, and `debug.rs` owns material introspection DTOs/summary construction.
+- `resources/mesh/` owns persistent GPU mesh resources. `gpu_mesh.rs` uploads tangent-capable glTF meshes for `StandardMaterial` normal mapping, `registry.rs` owns `MeshHandle` / `MeshRegistry`, `vertex_layout.rs` owns semantic vertex layouts, and `shape.rs` owns mesh bounds/sub-mesh metadata.
+- `resources/mesh/ray_geometry.rs` extracts CPU ray geometry for meshes with a Float32x3 `Position` attribute; this feeds provider-driven GI tracing while non-position meshes remain renderable but not GI-traceable.
 - Material pipelines resolve vertex inputs by semantic against the actual mesh layout, so meshes may contain extra attributes if the material-required ones are present with compatible formats.
 - `StandardMaterial` without a normal map requires `Position + Normal + UV0`.
 - `StandardMaterial` with a normal map requires `Position + Normal + Tangent + UV0`.
@@ -195,19 +222,19 @@ render/
   - `render/` — low-level prepared-frame and renderer implementation
 
 ## Runtime Flow
-1. `RenderComposer::render_world()` resolves transforms and collects `SceneView`s.
+1. `RenderRuntime::render_world()` resolves transforms and collects `SceneView`s.
 2. Registered features run `extract(...)` and may extend the view list through `collect_views(...)`.
 3. Registered `Extractor`s populate per-view `OpaquePhase` and `TransparentPhase`.
 4. Registered features run `prepare(...)` and may append additional phase items.
 5. Shared GPU tables are updated and uploaded through `GpuScene`.
-6. `RenderComposer` prepares generic GI provider resources and per-view directional-shadow payloads used by `StandardMaterial` and `DirectionalShadowPhase`.
-7. `RenderComposer` builds a `PreparedFrame` and one `PreparedView` per visible view, then lets features inject typed frame/view payloads.
+6. `RenderRuntime` prepares generic GI provider resources and per-view directional-shadow payloads used by `StandardMaterial` and `DirectionalShadowPhase`.
+7. `RenderRuntime` builds a `PreparedFrame` and one `PreparedView` per visible view, then lets features inject typed frame/view payloads.
 8. `pipeline_runtime.rs` converts `PipelineStep`s into `FramePipeline` nodes.
 9. `FramePipeline` executes phases, compute steps, custom passes, post-fx, and final viewport presentation.
 
 ## Composition Boundary
 - `RenderPipelineAsset` is the declarative configuration.
-- `RenderComposer` owns live runtime state for that asset.
+- `RenderRuntime` owns live runtime state for that asset.
 - `PreparedFrame` / `PreparedView` carry typed data between preparation and execution.
 - `FramePipeline` is the execution engine.
 - New renderer integrations should normally follow this shape:
@@ -236,4 +263,4 @@ render/
 ## Relation to Other Modules
 - GPU: `src/gpu/context.rs` provides `GpuContext`.
 - ECS: high-level integration happens through extractors operating on `World`.
-- App: `src/app/runner.rs` drives `RenderComposer` and exposes `feature_mut` / `with_feature_mut` on `FrameContext`.
+- App: `src/app/runner.rs` drives `RenderRuntime` and exposes `feature_mut` / `with_feature_mut` on `FrameContext`.

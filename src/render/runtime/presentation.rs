@@ -2,7 +2,7 @@ use crate::gpu::GpuContext;
 use crate::render::component::RenderSettings;
 use crate::render::execution::{
     pass_first_read_texture, require_current_color, require_render_target, FrameViewNode,
-    PhaseState, PreparedFrame, PreparedView, ViewExecutionContext,
+    PhaseState, PreparedFrame, PreparedView, RuntimeRenderServices, ViewExecutionContext,
 };
 use crate::render::gpu::{FullscreenPass, FullscreenPipeline};
 use crate::render::graph::{CompiledPass, PhysicalResources, RenderGraph, RenderGraphError};
@@ -56,7 +56,7 @@ impl ViewportBlitNode {
     }
 }
 
-impl FrameViewNode for ViewportBlitNode {
+impl FrameViewNode<dyn RuntimeRenderServices + '_> for ViewportBlitNode {
     fn name(&self) -> &'static str {
         "viewport_blit"
     }
@@ -102,6 +102,7 @@ impl FrameViewNode for ViewportBlitNode {
         ctx: &mut GpuContext,
         resources: &PhysicalResources<'_>,
         execution: &ViewExecutionContext<'_>,
+        _services: &mut (dyn RuntimeRenderServices + '_),
     ) -> Result<(), RenderGraphError> {
         if execution
             .view_payload::<SceneView>()
@@ -166,7 +167,11 @@ impl FrameViewNode for ViewportBlitNode {
         Ok(())
     }
 
-    fn draw_calls(&self, _execution: &ViewExecutionContext<'_>) -> usize {
+    fn draw_calls(
+        &self,
+        _execution: &ViewExecutionContext<'_>,
+        _services: &(dyn RuntimeRenderServices + '_),
+    ) -> usize {
         if _execution
             .view_payload::<SceneView>()
             .is_some_and(|scene_view| !scene_view.presents_to_surface())

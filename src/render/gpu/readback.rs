@@ -309,7 +309,7 @@ pub fn read_texture_subresource(
     slice.map_async(wgpu::MapMode::Read, move |result| {
         let _ = sender.send(result.map(|_| ()));
     });
-    ctx.device().poll(wgpu::Maintain::Wait);
+    let _ = ctx.device().poll(wgpu::PollType::wait_indefinitely());
     receiver
         .recv()
         .map_err(|err| TextureReadbackError::MapFailed(err.to_string()))?
@@ -426,7 +426,7 @@ mod tests {
     use super::*;
 
     fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::LowPower,
             compatible_surface: None,
@@ -434,15 +434,13 @@ mod tests {
         }))
         .expect("No suitable GPU adapter found for readback tests");
 
-        pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("readback_test_device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::Performance,
-            },
-            None,
-        ))
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("readback_test_device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            ..Default::default()
+        }))
         .expect("Failed to create test GPU device")
     }
 

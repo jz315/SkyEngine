@@ -1,8 +1,10 @@
 //! SkyEngine high-level rendering facade built around programmable scene pipelines.
 
 pub mod animation;
-pub mod assets;
+pub mod asset;
 pub mod backend;
+pub mod builtins;
+mod color;
 pub mod component;
 pub(crate) mod composite;
 pub(crate) mod execution;
@@ -27,7 +29,7 @@ pub(crate) mod live2d;
 
 pub use crate::math::{Projection, Quat, Transform};
 pub use animation::{animate_sprites, SpriteAnimationClip, SpriteAnimationFrame, SpriteAnimator};
-pub use assets::{
+pub use asset::{
     MeshAsset, MeshAssetDescriptor, MeshAssetError, MeshBoundingSphere, MeshIndexData, MeshSubMesh,
     MeshVertexAttribute, MeshVertexFormat, MeshVertexLayout, MeshVertexSemantic, RenderAssets,
     StandardMaterialAsset, TextureAddressMode, TextureFilter, TextureSamplerDesc,
@@ -39,6 +41,11 @@ pub use backend::{RenderlingSceneRenderer, RenderlingSceneSyncStats};
 pub use backend::{
     SceneRenderer, SceneRendererError, SceneRendererInitError, SceneSpotLight, WgpuSceneRenderer,
 };
+pub use builtins::{
+    Bloom, ContactShadows, DebugView, GiCompositePass, GiUpdateCompute, SceneMaterialPrepass,
+    SceneNormalPrepass, Sharpen, TemporalAntiAliasing, ToneMap, Vignette,
+};
+pub use color::Color;
 pub use component::{
     BloomSettings, Camera as CameraMarker, CameraViewport, ContactShadowsSettings,
     DirectionalLight, GlobalIllumination, MainCamera, MeshRenderer, Parent, PointLight,
@@ -50,6 +57,12 @@ pub use component::{
     MAX_DIRECTIONAL_SHADOW_CASCADES,
 };
 pub use execution::SceneTexture;
+pub use execution::{
+    ComputePassExecuteContext, ComputePassSetupContext, GraphPassExecuteContext,
+    GraphPassSetupContext, PhaseDrawServices, PhaseExecuteContext, PhaseSetupContext,
+    PostFxPassExecuteContext, PostFxPassSetupContext, RenderPassExecuteContext,
+    RenderPassSetupContext,
+};
 pub use gi::{GiProviderConfig, GiProviderFactory, GiProviderId, GiSettings};
 pub use gpu::{
     is_depth_format, GpuScene, GpuTable, GpuTableManager, ModelMatrixTable, Texture,
@@ -59,25 +72,20 @@ pub use lighting::DirectionalShadowPhase;
 pub use lighting::{GpuLight, GpuLightKind, Light2D, LightTable, SceneLightingResources};
 pub use phase::{OpaquePhase, TransparentPhase};
 pub use pipeline::{
-    Bloom, ComputePass, ComputePassExecuteContext, ComputePassSetupContext, ContactShadows,
-    DebugView, GiCompositePass, GiUpdateCompute, GraphPass, GraphPassExecuteContext,
-    GraphPassSetupContext, KajiyaDpiMode, KajiyaRendererSettings, PipelineStepDescriptor,
-    PostFxPass, PostFxPassExecuteContext, PostFxPassSetupContext, RenderBackendKind, RenderFeature,
-    RenderPass, RenderPassExecuteContext, RenderPassSetupContext, RenderPhase,
-    RenderPhaseExecuteContext, RenderPhaseSetupContext, RenderPipelineAsset, RenderPipelineBuilder,
-    RenderPipelineDescriptor, SceneMaterialPrepass, SceneNormalPrepass, Sharpen, SpriteFeature,
-    TemporalAntiAliasing, TextureSpec, ToneMap, Vignette,
+    ComputePass, GraphPass, KajiyaDpiMode, KajiyaRendererSettings, PipelineStepDescriptor,
+    PostFxPass, RenderBackendKind, RenderFeature, RenderPass, RenderPhase, RenderPipelineAsset,
+    RenderPipelineBuilder, RenderPipelineDescriptor, SpriteFeature, TextureSpec,
 };
-pub use resources::assets::{SharedRenderAssetCache, TextureReadiness};
 pub use resources::material::{
-    AlphaMode, MainPassMode, Material, MaterialBindContext, MaterialBinding, MaterialBindingLayout,
-    MaterialError, MaterialHandle, MaterialInterface, MaterialPassSet, MaterialPrepareContext,
-    MaterialPrepassMode, MaterialRenderState, MaterialShaderSet, MaterialStorage, PreparedMaterial,
+    AlphaMode, MainPassMode, Material, MaterialBinding, MaterialBindingLayout, MaterialError,
+    MaterialHandle, MaterialInterface, MaterialPassSet, MaterialPrepareContext,
+    MaterialPrepassMode, MaterialRenderState, MaterialShaderSet, PreparedMaterial,
     SceneBindingDesc, SceneBindingKind, SceneResourceKind, SceneResourceRequirements, ShaderSource,
     ShaderVariantKey, ShaderVariantPolicy, ShadowPassMode, SpriteMaterial, StandardMaterial,
     UnlitMaterial,
 };
-pub use runtime::RenderComposer;
+pub use resources::texture_cache::{SharedRenderAssetCache, TextureReadiness};
+pub use runtime::RenderRuntime;
 pub use runtime::RenderTimingStats;
 pub use runtime::{HistoryTexture, HistoryTextureRequest, HistoryTextureSize};
 pub use sprite::Sprite;
@@ -91,8 +99,8 @@ pub use tilemap::{
 #[cfg(feature = "physics")]
 pub use tilemap::{TiledPhysicsError, TiledPhysicsInstance, TiledPhysicsOptions};
 pub use view::{
-    Camera, Color, Frustum, RenderQueueSort, RenderStats, SceneView, SceneViewKind,
-    TemporalViewState, ViewportRect,
+    Camera, Frustum, RenderQueueSort, RenderStats, SceneView, SceneViewKind, TemporalViewState,
+    ViewportRect,
 };
 
 #[cfg(feature = "live2d")]
@@ -167,7 +175,7 @@ mod tests {
         let _tiled_spawn_origin = TiledSpawnOrigin::Centered;
         let _light = PointLight::new(64.0);
         let _spot = SpotLight::new(32.0);
-        let _composer = RenderComposer::from_asset(RenderPipelineAsset::builder().build());
+        let _composer = RenderRuntime::from_asset(RenderPipelineAsset::builder().build());
         let _feature = SpriteFeature::unlit();
         let _main_camera = MainCamera;
         let _sorting_layer = SortingLayer::default();

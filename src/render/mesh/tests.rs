@@ -4,7 +4,7 @@ use crate::render::resources::mesh::MeshIndexData;
 use crate::render::view::Camera;
 
 fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::LowPower,
         compatible_surface: None,
@@ -12,15 +12,13 @@ fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
     }))
     .expect("No suitable GPU adapter found for render tests");
 
-    pollster::block_on(adapter.request_device(
-        &wgpu::DeviceDescriptor {
-            label: Some("mesh_pass_test_device"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
-            memory_hints: wgpu::MemoryHints::Performance,
-        },
-        None,
-    ))
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("mesh_pass_test_device"),
+        required_features: wgpu::Features::empty(),
+        required_limits: wgpu::Limits::default(),
+        memory_hints: wgpu::MemoryHints::Performance,
+        ..Default::default()
+    }))
     .expect("Failed to create test GPU device")
 }
 
@@ -76,8 +74,7 @@ fn basic_pipeline_desc() -> MaterialPipelineDesc {
         vs_entry: "vs_main",
         fs_entry: "fs_main",
         blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-        material_properties_slot: None,
-        material_resources_slot: None,
+        material_slot: None,
         vertex_buffers: vec![wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Vertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
@@ -102,7 +99,7 @@ fn mesh_pass_renders_indexed_mesh_to_target() {
     let camera = Camera::new(32.0, 32.0);
     let mut mesh_pass = MeshPass::new(&ctx);
     let mut pipeline = mesh_pass
-        .create_pipeline_cache(&ctx, basic_pipeline_desc(), None, None)
+        .create_pipeline_cache(&ctx, basic_pipeline_desc(), None)
         .expect("mesh pipeline should build");
     let mesh = crate::render::resources::mesh::Mesh::from_vertices_indices(
         &ctx,
@@ -152,7 +149,7 @@ fn mesh_pass_rejects_sample_count_mismatch() {
     let camera = Camera::new(16.0, 16.0);
     let mut mesh_pass = MeshPass::new(&ctx);
     let mut pipeline = mesh_pass
-        .create_pipeline_cache(&ctx, basic_pipeline_desc(), None, None)
+        .create_pipeline_cache(&ctx, basic_pipeline_desc(), None)
         .expect("mesh pipeline should build");
     let mesh = crate::render::resources::mesh::Mesh::from_vertices(
         &ctx,
@@ -198,13 +195,13 @@ fn mesh_pass_rejects_depth_format_mismatch() {
     let mut desc = basic_pipeline_desc();
     desc.depth_stencil = Some(wgpu::DepthStencilState {
         format: wgpu::TextureFormat::Depth24Plus,
-        depth_write_enabled: true,
-        depth_compare: wgpu::CompareFunction::LessEqual,
+        depth_write_enabled: Some(true),
+        depth_compare: Some(wgpu::CompareFunction::LessEqual),
         stencil: wgpu::StencilState::default(),
         bias: wgpu::DepthBiasState::default(),
     });
     let mut pipeline = mesh_pass
-        .create_pipeline_cache(&ctx, desc, None, None)
+        .create_pipeline_cache(&ctx, desc, None)
         .expect("mesh pipeline should build");
     let mesh = crate::render::resources::mesh::Mesh::from_vertices(
         &ctx,

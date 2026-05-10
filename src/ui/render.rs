@@ -215,8 +215,8 @@ impl UiRenderer {
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("sky_ui_quad_pipeline_layout"),
-            bind_group_layouts: &[&screen_bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&screen_bind_group_layout)],
+            immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("sky_ui_quad_pipeline"),
@@ -258,7 +258,7 @@ impl UiRenderer {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
         let image_texture_layout =
@@ -290,8 +290,8 @@ impl UiRenderer {
         let image_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("sky_ui_image_pipeline_layout"),
-                bind_group_layouts: &[&screen_bind_group_layout, &image_texture_layout],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[Some(&screen_bind_group_layout), Some(&image_texture_layout)],
+                immediate_size: 0,
             });
         let image_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("sky_ui_image_pipeline"),
@@ -338,7 +338,7 @@ impl UiRenderer {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -422,8 +422,9 @@ impl UiRenderer {
             buffer.set_text(
                 &mut self.font_system,
                 &item.text,
-                Attrs::new().family(Family::SansSerif),
+                &Attrs::new().family(Family::SansSerif),
                 Shaping::Advanced,
+                Some(text_align(item.align)),
             );
             let align = text_align(item.align);
             for line in &mut buffer.lines {

@@ -1,7 +1,6 @@
 pub use crate::math::Projection;
 
 mod camera;
-mod color;
 mod frustum;
 mod math;
 mod projection;
@@ -11,7 +10,6 @@ mod types;
 mod viewport;
 
 pub use camera::{Camera, RenderView, ViewUniform};
-pub use color::Color;
 pub use frustum::Frustum;
 pub use scene_view::{SceneView, SceneViewKind, TemporalViewState};
 pub use types::{RenderQueueSort, RenderStats};

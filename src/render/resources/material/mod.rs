@@ -4,27 +4,26 @@
 mod binding;
 pub mod builtins;
 mod debug;
+mod dirty_queue;
 mod error;
 mod id;
 mod instance;
+mod instance_store;
 mod interface;
-mod legacy;
 mod model;
 mod pass;
 mod pipeline;
 mod prepare;
 mod prepared;
-mod properties;
+mod records;
 mod registry;
 mod scene;
+mod scene_binding;
 mod shader;
-mod storage;
 
 pub use binding::{MaterialBinding, MaterialBindingLayout};
-pub use builtins::{
-    AlphaMode, SpriteMaterial, SpriteMaterialModel, StandardMaterial, StandardMaterialModel,
-    UnlitMaterial, UnlitMaterialModel,
-};
+pub use builtins::{AlphaMode, SpriteMaterial, StandardMaterial, UnlitMaterial};
+#[allow(unused_imports)]
 pub use debug::{MaterialDebugSummary, MaterialInstanceDebugInfo, MaterialModelDebugInfo};
 pub use error::MaterialError;
 pub use id::{
@@ -32,22 +31,15 @@ pub use id::{
 };
 pub use instance::{MaterialInstanceInfo, MaterialInstanceVersion};
 pub use interface::{MaterialInterface, MaterialInterfaceBuilder, MaterialRenderState};
-pub use legacy::{MaterialModelExt, SceneBindingDesc, SceneBindingKind};
 pub use model::MaterialModel as Material;
 pub use model::{MaterialModel, MaterialVariantContext};
 pub use pass::{MainPassMode, MaterialPassSet, MaterialPrepassMode, ShadowPassMode};
 pub use pipeline::{
     MaterialPipelineCache, MaterialPipelineDesc, MaterialPipelineKey, PipelineCache,
 };
-pub use prepare::{MaterialPrepareContext, PreparedMaterialBuilder};
-pub use prepared::{
-    MaterialBindContext, MaterialInstance, MaterialResourceBindings, PreparedMaterial,
-    PreparedMaterialBinding, PreparedMaterialVersion,
-};
-pub use properties::{MaterialProperties, PropertyType};
+pub use prepare::MaterialPrepareContext;
+pub use prepared::{PreparedMaterial, PreparedMaterialBinding};
 pub use registry::MaterialRegistry;
 pub use scene::{SceneResourceKind, SceneResourceRequirements};
+pub use scene_binding::{SceneBindingDesc, SceneBindingKind};
 pub use shader::{MaterialShaderSet, ShaderSource, ShaderVariantKey, ShaderVariantPolicy};
-pub use storage::{MaterialStorage, MaterialStorageMut};
-
-pub type MaterialId = MaterialInstanceId;

@@ -5,21 +5,21 @@ use winit::window::Window;
 use crate::asset::{AssetServer, Handle};
 use crate::ecs::World;
 use crate::gpu::GpuContext;
-use crate::render::assets::{MeshAsset, StandardMaterialAsset};
+use crate::render::asset::{MeshAsset, StandardMaterialAsset};
 use crate::render::pipeline::{RenderBackendKind, RenderPipelineAsset};
-use crate::render::resources::assets::SharedRenderAssetCache;
 use crate::render::resources::material::MaterialHandle;
 use crate::render::resources::mesh::MeshHandle;
-use crate::render::runtime::RenderComposer;
+use crate::render::resources::texture_cache::SharedRenderAssetCache;
+use crate::render::runtime::RenderRuntime;
 use crate::render::view::RenderStats;
 
 use super::scene_renderer::{SceneRenderer, SceneRendererError, SceneRendererInitError};
-use super::wgpu_assets::WgpuRenderAssetCache;
+use super::wgpu_asset_bridge::WgpuRenderAssetCache;
 
-/// Native `wgpu` backend wrapper around the existing [`RenderComposer`].
+/// Native `wgpu` backend wrapper around the high-level [`RenderRuntime`].
 pub struct WgpuSceneRenderer {
     gpu: GpuContext,
-    composer: Option<RenderComposer>,
+    render_runtime: Option<RenderRuntime>,
     asset_cache: WgpuRenderAssetCache,
 }
 
@@ -33,13 +33,13 @@ impl WgpuSceneRenderer {
             debug_assert_eq!(asset.backend_kind(), RenderBackendKind::Wgpu);
         }
         let gpu = GpuContext::try_new(window, vsync)?;
-        let mut composer = pipeline.map(RenderComposer::from_asset);
-        if let Some(composer) = composer.as_mut() {
-            composer.initialize_for_gpu(&gpu);
+        let mut render_runtime = pipeline.map(RenderRuntime::from_asset);
+        if let Some(render_runtime) = render_runtime.as_mut() {
+            render_runtime.prepare_gpu_resources(&gpu);
         }
         Ok(Self {
             gpu,
-            composer,
+            render_runtime,
             asset_cache: WgpuRenderAssetCache::default(),
         })
     }
@@ -55,13 +55,13 @@ impl WgpuSceneRenderer {
     }
 
     #[inline]
-    pub fn composer(&self) -> Option<&RenderComposer> {
-        self.composer.as_ref()
+    pub fn render_runtime(&self) -> Option<&RenderRuntime> {
+        self.render_runtime.as_ref()
     }
 
     #[inline]
-    pub fn composer_mut(&mut self) -> Option<&mut RenderComposer> {
-        self.composer.as_mut()
+    pub fn render_runtime_mut(&mut self) -> Option<&mut RenderRuntime> {
+        self.render_runtime.as_mut()
     }
 
     pub fn sync_mesh_asset(
@@ -69,9 +69,9 @@ impl WgpuSceneRenderer {
         assets: &AssetServer,
         handle: Handle<MeshAsset>,
     ) -> Option<MeshHandle> {
-        let composer = self.composer.as_mut()?;
+        let render_runtime = self.render_runtime.as_mut()?;
         self.asset_cache
-            .sync_mesh(&self.gpu, composer, assets, handle)
+            .sync_mesh(&self.gpu, render_runtime, assets, handle)
     }
 
     pub fn sync_standard_material_asset(
@@ -80,9 +80,14 @@ impl WgpuSceneRenderer {
         render_assets: &SharedRenderAssetCache,
         handle: Handle<StandardMaterialAsset>,
     ) -> Option<MaterialHandle> {
-        let composer = self.composer.as_mut()?;
-        self.asset_cache
-            .sync_standard_material(&self.gpu, composer, assets, render_assets, handle)
+        let render_runtime = self.render_runtime.as_mut()?;
+        self.asset_cache.sync_standard_material(
+            &self.gpu,
+            render_runtime,
+            assets,
+            render_assets,
+            handle,
+        )
     }
 }
 
@@ -100,7 +105,7 @@ impl SceneRenderer for WgpuSceneRenderer {
     }
 
     fn render_world(&mut self, world: &World) {
-        self.composer
+        self.render_runtime
             .as_mut()
             .expect("FrameContext::render requires App::with_render_pipeline(...)")
             .render_world(&mut self.gpu, world);
@@ -108,21 +113,21 @@ impl SceneRenderer for WgpuSceneRenderer {
 
     fn resize(&mut self, width: u32, height: u32) {
         self.gpu.resize_surface(width, height);
-        if let Some(composer) = self.composer.as_mut() {
-            composer.resize(&self.gpu, width, height);
+        if let Some(render_runtime) = self.render_runtime.as_mut() {
+            render_runtime.resize(&self.gpu, width, height);
         }
     }
 
     fn surface_lost(&mut self) {
-        if let Some(composer) = self.composer.as_mut() {
-            composer.surface_lost();
+        if let Some(render_runtime) = self.render_runtime.as_mut() {
+            render_runtime.surface_lost();
         }
     }
 
     fn stats(&self) -> RenderStats {
-        self.composer
+        self.render_runtime
             .as_ref()
-            .map(RenderComposer::stats)
+            .map(RenderRuntime::stats)
             .unwrap_or_default()
     }
 
@@ -146,12 +151,12 @@ impl SceneRenderer for WgpuSceneRenderer {
         Some(&mut self.gpu)
     }
 
-    fn wgpu_composer_mut(&mut self) -> Option<&mut RenderComposer> {
-        self.composer.as_mut()
+    fn wgpu_render_runtime_mut(&mut self) -> Option<&mut RenderRuntime> {
+        self.render_runtime.as_mut()
     }
 
-    fn wgpu_parts_mut(&mut self) -> Option<(&mut RenderComposer, &mut GpuContext)> {
-        let composer = self.composer.as_mut()?;
-        Some((composer, &mut self.gpu))
+    fn wgpu_render_runtime_parts_mut(&mut self) -> Option<(&mut RenderRuntime, &mut GpuContext)> {
+        let render_runtime = self.render_runtime.as_mut()?;
+        Some((render_runtime, &mut self.gpu))
     }
 }

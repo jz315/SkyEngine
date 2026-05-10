@@ -22,7 +22,7 @@
 **SkyEngine** is a high-performance game engine built from scratch in Rust, standing on two pillars:
 
 1. **Chunk-Columnar Archetype ECS** — Components of the same type are stored contiguously within fixed-size memory chunks, naturally aligning with hardware prefetching for extreme iteration performance.
-2. **Programmable Scene Rendering** — A high-level `RenderPipelineAsset + RenderComposer` model coordinates ECS 2D, Live2D, and future renderer features on top of a declarative render graph, with built-in SpriteBatch, dynamic lighting, Bloom/ToneMap/Vignette post-processing, and Live2D Cubism SDK integration.
+2. **Programmable Scene Rendering** — A high-level `RenderPipelineAsset + RenderRuntime` model coordinates ECS 2D, Live2D, and future renderer features on top of a declarative render graph, with built-in SpriteBatch, dynamic lighting, Bloom/ToneMap/Vignette post-processing, and Live2D Cubism SDK integration.
 
 SkyEngine takes the **library approach**: no proc macros, no global state, no imposed application structure. Use just the ECS, or combine it with the full rendering pipeline — everything is opt-in.
 

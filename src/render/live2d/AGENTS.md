@@ -121,7 +121,7 @@
 
 ## High-Level Integration
 - High-level integration lives directly in `src/render/live2d/`.
-- `Live2DFeature` is the registration/runtime bridge used by `RenderComposer`.
+- `Live2DFeature` is the registration/runtime bridge used by `RenderRuntime`.
 - `Live2DFeature`:
   - extracts visible `Live2DModelInstance`s from ECS
   - collects/filters views

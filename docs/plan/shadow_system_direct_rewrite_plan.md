@@ -551,7 +551,7 @@ Files:
 - `src/render/lighting/shadow/extract.rs`
 - `src/render/resources/material/*`
 - `src/render/phase/*`
-- `src/render/runtime/frame_builder.rs`
+- `src/render/runtime/frame_coordinator.rs` and `src/render/runtime/frame/`
 
 Tests:
 
@@ -623,7 +623,7 @@ Files:
 
 - `src/render/lighting/shadow/graph.rs`
 - `src/render/lighting/shadow/phase.rs`
-- `src/render/runtime/nodes.rs`
+- `src/render/execution/step_nodes/`
 - `src/render/execution/slots.rs`
 
 Tests:
@@ -760,7 +760,7 @@ Tasks:
 
 Files:
 
-- `src/render/runtime/tests.rs`
+- `src/render/runtime/tests/`
 - `src/render/lighting/shadow/debug.rs`
 - `src/render/lighting/shadow/resources.rs`
 

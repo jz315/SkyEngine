@@ -2,7 +2,7 @@ use crate::gpu::GpuContext;
 use crate::render::execution::{PreparedFrame, PreparedView, ViewExecutionContext};
 use crate::render::graph::RenderGraphError;
 
-use super::contexts::{
+use crate::render::execution::{
     ComputePassExecuteContext, ComputePassSetupContext, GraphPassExecuteContext,
     GraphPassSetupContext, PostFxPassExecuteContext, PostFxPassSetupContext,
     RenderPassExecuteContext, RenderPassSetupContext,

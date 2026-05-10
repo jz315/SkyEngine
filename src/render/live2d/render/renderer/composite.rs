@@ -378,22 +378,25 @@ impl Live2DRenderer {
             ctx.device()
                 .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some("live2d_pipeline_layout"),
-                    bind_group_layouts: &[&self.uniform_bgl, &self.texture_bgl],
-                    push_constant_ranges: &[],
+                    bind_group_layouts: &[Some(&self.uniform_bgl), Some(&self.texture_bgl)],
+                    immediate_size: 0,
                 });
         let overlap_pipeline_layout =
             ctx.device()
                 .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some("live2d_overlap_pipeline_layout"),
-                    bind_group_layouts: &[&self.uniform_bgl, &self.blend_texture_bgl],
-                    push_constant_ranges: &[],
+                    bind_group_layouts: &[Some(&self.uniform_bgl), Some(&self.blend_texture_bgl)],
+                    immediate_size: 0,
                 });
         let composite_pipeline_layout =
             ctx.device()
                 .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some("live2d_composite_pipeline_layout"),
-                    bind_group_layouts: &[&self.composite_uniform_bgl, &self.composite_texture_bgl],
-                    push_constant_ranges: &[],
+                    bind_group_layouts: &[
+                        Some(&self.composite_uniform_bgl),
+                        Some(&self.composite_texture_bgl),
+                    ],
+                    immediate_size: 0,
                 });
 
         let vertex_layout = wgpu::VertexBufferLayout {
@@ -503,7 +506,7 @@ impl Live2DRenderer {
                     },
                     depth_stencil: None,
                     multisample: wgpu::MultisampleState::default(),
-                    multiview: None,
+                    multiview_mask: None,
                     cache: None,
                 })
         };
@@ -537,7 +540,7 @@ impl Live2DRenderer {
                     },
                     depth_stencil: None,
                     multisample: wgpu::MultisampleState::default(),
-                    multiview: None,
+                    multiview_mask: None,
                     cache: None,
                 })
         };
@@ -570,7 +573,7 @@ impl Live2DRenderer {
                     },
                     depth_stencil: None,
                     multisample: wgpu::MultisampleState::default(),
-                    multiview: None,
+                    multiview_mask: None,
                     cache: None,
                 })
         };
@@ -700,7 +703,7 @@ mod tests {
     };
 
     fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::LowPower,
             compatible_surface: None,
@@ -708,15 +711,13 @@ mod tests {
         }))
         .expect("No suitable GPU adapter found for Live2D renderer tests");
 
-        pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("live2d_renderer_test_device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::Performance,
-            },
-            None,
-        ))
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("live2d_renderer_test_device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            ..Default::default()
+        }))
         .expect("Failed to create test GPU device")
     }
 

@@ -1176,8 +1176,8 @@ mod tests {
             .shadow_bias(0.0008)
             .shadow_depth_bias(3)
             .shadow_slope_bias(1.8)
-            .shadow_normal_bias(0.007)
-            .shadow_filter_radius(0.09)
+            .shadow_normal_bias(0.002)
+            .shadow_filter_radius(0.055)
             .pcss_shadows(),));
 
         let mut views = vec![main_view];

@@ -127,8 +127,12 @@ impl DrawTilemapRuntime {
         if !self.pipelines.contains_key(&key) {
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("tilemap_phase_pipeline_layout"),
-                bind_group_layouts: &[view_layout, model_layout, &self.texture_bgl],
-                push_constant_ranges: &[],
+                bind_group_layouts: &[
+                    Some(view_layout),
+                    Some(model_layout),
+                    Some(&self.texture_bgl),
+                ],
+                immediate_size: 0,
             });
             let vertex_buffers = [
                 wgpu::VertexBufferLayout {
@@ -227,13 +231,13 @@ impl DrawTilemapRuntime {
                 },
                 depth_stencil: depth_format.map(|format| wgpu::DepthStencilState {
                     format,
-                    depth_write_enabled: false,
-                    depth_compare: wgpu::CompareFunction::LessEqual,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
                     stencil: wgpu::StencilState::default(),
                     bias: wgpu::DepthBiasState::default(),
                 }),
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             });
             self.pipelines.insert(key, pipeline);
@@ -412,7 +416,7 @@ mod tests {
     use crate::render::phase::create_model_bind_group_layout;
 
     fn create_test_device() -> wgpu::Device {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::LowPower,
             compatible_surface: None,
@@ -420,15 +424,13 @@ mod tests {
         }))
         .expect("test adapter should be available");
 
-        let (device, _) = pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("tilemap_draw_test_device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::Performance,
-            },
-            None,
-        ))
+        let (device, _) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("tilemap_draw_test_device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            ..Default::default()
+        }))
         .expect("test device should be available");
         device
     }

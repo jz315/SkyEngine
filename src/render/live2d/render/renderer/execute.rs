@@ -55,6 +55,7 @@ impl Live2DRenderer {
                     let mut frame = ctx.frame();
                     let color_attachments = [Some(wgpu::RenderPassColorAttachment {
                         view: &target_view,
+                        depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: if needs_clear {
@@ -103,6 +104,7 @@ impl Live2DRenderer {
                 let mut frame = ctx.frame();
                 let color_attachments = [Some(wgpu::RenderPassColorAttachment {
                     view: &target_view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: if needs_clear {
@@ -185,6 +187,7 @@ impl Live2DRenderer {
             let mut frame = ctx.frame();
             let color_attachments = [Some(wgpu::RenderPassColorAttachment {
                 view: &target_view,
+                depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: if needs_clear {

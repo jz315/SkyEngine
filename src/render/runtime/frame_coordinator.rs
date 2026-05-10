@@ -1,0 +1,80 @@
+use crate::asset::AssetServer;
+use crate::ecs::World;
+use crate::gpu::GpuContext;
+use crate::render::resources::texture_cache::SharedRenderAssetCache;
+
+use super::frame::{
+    begin_frame_inputs, execute_prepared_frame, extract_frame, finish_frame_stats,
+    finish_render_assets, prepare_frame_assets, prepare_global_illumination, prepare_shadows,
+    remember_previous_models, upload_scene_data, FrameRuntimeParts,
+};
+use super::runtime::RenderRuntime;
+
+pub(crate) struct FrameCoordinator;
+
+impl FrameCoordinator {
+    #[inline]
+    pub(crate) fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for FrameCoordinator {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RenderRuntime {
+    pub fn render_world(&mut self, gpu: &mut GpuContext, world: &World) {
+        self.frame.render_world(
+            gpu,
+            world,
+            FrameRuntimeParts {
+                plan: &mut self.plan,
+                resources: &mut self.resources,
+                runtime: &mut self.runtime,
+                shadows: &mut self.shadows,
+                executor: &mut self.executor,
+            },
+        );
+    }
+}
+
+impl FrameCoordinator {
+    fn render_world(
+        &mut self,
+        gpu: &mut GpuContext,
+        world: &World,
+        mut parts: FrameRuntimeParts<'_>,
+    ) {
+        let asset_cache = world.get_resource::<SharedRenderAssetCache>();
+        let asset_server = world.get_resource::<AssetServer>().cloned();
+        let inputs = begin_frame_inputs(&mut parts, gpu, world, asset_cache);
+        let mut extracted = extract_frame(
+            &mut parts,
+            gpu,
+            world,
+            &inputs,
+            asset_cache,
+            asset_server.as_ref(),
+        );
+        prepare_frame_assets(&mut parts, gpu, asset_cache);
+        let uploads = upload_scene_data(&mut parts, gpu, world, &inputs, &mut extracted);
+        prepare_global_illumination(&mut parts, gpu, &extracted, &uploads);
+        let shadows = prepare_shadows(&mut parts, gpu, &extracted, &uploads);
+        let render_asset_stats = finish_render_assets(world, asset_cache);
+        let execution = execute_prepared_frame(&mut parts, gpu, &extracted, &uploads, &shadows);
+        finish_frame_stats(
+            &mut parts,
+            &inputs,
+            &extracted,
+            &uploads,
+            &shadows,
+            render_asset_stats,
+            &execution,
+        );
+        remember_previous_models(&mut parts, &inputs);
+    }
+}

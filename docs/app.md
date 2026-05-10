@@ -151,7 +151,7 @@ ctx.dt() -> f32
 ctx.gpu()
 ctx.feature_mut::<T>()
 ctx.with_feature_mut::<T, _>(...)
-ctx.with_renderer_mut(...)
+ctx.with_render_runtime_mut(...)
 ```
 
 `dt` 语义：

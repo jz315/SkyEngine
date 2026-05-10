@@ -1,5 +1,5 @@
 use crate::render::gpu::Texture;
-use crate::render::view::Color;
+use crate::render::Color;
 
 use super::super::{
     MainPassMode, MaterialBinding, MaterialError, MaterialInterface, MaterialModel,
@@ -166,38 +166,6 @@ impl MaterialModel for SpriteMaterial {
             .texture(1, texture)
             .sampler(2, ctx.sampler_nearest())
             .build()
-    }
-}
-
-pub struct SpriteMaterialModel;
-
-impl MaterialModel for SpriteMaterialModel {
-    type Data = SpriteMaterial;
-
-    fn interface() -> MaterialInterface {
-        <SpriteMaterial as MaterialModel>::interface()
-    }
-
-    fn variant(
-        data: &Self::Data,
-        ctx: &super::super::MaterialVariantContext<'_>,
-    ) -> ShaderVariantKey {
-        <SpriteMaterial as MaterialModel>::variant(data, ctx)
-    }
-
-    fn render_state(data: &Self::Data) -> MaterialRenderState {
-        <SpriteMaterial as MaterialModel>::render_state(data)
-    }
-
-    fn passes(data: &Self::Data) -> MaterialPassSet {
-        <SpriteMaterial as MaterialModel>::passes(data)
-    }
-
-    fn prepare(
-        data: &Self::Data,
-        ctx: &mut MaterialPrepareContext<'_>,
-    ) -> Result<PreparedMaterial, MaterialError> {
-        <SpriteMaterial as MaterialModel>::prepare(data, ctx)
     }
 }
 

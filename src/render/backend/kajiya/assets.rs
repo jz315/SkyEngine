@@ -12,7 +12,7 @@ use turbosloth::*;
 use crate::asset::{AssetId, AssetServer, Handle};
 use crate::asset::{TextureAsset, TextureColorSpace};
 use crate::ecs::EntityId;
-use crate::render::assets::{
+use crate::render::asset::{
     MeshAsset, MeshIndexData, MeshVertexAttribute, MeshVertexFormat, MeshVertexSemantic,
     StandardMaterialAsset,
 };
@@ -794,8 +794,8 @@ fn kajiya_affine3(cols: [f32; 16]) -> ::kajiya::math::Affine3A {
 mod tests {
     use super::*;
     use crate::asset::{AssetConfig, TextureAsset};
-    use crate::render::assets::{MeshAssetDescriptor, MeshVertexLayout};
-    use crate::render::view::Color;
+    use crate::render::asset::{MeshAssetDescriptor, MeshVertexLayout};
+    use crate::render::Color;
 
     #[repr(C)]
     #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]

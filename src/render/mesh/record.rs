@@ -27,18 +27,9 @@ impl MeshPass {
             pass.set_pipeline(prepared.pipeline.as_ref());
             pass.set_bind_group(VIEW_BIND_GROUP_SLOT, &self.view_bind_group, &[]);
 
-            if let Some(material) = draw.material.as_deref() {
-                if let Some(slot) = draw.pipeline.property_slot() {
-                    pass.set_bind_group(slot, material.property_bind_group(), &[]);
-                }
-                if let Some(slot) = draw.pipeline.resource_slot() {
-                    pass.set_bind_group(
-                        slot,
-                        material
-                            .try_resource_bind_group()
-                            .expect("resource bind group validated before recording"),
-                        &[],
-                    );
+            if let Some(material) = draw.material {
+                if let Some(slot) = draw.pipeline.material_slot() {
+                    pass.set_bind_group(slot, material.bind_group(), &[]);
                 }
             }
 

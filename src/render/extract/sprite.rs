@@ -38,12 +38,12 @@ impl Extractor for ExtractSprites {
         let asset_server = ctx.asset_server;
         let render_assets = ctx.render_assets;
         let transparent_phase = &mut *ctx.transparent_phase;
-        let mut material_storage = ctx
-            .material_registry
-            .try_materials_mut::<SpriteMaterial>()
-            .ok_or(MaterialError::UnregisteredMaterialType {
+        if !ctx.material_registry.is_registered::<SpriteMaterial>() {
+            return Err(MaterialError::UnregisteredMaterialType {
                 type_name: std::any::type_name::<SpriteMaterial>(),
-            })?;
+            }
+            .into());
+        }
         let mut texture_materials = FxHashMap::default();
 
         self.query.for_each_with_entity(
@@ -72,7 +72,11 @@ impl Extractor for ExtractSprites {
                     if let Some(texture) = texture {
                         material = material.texture(texture);
                     }
-                    let handle = material_storage.insert(material).erased();
+                    let handle = ctx
+                        .material_registry
+                        .insert_material::<SpriteMaterial>(material)
+                        .expect("SpriteMaterial registration was checked before extraction")
+                        .erased();
                     texture_materials.insert(texture_key, handle);
                     handle
                 };
@@ -106,7 +110,7 @@ impl Extractor for ExtractSprites {
 fn resolve_sprite_texture(
     gpu: &crate::gpu::GpuContext,
     asset_server: Option<&crate::asset::AssetServer>,
-    render_assets: Option<&crate::render::resources::assets::SharedRenderAssetCache>,
+    render_assets: Option<&crate::render::resources::texture_cache::SharedRenderAssetCache>,
     handle: crate::asset::Handle<crate::asset::TextureAsset>,
 ) -> Option<crate::render::Texture> {
     match (asset_server, render_assets) {

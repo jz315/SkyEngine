@@ -35,15 +35,15 @@ impl FullscreenPipeline {
         ctx: &GpuContext,
         target_format: wgpu::TextureFormat,
     ) -> wgpu::RenderPipeline {
-        let bind_group_layout_refs: Vec<&wgpu::BindGroupLayout> =
-            self.bind_group_layouts.iter().collect();
+        let bind_group_layout_refs: Vec<Option<&wgpu::BindGroupLayout>> =
+            self.bind_group_layouts.iter().map(Some).collect();
 
         let pipeline_layout =
             ctx.device()
                 .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some(&format!("{}_layout", self.label)),
                     bind_group_layouts: &bind_group_layout_refs,
-                    push_constant_ranges: &[],
+                    immediate_size: 0,
                 });
 
         ctx.device()
@@ -72,7 +72,7 @@ impl FullscreenPipeline {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             })
     }
@@ -140,7 +140,7 @@ mod tests {
     use super::*;
 
     fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::LowPower,
             compatible_surface: None,
@@ -148,15 +148,13 @@ mod tests {
         }))
         .expect("No suitable GPU adapter found for render tests");
 
-        pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("render_test_device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::Performance,
-            },
-            None,
-        ))
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("render_test_device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            ..Default::default()
+        }))
         .expect("Failed to create test GPU device")
     }
 

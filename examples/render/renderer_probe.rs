@@ -1,4 +1,4 @@
-//! RenderComposer performance probe for the default universal scene pipeline.
+//! RenderRuntime performance probe for the default universal scene pipeline.
 //!
 //! Runs controlled headless scenarios and reports synchronized frame timings
 //! plus lightweight internal phase timings.
@@ -15,8 +15,8 @@ use sky_engine::ecs::{EntityId, World};
 use sky_engine::gpu::GpuContext;
 use sky_engine::render::{
     BloomSettings, CameraMarker, CameraViewport, Color, MainCamera, PointLight, Projection,
-    RenderComposer, RenderPipelineAsset, RenderSettings, RenderStats, SpriteFeature,
-    SpriteRenderer, ToneMapSettings, Transform, TransparentPhase, ViewportRect, VignetteSettings,
+    RenderPipelineAsset, RenderRuntime, RenderSettings, RenderStats, SpriteFeature, SpriteRenderer,
+    ToneMapSettings, Transform, TransparentPhase, ViewportRect, VignetteSettings,
 };
 
 const DEFAULT_SURFACE_SIZE: [u32; 2] = [1280, 720];
@@ -252,13 +252,13 @@ fn main() {
 
 fn run_scenario(ctx: &mut GpuContext, scenario: Scenario, config: &ProbeConfig) -> ScenarioResult {
     let mut renderer = match scenario.path {
-        ProbeRenderPath::Unlit => RenderComposer::from_asset(
+        ProbeRenderPath::Unlit => RenderRuntime::from_asset(
             RenderPipelineAsset::builder()
                 .add_feature(SpriteFeature::unlit())
                 .add_phase(TransparentPhase::new())
                 .build(),
         ),
-        ProbeRenderPath::LitHdr => RenderComposer::from_asset(RenderPipelineAsset::forward_2d()),
+        ProbeRenderPath::LitHdr => RenderRuntime::from_asset(RenderPipelineAsset::forward_2d()),
     };
     let mut scene = build_scene(ctx, scenario);
     let mut accum = StatsAccumulator {
@@ -281,7 +281,7 @@ fn run_scenario(ctx: &mut GpuContext, scenario: Scenario, config: &ProbeConfig) 
             .expect("headless begin_frame should succeed");
         renderer.render_world(ctx, &scene.world);
         ctx.end_frame();
-        let _ = ctx.device().poll(wgpu::MaintainBase::Wait);
+        let _ = ctx.device().poll(wgpu::PollType::wait_indefinitely());
         let frame_ms_sync = frame_start.elapsed().as_secs_f64() * 1000.0;
 
         if frame_index >= config.warmup_frames {
@@ -443,7 +443,7 @@ fn dirty_count(total: usize, ratio: f32) -> usize {
 }
 
 fn create_probe_device() -> (wgpu::Device, wgpu::Queue) {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: None,
@@ -451,15 +451,13 @@ fn create_probe_device() -> (wgpu::Device, wgpu::Queue) {
     }))
     .expect("No suitable GPU adapter found for renderer_probe");
 
-    pollster::block_on(adapter.request_device(
-        &wgpu::DeviceDescriptor {
-            label: Some("renderer_probe_device"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
-            memory_hints: wgpu::MemoryHints::Performance,
-        },
-        None,
-    ))
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("renderer_probe_device"),
+        required_features: wgpu::Features::empty(),
+        required_limits: wgpu::Limits::default(),
+        memory_hints: wgpu::MemoryHints::Performance,
+        ..Default::default()
+    }))
     .expect("Failed to create probe GPU device")
 }
 
@@ -500,7 +498,7 @@ fn print_help() {
 
 fn print_table(results: &[ScenarioResult], config: &ProbeConfig) {
     println!(
-        "RenderComposer probe | headless | warmup={} | sample={}",
+        "RenderRuntime probe | headless | warmup={} | sample={}",
         config.warmup_frames, config.sample_frames
     );
     println!(

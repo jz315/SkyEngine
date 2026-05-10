@@ -16,43 +16,49 @@ code.
 
 ## Current State
 
-The active material implementation is currently rooted at:
+The active material implementation is now rooted at:
 
 ```text
 src/render/resources/material/mod.rs
 ```
 
-That file is a large monolithic implementation. The neighboring files under
-`src/render/resources/material/` are partial split attempts and can be reused
-only as reference material:
+That root is a thin module facade. The material implementation has been split
+into focused files such as:
 
 ```text
-bindings.rs
-builtin.rs
-cache.rs
-properties.rs
+binding.rs
+builtins/
+dirty_queue.rs
+id.rs
+instance.rs
+instance_store.rs
+interface.rs
+model.rs
+pass.rs
+pipeline.rs
+prepare.rs
+prepared.rs
+records.rs
 registry.rs
+scene.rs
+scene_binding.rs
+shader.rs
 storage.rs
-traits.rs
 ```
 
-There is no need to preserve the current public exports:
+Removed compatibility exports/files include:
 
 ```rust
-Material
 MaterialBindContext
-MaterialHandle
-MaterialStorage
-PipelineCache
-SceneBindingDesc
-SceneBindingKind
-SpriteMaterial
-UnlitMaterial
-StandardMaterial
+MaterialResourceBindings
+MaterialInstance
+SpriteMaterialModel
+UnlitMaterialModel
+StandardMaterialModel
 ```
 
-The built-in material names can stay if useful, but their implementation and
-trait surface should be replaced.
+The built-in material data types remain the models directly: `SpriteMaterial`,
+`UnlitMaterial`, and `StandardMaterial`.
 
 ## Rewrite Rules
 
@@ -269,19 +275,15 @@ The registry should not contain built-in shader logic. Built-ins live in
 Recommended user shape:
 
 ```rust
-let handle = renderer
-    .materials_mut()
-    .insert::<StandardMaterialModel>(StandardMaterial {
-        albedo: Color::WHITE,
-        roughness: 0.55,
-        ..Default::default()
-    });
+let handle = renderer.insert_material::<StandardMaterial>(StandardMaterial {
+    albedo: Color::WHITE,
+    roughness: 0.55,
+    ..Default::default()
+});
 
-renderer
-    .materials_mut()
-    .set(handle, |mat| {
-        mat.roughness = 0.8;
-    })?;
+renderer.set_material(handle, |mat| {
+    mat.roughness = 0.8;
+})?;
 ```
 
 ## Scene Resources
@@ -623,12 +625,12 @@ adapters:
 
 - `src/render/mod.rs` exports;
 - `src/render/component/mesh.rs` material handle fields;
-- `src/render/pipeline/asset.rs` material registration;
+- `src/render/pipeline/material_registration.rs` material registration;
 - `src/render/pipeline/features.rs` built-in registration;
-- `src/render/pipeline/contexts.rs` material registry access;
+- `src/render/execution/contexts/` material registry access;
 - `src/render/runtime/composer.rs` registration and storage access;
-- `src/render/runtime/frame_builder.rs` extraction and batching;
-- `src/render/runtime/nodes.rs` prepared material lookup;
+- `src/render/runtime/frame_coordinator.rs` and `src/render/runtime/frame/` extraction and batching;
+- `src/render/execution/step_nodes/` prepared material lookup;
 - render/runtime tests that implement custom materials;
 - examples that create `StandardMaterial`, `UnlitMaterial`, or `SpriteMaterial`.
 
@@ -643,15 +645,11 @@ Old APIs should be removed from call sites as they are encountered.
 - Remove old exports from `src/render/mod.rs`.
 - Let compilation errors reveal all old surface usage.
 
-Expected broken symbols:
+Removed legacy symbols:
 
-- `Material`;
 - `MaterialBindContext`;
 - `MaterialStorage`;
 - old `MaterialHandle`;
-- old `PipelineCache`;
-- `SceneBindingDesc`;
-- `SceneBindingKind`;
 - `register_material::<M>()` using the old trait;
 - `materials::<M>()` and `materials_mut::<M>()` using old typed storage.
 
@@ -680,7 +678,7 @@ Minimum compile target:
 
 ### Phase 2: Unlit Vertical Slice
 
-Implement `UnlitMaterialModel` first.
+Implement `UnlitMaterial` first.
 
 This slice must prove:
 

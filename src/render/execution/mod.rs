@@ -1,13 +1,21 @@
+mod contexts;
 mod frame_pipeline;
 mod helpers;
 mod nodes;
 mod payload;
 mod slots;
+mod step_nodes;
 #[cfg(test)]
 mod tests;
 
 pub type TextureFormat = wgpu::TextureFormat;
 
+pub use contexts::{
+    ComputePassExecuteContext, ComputePassSetupContext, GraphPassExecuteContext,
+    GraphPassSetupContext, PhaseDrawServices, PhaseExecuteContext, PhaseSetupContext,
+    PostFxPassExecuteContext, PostFxPassSetupContext, RenderPassExecuteContext,
+    RenderPassSetupContext,
+};
 pub use frame_pipeline::{FrameExecutionStats, FramePipeline};
 pub use nodes::{
     FinalizeExecutionContext, FrameFinalizeNode, FrameSetupNode, FrameViewNode,
@@ -17,6 +25,11 @@ pub use payload::{FramePayloadStore, PreparedFrame, PreparedView, ViewPayloadSto
 pub use slots::{
     CompletedViewState, FinalizePhaseState, PhaseState, ResourceSlotMap, SceneTexture,
     SlotResource, TextureSlot,
+};
+
+pub(crate) use step_nodes::{
+    ComputeStepNode, GraphPassStepNode, HeadlessKeepAliveNode, PhaseStepNode, PostFxStepNode,
+    RenderPassStepNode, RenderServices, RuntimeRenderServices, SceneColorSeedNode,
 };
 
 pub(crate) use helpers::{

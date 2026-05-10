@@ -14,7 +14,8 @@ use crate::render::tilemap::{
     TilemapDrawData, TilemapGpuChunkKey, TilemapInstance, TilemapInstanceSpan,
     TilemapPreparedInstances, TilemapStorage,
 };
-use crate::render::view::{Color, ResolvedSceneTransforms, SceneView};
+use crate::render::view::{ResolvedSceneTransforms, SceneView};
+use crate::render::Color;
 use crate::render::Texture;
 
 use crate::render::extract::{ExtractContext, ExtractError, Extractor};

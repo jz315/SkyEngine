@@ -11,7 +11,7 @@ use super::{
 };
 
 fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::LowPower,
         compatible_surface: None,
@@ -19,15 +19,13 @@ fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
     }))
     .expect("No suitable GPU adapter found for frame pipeline tests");
 
-    pollster::block_on(adapter.request_device(
-        &wgpu::DeviceDescriptor {
-            label: Some("frame_pipeline_test_device"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
-            memory_hints: wgpu::MemoryHints::Performance,
-        },
-        None,
-    ))
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("frame_pipeline_test_device"),
+        required_features: wgpu::Features::empty(),
+        required_limits: wgpu::Limits::default(),
+        memory_hints: wgpu::MemoryHints::Performance,
+        ..Default::default()
+    }))
     .expect("Failed to create test GPU device")
 }
 
@@ -183,6 +181,7 @@ impl FrameViewNode for SeedViewNode {
         _ctx: &mut GpuContext,
         _resources: &PhysicalResources<'_>,
         _execution: &ViewExecutionContext<'_>,
+        _services: &mut (),
     ) -> Result<(), RenderGraphError> {
         Ok(())
     }
@@ -234,6 +233,7 @@ impl FrameViewNode for ObserveViewNode {
         _ctx: &mut GpuContext,
         _resources: &PhysicalResources<'_>,
         _execution: &ViewExecutionContext<'_>,
+        _services: &mut (),
     ) -> Result<(), RenderGraphError> {
         Ok(())
     }
@@ -366,11 +366,12 @@ impl FrameViewNode for MultiPassDrawCountNode {
         _ctx: &mut GpuContext,
         _resources: &PhysicalResources<'_>,
         _execution: &ViewExecutionContext<'_>,
+        _services: &mut (),
     ) -> Result<(), RenderGraphError> {
         Ok(())
     }
 
-    fn draw_calls(&self, _execution: &ViewExecutionContext<'_>) -> usize {
+    fn draw_calls(&self, _execution: &ViewExecutionContext<'_>, _services: &()) -> usize {
         1
     }
 }

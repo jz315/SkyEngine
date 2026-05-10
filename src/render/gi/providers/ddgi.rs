@@ -5,6 +5,7 @@ use std::borrow::Cow;
 use crate::gpu::GpuContext;
 use crate::math::{Mat4, Vec3};
 use crate::render::component::GlobalIllumination;
+use crate::render::execution::ComputePassExecuteContext;
 use crate::render::gi::{
     downcast_settings, GiMaterial, GiProviderFactory, GiProviderId, GiProviderRuntime,
     GiSamplingBinding, GiSceneInput, GiSettings, GiShaderDescriptor, GiUpdateDescriptor,
@@ -12,9 +13,9 @@ use crate::render::gi::{
 use crate::render::gpu::ComputePipelineCache;
 use crate::render::gpu::{RenderTarget, RenderTargetDescriptor};
 use crate::render::graph::{PassFlags, RenderGraphError};
-use crate::render::pipeline::ComputePassExecuteContext;
 use crate::render::resources::mesh::RayTriangle;
-use crate::render::view::{Color, SceneView};
+use crate::render::view::SceneView;
+use crate::render::Color;
 use crate::render::GpuLight;
 
 pub const DDGI_PROVIDER_ID: GiProviderId = "sky.ddgi";
@@ -384,7 +385,7 @@ impl DdgiRuntime {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
         let last_uniform = disabled_uniform();
@@ -1506,8 +1507,18 @@ mod tests {
     fn ddgi_symbols_stay_inside_provider_boundary() {
         let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let mut files = vec![
-            manifest_dir.join("src/render/runtime/frame_builder.rs"),
-            manifest_dir.join("src/render/pipeline/asset.rs"),
+            manifest_dir.join("src/render/runtime/frame_coordinator.rs"),
+            manifest_dir.join("src/render/runtime/frame/assemble_frame.rs"),
+            manifest_dir.join("src/render/runtime/frame/prepare_frame_resources.rs"),
+            manifest_dir.join("src/render/runtime/frame/execute_frame.rs"),
+            manifest_dir.join("src/render/runtime/frame/extract_frame.rs"),
+            manifest_dir.join("src/render/runtime/frame/finish_frame.rs"),
+            manifest_dir.join("src/render/runtime/frame/gi.rs"),
+            manifest_dir.join("src/render/runtime/frame/collect_frame_inputs.rs"),
+            manifest_dir.join("src/render/runtime/frame/upload_scene.rs"),
+            manifest_dir.join("src/render/runtime/frame/shadows.rs"),
+            manifest_dir.join("src/render/runtime/executor.rs"),
+            manifest_dir.join("src/render/pipeline/pipeline_asset.rs"),
             manifest_dir.join("src/render/gi/mod.rs"),
             manifest_dir.join("src/render/shaders/materials/standard_material.wgsl"),
             manifest_dir.join("src/render/shaders/materials/standard_material_normal_mapped.wgsl"),

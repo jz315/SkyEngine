@@ -235,7 +235,7 @@ mod tests {
     use super::*;
 
     fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::LowPower,
             compatible_surface: None,
@@ -243,28 +243,26 @@ mod tests {
         }))
         .expect("No suitable GPU adapter found for TAA tests");
 
-        pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("taa_test_device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::Performance,
-            },
-            None,
-        ))
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("taa_test_device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            ..Default::default()
+        }))
         .expect("Failed to create test GPU device")
     }
 
     #[test]
     fn taa_wgsl_source_validates() {
         let (device, _queue) = create_test_device();
-        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let error_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let _module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("taa_shader_test"),
             source: wgpu::ShaderSource::Wgsl(TAA_SHADER.into()),
         });
-        device.poll(wgpu::Maintain::Wait);
-        let error = pollster::block_on(device.pop_error_scope());
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        let error = pollster::block_on(error_scope.pop());
         assert!(error.is_none(), "TAA shader should validate: {error:?}");
     }
 

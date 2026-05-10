@@ -252,7 +252,7 @@ frame update
 ```
 
 This mirrors the current egui integration and avoids forcing yakui or any other
-game UI backend into the main `RenderComposer` architecture before the API has
+game UI backend into the main `RenderRuntime` architecture before the API has
 proved itself.
 
 Longer term, a backend can become a `RenderFeature` or a render graph node if

@@ -1,6 +1,6 @@
-use super::draw::{DrawContext, DrawError, DrawFunctionRegistry};
 use super::item::PhaseItem;
 use super::sort_key::entity_sort_key;
+use super::{DrawContext, DrawError, DrawFunctionRegistry};
 
 #[derive(Default)]
 pub struct TransparentPhase {

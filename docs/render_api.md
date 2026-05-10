@@ -292,7 +292,7 @@ batch.flush_to_surface(&mut ctx, &camera, Some(clear));
 
 ---
 
-## Mesh / MeshPass (`src/render/resources/mesh.rs`, `src/render/passes/mesh_pass.rs`)
+## Mesh / MeshPass (`src/render/resources/mesh/`, `src/render/mesh/`)
 
 `Mesh` is the persistent custom-geometry counterpart to `SpriteBatch`'s internal quad buffers.
 
@@ -329,7 +329,7 @@ Typical flow:
 ```rust
 let mesh = Mesh::from_vertices_indices(&ctx, &vertices, MeshIndexData::U16(&indices), "tri");
 let mut mesh_pass = MeshPass::new(&ctx);
-let mut pipeline = mesh_pass.create_pipeline_cache(&ctx, desc, None, None)?;
+let mut pipeline = mesh_pass.create_pipeline_cache(&ctx, desc, None)?;
 let mut draws = [MeshDraw::new(&mesh, &mut pipeline)];
 
 mesh_pass.render_to_target(&mut ctx, &target, &camera, Some(Color::BLACK), &mut draws)?;

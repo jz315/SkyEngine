@@ -11,6 +11,7 @@ use crate::math::Mat4;
 use crate::render::component::GlobalIllumination;
 use crate::render::execution::{
     pass_first_write_texture, pass_nth_read_texture, require_render_target,
+    PostFxPassExecuteContext, PostFxPassSetupContext,
 };
 use crate::render::gi::{
     downcast_settings, GiCompositeDescriptor, GiProviderFactory, GiProviderId, GiProviderRuntime,
@@ -21,7 +22,7 @@ use crate::render::graph::{
     CompiledPass, PassFlags, RenderGraph, RenderGraphError, ResourceRef, TargetSize, TextureHandle,
     TextureSubresource,
 };
-use crate::render::pipeline::{PostFxPassExecuteContext, PostFxPassSetupContext, TextureSpec};
+use crate::render::pipeline::TextureSpec;
 use crate::render::view::SceneView;
 use std::sync::OnceLock;
 
@@ -1509,6 +1510,7 @@ fn color_attachment(
 ) -> wgpu::RenderPassColorAttachment<'_> {
     wgpu::RenderPassColorAttachment {
         view: target.view(),
+        depth_slice: None,
         resolve_target: None,
         ops: wgpu::Operations {
             load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -1632,7 +1634,7 @@ mod tests {
     use super::*;
 
     fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::LowPower,
             compatible_surface: None,
@@ -1640,26 +1642,24 @@ mod tests {
         }))
         .expect("No suitable GPU adapter found for render tests");
 
-        pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("ssgi_shader_test_device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::Performance,
-            },
-            None,
-        ))
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("ssgi_shader_test_device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            ..Default::default()
+        }))
         .expect("Failed to create test GPU device")
     }
 
     fn assert_wgsl_module_is_valid(device: &wgpu::Device, label: &'static str, source: &str) {
-        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let error_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let _module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some(label),
             source: wgpu::ShaderSource::Wgsl(source.into()),
         });
-        device.poll(wgpu::Maintain::Wait);
-        let error = pollster::block_on(device.pop_error_scope());
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        let error = pollster::block_on(error_scope.pop());
         assert!(error.is_none(), "{label} should validate: {error:?}");
     }
 

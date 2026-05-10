@@ -4,12 +4,13 @@ use std::hash::{Hash, Hasher};
 use rustc_hash::FxHashMap;
 use wgpu::util::DeviceExt;
 
+use crate::render::execution::{PhaseExecuteContext, PhaseSetupContext};
 use crate::render::gpu::DEFAULT_DEPTH_FORMAT;
 use crate::render::graph::{ImportedTexture, LoadOp, RenderGraphError, ResourceRef};
 use crate::render::phase::{
     DrawFunctionRegistry, MeshDrawData, OpaquePhase, PhaseItem, TransparentPhase,
 };
-use crate::render::pipeline::{RenderPhase, RenderPhaseExecuteContext, RenderPhaseSetupContext};
+use crate::render::pipeline::RenderPhase;
 use crate::render::resources::material::{MaterialError, MaterialHandle, MaterialRegistry};
 use crate::render::resources::mesh::{VertexLayout, VertexSemantic};
 use crate::render::view::SceneView;
@@ -111,7 +112,7 @@ impl DirectionalShadowPhase {
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("directional_shadow_atlas_rect_clear_pipeline_layout"),
                 bind_group_layouts: &[],
-                push_constant_ranges: &[],
+                immediate_size: 0,
             });
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("directional_shadow_atlas_rect_clear_pipeline"),
@@ -130,13 +131,13 @@ impl DirectionalShadowPhase {
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: DEFAULT_DEPTH_FORMAT,
-                    depth_write_enabled: true,
-                    depth_compare: wgpu::CompareFunction::Always,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Always),
                     stencil: wgpu::StencilState::default(),
                     bias: wgpu::DepthBiasState::default(),
                 }),
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             })
         })
@@ -151,7 +152,7 @@ impl DirectionalShadowPhase {
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("directional_transparent_shadow_atlas_rect_clear_pipeline_layout"),
                 bind_group_layouts: &[],
-                push_constant_ranges: &[],
+                immediate_size: 0,
             });
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("directional_transparent_shadow_atlas_rect_clear_pipeline"),
@@ -179,13 +180,13 @@ impl DirectionalShadowPhase {
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: DEFAULT_DEPTH_FORMAT,
-                    depth_write_enabled: false,
-                    depth_compare: wgpu::CompareFunction::Always,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::Always),
                     stencil: wgpu::StencilState::default(),
                     bias: wgpu::DepthBiasState::default(),
                 }),
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             })
         })
@@ -241,13 +242,15 @@ impl DirectionalShadowPhase {
                 source: wgpu::ShaderSource::Wgsl(shader_source.into()),
             });
             let material_layouts = material_layout.into_iter();
-            let bind_group_layouts: Vec<&wgpu::BindGroupLayout> = std::iter::once(shadow_layout)
-                .chain(material_layouts)
-                .collect();
+            let bind_group_layouts: Vec<Option<&wgpu::BindGroupLayout>> =
+                std::iter::once(shadow_layout)
+                    .chain(material_layouts)
+                    .map(Some)
+                    .collect();
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("directional_shadow_pipeline_layout"),
                 bind_group_layouts: &bind_group_layouts,
-                push_constant_ranges: &[],
+                immediate_size: 0,
             });
             let instance_attributes = [
                 wgpu::VertexAttribute {
@@ -327,8 +330,8 @@ impl DirectionalShadowPhase {
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: DEFAULT_DEPTH_FORMAT,
-                    depth_write_enabled: kind != ShadowPipelineKind::Transparent,
-                    depth_compare: wgpu::CompareFunction::LessEqual,
+                    depth_write_enabled: Some(kind != ShadowPipelineKind::Transparent),
+                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
                     stencil: wgpu::StencilState::default(),
                     bias: wgpu::DepthBiasState {
                         constant: raster_bias.constant,
@@ -337,7 +340,7 @@ impl DirectionalShadowPhase {
                     },
                 }),
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             });
             self.pipelines.insert(key, pipeline);
@@ -372,7 +375,7 @@ impl RenderPhase for DirectionalShadowPhase {
                 .is_some_and(ShadowViewBinding::enabled)
     }
 
-    fn setup(&mut self, ctx: &mut RenderPhaseSetupContext<'_, '_>) {
+    fn setup(&mut self, ctx: &mut PhaseSetupContext<'_, '_>) {
         let Some(scene_view) = ctx.view().payload::<SceneView>() else {
             return;
         };
@@ -457,18 +460,11 @@ impl RenderPhase for DirectionalShadowPhase {
 
     fn execute(
         &mut self,
-        ctx: &mut RenderPhaseExecuteContext<'_, '_, '_>,
+        ctx: &mut PhaseExecuteContext<'_, '_, '_>,
     ) -> Result<(), RenderGraphError> {
-        let (
-            gpu,
-            pass,
-            resources,
-            execution,
-            draw_functions,
-            material_registry,
-            mesh_registry,
-            _fallback_texture,
-        ) = ctx.split();
+        let (gpu, pass, resources, execution, draw_services) = ctx.split();
+        let (draw_functions, material_registry, mesh_registry, _fallback_texture) =
+            draw_services.split();
         let draw_functions = &*draw_functions;
         let material_registry = &*material_registry;
         let shadow_pass_layout = execution
@@ -554,6 +550,7 @@ impl RenderPhase for DirectionalShadowPhase {
                 .is_none_or(|depth| depth.depth_store);
             let color_attachments = [Some(wgpu::RenderPassColorAttachment {
                 view: resources.view(color_handle),
+                depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: color_load,
@@ -598,14 +595,11 @@ impl RenderPhase for DirectionalShadowPhase {
                     "transparent shadow caster requires registered StandardMaterial layout".into(),
                 )
             })?;
-            let materials = material_registry
-                .try_materials::<StandardMaterial>()
-                .ok_or_else(|| {
-                    RenderGraphError::ExecutionFailed(
-                        "transparent shadow caster requires registered StandardMaterial storage"
-                            .into(),
-                    )
-                })?;
+            if !material_registry.is_registered::<StandardMaterial>() {
+                return Err(RenderGraphError::ExecutionFailed(
+                    "transparent shadow caster requires registered StandardMaterial".into(),
+                ));
+            }
             let mut bind_group_keepalive = Vec::new();
             let mut cursor = 0usize;
             while cursor < transparent_phase.items().len() {
@@ -641,7 +635,10 @@ impl RenderPhase for DirectionalShadowPhase {
                     cursor = batch_end;
                     continue;
                 };
-                if materials.get(material_handle).is_none() {
+                if material_registry
+                    .get_erased::<StandardMaterial>(material_handle)
+                    .is_err()
+                {
                     cursor = batch_end;
                     continue;
                 }
@@ -822,19 +819,13 @@ impl RenderPhase for DirectionalShadowPhase {
                 caster_kind.pipeline_kind(),
             )?;
             if let ShadowCasterKind::AlphaTest(material_handle) = caster_kind {
-                let materials = material_registry
-                    .try_materials::<StandardMaterial>()
-                    .ok_or_else(|| {
+                let _ = material_registry
+                    .get_erased::<StandardMaterial>(material_handle)
+                    .map_err(|_| {
                         RenderGraphError::ExecutionFailed(
-                            "alpha-test shadow caster requires registered StandardMaterial storage"
-                                .into(),
+                            "alpha-test shadow caster material handle no longer resolves".into(),
                         )
                     })?;
-                let _ = materials.get(material_handle).ok_or_else(|| {
-                    RenderGraphError::ExecutionFailed(
-                        "alpha-test shadow caster material handle no longer resolves".into(),
-                    )
-                })?;
                 bind_group_keepalive.push(
                     material_registry
                         .prepared(material_handle)
@@ -1008,10 +999,10 @@ fn shadow_caster_kind(
 
     let draw = *item.data::<MeshDrawData>();
     let raw_material_handle = draw.material_handle::<StandardMaterial>();
-    let Some(materials) = material_registry.try_materials::<StandardMaterial>() else {
+    if !material_registry.is_registered::<StandardMaterial>() {
         return ShadowCasterKind::Opaque;
-    };
-    let Some(material) = materials.get(raw_material_handle) else {
+    }
+    let Ok(material) = material_registry.get_erased::<StandardMaterial>(raw_material_handle) else {
         return ShadowCasterKind::Opaque;
     };
     let Some(model_id) = material_registry.model_id::<StandardMaterial>() else {
@@ -1042,8 +1033,9 @@ fn transparent_shadow_material_handle(
 
     let draw = *item.data::<MeshDrawData>();
     let raw_material_handle = draw.material_handle::<StandardMaterial>();
-    let materials = material_registry.try_materials::<StandardMaterial>()?;
-    let material = materials.get(raw_material_handle)?;
+    let material = material_registry
+        .get_erased::<StandardMaterial>(raw_material_handle)
+        .ok()?;
     let model_id = material_registry.model_id::<StandardMaterial>()?;
     let material_handle =
         crate::render::resources::material::TypedMaterialHandle::<StandardMaterial>::new(
@@ -1126,7 +1118,7 @@ mod tests {
     use crate::render::{DirectionalLight, GpuScene, LightTable, MaterialHandle, Transform};
 
     fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::LowPower,
             compatible_surface: None,
@@ -1134,15 +1126,13 @@ mod tests {
         }))
         .expect("No suitable GPU adapter found for shadow phase tests");
 
-        pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("shadow_phase_test_device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::Performance,
-            },
-            None,
-        ))
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("shadow_phase_test_device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            ..Default::default()
+        }))
         .expect("Failed to create test GPU device")
     }
 
@@ -1290,14 +1280,14 @@ mod tests {
             draw_functions.register(crate::render::phase::DrawMesh::<StandardMaterial>::new());
         let mut material_registry = MaterialRegistry::new();
         material_registry
-            .register_material::<StandardMaterial>(&device)
+            .register_model::<StandardMaterial>(&device)
             .expect("standard material should register");
         let opaque = material_registry
-            .materials_mut::<StandardMaterial>()
-            .insert(StandardMaterial::default());
+            .insert_material::<StandardMaterial>(StandardMaterial::default())
+            .expect("opaque material should insert");
         let mask = material_registry
-            .materials_mut::<StandardMaterial>()
-            .insert(StandardMaterial::default().alpha_mask(0.35));
+            .insert_material::<StandardMaterial>(StandardMaterial::default().alpha_mask(0.35))
+            .expect("mask material should insert");
         let opaque_item = PhaseItem::new(
             0,
             draw_mesh,
@@ -1331,11 +1321,13 @@ mod tests {
             draw_functions.register(crate::render::phase::DrawMesh::<StandardMaterial>::new());
         let mut material_registry = MaterialRegistry::new();
         material_registry
-            .register_material::<StandardMaterial>(&device)
+            .register_model::<StandardMaterial>(&device)
             .expect("standard material should register");
         let blend = material_registry
-            .materials_mut::<StandardMaterial>()
-            .insert(StandardMaterial::default().alpha_mode(crate::render::AlphaMode::Blend));
+            .insert_material::<StandardMaterial>(
+                StandardMaterial::default().alpha_mode(crate::render::AlphaMode::Blend),
+            )
+            .expect("blend material should insert");
         let item = PhaseItem::new(
             0,
             draw_mesh,
@@ -1443,8 +1435,7 @@ mod tests {
 
         assert!(phase.is_enabled(&frame, &prepared_view));
         {
-            let mut setup =
-                RenderPhaseSetupContext::new(&mut graph, &mut state, &frame, &prepared_view);
+            let mut setup = PhaseSetupContext::new(&mut graph, &mut state, &frame, &prepared_view);
             phase.setup(&mut setup);
         }
 
@@ -1598,7 +1589,7 @@ mod tests {
 
         {
             let mut setup =
-                RenderPhaseSetupContext::new(&mut graph, &mut state, &frame, &shadow_prepared_view);
+                PhaseSetupContext::new(&mut graph, &mut state, &frame, &shadow_prepared_view);
             shadow_phase.setup(&mut setup);
         }
 
@@ -1620,7 +1611,7 @@ mod tests {
         let mut opaque_phase = OpaquePhase::new();
         {
             let mut setup =
-                RenderPhaseSetupContext::new(&mut graph, &mut state, &frame, &main_prepared_view);
+                PhaseSetupContext::new(&mut graph, &mut state, &frame, &main_prepared_view);
             opaque_phase.setup(&mut setup);
         }
 
@@ -1750,8 +1741,7 @@ mod tests {
 
         assert!(phase.is_enabled(&frame, &prepared_view));
         {
-            let mut setup =
-                RenderPhaseSetupContext::new(&mut graph, &mut state, &frame, &prepared_view);
+            let mut setup = PhaseSetupContext::new(&mut graph, &mut state, &frame, &prepared_view);
             phase.setup(&mut setup);
         }
 

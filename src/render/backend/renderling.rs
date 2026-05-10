@@ -6,7 +6,7 @@ use winit::window::Window;
 use crate::asset::{AssetId, AssetServer, Handle};
 use crate::ecs::World;
 use crate::math::Projection;
-use crate::render::assets::{
+use crate::render::asset::{
     MeshAsset, MeshIndexData, MeshVertexAttribute, MeshVertexFormat, MeshVertexSemantic,
     StandardMaterialAsset,
 };

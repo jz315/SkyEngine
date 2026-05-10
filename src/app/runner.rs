@@ -38,7 +38,7 @@ use crate::gpu::GpuContext;
 use crate::input::raw::{Input, KeyCode, MouseButton};
 use crate::render::backend::{create_scene_renderer, SceneRendererError};
 use crate::render::{
-    RenderAssets, RenderBackendKind, RenderComposer, RenderPipelineAsset, RenderStats,
+    RenderAssets, RenderBackendKind, RenderPipelineAsset, RenderRuntime, RenderStats,
     SceneRenderer, SharedRenderAssetCache, TextureReadiness,
 };
 
@@ -254,13 +254,13 @@ impl<'a> SetupContext<'a> {
             .expect("SetupContext::gpu is only available for the wgpu render backend")
     }
 
-    /// Mutably access the installed wgpu [`RenderComposer`] and GPU together.
-    pub fn with_renderer_mut<R>(
+    /// Mutably access the installed wgpu [`RenderRuntime`] and GPU together.
+    pub fn with_render_runtime_mut<R>(
         &mut self,
-        f: impl FnOnce(&mut RenderComposer, &mut GpuContext) -> R,
+        f: impl FnOnce(&mut RenderRuntime, &mut GpuContext) -> R,
     ) -> Option<R> {
-        let (renderer, gpu) = self.renderer.wgpu_parts_mut()?;
-        Some(f(renderer, gpu))
+        let (render_runtime, gpu) = self.renderer.wgpu_render_runtime_parts_mut()?;
+        Some(f(render_runtime, gpu))
     }
 }
 
@@ -514,7 +514,7 @@ impl<'a> FrameContext<'a> {
 
     /// Mutably access a registered render feature by concrete type.
     pub fn feature_mut<T: 'static>(&mut self) -> Option<&mut T> {
-        self.renderer.wgpu_composer_mut()?.feature_mut::<T>()
+        self.renderer.wgpu_render_runtime_mut()?.feature_mut::<T>()
     }
 
     /// Mutably access a render feature and the GPU at the same time.
@@ -522,21 +522,21 @@ impl<'a> FrameContext<'a> {
         &mut self,
         f: impl FnOnce(&mut T, &mut GpuContext) -> R,
     ) -> Option<R> {
-        let (renderer, gpu) = self.renderer.wgpu_parts_mut()?;
-        let feature = renderer.feature_mut::<T>()?;
+        let (render_runtime, gpu) = self.renderer.wgpu_render_runtime_parts_mut()?;
+        let feature = render_runtime.feature_mut::<T>()?;
         Some(f(feature, gpu))
     }
 
-    /// Mutably access the installed [`RenderComposer`] and the GPU together.
+    /// Mutably access the installed [`RenderRuntime`] and the GPU together.
     ///
     /// This is the escape hatch for runtime mesh/material setup that depends on
     /// both renderer-owned registries and a live [`GpuContext`].
-    pub fn with_renderer_mut<R>(
+    pub fn with_render_runtime_mut<R>(
         &mut self,
-        f: impl FnOnce(&mut RenderComposer, &mut GpuContext) -> R,
+        f: impl FnOnce(&mut RenderRuntime, &mut GpuContext) -> R,
     ) -> Option<R> {
-        let (renderer, gpu) = self.renderer.wgpu_parts_mut()?;
-        Some(f(renderer, gpu))
+        let (render_runtime, gpu) = self.renderer.wgpu_render_runtime_parts_mut()?;
+        Some(f(render_runtime, gpu))
     }
 
     /// Backend-neutral UI facade.

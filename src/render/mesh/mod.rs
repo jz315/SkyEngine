@@ -12,8 +12,8 @@ use crate::render::gpu::RenderTarget;
 use crate::render::resources::material::{
     MaterialError, MaterialPipelineCache, MaterialPipelineDesc,
 };
-use crate::render::view::Color;
 use crate::render::view::RenderView;
+use crate::render::Color;
 
 pub use self::draw::MeshDraw;
 pub use self::errors::MeshPassError;
@@ -83,15 +83,13 @@ impl MeshPass {
         &self,
         ctx: &GpuContext,
         desc: MaterialPipelineDesc,
-        properties_layout: Option<&wgpu::BindGroupLayout>,
-        bindings_layout: Option<&wgpu::BindGroupLayout>,
+        material_layout: Option<&wgpu::BindGroupLayout>,
     ) -> Result<MaterialPipelineCache, MaterialError> {
         MaterialPipelineCache::try_new_with_fixed_layouts(
             ctx,
             desc,
             &[(VIEW_BIND_GROUP_SLOT, &self.view_bind_group_layout)],
-            properties_layout,
-            bindings_layout,
+            material_layout,
         )
     }
 
@@ -118,6 +116,7 @@ impl MeshPass {
             .map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear);
         let color_attachments = [Some(wgpu::RenderPassColorAttachment {
             view: target.view(),
+            depth_slice: None,
             resolve_target: None,
             ops: wgpu::Operations {
                 load: color_load,
@@ -171,6 +170,7 @@ impl MeshPass {
         let depth_load = clear_depth.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear);
         let color_attachments = [Some(wgpu::RenderPassColorAttachment {
             view: target.view(),
+            depth_slice: None,
             resolve_target: None,
             ops: wgpu::Operations {
                 load: color_load,

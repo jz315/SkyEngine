@@ -170,6 +170,7 @@ impl LightPass {
         let instance_count = self.instances_scratch.len() as u32;
         let color_attachments = [Some(wgpu::RenderPassColorAttachment {
             view: lightmap.view(),
+            depth_slice: None,
             resolve_target: None,
             ops: wgpu::Operations {
                 load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -243,8 +244,8 @@ impl LightPass {
                 ctx.device()
                     .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                         label: Some("light_pass_layout"),
-                        bind_group_layouts: &[&camera_bgl, &normal_bgl],
-                        push_constant_ranges: &[],
+                        bind_group_layouts: &[Some(&camera_bgl), Some(&normal_bgl)],
+                        immediate_size: 0,
                     });
 
             ctx.device()
@@ -315,7 +316,7 @@ impl LightPass {
                     },
                     depth_stencil: None,
                     multisample: wgpu::MultisampleState::default(),
-                    multiview: None,
+                    multiview_mask: None,
                     cache: None,
                 })
         })
@@ -334,7 +335,7 @@ mod tests {
     use std::panic::{self, AssertUnwindSafe};
 
     fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::LowPower,
             compatible_surface: None,
@@ -342,15 +343,13 @@ mod tests {
         }))
         .expect("No suitable GPU adapter found for render tests");
 
-        pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("render_test_device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::Performance,
-            },
-            None,
-        ))
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("render_test_device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            ..Default::default()
+        }))
         .expect("Failed to create test GPU device")
     }
 

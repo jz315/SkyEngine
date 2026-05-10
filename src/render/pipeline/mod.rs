@@ -1,30 +1,24 @@
-mod asset;
-mod builtins;
-mod contexts;
+mod backend_kind;
+mod builder;
+mod descriptor;
 mod features;
+mod material_registration;
 mod passes;
 mod phases;
+mod pipeline_asset;
 mod resource_spec;
+mod step;
 
-pub(crate) use asset::MaterialRegistration;
-pub use asset::{
-    KajiyaDpiMode, KajiyaRendererSettings, PipelineStep, PipelineStepDescriptor, RenderBackendKind,
-    RenderPipelineAsset, RenderPipelineBuilder, RenderPipelineDescriptor,
-};
-pub use builtins::{
-    Bloom, ContactShadows, DebugView, GiCompositePass, GiUpdateCompute, SceneMaterialPrepass,
-    SceneNormalPrepass, Sharpen, TemporalAntiAliasing, ToneMap, Vignette,
-};
-pub use contexts::{
-    ComputePassExecuteContext, ComputePassSetupContext, GraphPassExecuteContext,
-    GraphPassSetupContext, PostFxPassExecuteContext, PostFxPassSetupContext,
-    RenderPassExecuteContext, RenderPassSetupContext, RenderPhaseExecuteContext,
-    RenderPhaseSetupContext,
-};
+pub use backend_kind::{KajiyaDpiMode, KajiyaRendererSettings, RenderBackendKind};
+pub use builder::RenderPipelineBuilder;
+pub use descriptor::RenderPipelineDescriptor;
 pub(crate) use features::AnyRenderFeature;
 #[cfg(feature = "live2d")]
 pub use features::Live2DFeature;
 pub use features::{RenderFeature, SpriteFeature};
+pub(crate) use material_registration::MaterialRegistration;
 pub use passes::{ComputePass, GraphPass, PostFxPass, RenderPass};
 pub use phases::RenderPhase;
+pub use pipeline_asset::RenderPipelineAsset;
 pub use resource_spec::TextureSpec;
+pub use step::{PipelineStep, PipelineStepDescriptor};
