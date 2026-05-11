@@ -2541,6 +2541,397 @@ shadow view 是 `SceneViewKind::DirectionalShadow`，不 present 到 surface。
 
 它仍然复用 view/extract/phase 的框架：只是这个 view 的目标不是最终颜色，而是 shadow depth atlas。
 
+### 17.1.1 为什么最终画面里的“阴影”不是一个东西
+
+调试 3D demo 时，最容易误判的一点是：屏幕上看起来发黑的区域，不一定都来自 directional shadow map。
+
+可以先把最终颜色粗略拆成几层：
+
+```text
+final color =
+  material base color
+  * direct lighting
+  * direct shadow factor
+  + indirect lighting / GI
+  + emissive
+  + contact shadow / AO modulation
+  + post-fx / temporal history
+```
+
+这里至少有四种东西都会让画面变暗：
+
+| 层 | 典型来源 | 看起来像什么 | 是否来自 shadow map |
+|----|----------|--------------|---------------------|
+| direct shadow | directional CSM atlas | 有明确投影方向、跟太阳/方向光相关 | 是 |
+| contact shadow | screen-space depth/normal ray march | 物体接触处、角落、缝隙更暗 | 不是 |
+| ambient occlusion | contact shadow pass 的 AO 部分或类似项 | 角落/褶皱/贴近表面发暗 | 不是 |
+| indirect/GI | DDGI、SSGI、ambient | 室内暗部、反弹光、环境亮度 | 不是 CSM |
+| temporal artifact | TAA/history | 拖影、闪烁、边缘残留 | 不是 |
+
+所以“室内物体没有影子”本身不一定是 bug。方向光如果没有直接照进室内，室内就不会有 direct shadow map 产生的投影。室内明暗主要应该由：
+
+- ambient color；
+- point/spot lights；
+- emissive；
+- DDGI / SSGI；
+- contact shadow / AO；
+
+共同决定。
+
+这也是为什么 debug 时必须先分层：
+
+```text
+默认画面不对
+  -> F12 direct-only 还不对：查 CSM / bias / PCF / PCSS / cascade
+  -> F12 对，但默认不对：查 GI / contact / TAA / tone map
+  -> G indirect-only 不对：查 GI / ambient / screen-space reconstruction
+  -> 关 C 后好了：查 contact shadows / AO
+  -> 关 V 后好了：查 GI provider / composite
+```
+
+### 17.1.2 当前 Directional Shadow 数据从哪里来
+
+当前方向光阴影核心文件：
+
+```text
+src/render/lighting/shadow/
+  atlas.rs       atlas rect、guard band、cascade 打包
+  bindings.rs    shadow uniform / bind group layout
+  view.rs        选择方向光、构造 cascade shadow views、写 ShadowViewBinding
+  phase.rs       渲染 opaque / alpha-test / transparent casters 到 shadow atlas
+  resources.rs   RenderGraph 资源暴露和 debug resources
+  formula.rs     test-only 公式验证
+```
+
+运行时大致是：
+
+```text
+RenderRuntime::render_world
+  -> 收集 main SceneView
+  -> append_directional_shadow_views(...)
+       -> 找到 DirectionalLight
+       -> 解析 cascade_count / splits / resolution
+       -> 根据 main view frustum 构造每个 cascade 的 shadow SceneView
+  -> extract mesh phase items
+       -> main view 有 opaque/transparent items
+       -> shadow views 也有自己的 phase items
+  -> sync_shadow_views(...)
+       -> 创建/resize atlas
+       -> 写 ShadowUniform
+       -> 写每个 cascade 的 ShadowPassUniform
+       -> 统计 caster count / update mask
+  -> FramePipeline 执行 DirectionalShadowPhase
+       -> 清 atlas rect
+       -> 画 casters 到 depth atlas
+       -> 可选 transparent shadow atlas
+  -> OpaquePhase 中 StandardMaterial 采样 shadow bind group
+```
+
+这里的关键点是：shadow view 不是一个特殊旁路，它也是 `SceneView`。这让它能复用已有的 extraction、phase item、frustum culling、model matrix table、material registry。但它的输出不是 `scene_color`，而是 shadow atlas。
+
+### 17.1.3 CSM 的三个空间
+
+CSM 调试时要分清三个空间：
+
+| 空间 | 作用 | 常见错误 |
+|------|------|----------|
+| camera/view space | 根据主相机深度选择 cascade | split 距离和 shader 选择不一致 |
+| light space | 从光方向看 receiver/caster | light basis 翻转、depth extent 错 |
+| atlas UV space | 在 shadow atlas 里采样某个 cascade rect | 越界采样、guard band 不够、cascade 串色 |
+
+简单说：
+
+```text
+main camera 决定：这个像素属于哪个 cascade
+light view 决定：这个像素从光看过去在哪里
+atlas mapping 决定：去 atlas 的哪一块采样
+```
+
+如果 camera split 错，会表现为 cascade 边界突变。
+
+如果 light view fitting 错，会表现为 caster/receiver 被裁掉、阴影缺块、随着相机转动突然跳。
+
+如果 atlas mapping 错，会表现为采样到别的 cascade、边缘漏光、横向重复、debug cascade 和最终结果对不上。
+
+### 17.1.4 Receiver extent 和 caster extent 不是一回事
+
+这是当前 shadow 系统里非常重要的合同。
+
+receiver 是“主相机这一段 cascade 能看到、需要接收阴影的区域”。它决定 shadow compare 时需要的深度精度。
+
+caster 是“可能向 receiver 投影的物体”。它可能不在当前 camera split 里，但仍然在光线方向上挡住 receiver。
+
+所以不能简单说：
+
+```text
+只渲染当前 cascade 视锥里的物体
+```
+
+这会漏掉这种情况：
+
+```text
+光线方向
+  caster 在 camera split 外
+      ↓
+  receiver 在 camera split 内
+```
+
+正确思路是：
+
+```text
+receiver depth extent:
+  尽量贴合接收区域，保证 depth precision
+
+caster depth extent:
+  沿 light direction 扩大，保留能投影到 receiver 的 caster
+```
+
+如果 receiver extent 太大，深度精度下降，容易 acne、peter-panning 或软阴影漂浮。
+
+如果 caster extent 太小，会出现物体明明挡光，但 shadow atlas 里没有它。
+
+当前测试里已经覆盖了这个合同：
+
+```text
+cargo test --features app render::lighting::shadow::view
+```
+
+其中 `directional_shadow_view_keeps_light_ray_casters_outside_receiver_slice` 专门验证 caster 可以在 receiver slice 外，但仍然保留在 shadow culling 范围内。
+
+### 17.1.5 Bias 为什么难
+
+Shadow acne 和 Peter Pan 现象是一对拉扯。
+
+Shadow acne：
+
+```text
+接收面自己采样自己的 shadow depth
+因为浮点误差 / depth precision / 斜率原因
+被误判为在阴影里
+表现为斑点、条纹、脏污
+```
+
+Peter Pan：
+
+```text
+bias 太大
+阴影从物体脚下脱离
+表现为物体像飘起来
+```
+
+SkyEngine 目前相关参数包括：
+
+- material compare bias；
+- receiver normal bias；
+- raster depth bias；
+- raster slope bias；
+- texel world size；
+- receiver depth range；
+- PCF / PCSS filter radius。
+
+真正的问题不是“bias 越大越干净”，而是单位必须统一：
+
+```text
+texel_world_size:
+  一个 shadow texel 在世界里覆盖多大
+
+receiver_depth_range:
+  这个 cascade 的 shadow depth 范围
+
+normal_bias_world:
+  沿 normal 或 light 相关方向偏移多少世界单位
+
+compare_bias_depth:
+  最终变成 shadow map compare 使用的深度单位
+```
+
+如果这些单位混在一起，调参就会出现这种情况：
+
+```text
+近处 cascade 看起来好了
+远处 cascade 坏了
+
+正面光好了
+斜面坏了
+
+PCF 看起来好了
+PCSS 又漂了
+```
+
+所以现在 `src/render/lighting/shadow/formula.rs` 里保留了 test-only 公式测试，用来把关键公式固定下来。
+
+### 17.1.6 PCF 和 PCSS 不能修几何错误
+
+PCF / PCSS 是过滤策略，不是 shadow view fitting 的替代品。
+
+PCF：
+
+```text
+围绕当前 UV 多采样几次 shadow map
+平均结果
+边缘变软一点
+```
+
+PCSS：
+
+```text
+先找 blocker
+根据 receiver 和 blocker 的深度差估计 penumbra
+再扩大 filter radius
+近处硬，远处软
+```
+
+PCSS 可以让边缘更自然，但也会掩盖问题：
+
+- cascade fitting 错了，PCSS 可能把错边界糊开；
+- bias 错了，PCSS 可能让接触处更漂；
+- atlas clamp 错了，PCSS 扩大采样半径后更容易采到错误区域；
+- blocker search 错了，软阴影半径会忽大忽小。
+
+所以排查 CSM 时，优先使用硬一点、确定性更强的模式：
+
+```text
+filter radius = 0
+contact shadows off
+GI off
+TAA off
+direct-only
+```
+
+确认几何和 depth compare 对了，再判断 PCSS 质量。
+
+### 17.1.7 WickedEngine 对齐到什么程度
+
+WickedEngine 是参考，不是复制粘贴目标。
+
+对齐重点：
+
+- cascade selection 的边界行为；
+- cascade edge fade 曲线；
+- PCSS radius remap；
+- blocker search 的判断方式；
+- penumbra scale；
+- atlas clamp / guard band；
+- directional shadow camera 的稳定性；
+- debug view 的可观察性。
+
+不应该直接照搬：
+
+- HLSL 资源绑定形状；
+- DirectX clip-space 假设；
+- Wicked 的全 renderer 架构；
+- 与 SkyEngine ECS / RenderGraph / wgpu 不匹配的对象生命周期。
+
+目前公式层对齐用 `src/render/lighting/shadow/formula.rs` 固定。例如 PCSS radius 使用 Wicked 风格的：
+
+```text
+filter_radius_texels = radius * 8 + 2
+cap = 36 texels
+```
+
+PCSS penumbra 使用：
+
+```text
+penumbra_scale = receiver_blocker_gap * 200
+cap = 4
+```
+
+这些不是“抄代码”，而是把 reference renderer 的数学合同翻译成 SkyEngine 可测试的 Rust/WGSL 合同。
+
+### 17.1.8 当前阴影验证层级
+
+不要只靠肉眼看 demo。当前验证分三层：
+
+| 层级 | 文件 | 证明什么 |
+|------|------|----------|
+| CPU formula | `src/render/lighting/shadow/formula.rs` | 公式、边界、Wicked fixture 数字 |
+| CPU view geometry | `src/render/lighting/shadow/view.rs` tests | cascade fitting、split corners、caster extent、atlas mapping |
+| GPU readback | `src/render/runtime/tests/shadows.rs` | 实际 wgpu pass、shader、depth atlas、final color 是否工作 |
+
+常用命令：
+
+```bash
+cargo test --features app render::lighting::shadow::formula
+cargo test --features app render::lighting::shadow::view
+cargo test --features app render::runtime::tests::shadows
+```
+
+现在 GPU readback 覆盖包括：
+
+- perspective directional shadow view 是否启用；
+- orthographic directional shadow view 是否启用；
+- shadow atlas 是否写入 caster depth；
+- caster 在 light ray 上但不在 near receiver slice 中时，仍能进入 shadow atlas；
+- standard material final color 会被 directional shadow 压暗；
+- far receiver pixel 不应被整片错误压暗；
+- cascade boundary 附近不应出现明显亮度突变；
+- per-cascade LOD mask stats 是否正确。
+
+这套测试的意义是：当 demo 又出现“阴影突变”时，先看这些测试有没有坏。如果测试没坏，问题更可能在 demo 的 GI/contact/TAA/具体场景参数，而不是基础 CSM 公式。
+
+### 17.1.9 Debug view 要回答的问题
+
+当前 three_d_demo 的 shadow debug keys：
+
+| 按键 | Debug view | 应该回答的问题 |
+|------|------------|----------------|
+| `F1` | lit scene | 默认最终画面是否正常 |
+| `F2`-`F5` | raw directional shadow cascade 0-3 | atlas 中每个 cascade 有没有写入合理 depth |
+| `F6` | sampled directional shadow cascade coverage | shader 最终采样认为哪些地方被 shadow 覆盖 |
+| `F7` | view-depth split cascade coverage | 根据主相机 view depth，像素属于哪个 cascade |
+| `F8` | cascade fade weight | cascade 边缘过渡是否在预期区域 |
+| `F9` | shadow compare-depth delta | receiver compare depth 和 shadow map depth 差值是否合理 |
+| `F10` | shadow bias / texel pressure | bias 是否过大或过小 |
+| `F11` | PCSS blocker / penumbra / filter size | blocker search 和软阴影半径是否异常 |
+| `F12` | direct lighting only | 只看直射光，排除 GI/contact/post-fx 干扰 |
+| `G` | indirect lighting only | 只看间接光/GI/ambient 相关 |
+| `C` | contact shadows toggle | 判断接触阴影是否制造条纹或过暗 |
+| `V` | GI toggle | 判断 GI 是否改变室内暗部或间接亮度 |
+| `R` | repro camera lock | 锁定固定复现相机，避免换角度误判 |
+
+最重要的两个隔离视图是：
+
+```text
+F12 direct-only:
+  如果这里已经错，优先查 direct shadow / CSM / bias / PCSS。
+
+G indirect-only:
+  如果这里错，优先查 GI / ambient / SSGI/DDGI composite。
+```
+
+### 17.1.10 为什么 F6 正常但最终画面仍可能不对
+
+`F6` 看的是 directional shadow coverage，重点是 CSM 采样结果。
+
+最终画面还会叠：
+
+- BRDF diffuse/specular；
+- light intensity/color；
+- normal map；
+- material albedo/roughness/metallic；
+- indirect diffuse；
+- contact shadows；
+- GI composite；
+- bloom/tone map/TAA/debug override。
+
+所以这类现象不矛盾：
+
+```text
+F6 cascade coverage 看起来连续
+但默认画面有室内暗块
+```
+
+这种情况下要先查：
+
+```text
+G indirect-only
+C contact off
+V GI off
+SKY_DEMO_DISABLE_TAA=1
+```
+
+而不是马上去改 cascade split 或 bias。
+
 ### 17.2 DdgiUpdateCompute
 
 `DdgiUpdateCompute` 是 `ComputePass`。它根据 `RenderSettings.global_illumination` 决定是否有效。
@@ -2744,14 +3135,327 @@ SKY_RENDER_DEBUG_LOG=1
 
 ```text
 SKY_DEMO_DISABLE_SSGI
+SKY_DEMO_DISABLE_GI
 SKY_DEMO_DISABLE_TAA
 SKY_DEMO_DISABLE_BLOOM
 SKY_DEMO_DISABLE_CONTACT_SHADOWS
+SKY_DEMO_LOCK_REPRO_CAMERA
 ```
 
 用于快速二分某个 post-fx 是否造成问题。
 
-### 19.4 常见空画面检查顺序
+### 19.4 three_d_demo 阴影/GI 排查手册
+
+这一节是当前 3D demo 阴影问题的实战排查路线。目标不是“凭感觉调到好看”，而是快速定位问题属于哪一层。
+
+先固定复现：
+
+```powershell
+$env:SKY_RENDER_DEBUG_LOG="1"
+$env:SKY_DEMO_LOCK_REPRO_CAMERA="1"
+cargo run --example three_d_demo --features app --release
+```
+
+也可以运行 demo 后按 `R` 锁定/解锁 canonical repro camera。
+
+固定相机很重要。否则你每次看到的 cascade split、室内暗部、screen-space GI 输入都不一样，调试会变成“刚才那个角度好像不对”。
+
+#### 19.4.1 第一步：先判断是不是 direct shadow
+
+按 `F12`。
+
+`F12` 是 direct lighting only。它的目的不是让画面好看，而是把 GI/contact/间接光干扰尽量剥掉。
+
+判断：
+
+```text
+F12 仍然有阴影割裂、突变、漂浮、缺块
+  -> 优先查 directional shadow / CSM / atlas / bias / PCF / PCSS
+
+F12 看起来基本合理，默认画面不合理
+  -> 不要先改 CSM
+  -> 优先查 GI / contact shadows / TAA / tone map
+```
+
+这一步能避免最常见的误判：把室内 indirect/GI 暗部当成 directional shadow bug。
+
+#### 19.4.2 第二步：只看 indirect
+
+按 `G`。
+
+`G` 是 indirect lighting only。它应该帮助你观察：
+
+- ambient 是否太暗；
+- DDGI/SSGI 是否给室内错误加暗或加亮；
+- emissive/indirect 是否参与；
+- 是否出现 direct shadow 那种硬边界。
+
+判断：
+
+```text
+G 下也有明显硬边界
+  -> indirect-only 分支可能混入了 direct shadow 或 direct light
+
+G 下室内整体过黑/过亮
+  -> 查 GI provider / ambient / composite intensity
+
+G 下正常，默认画面不正常
+  -> 查 direct + indirect 合成、contact shadows、tone map/TAA
+```
+
+#### 19.4.3 第三步：关 contact shadows
+
+按 `C`，或者启动前：
+
+```powershell
+$env:SKY_DEMO_DISABLE_CONTACT_SHADOWS="1"
+```
+
+contact shadows 是 screen-space 的。它读 scene depth/normal，然后在屏幕空间做短距离 ray marching 或 AO。它不是 shadow map。
+
+如果关 `C` 后问题明显消失：
+
+```text
+优先查:
+  src/render/postfx/contact_shadows.rs
+  src/render/shaders/postfx/contact_shadows.wgsl
+  RenderSettings.contact_shadows
+
+重点看:
+  max_distance
+  thickness
+  ray_steps
+  ao_intensity
+  ao_radius_pixels
+  depth discontinuity fade
+```
+
+常见 contact shadow 问题：
+
+- 角落整片发黑；
+- 物体边缘出现条纹；
+- 随相机移动产生屏幕空间滑动；
+- depth discontinuity 附近硬断；
+- AO 和 direct shadow 叠乘后过暗。
+
+#### 19.4.4 第四步：关 GI
+
+按 `V`，或者启动前：
+
+```powershell
+$env:SKY_DEMO_DISABLE_GI="1"
+```
+
+历史兼容也支持：
+
+```powershell
+$env:SKY_DEMO_DISABLE_SSGI="1"
+```
+
+如果关 GI 后室内暗部明显变化，说明问题不在 shadow map 本体。
+
+判断：
+
+```text
+V off 后 direct shadow 边界仍突变
+  -> 查 CSM
+
+V off 后室内暗部恢复合理
+  -> 查 GI / ambient / indirect composite
+
+V off 后画面过平但阴影边界正常
+  -> GI 是主要贡献层，CSM 大概率不是根因
+```
+
+注意：`three_d_demo` 当前默认 runtime 会把 GI 设置成 DDGI provider，而启动时的 `RenderSettings` 可能配置过 SSGI。update loop 每帧会根据 demo 状态刷新 `settings.global_illumination`。所以排查时要看窗口标题或 `SKY_RENDER_DEBUG_LOG=1` 输出，确认当前实际 GI 是 off、ddgi、ssgi 还是 provider。
+
+#### 19.4.5 第五步：关 TAA
+
+启动前：
+
+```powershell
+$env:SKY_DEMO_DISABLE_TAA="1"
+```
+
+TAA 不应该改变真实光照关系，但会改变你看到的边缘和历史残留。
+
+如果关 TAA 后问题改善：
+
+```text
+优先查:
+  scene_velocity
+  jittered vs unjittered view-proj
+  temporal history reset
+  history clamp
+  post-fx order
+```
+
+常见 TAA 相关现象：
+
+- 阴影边缘拖影；
+- camera orbit 时暗块滞后；
+- cascade 切换处残留上一帧；
+- 细节变糊，看起来像 PCSS 过软。
+
+当前 shadow view corner 计算有测试覆盖 TAA jitter：
+
+```bash
+cargo test --features app render::lighting::shadow::view
+```
+
+其中 `directional_shadow_corners_ignore_taa_jittered_view_projection` 保证 shadow cascade corners 使用 unjittered view-projection，不被 TAA jitter 直接污染。
+
+#### 19.4.6 第六步：看 cascade debug
+
+如果 `F12` 已经说明 direct shadow 有问题，进入 cascade debug：
+
+| 按键 | 看什么 | 如果异常 |
+|------|--------|----------|
+| `F2`-`F5` | raw cascade atlas | 没写入、被裁、depth 大片清空 |
+| `F6` | sampled coverage | shader 采样结果是否连续 |
+| `F7` | split coverage | 主相机深度属于哪个 cascade |
+| `F8` | fade weight | fade 是否只在边缘区域发生 |
+| `F9` | compare-depth delta | receiver 和 atlas depth 差值是否突然跳 |
+| `F10` | bias/texel pressure | bias 是否压过真实接触关系 |
+| `F11` | PCSS blocker/penumbra | blocker search 是否忽大忽小 |
+
+对应推理：
+
+```text
+F7 边界位置和 F6 突变位置一致
+  -> cascade split/fade 相关
+
+F2-F5 某个 cascade 没有 caster
+  -> shadow view culling / caster extent / layer mask / cast_shadow flag
+
+F9 在边界附近突然大跳
+  -> light_view_proj / depth range / compare bias
+
+F10 显示压力很大
+  -> texel_world_size、depth_range、normal_bias、compare_bias 单位要查
+
+F11 penumbra 忽然变大
+  -> PCSS blocker search 或 depth gap 问题
+```
+
+#### 19.4.7 第七步：切换到最小测试，不在 demo 里硬猜
+
+如果 demo 里看不清，跑最小测试：
+
+```bash
+cargo test --features app render::lighting::shadow::formula
+cargo test --features app render::lighting::shadow::view
+cargo test --features app render::runtime::tests::shadows
+```
+
+三类测试分别回答：
+
+```text
+formula:
+  数学公式和 Wicked fixture 是否一致
+
+view:
+  cascade view 几何、split、caster extent、atlas mapping 是否成立
+
+runtime shadows:
+  GPU pass、shader、depth atlas、final color readback 是否成立
+```
+
+如果这些都过，但 demo 不对：
+
+```text
+优先怀疑:
+  demo 场景参数
+  GI/contact/TAA/post-fx
+  material normal map
+  特定角度的 screen-space artifact
+```
+
+如果这些测试有一个坏了：
+
+```text
+先修测试指向的层
+不要在 demo 里继续调参
+```
+
+#### 19.4.8 现象到模块的快速映射
+
+| 现象 | 优先查 |
+|------|--------|
+| cascade 边界硬跳 | `src/render/lighting/shadow/view.rs`、shader cascade selection |
+| 物体脚下阴影漂浮 | bias、normal bias、PCSS filter radius |
+| 表面有斑点/条纹 | compare bias、raster bias、depth precision |
+| 某个物体完全不投影 | cast_shadow flag、layer mask、shadow view culling、phase extraction |
+| 室内整体过暗 | GI、ambient、contact AO、tone map |
+| 关 contact 后好了 | `contact_shadows.wgsl`、depth/normal 输入 |
+| 关 GI 后好了 | DDGI/SSGI provider、GI composite |
+| camera 动时残影 | TAA、velocity、history reset |
+| F6 正常但默认不对 | direct shadow 基本正常，查 GI/contact/material/post-fx |
+| raw atlas 对但 final 错 | material shader sampling/bias/atlas mapping/debug branch |
+
+#### 19.4.9 排查时不要做什么
+
+不要一上来做这些：
+
+- 直接把 bias 调大；
+- 直接把 PCSS radius 调小；
+- 直接改 cascade distances；
+- 看到室内暗就改 directional shadow；
+- F6 看不懂就跳去重写 shadow phase；
+- 不跑测试，只靠 demo 一帧肉眼判断。
+
+可以临时调参做诊断，但不能把“看起来好一点”当成修复。真正要留下的修改，应该至少回答：
+
+```text
+修的是哪一层？
+为什么是这层？
+有没有对应测试？
+是否影响 StandardMaterial 和 StandardMaterialNormalMapped 两条 shader？
+是否影响 direct-only / indirect-only debug？
+是否影响 contact/GI/TAA 分层？
+```
+
+#### 19.4.10 推荐的单次排查记录模板
+
+每次遇到“阴影又不对”，建议记录：
+
+```text
+demo:
+  example: three_d_demo
+  camera: repro locked / free
+  yaw:
+  pitch:
+  distance:
+
+settings:
+  GI: off / ddgi / ssgi / provider
+  contact shadows: on / off
+  TAA: on / off
+  bloom: on / off
+  debug view:
+
+observations:
+  default:
+  F12 direct-only:
+  G indirect-only:
+  C off:
+  V off:
+  F6:
+  F7:
+  F9/F10/F11:
+
+classification:
+  direct shadow / GI / contact / TAA / material / unknown
+
+commands:
+  cargo test --features app render::lighting::shadow::formula
+  cargo test --features app render::lighting::shadow::view
+  cargo test --features app render::runtime::tests::shadows
+```
+
+这个模板的价值是强迫问题先归类。归类以后，代码修改范围会自然缩小。
+
+### 19.5 常见空画面检查顺序
 
 1. App 是否安装了 pipeline：`with_render_pipeline(...)`。
 2. 每帧是否调用了 `ctx.render()`。
@@ -2768,7 +3472,7 @@ SKY_DEMO_DISABLE_CONTACT_SHADOWS
 13. RenderGraph pass 是否被 dead culling。
 14. ViewportBlit 是否运行，view 是否 presents_to_surface。
 
-### 19.5 常用验证命令
+### 19.6 常用验证命令
 
 文档修改通常不需要跑测试。改 render 代码时按范围选择：
 
@@ -2785,6 +3489,27 @@ cargo check --examples --features app
 ```bash
 cargo check --examples --features app
 ```
+
+改 directional shadow / GI / contact shadow 时，建议至少跑：
+
+```bash
+cargo fmt
+cargo test --features app render::lighting::shadow::formula
+cargo test --features app render::lighting::shadow::view
+cargo test --features app render::runtime::tests::shadows
+cargo test --features app render::postfx::contact_shadows
+cargo check --examples --features app
+```
+
+这些命令对应的覆盖面：
+
+| 命令 | 覆盖 |
+|------|------|
+| `shadow::formula` | 数学公式和 Wicked fixture |
+| `shadow::view` | CSM 几何、split、caster extent、atlas mapping |
+| `runtime::tests::shadows` | GPU shadow atlas、final color readback、cascade boundary |
+| `postfx::contact_shadows` | screen-space contact/AO 合同 |
+| `check --examples` | demo 和 public render API 兼容 |
 
 ---
 

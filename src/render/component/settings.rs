@@ -160,6 +160,13 @@ pub enum RenderDebugView {
     DirectionalShadowMap,
     DirectionalShadowCascade(u32),
     DirectionalShadowCoverage,
+    DirectionalShadowSplitCoverage,
+    DirectionalShadowFade,
+    DirectionalShadowCompareDelta,
+    DirectionalShadowBias,
+    DirectionalShadowPcss,
+    DirectLighting,
+    IndirectLighting,
 }
 
 impl RenderDebugView {
@@ -254,5 +261,12 @@ mod tests {
         assert!(RenderDebugView::DirectionalShadowMap.is_enabled());
         assert!(RenderDebugView::DirectionalShadowCascade(1).is_enabled());
         assert!(RenderDebugView::DirectionalShadowCoverage.is_enabled());
+        assert!(RenderDebugView::DirectionalShadowSplitCoverage.is_enabled());
+        assert!(RenderDebugView::DirectionalShadowFade.is_enabled());
+        assert!(RenderDebugView::DirectionalShadowCompareDelta.is_enabled());
+        assert!(RenderDebugView::DirectionalShadowBias.is_enabled());
+        assert!(RenderDebugView::DirectionalShadowPcss.is_enabled());
+        assert!(RenderDebugView::DirectLighting.is_enabled());
+        assert!(RenderDebugView::IndirectLighting.is_enabled());
     }
 }

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::gpu::GpuContext;
 use crate::render::gpu::helpers::{
-    create_position_quad_geometry, BindGroupCache, CameraBinding, QuadGeometry, RenderPipelineCache,
+    create_position_quad_geometry, CameraBinding, QuadGeometry, RenderPipelineCache,
 };
 use crate::render::gpu::RenderTarget;
 use crate::render::gpu::Texture;
@@ -31,7 +31,6 @@ pub struct LightPass {
     normal_bgl: wgpu::BindGroupLayout,
     _flat_normal: Texture,
     flat_normal_bind_group: wgpu::BindGroup,
-    normal_bind_group_cache: BindGroupCache<usize>,
     instances_scratch: Vec<LightInstance>,
 }
 
@@ -118,7 +117,6 @@ impl LightPass {
             normal_bgl,
             _flat_normal: flat_normal,
             flat_normal_bind_group,
-            normal_bind_group_cache: BindGroupCache::new(),
             instances_scratch: Vec::with_capacity(256),
         };
         let _ = this.pipeline_for(ctx, target_format);
@@ -166,7 +164,7 @@ impl LightPass {
             );
         }
 
-        let normal_bg = self.resolve_normal_bind_group(ctx, normal_target).clone();
+        let normal_bg = self.resolve_normal_bind_group(ctx, normal_target);
         let instance_count = self.instances_scratch.len() as u32;
         let color_attachments = [Some(wgpu::RenderPassColorAttachment {
             view: lightmap.view(),
@@ -191,7 +189,7 @@ impl LightPass {
         });
         pass.set_pipeline(pipeline.as_ref());
         pass.set_bind_group(0, &self.camera.bind_group, &[]);
-        pass.set_bind_group(1, &normal_bg, &[]);
+        pass.set_bind_group(1, normal_bg.as_ref(), &[]);
         pass.set_vertex_buffer(0, self.quad.vertex_buffer.slice(..));
         pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
         pass.set_index_buffer(self.quad.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
@@ -201,34 +199,30 @@ impl LightPass {
     }
 
     fn resolve_normal_bind_group(
-        &mut self,
+        &self,
         ctx: &GpuContext,
         normal_target: Option<&RenderTarget>,
-    ) -> &wgpu::BindGroup {
+    ) -> std::borrow::Cow<'_, wgpu::BindGroup> {
         let Some(target) = normal_target else {
-            return &self.flat_normal_bind_group;
+            return std::borrow::Cow::Borrowed(&self.flat_normal_bind_group);
         };
 
-        let key = std::ptr::from_ref(target.texture()) as usize;
-        let normal_bgl = self.normal_bgl.clone();
         let target_view = target.view();
         let sampler = ctx.sampler_linear();
-        self.normal_bind_group_cache.get_or_create(key, || {
-            ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("light_normal_bg"),
-                layout: &normal_bgl,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(target_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(sampler),
-                    },
-                ],
-            })
-        })
+        std::borrow::Cow::Owned(ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("light_normal_bg"),
+            layout: &self.normal_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(target_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+            ],
+        }))
     }
 
     fn pipeline_for(

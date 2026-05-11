@@ -1,0 +1,23 @@
+[package]
+name = "yakui-core"
+description = "Core crate for yakui, a UI library for games"
+version = "0.3.0"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/SecondHalfGames/yakui"
+edition = "2021"
+
+[features]
+
+[dependencies]
+anymap = "0.12.1"
+bitflags = "2.11.1"
+fast-srgb8 = "1.0.0"
+keyboard-types = { version = "0.8.3", default-features = false }
+parking_lot = "0.12.5"
+
+log.workspace = true
+glam.workspace = true
+thunderdome.workspace = true
+smallvec.workspace = true
+
+profiling.workspace = true

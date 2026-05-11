@@ -98,14 +98,13 @@ struct RenderState {
 
 impl RenderState {
     fn new(gpu: &GpuContext) -> Self {
-        let [sw, sh] = gpu.surface_size();
         let hdr = wgpu::TextureFormat::Rgba16Float;
 
         let mut vignette = Vignette::new(gpu, hdr);
         vignette.intensity = 0.18;
         vignette.smoothness = 0.50;
 
-        let mut bloom = Bloom::new(gpu, sw, sh, hdr);
+        let mut bloom = Bloom::new(gpu, hdr);
         bloom.intensity = 0.25;
         bloom.spread = 0.70;
 
@@ -128,10 +127,7 @@ impl RenderState {
         }
     }
 
-    fn resize(&mut self, gpu: &GpuContext, width: u32, height: u32) {
-        self.bloom
-            .resize(gpu, width, height, wgpu::TextureFormat::Rgba16Float);
-    }
+    fn resize(&mut self, _gpu: &GpuContext, _width: u32, _height: u32) {}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -282,10 +278,14 @@ fn main() {
         s.read(hdr_rt);
         s.write(graded_rt);
     });
-    let bloom_pass = graph.add_render_pass("bloom", |s| {
-        s.read(graded_rt);
-        s.write(bloom_rt);
-    });
+    let bloom_graph = Bloom::setup_graph(
+        &mut graph,
+        graded_rt,
+        bloom_rt,
+        TargetSize::Surface,
+        hdr,
+        "bloom",
+    );
     let tonemap_pass = graph.add_render_pass("tonemap", |s| {
         s.read(bloom_rt);
         s.write_surface();
@@ -495,10 +495,10 @@ fn main() {
                 let input = textures.render_target(hdr_rt).expect("hdr_rt");
                 let output = textures.render_target(graded_rt).expect("graded_rt");
                 rs.vignette.apply_to_target(gpu, input, output);
-            } else if pass.handle == bloom_pass {
-                let input = textures.render_target(graded_rt).expect("graded_rt");
-                let output = textures.render_target(bloom_rt).expect("bloom_rt");
-                rs.bloom.apply(gpu, input, output);
+            } else if rs
+                .bloom
+                .execute_graph_pass(gpu, &bloom_graph, pass, textures)?
+            {
             } else if pass.handle == tonemap_pass {
                 let input = textures.render_target(bloom_rt).expect("bloom_rt");
                 rs.tonemap.apply_to_surface(gpu, input);

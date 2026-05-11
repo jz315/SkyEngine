@@ -151,6 +151,28 @@ pub use layout::{SsgiComputeTextureLayout, SsgiMipLevel, SsgiResources};
 
 The public import path should remain stable through re-exports from `src/render/gi/providers/mod.rs`.
 
+### Rust Module Migration Note
+
+`src/render/gi/providers/mod.rs` currently declares:
+
+```rust
+pub mod ssgi;
+```
+
+That declaration is currently backed by `src/render/gi/providers/ssgi.rs`.
+Rust cannot keep both `ssgi.rs` and `ssgi/mod.rs` for the same module at the
+same time. The migration must therefore move the file module to the directory
+module in one coherent step:
+
+1. create `src/render/gi/providers/ssgi/`;
+2. move the existing implementation body into `src/render/gi/providers/ssgi/mod.rs`;
+3. delete or fully replace `src/render/gi/providers/ssgi.rs`;
+4. keep `pub mod ssgi;` unchanged in `src/render/gi/providers/mod.rs`;
+5. preserve public re-exports from the new `ssgi/mod.rs`.
+
+Do not attempt an intermediate state where both `ssgi.rs` and `ssgi/mod.rs`
+exist.
+
 ## Core Architecture
 
 ### Settings Layer
@@ -200,6 +222,12 @@ Responsibilities:
 
 This layer must not import render graph execution contexts or create GPU objects.
 
+This layer may still use lightweight descriptor types such as
+`wgpu::TextureFormat` and `wgpu::TextureUsages` if that is the existing engine
+contract. "Unit-testable without `wgpu`" means no `wgpu::Device`, queue,
+surface, shader module, pipeline, bind group, or GPU context creation is
+required.
+
 ### Graph Layer
 
 Owns `RenderGraph` declaration.
@@ -213,6 +241,10 @@ Responsibilities:
 - update scene color state.
 
 This layer should not create bind groups, pipelines, or perform resource view lookup.
+
+The graph layer should return or store a concrete `SsgiGraphResourceMap` that
+maps `SsgiResourceRole` values to graph handles/subresources. This is the bridge
+used by both graph declaration tests and executor validation.
 
 ### Contract Layer
 
@@ -244,6 +276,46 @@ let depth = pass_resources.read(SsgiRead::LowDepth);
 
 The exact API can differ, but the concept should be role-based rather than position-based.
 
+`CompiledPass` currently stores ordered `reads` and `writes`, not semantic
+roles. The role-based design therefore needs an explicit bridge rather than
+assuming the render graph will preserve role metadata.
+
+Recommended contract shape:
+
+```rust
+pub(crate) struct SsgiPassDescriptor {
+    pub name: &'static str,
+    pub kind: SsgiPassKind,
+    pub reads: &'static [SsgiResourceRole],
+    pub writes: &'static [SsgiResourceRole],
+    pub bindings: &'static [SsgiBindingRole],
+    pub shader: SsgiShaderStage,
+    pub dispatch: SsgiDispatchRule,
+}
+```
+
+Graph declaration should iterate descriptors and translate roles into concrete
+`TextureHandle` / `TextureSubresource` values using `SsgiComputeGraphResources`
+and scene input handles.
+
+Execution should resolve resources from the same descriptor and the same
+concrete resource map, then validate that the compiled pass contains the
+expected resources. It should not infer semantic meaning from nth-read or
+nth-write positions. If a mismatch is detected, fail at the SSGI contract
+boundary with a message that names the pass and role.
+
+In short:
+
+```text
+SsgiPassDescriptor + SsgiGraphResourceMap
+  -> graph declaration
+  -> compiled pass validation
+  -> executor resource views
+```
+
+The graph remains free to store ordered reads/writes internally; SSGI owns the
+semantic mapping.
+
 ### Uniform Layer
 
 Owns CPU-to-shader parameter conversion.
@@ -273,6 +345,21 @@ Responsibilities:
 - role-to-binding mapping.
 
 Shader binding numbers should live here or in `contract.rs`, not inside execution branches.
+
+Long-lived GPU objects should be grouped in a small owner such as:
+
+```rust
+pub(crate) struct SsgiGpuState {
+    // bind group layouts
+    // compute pipelines
+    // final fullscreen pipeline
+    // uniform buffer
+}
+```
+
+`SsgiGpuState` owns persistent layouts, pipelines, and uniform buffers. The
+bindings layer may still create short-lived per-pass bind groups from resolved
+texture views.
 
 ### Pipelines Layer
 
@@ -495,10 +582,15 @@ Add tests at the layer where they are cheapest:
   - every pass name maps to exactly one pass kind;
   - graph declarations and executor resource roles agree;
   - binding roles are unique within each group;
+  - every descriptor role can be resolved from `SsgiGraphResourceMap`;
+  - every descriptor read/write resolves to the expected texture handle,
+    subresource mip, mip count, array layer, and array layer count;
 - graph tests:
   - declared reads and writes match contract;
   - final output keeps the compute chain alive;
   - repeated setup remains deterministic;
+  - compiled pass resources validate against the descriptor-derived role map;
+  - execution reordering does not affect pass identity or role resolution;
 - shader validation tests:
   - all WGSL modules compile;
   - normal/depth convention assumptions remain synchronized;
@@ -533,6 +625,11 @@ Purpose: isolate resource math.
 
 Tasks:
 
+- Perform the Rust module migration:
+  - create `src/render/gi/providers/ssgi/`;
+  - move the current `ssgi.rs` body to `ssgi/mod.rs`;
+  - remove the old `ssgi.rs` module file in the same change;
+  - keep `pub mod ssgi;` stable in `providers/mod.rs`.
 - Create `ssgi/layout.rs`.
 - Move:
   - `SsgiResources`;
@@ -545,6 +642,8 @@ Tasks:
 
 Acceptance:
 
+- The crate does not contain both `src/render/gi/providers/ssgi.rs` and
+  `src/render/gi/providers/ssgi/mod.rs`.
 - Layout tests pass.
 - No behavior changes in graph or execution.
 
@@ -557,13 +656,18 @@ Tasks:
 - Create `ssgi/contract.rs`.
 - Move pass names and `SsgiComputePassKind`.
 - Replace raw name arrays with pass descriptors.
+- Introduce `SsgiResourceRole`, `SsgiBindingRole`, `SsgiPassDescriptor`, and
+  descriptor lookup by pass name.
 - Add tests that all pass names are unique.
 - Add tests that every compute descriptor maps to a kind.
+- Add tests that descriptor order preserves the current declared graph chain.
 
 Acceptance:
 
 - Existing pass order is preserved.
 - There is one source of truth for SSGI pass identity.
+- Descriptor pass names, kinds, shader stages, resource roles, and binding roles
+  can be inspected without reading graph or executor code.
 
 ### Milestone S3: Split Graph Declaration
 
@@ -578,11 +682,15 @@ Tasks:
   - final pass declaration;
   - blackboard key handling if still needed.
 - Make graph declaration consume `SsgiResources` and contract descriptors.
+- Build a concrete `SsgiGraphResourceMap` during setup and store/pass it through
+  the same mechanism execution will use.
 
 Acceptance:
 
 - Graph tests prove declared dependencies match the pass contract.
 - The final output keeps all required compute passes alive.
+- Graph tests verify each descriptor role maps to the expected graph
+  read/write, including subresource mip and array-layer ranges.
 
 ### Milestone S4: Split Bindings And Pipelines
 
@@ -594,12 +702,13 @@ Tasks:
 - Create `ssgi/pipelines.rs`.
 - Move bind group layout creation out of pass execution.
 - Move pipeline cache creation out of pass execution.
-- Replace repeated layout creation checks with a small GPU state object.
+- Replace repeated layout creation checks with `SsgiGpuState`.
 
 Acceptance:
 
 - Binding roles and binding numbers are inspectable in one place.
 - Pipeline creation does not require scanning executor logic.
+- Persistent GPU state ownership is centralized in `SsgiGpuState`.
 
 ### Milestone S5: Split Uniform Construction
 
@@ -630,6 +739,8 @@ Tasks:
 - Create `ssgi/executor.rs`.
 - Move compute and final execution.
 - Resolve resources by contract roles instead of nth-read/nth-write where practical.
+- Validate the compiled pass against the descriptor-derived role map before
+  creating resource views.
 - Keep final fullscreen composite separate from compute dispatch.
 
 Acceptance:
@@ -637,6 +748,8 @@ Acceptance:
 - Unknown pass names fail clearly.
 - Resource-role mismatch fails at the contract boundary.
 - Execution code no longer owns layout, graph, provider, or settings policy.
+- Executor code no longer assigns semantic meaning to nth-read/nth-write
+  positions for SSGI resources.
 
 ### Milestone S7: Thin Provider Runtime
 
@@ -655,9 +768,15 @@ Acceptance:
 - `provider.rs` can be understood without knowing shader binding details.
 - The SSGI public API remains stable.
 
-### Milestone S8: Add Technique Pipeline Extensions
+### Follow-Up S8: Add Technique Pipeline Extensions
 
-Purpose: prepare SSGI for production stability.
+Purpose: prepare SSGI for production stability after the architecture refactor
+has landed.
+
+This is intentionally a follow-up stage, not part of the minimal S0-S7
+refactor. Do not start adding temporal accumulation, denoising, new public
+quality controls, or new debug outputs until the provider has been split and the
+contract/resource-role path is stable.
 
 Tasks:
 

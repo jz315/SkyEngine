@@ -407,3 +407,142 @@ fn alias_group_count_matches_groups() {
 
     graph.destroy_physical_resources();
 }
+
+#[test]
+fn pass_local_read_write_textures_do_not_alias() {
+    let (device, queue) = create_test_device();
+    let ctx = crate::gpu::GpuContext::new_headless(
+        device,
+        queue,
+        wgpu::TextureFormat::Bgra8Unorm,
+        [64, 64],
+    );
+
+    let mut graph = RenderGraph::new();
+    let scene = graph.create_texture(|b| {
+        b.name("scene_rt")
+            .size(TargetSize::Exact(64, 64))
+            .format(TextureFormat::Rgba16Float);
+    });
+    let light = graph.create_texture(|b| {
+        b.name("light_rt")
+            .size(TargetSize::Exact(64, 64))
+            .format(TextureFormat::Rgba16Float);
+    });
+    let hdr = graph.create_texture(|b| {
+        b.name("hdr_rt")
+            .size(TargetSize::Exact(64, 64))
+            .format(TextureFormat::Rgba16Float);
+    });
+    let bloom = graph.create_texture(|b| {
+        b.name("bloom_rt")
+            .size(TargetSize::Exact(64, 64))
+            .format(TextureFormat::Rgba16Float);
+    });
+
+    graph.add_render_pass("scene", |s| {
+        s.write_color_cleared(0, scene, [0.0, 0.0, 0.0, 1.0]);
+    });
+    graph.add_render_pass("lighting", |s| {
+        s.write_color_cleared(0, light, [0.0, 0.0, 0.0, 1.0]);
+    });
+    graph.add_render_pass("composite", |s| {
+        s.read(scene);
+        s.read(light);
+        s.write(hdr);
+    });
+    graph.add_render_pass("bloom", |s| {
+        s.read(hdr);
+        s.write(bloom);
+    });
+    graph.add_render_pass("tonemap", |s| {
+        s.read(bloom);
+        s.write_surface();
+    });
+
+    graph.compile().unwrap();
+    graph.allocate_physical_resources(&ctx);
+
+    let hdr_ptr = graph.try_resolve_texture(hdr).unwrap() as *const wgpu::Texture;
+    let bloom_ptr = graph.try_resolve_texture(bloom).unwrap() as *const wgpu::Texture;
+    assert_ne!(
+        hdr_ptr, bloom_ptr,
+        "textures read and written by the same graph pass must not alias"
+    );
+
+    graph.destroy_physical_resources();
+}
+
+#[test]
+fn aliased_owner_changes_execute_across_encoder_boundary() {
+    let (device, queue) = create_test_device();
+    let mut ctx = crate::gpu::GpuContext::new_headless(
+        device,
+        queue,
+        wgpu::TextureFormat::Bgra8Unorm,
+        [32, 32],
+    );
+
+    let mut graph = RenderGraph::new();
+    let first = graph.create_texture(|b| {
+        b.name("first")
+            .size(TargetSize::Exact(32, 32))
+            .format(TextureFormat::Rgba8Unorm);
+    });
+    let second = graph.create_texture(|b| {
+        b.name("second")
+            .size(TargetSize::Exact(32, 32))
+            .format(TextureFormat::Rgba8Unorm);
+    });
+    let bridge = graph.create_texture(|b| {
+        b.name("bridge")
+            .size(TargetSize::Exact(32, 32))
+            .format(TextureFormat::Rgba16Float);
+    });
+
+    graph.add_render_pass("write_first", |s| {
+        s.write_color_cleared(0, first, [0.0, 0.0, 0.0, 1.0]);
+    });
+    graph.add_render_pass("consume_first", |s| {
+        s.read(first);
+        s.write_color_cleared(0, bridge, [0.0, 0.0, 0.0, 1.0]);
+    });
+    graph.add_render_pass("write_second", |s| {
+        s.read(bridge);
+        s.write_color_cleared(0, second, [0.0, 0.0, 0.0, 1.0]);
+    });
+    graph.add_render_pass("present", |s| {
+        s.read(second);
+        s.write_surface();
+    });
+
+    ctx.begin_frame()
+        .expect("headless begin_frame should succeed");
+    graph
+        .try_execute(&mut ctx, |pass, gpu, resources| {
+            for output in &pass.color_outputs {
+                let ResourceRef::Texture(handle) = output.target else {
+                    continue;
+                };
+                let target = resources.render_target(handle).expect("render target");
+                let load = match output.load {
+                    LoadOp::Clear(color) => wgpu::LoadOp::Clear(wgpu::Color {
+                        r: color[0] as f64,
+                        g: color[1] as f64,
+                        b: color[2] as f64,
+                        a: color[3] as f64,
+                    }),
+                    LoadOp::Load => wgpu::LoadOp::Load,
+                    LoadOp::DontCare => wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                };
+                let mut frame = gpu.frame();
+                let _pass = frame.begin_target_pass("alias_owner_change_test", target, load);
+            }
+            Ok(())
+        })
+        .expect("aliased owner changes should execute without wgpu validation errors");
+    ctx.end_frame();
+
+    assert!(graph.alias_group_count() > 0);
+    graph.destroy_physical_resources();
+}

@@ -5,12 +5,13 @@ pub(crate) struct ShadowUniform {
     pub(crate) light_view_proj: [[f32; 16]; MAX_DIRECTIONAL_SHADOW_CASCADES],
     pub(crate) light_direction: [f32; 4],
     pub(crate) cascade_splits: [f32; MAX_DIRECTIONAL_SHADOW_CASCADES],
-    // x compare bias, y world units per shadow texel, z filter radius in world units,
+    // x compare bias, y world units per shadow texel, z Wicked-style filter radius,
     // w light-space depth range in world units (0 disables the cascade).
     pub(crate) cascade_params: [[f32; 4]; MAX_DIRECTIONAL_SHADOW_CASCADES],
     pub(crate) shadow_atlas_mul_add: [f32; 4],
     pub(crate) shadow_atlas_resolution_rcp: [f32; 4], // xy atlas reciprocal, z guard band texels, w sampling mode
-    pub(crate) shadow_params: [f32; 4], // x cascade count, y blend, z coverage debug flag, w enabled
+    // x cascade count, y blend, z material debug mode, w enabled plus temporal rotation seed
+    pub(crate) shadow_params: [f32; 4],
 }
 
 #[repr(C)]

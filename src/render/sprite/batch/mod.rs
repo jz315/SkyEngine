@@ -29,7 +29,7 @@ use std::sync::Arc;
 
 use crate::gpu::GpuContext;
 use crate::render::gpu::helpers::{
-    create_textured_quad_geometry, BindGroupCache, CameraBinding, QuadGeometry, RenderPipelineCache,
+    create_textured_quad_geometry, CameraBinding, QuadGeometry, RenderPipelineCache,
 };
 use crate::render::gpu::RenderTarget;
 use crate::render::gpu::Texture;
@@ -115,7 +115,6 @@ pub struct SpriteBatch {
     camera: CameraBinding,
     texture_bgl: wgpu::BindGroupLayout,
     pipelines: RenderPipelineCache<BatchPipelineKey>,
-    texture_bind_group_cache: BindGroupCache<usize>,
     texture_bind_group_scratch: Vec<wgpu::BindGroup>,
     instances: Vec<SpriteInstance>,
     draw_cmds: Vec<DrawCmd>,
@@ -177,7 +176,6 @@ impl SpriteBatch {
             camera,
             texture_bgl,
             pipelines: RenderPipelineCache::new(),
-            texture_bind_group_cache: BindGroupCache::new(),
             texture_bind_group_scratch: Vec::with_capacity(16),
             instances: Vec::with_capacity(1024),
             draw_cmds: Vec::with_capacity(16),
@@ -354,26 +352,20 @@ impl SpriteBatch {
         let sampler = ctx.sampler_nearest();
         self.texture_bind_group_scratch.clear();
         for texture in &self.frame_textures {
-            let key = std::ptr::from_ref(texture.texture()) as usize;
-            let bind_group = self
-                .texture_bind_group_cache
-                .get_or_create(key, || {
-                    ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("sprite_texture_bg"),
-                        layout: &texture_bgl,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: wgpu::BindingResource::TextureView(texture.view()),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: wgpu::BindingResource::Sampler(sampler),
-                            },
-                        ],
-                    })
-                })
-                .clone();
+            let bind_group = ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("sprite_texture_bg"),
+                layout: &texture_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(texture.view()),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    },
+                ],
+            });
             self.texture_bind_group_scratch.push(bind_group);
         }
     }

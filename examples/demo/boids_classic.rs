@@ -587,10 +587,9 @@ struct RenderState {
 
 impl RenderState {
     fn new(gpu: &GpuContext) -> Self {
-        let [sw, sh] = gpu.surface_size();
         let hdr = wgpu::TextureFormat::Rgba16Float;
 
-        let mut bloom = Bloom::new(gpu, sw, sh, hdr);
+        let mut bloom = Bloom::new(gpu, hdr);
         bloom.intensity = 0.55;
         bloom.spread = 1.2;
 
@@ -612,10 +611,7 @@ impl RenderState {
         }
     }
 
-    fn resize(&mut self, gpu: &GpuContext, width: u32, height: u32) {
-        self.bloom
-            .resize(gpu, width, height, wgpu::TextureFormat::Rgba16Float);
-    }
+    fn resize(&mut self, _gpu: &GpuContext, _width: u32, _height: u32) {}
 }
 
 // ─── Main ───────────────────────────────────────────────────────────────────
@@ -697,10 +693,14 @@ fn main() {
         s.read(light_rt);
         s.write(hdr_rt);
     });
-    let bloom_pass = graph.add_render_pass("bloom", |s| {
-        s.read(hdr_rt);
-        s.write(bloom_rt);
-    });
+    let bloom_graph = Bloom::setup_graph(
+        &mut graph,
+        hdr_rt,
+        bloom_rt,
+        TargetSize::Surface,
+        wgpu::TextureFormat::Rgba16Float,
+        "bloom",
+    );
     let tonemap_pass = graph.add_render_pass("tonemap", |s| {
         s.read(bloom_rt);
         s.write_surface();
@@ -918,10 +918,10 @@ fn main() {
                 let output = textures.render_target(hdr_rt).expect("hdr_rt");
                 rs.composite_pass
                     .render_to_target(gpu, scene, lightmap, output);
-            } else if pass.handle == bloom_pass {
-                let input = textures.render_target(hdr_rt).expect("hdr_rt");
-                let output = textures.render_target(bloom_rt).expect("bloom_rt");
-                rs.bloom.apply(gpu, input, output);
+            } else if rs
+                .bloom
+                .execute_graph_pass(gpu, &bloom_graph, pass, textures)?
+            {
             } else if pass.handle == tonemap_pass {
                 let input = textures.render_target(bloom_rt).expect("bloom_rt");
                 rs.tonemap.apply_to_surface(gpu, input);

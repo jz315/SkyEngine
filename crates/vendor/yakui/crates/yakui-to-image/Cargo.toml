@@ -1,0 +1,15 @@
+[package]
+name = "yakui-to-image"
+description = "Quickly render a yakui UI to an image file"
+publish = false
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+yakui-core = { path = "../yakui-core" }
+yakui-wgpu = { path = "../yakui-wgpu" }
+
+pollster.workspace = true
+image = { workspace = true, features = ["png"] }
+
+wgpu.workspace = true

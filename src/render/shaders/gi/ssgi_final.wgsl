@@ -1,6 +1,5 @@
-// WickedEngine-inspired final SSGI upsample/composite pass.
-// This mirrors WickedEngine's 2x -> output step: low 2x diffuse/depth/normal
-// is bilateral-upsampled against full-resolution scene depth and normal.
+// WickedEngine-inspired final SSGI upsample.
+// fs_final_upsample outputs only the full-resolution indirect diffuse term.
 
 struct SsgiUniform {
     params0: vec4<f32>,
@@ -25,14 +24,8 @@ var t_scene_color: texture_2d<f32>;
 @group(1) @binding(0)
 var<uniform> ssgi: SsgiUniform;
 
-const UPSAMPLE_DEPTH_THRESHOLD: f32 = 0.1;
-
 fn saturate(v: f32) -> f32 {
     return clamp(v, 0.0, 1.0);
-}
-
-fn luminance(color: vec3<f32>) -> f32 {
-    return dot(max(color, vec3<f32>(0.0)), vec3<f32>(0.2126, 0.7152, 0.0722));
 }
 
 fn clamped_pixel(pixel: vec2<i32>, dims: vec2<u32>) -> vec2<i32> {
@@ -61,11 +54,25 @@ fn reconstruct_position_from_depth(pixel: vec2<i32>, dims: vec2<u32>, depth: f32
     if (abs(view.w) > 0.000001) {
         position = position / view.w;
     }
-    // Wicked's view-space SSGI math uses positive Z as distance from camera.
-    // SkyEngine uses a right-handed view matrix, so projected view-space Z is
-    // negative in front of the camera.
     position.z = -position.z;
     return position;
+}
+
+fn bilateral_depth_weight(depth_delta: f32) -> f32 {
+    let soft_reject = 1.0 - saturate(depth_delta * max(ssgi.params0.w, 0.0001));
+    return soft_reject * soft_reject * soft_reject * soft_reject;
+}
+
+fn luminance(color: vec3<f32>) -> f32 {
+    return dot(max(color, vec3<f32>(0.0)), vec3<f32>(0.2126, 0.7152, 0.0722));
+}
+
+fn limit_luminance(color: vec3<f32>, max_luma: f32) -> vec3<f32> {
+    let luma = luminance(color);
+    if (luma <= max_luma || luma <= 0.00001) {
+        return color;
+    }
+    return color * (max_luma / luma);
 }
 
 fn upsample_diffuse(output_pixel: vec2<i32>, high_dims: vec2<u32>) -> vec3<f32> {
@@ -87,8 +94,8 @@ fn upsample_diffuse(output_pixel: vec2<i32>, high_dims: vec2<u32>) -> vec3<f32> 
             let low_depth = textureLoad(t_depth_low, low_pixel, 0).r;
             let sample_linear_depth = reconstruct_position_from_depth(low_pixel, low_dims, low_depth).z;
             let sample_normal = decode_view_normal(textureLoad(t_normal_low, low_pixel, 0).rgb);
-            let depth_weight = 1.0 - saturate(abs(sample_linear_depth - center_linear_depth) * UPSAMPLE_DEPTH_THRESHOLD);
-            let normal_weight = pow(saturate(dot(sample_normal, center_normal)), normal_power) + 0.001;
+            let depth_weight = bilateral_depth_weight(abs(sample_linear_depth - center_linear_depth));
+            let normal_weight = pow(saturate(dot(sample_normal, center_normal)), normal_power);
             let weight = depth_weight * normal_weight;
             result = result + textureLoad(t_diffuse_low, low_pixel, 0).rgb * weight;
             sum = sum + weight;
@@ -116,14 +123,14 @@ fn stabilize_indirect(diffuse: vec3<f32>, scene_color: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_final_upsample(input: FullscreenOutput) -> @location(0) vec4<f32> {
-    let dims = textureDimensions(t_scene_color);
+    let dims = textureDimensions(t_scene_normal);
     let pixel = vec2<i32>(input.position.xy);
     let scene_pixel = clamped_pixel(pixel, dims);
-    let scene_color = textureLoad(t_scene_color, scene_pixel, 0);
+    let scene_color = textureLoad(t_scene_color, scene_pixel, 0).rgb;
     let center_depth = textureLoad(t_scene_depth, scene_pixel, 0);
     if (center_depth >= 0.99999) {
-        return scene_color;
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
-    let diffuse = stabilize_indirect(upsample_diffuse(pixel, dims), scene_color.rgb) * ssgi.params0.x;
-    return vec4<f32>(scene_color.rgb + diffuse, scene_color.a);
+    let diffuse = stabilize_indirect(upsample_diffuse(pixel, dims), scene_color) * ssgi.params0.x;
+    return vec4<f32>(diffuse, 1.0);
 }

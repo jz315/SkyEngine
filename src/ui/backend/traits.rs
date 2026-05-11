@@ -3,6 +3,8 @@ use std::any::Any;
 use crate::ecs::World;
 use crate::gpu::GpuContext;
 use crate::input::Input;
+use winit::event::WindowEvent;
+use winit::window::Window;
 
 /// Stable identifier for a UI backend installed in [`UiHost`](super::UiHost).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -43,7 +45,38 @@ impl UiCaptureState {
 pub struct UiBeginFrameContext<'a> {
     pub world: &'a mut World,
     pub input: &'a Input,
-    pub surface_size: [f32; 2],
+    pub window: Option<&'a Window>,
+    pub logical_surface_size: [f32; 2],
+    pub physical_surface_size: [f32; 2],
+    pub scale_factor: f32,
+}
+
+/// Context passed to UI backends for raw window events.
+pub struct UiEventContext<'a> {
+    pub world: &'a mut World,
+    pub window: Option<&'a Window>,
+    pub event: &'a WindowEvent,
+    pub scale_factor: f32,
+}
+
+/// Input handling result from a UI backend.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UiEventResponse {
+    pub consumed: bool,
+}
+
+impl UiEventResponse {
+    pub const fn ignored() -> Self {
+        Self { consumed: false }
+    }
+
+    pub const fn consumed() -> Self {
+        Self { consumed: true }
+    }
+
+    pub fn merge(&mut self, other: Self) {
+        self.consumed |= other.consumed;
+    }
 }
 
 /// Context passed to UI backends when overlay rendering is requested.
@@ -84,6 +117,10 @@ pub trait UiBackend: 'static {
 
     fn name(&self) -> &'static str {
         self.id().as_str()
+    }
+
+    fn handle_event(&mut self, _ctx: UiEventContext<'_>) -> UiEventResponse {
+        UiEventResponse::ignored()
     }
 
     fn begin_frame(&mut self, ctx: UiBeginFrameContext<'_>);

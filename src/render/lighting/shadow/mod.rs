@@ -1,5 +1,7 @@
 mod atlas;
 mod bindings;
+#[cfg(test)]
+mod formula;
 mod phase;
 mod resources;
 mod view;

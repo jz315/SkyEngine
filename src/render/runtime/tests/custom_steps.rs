@@ -418,3 +418,39 @@ fn view_specific_phase_and_postfx_skip_disabled_views() {
     assert_eq!(postfx_setup.load(Ordering::Relaxed), 1);
     assert_eq!(postfx_execute.load(Ordering::Relaxed), 1);
 }
+
+#[test]
+fn builtin_bloom_executes_explicit_graph_passes_for_each_view() {
+    let (device, queue) = create_test_device();
+    let mut ctx =
+        GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [64, 32]);
+
+    let mut renderer = RenderRuntime::from_asset(RenderPipelineAsset::forward_2d());
+    let mut world = World::new();
+    world.insert_resource(RenderSettings::default());
+    world.spawn((
+        Transform::default(),
+        CameraMarker::new(),
+        Projection::orthographic_fixed(32.0, 32.0),
+        CameraViewport::new(ViewportRect::new(0, 0, 32, 32)).order(0),
+    ));
+    world.spawn((
+        Transform::default(),
+        CameraMarker::new(),
+        Projection::orthographic_fixed(32.0, 32.0),
+        CameraViewport::new(ViewportRect::new(32, 0, 32, 32)).order(1),
+    ));
+
+    ctx.begin_frame()
+        .expect("headless begin_frame should succeed");
+    renderer.render_world(&mut ctx, &world);
+    ctx.end_frame();
+
+    let stats = renderer.stats();
+    assert_eq!(stats.view_count, 2);
+    assert!(
+        stats.passes >= 2 * crate::render::postfx::bloom::BLOOM_GRAPH_PASS_COUNT,
+        "expected both views to register bloom's expanded graph passes, got {} passes",
+        stats.passes
+    );
+}

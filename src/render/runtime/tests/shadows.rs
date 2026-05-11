@@ -427,6 +427,215 @@ fn directional_shadow_atlas_draws_caster_between_light_and_near_cascade() {
     );
 }
 
+#[test]
+fn directional_shadow_cascade_boundary_keeps_near_and_far_receivers_consistent() {
+    #[repr(C)]
+    #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+    struct Vertex {
+        position: [f32; 3],
+        normal: [f32; 3],
+        uv: [f32; 2],
+    }
+
+    let (device, queue) = create_test_device();
+    let mut ctx =
+        GpuContext::new_headless(device, queue, wgpu::TextureFormat::Rgba8Unorm, [128, 96]);
+    let capture = Arc::new(RenderTarget::from_descriptor(
+        &ctx,
+        RenderTargetDescriptor::new(128, 96, wgpu::TextureFormat::Rgba8Unorm)
+            .label("shadow_boundary_capture"),
+    ));
+    let mut renderer = RenderRuntime::from_asset(
+        RenderPipelineAsset::builder()
+            .register_material::<StandardMaterial>()
+            .add_phase(crate::render::lighting::shadow::DirectionalShadowPhase::new())
+            .add_compute(crate::render::GiUpdateCompute::default())
+            .add_phase(crate::render::OpaquePhase::new())
+            .add_postfx(CaptureCurrentColorPass {
+                target: capture.clone(),
+            })
+            .build(),
+    );
+    renderer.register_material::<StandardMaterial>(&ctx);
+
+    let plane = renderer.insert_mesh(Mesh::from_raw(
+        &ctx,
+        MeshDescriptor::new(
+            bytemuck::cast_slice(&[
+                Vertex {
+                    position: [-1.0, 0.0, -1.0],
+                    normal: [0.0, 0.0, 1.0],
+                    uv: [0.0, 1.0],
+                },
+                Vertex {
+                    position: [1.0, 0.0, -1.0],
+                    normal: [0.0, 0.0, 1.0],
+                    uv: [1.0, 1.0],
+                },
+                Vertex {
+                    position: [1.0, 0.0, 1.0],
+                    normal: [0.0, 0.0, 1.0],
+                    uv: [1.0, 0.0],
+                },
+                Vertex {
+                    position: [-1.0, 0.0, 1.0],
+                    normal: [0.0, 0.0, 1.0],
+                    uv: [0.0, 0.0],
+                },
+            ]),
+            4,
+            Mesh::vertex_layout_position_normal_uv(),
+            "shadow_boundary_receiver",
+        )
+        .with_indices(MeshIndexData::U16(&[0, 1, 2, 0, 2, 3]))
+        .with_bounding_sphere(BoundingSphere::new([0.0, 0.0, 0.0], 1.5)),
+    ));
+    let blocker = renderer.insert_mesh(Mesh::from_raw(
+        &ctx,
+        MeshDescriptor::new(
+            bytemuck::cast_slice(&[
+                Vertex {
+                    position: [-0.25, -0.25, -0.25],
+                    normal: [0.0, 0.0, 1.0],
+                    uv: [0.0, 1.0],
+                },
+                Vertex {
+                    position: [0.25, -0.25, -0.25],
+                    normal: [0.0, 0.0, 1.0],
+                    uv: [1.0, 1.0],
+                },
+                Vertex {
+                    position: [0.25, 0.25, -0.25],
+                    normal: [0.0, 0.0, 1.0],
+                    uv: [1.0, 0.0],
+                },
+                Vertex {
+                    position: [-0.25, 0.25, -0.25],
+                    normal: [0.0, 0.0, 1.0],
+                    uv: [0.0, 0.0],
+                },
+            ]),
+            4,
+            Mesh::vertex_layout_position_normal_uv(),
+            "shadow_boundary_blocker",
+        )
+        .with_indices(MeshIndexData::U16(&[0, 1, 2, 0, 2, 3]))
+        .with_bounding_sphere(BoundingSphere::new([0.0, 0.0, -0.25], 0.45)),
+    ));
+    let receiver_material = renderer.insert_material::<StandardMaterial>(StandardMaterial {
+        albedo: Color::WHITE,
+        roughness: 0.85,
+        receive_shadows: true,
+        ..Default::default()
+    });
+    let blocker_material = renderer.insert_material::<StandardMaterial>(StandardMaterial {
+        albedo: Color::BLACK,
+        roughness: 1.0,
+        receive_shadows: false,
+        ..Default::default()
+    });
+
+    let mut world = World::new();
+    world.insert_resource(RenderSettings {
+        clear_color: Color::BLACK,
+        ambient_color: Color::BLACK,
+        global_illumination: crate::render::GlobalIllumination::Off,
+        bloom: crate::render::BloomSettings {
+            enabled: false,
+            ..Default::default()
+        },
+        tonemap: crate::render::ToneMapSettings {
+            enabled: false,
+            ..Default::default()
+        },
+        temporal_aa: crate::render::TemporalAntiAliasingSettings {
+            enabled: false,
+            ..Default::default()
+        },
+        contact_shadows: crate::render::ContactShadowsSettings {
+            enabled: false,
+            ..Default::default()
+        },
+        ..RenderSettings::default()
+    });
+    world.spawn((
+        Transform::default(),
+        CameraMarker::new(),
+        Projection::perspective(60.0f32.to_radians(), 0.1, 120.0),
+        MainCamera,
+    ));
+    world.spawn((
+        Transform::from_xyz(0.0, 0.0, -7.0).with_scale3(7.0, 1.0, 1.0),
+        WgpuMeshRenderer::new(plane, receiver_material).casts_shadows(false),
+    ));
+    world.spawn((
+        Transform::from_xyz(0.0, 0.0, -2.4),
+        WgpuMeshRenderer::new(blocker, blocker_material),
+    ));
+    world.spawn((DirectionalLight::new([0.55, -1.0, -0.35])
+        .intensity(9.0)
+        .cascade_count(4)
+        .cascade_distances([4.0, 9.5, 24.0, 60.0])
+        .shadow_map_size(256)
+        .shadow_bias(0.0)
+        .shadow_depth_bias(0)
+        .shadow_slope_bias(0.0)
+        .shadow_normal_bias(0.0)
+        .shadow_filter_radius(0.0),));
+
+    ctx.begin_frame()
+        .expect("headless begin_frame should succeed");
+    renderer.render_world(&mut ctx, &world);
+    ctx.end_frame();
+
+    let stats = renderer.stats();
+    assert_eq!(stats.shadow_cascade_count, 4);
+    assert!(
+        stats.shadow_caster_count >= 1,
+        "the blocker should be submitted to at least one shadow cascade"
+    );
+    assert!(
+        stats
+            .shadow_caster_count_by_cascade
+            .iter()
+            .any(|count| *count > 0),
+        "the blocker should survive cascade culling in the boundary scene"
+    );
+
+    let readback =
+        read_render_target(&ctx, &capture).expect("shadow boundary color readback should work");
+    assert_eq!(readback.format(), wgpu::TextureFormat::Rgba8Unorm);
+
+    let pixels = readback
+        .data()
+        .chunks_exact(readback.bytes_per_pixel() as usize)
+        .map(|pixel| {
+            [
+                pixel[0] as f32 / 255.0,
+                pixel[1] as f32 / 255.0,
+                pixel[2] as f32 / 255.0,
+            ]
+        })
+        .collect::<Vec<_>>();
+    let width = readback.width();
+    let height = readback.height();
+    let left_index = (height / 2 * width + width / 3) as usize;
+    let right_index = (height / 2 * width + width * 2 / 3) as usize;
+    let center_index = (height / 2 * width + width / 2) as usize;
+    let left_luma = pixels[left_index][0] + pixels[left_index][1] + pixels[left_index][2];
+    let right_luma = pixels[right_index][0] + pixels[right_index][1] + pixels[right_index][2];
+    let center_luma = pixels[center_index][0] + pixels[center_index][1] + pixels[center_index][2];
+
+    assert!(
+        (left_luma - right_luma).abs() < 0.20,
+        "cascade boundary should not create a large brightness jump; left={left_luma}, right={right_luma}, center={center_luma}"
+    );
+    assert!(
+        center_luma < 2.6,
+        "receiver center should remain shaded enough to prove the blocker contributes to the frame; center={center_luma}"
+    );
+}
+
 #[derive(Clone)]
 struct CaptureCurrentColorPass {
     target: Arc<RenderTarget>,
@@ -783,6 +992,10 @@ fn standard_material_directional_shadow_darkens_final_color() {
     let mut max_delta_pixel = [0u32; 2];
     let mut max_shadowed = [0.0; 3];
     let mut max_unshadowed = [0.0; 3];
+    let mut min_far_delta = f32::INFINITY;
+    let mut min_far_pixel = [0u32; 2];
+    let mut far_shadowed = [0.0; 3];
+    let mut far_unshadowed = [0.0; 3];
     for y in 16..(height - 16) {
         for x in 16..(width - 16) {
             let index = (y * width + x) as usize;
@@ -798,6 +1011,26 @@ fn standard_material_directional_shadow_darkens_final_color() {
             }
         }
     }
+    for y in 16..(height - 16) {
+        for x in 16..(width - 16) {
+            let dx = x as i32 - max_delta_pixel[0] as i32;
+            let dy = y as i32 - max_delta_pixel[1] as i32;
+            if dx * dx + dy * dy < 28 * 28 {
+                continue;
+            }
+            let index = (y * width + x) as usize;
+            let shadowed_luma = shadowed[index][0] + shadowed[index][1] + shadowed[index][2];
+            let unshadowed_luma =
+                unshadowed[index][0] + unshadowed[index][1] + unshadowed[index][2];
+            let delta = (unshadowed_luma - shadowed_luma).abs();
+            if delta < min_far_delta {
+                min_far_delta = delta;
+                min_far_pixel = [x, y];
+                far_shadowed = shadowed[index];
+                far_unshadowed = unshadowed[index];
+            }
+        }
+    }
 
     assert_eq!(shadowed_stats.shadow_caster_count, 1);
     assert_eq!(shadowed_stats.shadow_draw_calls, 1);
@@ -806,6 +1039,10 @@ fn standard_material_directional_shadow_darkens_final_color() {
     assert!(
         max_delta > 0.25,
         "expected receive_shadows=true to darken at least one receiver pixel; center_delta={center_delta}, max_delta={max_delta} at {max_delta_pixel:?}, shadowed={max_shadowed:?}, unshadowed={max_unshadowed:?}"
+    );
+    assert!(
+        min_far_delta < 0.04,
+        "expected a far receiver pixel to stay lit while the caster shadows another area; min_far_delta={min_far_delta} at {min_far_pixel:?}, shadowed={far_shadowed:?}, unshadowed={far_unshadowed:?}, shadow_pixel={max_delta_pixel:?}"
     );
 }
 

@@ -5,44 +5,64 @@
 
 mod backend;
 mod backends;
+#[cfg(feature = "ui-legacy")]
 mod components;
+#[cfg(feature = "ui-legacy")]
 mod input;
+#[cfg(feature = "ui-legacy")]
 mod layout;
+#[cfg(feature = "ui-legacy")]
 mod render;
+#[cfg(feature = "ui-legacy")]
 mod state;
+#[cfg(feature = "ui-legacy")]
 mod text;
 
 pub use backend::{
-    ensure_ui_host, render_ui_overlays, try_with_ui_host_mut, ui_wants_keyboard, ui_wants_pointer,
-    update_ui_backends, with_ui_backend_mut, UiBackend, UiBackendId, UiBeginFrameContext,
-    UiCaptureState, UiError, UiHost, UiRenderContext,
+    ensure_ui_host, handle_ui_event, render_ui_overlays, try_with_ui_host_mut, ui_wants_keyboard,
+    ui_wants_pointer, update_ui_backends, with_ui_backend_mut, UiBackend, UiBackendId,
+    UiBeginFrameContext, UiCaptureState, UiError, UiEventContext, UiEventResponse, UiHost,
+    UiRenderContext,
 };
+#[cfg(feature = "ui-legacy")]
 pub use backends::legacy::LegacyUiBackend;
+#[cfg(feature = "yakui-ui")]
+pub use backends::yakui::{install_yakui_backend, YakuiBackend, YakuiUiPlugin};
+#[cfg(feature = "ui-legacy")]
 pub use components::{
     UiAlign, UiAnchor, UiButton, UiId, UiImage, UiInteraction, UiLayout, UiLength, UiNode, UiPanel,
     UiProgressBar, UiRect, UiScroll, UiSlider, UiText, UiToggle,
 };
+#[cfg(feature = "ui-legacy")]
 pub use input::update_ui;
+#[cfg(feature = "ui-legacy")]
 pub use render::render_ui;
+#[cfg(feature = "ui-legacy")]
 pub use state::{UiConfig, UiEvent, UiEventKind, UiEvents, UiState, UiTheme};
+#[cfg(feature = "ui-legacy")]
 pub use text::{UiFontBook, UiFontSource};
 
+#[cfg(feature = "ui-legacy")]
 pub(crate) use layout::{hit_test_input, rect_map, resolve_world_layout};
+#[cfg(feature = "ui-legacy")]
 pub(crate) use text::preferred_text_size;
 
 use crate::ecs::World;
 
+#[cfg(feature = "ui-legacy")]
 #[derive(Clone, Debug, Default)]
 pub struct UiPlugin {
     pub config: UiConfig,
 }
 
+#[cfg(feature = "ui-legacy")]
 impl UiPlugin {
     pub fn new(config: UiConfig) -> Self {
         Self { config }
     }
 
     pub fn install(self, world: &mut World) {
+        #[cfg(feature = "ui-legacy")]
         install_ui(world, self.config);
     }
 }
@@ -52,6 +72,7 @@ impl UiPlugin {
 /// Most applications do not need to call this directly. Use [`UiPlugin`] for
 /// explicit configuration, or let [`update_ui`] / [`render_ui`] lazily install
 /// default resources.
+#[cfg(feature = "ui-legacy")]
 pub fn install_ui(world: &mut World, config: UiConfig) {
     world.insert_resource(config.clone());
     install_ui_resources(world, &config);
@@ -59,10 +80,16 @@ pub fn install_ui(world: &mut World, config: UiConfig) {
 }
 
 pub(crate) fn ensure_ui_resources(world: &mut World) {
-    ensure_legacy_ui_resources(world);
-    install_legacy_backend(world);
+    #[cfg(feature = "ui-legacy")]
+    {
+        ensure_legacy_ui_resources(world);
+        install_legacy_backend(world);
+    }
+    #[cfg(not(feature = "ui-legacy"))]
+    let _ = world;
 }
 
+#[cfg(feature = "ui-legacy")]
 pub(crate) fn ensure_legacy_ui_resources(world: &mut World) {
     let config = world
         .get_resource::<UiConfig>()
@@ -74,6 +101,7 @@ pub(crate) fn ensure_legacy_ui_resources(world: &mut World) {
     install_ui_resources(world, &config);
 }
 
+#[cfg(feature = "ui-legacy")]
 fn install_ui_resources(world: &mut World, config: &UiConfig) {
     if world.get_resource::<UiTheme>().is_none() {
         world.insert_resource(UiTheme::default());
@@ -94,6 +122,7 @@ fn install_ui_resources(world: &mut World, config: &UiConfig) {
     }
 }
 
+#[cfg(feature = "ui-legacy")]
 fn install_legacy_backend(world: &mut World) {
     ensure_ui_host(world);
     backend::try_with_ui_host_mut(world, |host, world| {
@@ -111,6 +140,7 @@ fn install_legacy_backend(world: &mut World) {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "ui-legacy")]
     #[test]
     fn ensure_ui_resources_installs_default_runtime_resources() {
         let mut world = World::new();
@@ -124,6 +154,7 @@ mod tests {
         assert!(world.get_resource::<UiFontBook>().is_some());
     }
 
+    #[cfg(feature = "ui-legacy")]
     #[test]
     fn ui_plugin_installs_configured_runtime_resources() {
         let mut world = World::new();

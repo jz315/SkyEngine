@@ -27,7 +27,7 @@
 //! memory regions within linear heaps, we share entire `RenderTarget` objects.
 //! This is the correct abstraction for wgpu's resource model.
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::types::{
     resolve_target_size, ResourceLifetime, ResourceRef, TextureDesc, TextureFormat, TextureHandle,
@@ -93,11 +93,28 @@ pub struct AliasingStats {
 /// A tuple of `(alias_groups, stats)`.  Each group contains >= 1 member.
 /// Groups with exactly 1 member represent textures that could not be aliased
 /// (they still participate in the allocation fast path).
+#[cfg(test)]
 pub(crate) fn compute_texture_aliases(
     textures: &[TextureDesc],
     lifetimes: &FxHashMap<ResourceRef, ResourceLifetime>,
     handle_token: u64,
     surface_size: [u32; 2],
+) -> (Vec<AliasGroup>, AliasingStats) {
+    compute_texture_aliases_with_forbidden_pairs(
+        textures,
+        lifetimes,
+        handle_token,
+        surface_size,
+        &FxHashSet::default(),
+    )
+}
+
+pub(crate) fn compute_texture_aliases_with_forbidden_pairs(
+    textures: &[TextureDesc],
+    lifetimes: &FxHashMap<ResourceRef, ResourceLifetime>,
+    handle_token: u64,
+    surface_size: [u32; 2],
+    forbidden_pairs: &FxHashSet<(usize, usize)>,
 ) -> (Vec<AliasGroup>, AliasingStats) {
     // ── Step 1: Collect candidates ──────────────────────────────────────
     // Only transient, non-imported textures with a valid lifetime are eligible.
@@ -154,6 +171,13 @@ pub(crate) fn compute_texture_aliases(
 
         // Try best-fit into existing groups (SakuraEngine lines 137-160).
         for (group_idx, group) in groups.iter().enumerate() {
+            if group
+                .members
+                .iter()
+                .any(|&member_idx| alias_pair_forbidden(tex_idx, member_idx, forbidden_pairs))
+            {
+                continue;
+            }
             if !can_fit_in_group(
                 tex_idx,
                 desc.format,
@@ -282,6 +306,20 @@ fn can_fit_in_group(
 
     let _ = textures; // used for potential future checks
     true
+}
+
+#[inline]
+fn alias_pair_key(a: usize, b: usize) -> (usize, usize) {
+    if a <= b {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+#[inline]
+fn alias_pair_forbidden(a: usize, b: usize, forbidden_pairs: &FxHashSet<(usize, usize)>) -> bool {
+    forbidden_pairs.contains(&alias_pair_key(a, b))
 }
 
 /// Check if two resource lifetimes conflict (overlap in execution order).
@@ -1360,5 +1398,41 @@ mod tests {
             TOKEN,
         );
         assert!(!result, "texture usage mismatch should prevent fitting");
+    }
+
+    #[test]
+    fn forbidden_pairs_prevent_aliasing_even_when_lifetimes_do_not_overlap() {
+        let textures = vec![
+            make_tex("a", wgpu::TextureFormat::Rgba8Unorm, true),
+            make_tex("b", wgpu::TextureFormat::Rgba8Unorm, true),
+            make_tex("c", wgpu::TextureFormat::Rgba8Unorm, true),
+        ];
+        let mut lifetimes = FxHashMap::default();
+        insert_lifetime(&mut lifetimes, 0, 0, 0);
+        insert_lifetime(&mut lifetimes, 1, 1, 1);
+        insert_lifetime(&mut lifetimes, 2, 2, 2);
+
+        let mut forbidden_pairs = FxHashSet::default();
+        forbidden_pairs.insert((0, 1));
+
+        let (groups, stats) = compute_texture_aliases_with_forbidden_pairs(
+            &textures,
+            &lifetimes,
+            TOKEN,
+            [800, 600],
+            &forbidden_pairs,
+        );
+
+        assert!(
+            groups
+                .iter()
+                .all(|group| !(group.members.contains(&0) && group.members.contains(&1))),
+            "forbidden texture pair must not share an alias group"
+        );
+        assert_eq!(stats.original_texture_count, 3);
+        assert!(
+            stats.total_groups >= 2,
+            "forbidding one compatible pair should force at least two groups"
+        );
     }
 }

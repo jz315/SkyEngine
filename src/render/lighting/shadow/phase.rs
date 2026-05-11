@@ -1417,7 +1417,7 @@ mod tests {
             ShadowRasterBias::new(5, 1.25, 0.0)
         );
         assert_eq!(shadow_bindings[0].normal_bias(), 0.03);
-        assert!(shadow_bindings[0].coverage_debug());
+        assert_eq!(shadow_bindings[0].debug_mode(), 1.0);
 
         let mut frame = PreparedFrame::new(wgpu::TextureFormat::Bgra8Unorm, false);
         frame.insert_payload(&scene_layout);

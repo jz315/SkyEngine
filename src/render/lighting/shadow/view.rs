@@ -84,7 +84,7 @@ pub(crate) struct ShadowViewBinding {
     atlas_layout: ShadowAtlasLayout,
     light_direction: [f32; 3],
     caster_count: usize,
-    coverage_debug: bool,
+    debug_mode: f32,
     cascade_update_mask: u32,
     previous_cascade_signatures: [u64; MAX_DIRECTIONAL_SHADOW_CASCADES],
 }
@@ -142,7 +142,7 @@ impl ShadowViewBinding {
             atlas_layout: ShadowAtlasLayout::default(),
             light_direction: [0.0, -1.0, 0.0],
             caster_count: 0,
-            coverage_debug: false,
+            debug_mode: 0.0,
             cascade_update_mask: 0,
             previous_cascade_signatures: [0; MAX_DIRECTIONAL_SHADOW_CASCADES],
         };
@@ -180,7 +180,7 @@ impl ShadowViewBinding {
         self.caster_count_by_cascade = [0; MAX_DIRECTIONAL_SHADOW_CASCADES];
         self.atlas_layout = ShadowAtlasLayout::default();
         self.light_direction = [0.0, -1.0, 0.0];
-        self.coverage_debug = false;
+        self.debug_mode = 0.0;
         self.cascade_update_mask = 0;
         self.previous_cascade_signatures = [0; MAX_DIRECTIONAL_SHADOW_CASCADES];
         self.scene_bind_group = create_shadow_scene_bind_group(
@@ -256,7 +256,7 @@ impl ShadowViewBinding {
         self.atlas_layout = atlas_layout;
         self.light_direction = update.light_direction;
         self.caster_count = update.caster_count;
-        self.coverage_debug = update.coverage_debug;
+        self.debug_mode = update.debug_mode;
         self.cascade_update_mask = cascade_update_mask(
             update.update_policy,
             force_update,
@@ -303,8 +303,8 @@ impl ShadowViewBinding {
             shadow_params: [
                 cascade_count as f32,
                 update.cascade_blend,
-                if update.coverage_debug { 1.0 } else { 0.0 },
-                1.0,
+                update.debug_mode,
+                1.0 + update.temporal_rotation_seed.clamp(0.0, 0.999_999),
             ],
         };
         gpu.queue()
@@ -392,8 +392,8 @@ impl ShadowViewBinding {
 
     #[inline]
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn coverage_debug(&self) -> bool {
-        self.coverage_debug
+    pub(crate) fn debug_mode(&self) -> f32 {
+        self.debug_mode
     }
 }
 
@@ -435,7 +435,8 @@ struct ShadowViewUpdate {
     caster_count: usize,
     caster_count_by_cascade: [usize; MAX_DIRECTIONAL_SHADOW_CASCADES],
     cascade_signatures: [u64; MAX_DIRECTIONAL_SHADOW_CASCADES],
-    coverage_debug: bool,
+    debug_mode: f32,
+    temporal_rotation_seed: f32,
     sampling_mode: ShadowSamplingMode,
     update_policy: ShadowUpdatePolicy,
 }
@@ -669,11 +670,45 @@ pub(crate) fn sync_shadow_views(
             caster_count,
             caster_count_by_cascade,
             cascade_signatures,
-            coverage_debug: matches!(debug_view, RenderDebugView::DirectionalShadowCoverage),
+            debug_mode: shadow_debug_mode(debug_view),
+            temporal_rotation_seed: shadow_temporal_rotation_seed(views),
             sampling_mode: setup.sampling_mode,
             update_policy: setup.update_policy,
         };
         shadow_view.update(gpu, scene_layout, pass_layout, sampler, light_table, update);
+    }
+}
+
+fn shadow_debug_mode(debug_view: RenderDebugView) -> f32 {
+    match debug_view {
+        RenderDebugView::DirectionalShadowCoverage => 1.0,
+        RenderDebugView::DirectionalShadowSplitCoverage => 2.0,
+        RenderDebugView::DirectionalShadowFade => 3.0,
+        RenderDebugView::DirectionalShadowCompareDelta => 4.0,
+        RenderDebugView::DirectionalShadowBias => 5.0,
+        RenderDebugView::DirectionalShadowPcss => 6.0,
+        RenderDebugView::DirectLighting => 7.0,
+        RenderDebugView::IndirectLighting => 8.0,
+        _ => 0.0,
+    }
+}
+
+fn shadow_temporal_rotation_seed(views: &[SceneView]) -> f32 {
+    let Some(view) = views.iter().find(|view| !view.is_shadow()) else {
+        return 0.0;
+    };
+    if view.temporal.jitter == [0.0, 0.0] && view.temporal.previous_jitter == [0.0, 0.0] {
+        0.0
+    } else {
+        (view.temporal.frame_index % 256) as f32 / 256.0
+    }
+}
+
+fn shadow_filter_radius(light: DirectionalLight) -> f32 {
+    if light.shadow_filter_radius <= 0.0 {
+        0.0
+    } else {
+        light.shadow_filter_radius.max(light.radius).max(0.0)
     }
 }
 
@@ -849,7 +884,7 @@ fn build_shadow_view(
             receiver_depth_extent,
             caster_depth_extent: culling_depth_extent,
             bias: light.shadow_bias.max(0.0),
-            radius: light.shadow_filter_radius.max(0.0),
+            radius: shadow_filter_radius(light),
             raster_bias: ShadowRasterBias::new(
                 light.shadow_depth_bias,
                 light.shadow_slope_bias.max(0.0),
@@ -1038,7 +1073,9 @@ fn lerp_point(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
 }
 
 fn view_frustum_corners_world(view: &SceneView) -> Option<[[f32; 3]; 8]> {
-    let inverse_view_proj = Mat4::from_cols_array(view.view_uniform.view_proj).inverse();
+    // Wicked builds directional shadow cascades from the camera with jitter removed.
+    // Keep the shadow projection stable even when the main view is TAA-jittered.
+    let inverse_view_proj = Mat4::from_cols_array(view.unjittered_view_proj_matrix).inverse();
     let corners = [
         [-1.0, -1.0, 0.0],
         [1.0, -1.0, 0.0],
@@ -1173,11 +1210,11 @@ mod tests {
             .cascade_count(4)
             .cascade_distances([5.5, 13.0, 30.0, 80.0])
             .shadow_resolution_per_cascade(2048)
+            .radius(0.055)
             .shadow_bias(0.0008)
             .shadow_depth_bias(3)
             .shadow_slope_bias(1.8)
             .shadow_normal_bias(0.002)
-            .shadow_filter_radius(0.055)
             .pcss_shadows(),));
 
         let mut views = vec![main_view];
@@ -1262,6 +1299,39 @@ mod tests {
                 "the next cascade should start exactly at the previous near-plane split"
             );
         }
+    }
+
+    #[test]
+    fn directional_shadow_corners_ignore_taa_jittered_view_projection() {
+        let projection = Projection::perspective(60.0_f32.to_radians(), 0.1, 100.0);
+        let transform = Transform::from_xyz(0.0, 1.0, 8.0);
+        let mut main_view = SceneView::new(
+            0,
+            ViewportRect::from_surface_size([128, 128]),
+            [128, 128],
+            false,
+            u32::MAX,
+            transform,
+            projection,
+            projection.view_uniform(transform, [128, 128]),
+            false,
+        );
+        let unjittered_corners =
+            view_frustum_corners_world(&main_view).expect("main view should produce corners");
+        let mut jittered_uniform = main_view.view_uniform;
+        jittered_uniform.view_proj[12] += 0.25;
+        jittered_uniform.view_proj[13] -= 0.25;
+        main_view.set_jittered_view_uniform(jittered_uniform);
+
+        assert_ne!(
+            main_view.view_uniform.view_proj,
+            main_view.unjittered_view_proj_matrix
+        );
+        assert_eq!(
+            view_frustum_corners_world(&main_view)
+                .expect("jittered main view should produce corners"),
+            unjittered_corners
+        );
     }
 
     #[test]

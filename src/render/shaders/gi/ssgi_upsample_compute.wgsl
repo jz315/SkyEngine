@@ -18,14 +18,14 @@ var input_diffuse_low: texture_2d<f32>;
 var input_depth_high: texture_2d<f32>;
 @group(0) @binding(4)
 var input_normal_high: texture_2d<f32>;
+@group(0) @binding(5)
+var input_diffuse_high: texture_2d<f32>;
 
 @group(1) @binding(0)
 var<uniform> ssgi: SsgiUniform;
 
 @group(2) @binding(0)
 var output_diffuse: texture_storage_2d<rgba16float, write>;
-
-const UPSAMPLE_DEPTH_THRESHOLD: f32 = 0.1;
 
 fn saturate(v: f32) -> f32 {
     return clamp(v, 0.0, 1.0);
@@ -80,6 +80,26 @@ fn load_normal_low(pixel: vec2<i32>, dims: vec2<u32>) -> vec3<f32> {
     return decode_view_normal(textureLoad(input_normal_low, clamped_pixel(pixel, dims), 0).rgb);
 }
 
+fn bilateral_depth_weight(depth_delta: f32) -> f32 {
+    let soft_reject = 1.0 - saturate(depth_delta * max(ssgi.params0.w, 0.0001));
+    return soft_reject * soft_reject * soft_reject * soft_reject;
+}
+
+fn luminance(color: vec3<f32>) -> f32 {
+    return dot(max(color, vec3<f32>(0.0)), vec3<f32>(0.2126, 0.7152, 0.0722));
+}
+
+fn limit_luminance(color: vec3<f32>, max_luma: f32) -> vec3<f32> {
+    let luma = luminance(color);
+    if (luma <= max_luma || luma <= 0.00001) {
+        return color;
+    }
+    return color * (max_luma / luma);
+}
+
+const SSGI_MAX_FILTERED_LUMINANCE: f32 = 2.0;
+const SSGI_LOW_MIP_BLEND: f32 = 0.35;
+
 fn upsample_diffuse(output_pixel: vec2<i32>, high_dims: vec2<u32>) -> vec3<f32> {
     let low_dims = textureDimensions(input_diffuse_low);
     let center_depth = load_depth_high(output_pixel, high_dims);
@@ -100,9 +120,8 @@ fn upsample_diffuse(output_pixel: vec2<i32>, high_dims: vec2<u32>) -> vec3<f32> 
             let sample_linear_depth =
                 reconstruct_position_from_depth(low_pixel, low_dims, low_depth).z;
             let sample_normal = load_normal_low(low_pixel, low_dims);
-            let depth_weight =
-                1.0 - saturate(abs(sample_linear_depth - center_linear_depth) * UPSAMPLE_DEPTH_THRESHOLD);
-            let normal_weight = pow(saturate(dot(sample_normal, center_normal)), normal_power) + 0.001;
+            let depth_weight = bilateral_depth_weight(abs(sample_linear_depth - center_linear_depth));
+            let normal_weight = pow(saturate(dot(sample_normal, center_normal)), normal_power);
             let weight = depth_weight * normal_weight;
             result = result + textureLoad(input_diffuse_low, low_pixel, 0).rgb * weight;
             sum = sum + weight;
@@ -112,7 +131,9 @@ fn upsample_diffuse(output_pixel: vec2<i32>, high_dims: vec2<u32>) -> vec3<f32> 
     if (sum > 0.0) {
         result = result / sum;
     }
-    return max(result, vec3<f32>(0.0));
+    let high_diffuse = max(textureLoad(input_diffuse_high, clamped_pixel(output_pixel, high_dims), 0).rgb, vec3<f32>(0.0));
+    let combined = mix(high_diffuse, result, SSGI_LOW_MIP_BLEND);
+    return limit_luminance(max(combined, vec3<f32>(0.0)), SSGI_MAX_FILTERED_LUMINANCE);
 }
 
 @compute @workgroup_size(8, 8, 1)

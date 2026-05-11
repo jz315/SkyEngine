@@ -1,7 +1,6 @@
 //! Scene/light composite pass.
 
 use crate::gpu::GpuContext;
-use crate::render::gpu::helpers::BindGroupCache;
 use crate::render::gpu::RenderTarget;
 use crate::render::gpu::{FullscreenPass, FullscreenPipeline};
 
@@ -11,7 +10,6 @@ const COMPOSITE_SHADER: &str = include_str!("../shaders/composite/composite.wgsl
 pub struct CompositePass {
     pipeline: FullscreenPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
-    bind_group_cache: BindGroupCache<(usize, usize)>,
 }
 
 impl CompositePass {
@@ -84,7 +82,6 @@ impl CompositePass {
         Self {
             pipeline,
             bind_group_layout,
-            bind_group_cache: BindGroupCache::new(),
         }
     }
 
@@ -97,7 +94,7 @@ impl CompositePass {
     ) {
         Self::validate_targets(scene, lightmap, output);
 
-        let bind_group = self.bind_group(ctx, scene, lightmap).clone();
+        let bind_group = self.bind_group(ctx, scene, lightmap);
         let pipeline = self.pipeline.pipeline(ctx, output.format());
         let color_attachments = [Some(wgpu::RenderPassColorAttachment {
             view: output.view(),
@@ -126,7 +123,7 @@ impl CompositePass {
         scene: &RenderTarget,
         lightmap: &RenderTarget,
     ) {
-        let bind_group = self.bind_group(ctx, scene, lightmap).clone();
+        let bind_group = self.bind_group(ctx, scene, lightmap);
         let pipeline = self.pipeline.pipeline(ctx, ctx.surface_format());
         let mut frame = ctx.frame();
         let mut pass = frame.begin_surface_pass("composite_pass", Some(wgpu::Color::BLACK));
@@ -136,42 +133,35 @@ impl CompositePass {
     }
 
     fn bind_group(
-        &mut self,
+        &self,
         ctx: &GpuContext,
         scene: &RenderTarget,
         lightmap: &RenderTarget,
-    ) -> &wgpu::BindGroup {
-        let key = (
-            std::ptr::from_ref(scene.texture()) as usize,
-            std::ptr::from_ref(lightmap.texture()) as usize,
-        );
-        let layout = self.bind_group_layout.clone();
+    ) -> wgpu::BindGroup {
         let scene_view = scene.view();
         let lightmap_view = lightmap.view();
         let sampler = ctx.sampler_linear();
-        self.bind_group_cache.get_or_create(key, || {
-            ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("composite_bg"),
-                layout: &layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(scene_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(lightmap_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::Sampler(sampler),
-                    },
-                ],
-            })
+        ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("composite_bg"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(scene_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(lightmap_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+            ],
         })
     }
 }

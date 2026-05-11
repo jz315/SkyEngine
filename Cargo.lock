@@ -245,6 +245,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
+name = "anymap"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33954243bd79057c2de7338850b85983a44588021f8a5fee574a8888c6de4344"
+
+[[package]]
 name = "approx"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2869,6 +2875,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af9673d8203fcb076b19dfd17e38b3d4ae9f44959416ea532ce72415a6020365"
 
 [[package]]
+name = "fast-srgb8"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd2e7510819d6fbf51a5545c8f922716ecfb14df168a3242f7d33e0239efe6a1"
+
+[[package]]
 name = "fastrand"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3489,6 +3501,7 @@ version = "0.32.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f70749695b063ecbf6b62949ccccde2e733ec3ecbbd71d467dca4e5c6c97cca0"
 dependencies = [
+ "bytemuck",
  "libm",
  "mint",
 ]
@@ -4432,6 +4445,15 @@ dependencies = [
  "parking_lot 0.12.5",
  "puffin",
  "turbosloth",
+]
+
+[[package]]
+name = "keyboard-types"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fbe853b403ae61a04233030ae8a79d94975281ed9770a1f9e246732b534b28d"
+dependencies = [
+ "bitflags 2.11.1",
 ]
 
 [[package]]
@@ -6819,6 +6841,11 @@ dependencies = [
  "uuid 1.23.1",
  "wgpu 29.0.3",
  "winit",
+ "yakui",
+ "yakui-core",
+ "yakui-wgpu",
+ "yakui-widgets",
+ "yakui-winit",
  "yarnspinner",
 ]
 
@@ -7386,6 +7413,12 @@ checksum = "f60246a4944f24f6e018aa17cdeffb7818b76356965d03b07d6a9886e8962185"
 dependencies = [
  "cfg-if",
 ]
+
+[[package]]
+name = "thunderdome"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92e170f93360bf9ae6fe3c31116bbf27adb1d054cedd6bc3d7857e34f2d98d0b"
 
 [[package]]
 name = "tiff"
@@ -9568,6 +9601,62 @@ name = "xml-rs"
 version = "0.8.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ae8337f8a065cfc972643663ea4279e04e7256de865aa66fe25cec5fb912d3f"
+
+[[package]]
+name = "yakui"
+version = "0.3.0"
+dependencies = [
+ "yakui-core",
+ "yakui-widgets",
+]
+
+[[package]]
+name = "yakui-core"
+version = "0.3.0"
+dependencies = [
+ "anymap",
+ "bitflags 2.11.1",
+ "fast-srgb8",
+ "glam 0.32.1",
+ "keyboard-types",
+ "log",
+ "parking_lot 0.12.5",
+ "profiling",
+ "smallvec",
+ "thunderdome",
+]
+
+[[package]]
+name = "yakui-wgpu"
+version = "0.3.0"
+dependencies = [
+ "bytemuck",
+ "glam 0.32.1",
+ "profiling",
+ "thunderdome",
+ "wgpu 29.0.3",
+ "yakui-core",
+]
+
+[[package]]
+name = "yakui-widgets"
+version = "0.3.0"
+dependencies = [
+ "arboard",
+ "cosmic-text 0.18.2",
+ "log",
+ "sys-locale",
+ "thunderdome",
+ "yakui-core",
+]
+
+[[package]]
+name = "yakui-winit"
+version = "0.3.0"
+dependencies = [
+ "winit",
+ "yakui-core",
+]
 
 [[package]]
 name = "yarnspinner"

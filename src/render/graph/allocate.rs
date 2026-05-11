@@ -9,6 +9,34 @@ use crate::render::gpu::RenderTargetDescriptor;
 impl RenderGraph {
     // ── Physical resource management ────────────────────────────────────
 
+    fn pass_local_texture_alias_conflicts(&self) -> FxHashSet<(usize, usize)> {
+        let mut conflicts = FxHashSet::default();
+
+        for &pass_idx in &self.order {
+            let pass = &self.passes[pass_idx];
+            let mut texture_indices = Vec::new();
+            for resource in pass.reads.iter().chain(pass.writes.iter()).copied() {
+                match resource {
+                    ResourceRef::Texture(handle) => texture_indices.push(handle.0),
+                    ResourceRef::TextureSubresource(subresource) => {
+                        texture_indices.push(subresource.texture.0);
+                    }
+                    ResourceRef::Surface | ResourceRef::Buffer(_) => {}
+                }
+            }
+
+            texture_indices.sort_unstable();
+            texture_indices.dedup();
+            for left in 0..texture_indices.len() {
+                for right in left + 1..texture_indices.len() {
+                    conflicts.insert((texture_indices[left], texture_indices[right]));
+                }
+            }
+        }
+
+        conflicts
+    }
+
     pub(super) fn buffer_usage_for(&self, handle: BufferHandle) -> wgpu::BufferUsages {
         debug_assert!(
             self.compiled,
@@ -124,11 +152,13 @@ impl RenderGraph {
         // ── Memory alias analysis (deferred from compile) ───────────────
         // Computed here instead of in compile() because we need the real
         // surface dimensions for best-fit waste calculations.
-        let (alias_groups, alias_stats) = alias::compute_texture_aliases(
+        let forbidden_alias_pairs = self.pass_local_texture_alias_conflicts();
+        let (alias_groups, alias_stats) = alias::compute_texture_aliases_with_forbidden_pairs(
             &self.textures,
             &self.lifetimes,
             self.handle_token,
             surface_size,
+            &forbidden_alias_pairs,
         );
         self.alias_groups = alias_groups;
         self.alias_stats = Some(alias_stats);

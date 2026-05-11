@@ -43,7 +43,12 @@ pub use super::phase::{
     TransparentPhase,
 };
 pub use super::pipeline::{GraphPass, TextureSpec};
-pub use super::postfx::{bloom::Bloom, tonemap::ToneMap, vignette::Vignette, PostFx};
+pub use super::postfx::{
+    bloom::{Bloom, BloomGraph},
+    tonemap::ToneMap,
+    vignette::Vignette,
+    PostFx,
+};
 pub use super::resources::{
     atlas::{AtlasError, AtlasPacker, TextureAtlas, UvRect},
     blackboard::Blackboard,

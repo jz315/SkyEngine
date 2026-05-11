@@ -1,6 +1,6 @@
 use crate::math::{Mat4, Vec3};
 use crate::render::builtins::logging::should_log_scene_view;
-use crate::render::component::RenderSettings;
+use crate::render::component::{RenderDebugView, RenderSettings};
 use crate::render::execution::{
     pass_first_write_texture, pass_nth_read_texture, require_render_target,
     PostFxPassExecuteContext, PostFxPassSetupContext, PreparedFrame, PreparedView,
@@ -50,12 +50,15 @@ impl PostFxPass for ContactShadows {
         {
             return false;
         }
-        frame
+        let settings = frame
             .payload::<RenderSettings>()
             .cloned()
-            .unwrap_or_default()
-            .contact_shadows
-            .enabled
+            .unwrap_or_default();
+        settings.contact_shadows.enabled
+            && !matches!(
+                settings.debug_view,
+                RenderDebugView::DirectLighting | RenderDebugView::IndirectLighting
+            )
     }
 
     fn requires_hdr_input(&self) -> bool {

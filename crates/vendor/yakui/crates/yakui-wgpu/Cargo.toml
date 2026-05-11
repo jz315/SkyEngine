@@ -1,0 +1,20 @@
+[package]
+name = "yakui-wgpu"
+description = "wgpu renderer for yakui"
+version = "0.3.0"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/SecondHalfGames/yakui"
+edition = "2021"
+
+[features]
+
+[dependencies]
+yakui-core = { path = "../yakui-core", version = "0.3.0" }
+
+bytemuck = { workspace = true, features = ["derive"] }
+glam = { workspace = true, features = ["bytemuck"] }
+thunderdome.workspace = true
+
+wgpu.workspace = true
+
+profiling.workspace = true

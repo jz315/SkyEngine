@@ -22,8 +22,8 @@ use sky_engine::gpu::GpuContext;
 use sky_engine::input::KeyCode;
 use sky_engine::math::Transform;
 use sky_engine::render::expert::{
-    Bloom, CompositePass, Light2D, LightPass, PassHandle, RenderGraph, SpriteBatch, TargetSize,
-    TextureHandle, ToneMap,
+    Bloom, BloomGraph, CompositePass, Light2D, LightPass, PassHandle, RenderGraph, SpriteBatch,
+    TargetSize, TextureHandle, ToneMap,
 };
 use sky_engine::render::{Camera, Color, Sprite, Texture};
 
@@ -277,7 +277,7 @@ struct DustMote {
 
 // ─── Render graph handles ───────────────────────────────────────────────────
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct GraphHandles {
     scene_rt: TextureHandle,
     normal_rt: TextureHandle,
@@ -288,7 +288,7 @@ struct GraphHandles {
     normal_pass: PassHandle,
     lighting_pass: PassHandle,
     composite_pass: PassHandle,
-    bloom_pass: PassHandle,
+    bloom_graph: BloomGraph,
     tonemap_pass: PassHandle,
 }
 
@@ -641,9 +641,8 @@ struct RenderState {
 
 impl RenderState {
     fn new(gpu: &GpuContext) -> Self {
-        let [sw, sh] = gpu.surface_size();
         let hdr = wgpu::TextureFormat::Rgba16Float;
-        let mut bloom = Bloom::new(gpu, sw, sh, hdr);
+        let mut bloom = Bloom::new(gpu, hdr);
         bloom.intensity = 0.85;
         bloom.spread = 1.8;
         let mut tonemap = ToneMap::new(gpu, gpu.surface_format());
@@ -663,10 +662,7 @@ impl RenderState {
             tonemap,
         }
     }
-    fn resize(&mut self, gpu: &GpuContext, w: u32, h: u32) {
-        self.bloom
-            .resize(gpu, w, h, wgpu::TextureFormat::Rgba16Float);
-    }
+    fn resize(&mut self, _gpu: &GpuContext, _w: u32, _h: u32) {}
 }
 
 fn make_soft_glow(gpu: &GpuContext, size: u32) -> Texture {
@@ -774,10 +770,14 @@ impl SpiritWispsApp {
             s.read(light_rt);
             s.write(hdr_rt);
         });
-        let bloom_pass = graph.add_render_pass("bloom", |s| {
-            s.read(hdr_rt);
-            s.write(bloom_rt);
-        });
+        let bloom_graph = Bloom::setup_graph(
+            &mut graph,
+            hdr_rt,
+            bloom_rt,
+            TargetSize::Surface,
+            wgpu::TextureFormat::Rgba16Float,
+            "bloom",
+        );
         let tonemap_pass = graph.add_render_pass("tonemap", |s| {
             s.read(bloom_rt);
             s.write_surface();
@@ -793,7 +793,7 @@ impl SpiritWispsApp {
             normal_pass,
             lighting_pass,
             composite_pass,
-            bloom_pass,
+            bloom_graph,
             tonemap_pass,
         });
         self.graph = Some(graph);
@@ -869,7 +869,7 @@ impl AppState for SpiritWispsApp {
 
         // ── Build sprites & lights ──────────────────────────────────
         let rs = self.render.as_mut().unwrap();
-        let h = *self.handles.as_ref().unwrap();
+        let h = self.handles.as_ref().unwrap();
         rs.camera.transform = Transform::from_xyz(W * 0.5, H * 0.5, 0.0);
 
         self.lights.clear();
@@ -1063,10 +1063,10 @@ impl AppState for SpiritWispsApp {
                 let output = textures.render_target(h.hdr_rt).expect("hdr_rt");
                 rs.composite_pass
                     .render_to_target(gpu, scene, lightmap, output);
-            } else if pass.handle == h.bloom_pass {
-                let input = textures.render_target(h.hdr_rt).expect("hdr_rt");
-                let output = textures.render_target(h.bloom_rt).expect("bloom_rt");
-                rs.bloom.apply(gpu, input, output);
+            } else if rs
+                .bloom
+                .execute_graph_pass(gpu, &h.bloom_graph, pass, textures)?
+            {
             } else if pass.handle == h.tonemap_pass {
                 let input = textures.render_target(h.bloom_rt).expect("bloom_rt");
                 rs.tonemap.apply_to_surface(gpu, input);

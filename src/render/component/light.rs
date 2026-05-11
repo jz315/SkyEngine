@@ -556,7 +556,7 @@ mod tests {
     }
 
     #[test]
-    fn directional_light_radius_does_not_change_shadow_filter_radius() {
+    fn directional_light_radius_and_shadow_filter_radius_are_separate_authoring_fields() {
         let light = DirectionalLight::default().radius(0.05);
 
         assert_eq!(light.radius, 0.05);
@@ -600,6 +600,7 @@ mod tests {
         let pcss = DirectionalLight::default().pcss_shadows();
         assert_eq!(pcss.shadow_sampling_mode, ShadowSamplingMode::Pcss);
         assert!(pcss.shadow_filter_radius >= 0.05);
+        assert!(pcss.shadow_filter_radius >= pcss.radius);
         assert!(pcss.shadow_normal_bias >= 0.002);
         assert_eq!(ShadowSamplingMode::Pcss.shader_code(), 2.0);
     }

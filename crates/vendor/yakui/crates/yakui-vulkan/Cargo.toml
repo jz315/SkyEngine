@@ -1,0 +1,26 @@
+[package]
+name = "yakui-vulkan"
+description = "vulkan bindings for yakui"
+version = "0.3.0"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/SecondHalfGames/yakui"
+edition = "2021"
+
+[dependencies]
+yakui-core = { path = "../yakui-core", version = "0.3.0" }
+
+bytemuck.workspace = true
+thunderdome.workspace = true
+
+ash.workspace = true
+
+[dev-dependencies]
+yakui = { path = "../yakui", version = "0.3.0" }
+
+image = { workspace = true, features = ["jpeg", "png"] }
+
+ash = { workspace = true, features = ["loaded"] }
+ash-window.workspace = true
+
+winit.workspace = true
+raw-window-handle.workspace = true

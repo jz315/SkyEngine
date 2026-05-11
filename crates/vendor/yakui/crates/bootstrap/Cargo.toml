@@ -1,0 +1,31 @@
+[package]
+name = "bootstrap"
+publish = false
+version = "0.1.0"
+edition = "2021"
+
+[features]
+profile = ["profiling/profile-with-tracy", "tracy-client"]
+
+[dependencies]
+yakui = { path = "../yakui" }
+yakui-wgpu = { path = "../yakui-wgpu" }
+yakui-winit = { path = "../yakui-winit" }
+yakui-sdl3 = { path = "../yakui-sdl3" }
+
+env_logger.workspace = true
+log.workspace = true
+pollster.workspace = true
+image = { workspace = true, features = ["png"] }
+anyhow.workspace = true
+
+wgpu.workspace = true
+
+sdl3 = { workspace = true, features = [
+    "build-from-source",
+    "raw-window-handle",
+] }
+winit = { workspace = true, default-features = true }
+
+profiling.workspace = true
+tracy-client = { workspace = true, optional = true }

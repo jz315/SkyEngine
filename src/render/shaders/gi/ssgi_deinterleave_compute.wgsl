@@ -16,6 +16,8 @@ var t_scene_color: texture_2d<f32>;
 var t_scene_depth: texture_depth_2d;
 @group(0) @binding(2)
 var t_scene_normal: texture_2d<f32>;
+@group(0) @binding(3)
+var t_scene_velocity: texture_2d<f32>;
 
 @group(1) @binding(0)
 var<uniform> ssgi: SsgiUniform;
@@ -37,6 +39,20 @@ fn flatten_slice(slice_xy: vec2<u32>) -> u32 {
     return slice_xy.x + slice_xy.y * 4u;
 }
 
+fn luminance(color: vec3<f32>) -> f32 {
+    return dot(max(color, vec3<f32>(0.0)), vec3<f32>(0.2126, 0.7152, 0.0722));
+}
+
+fn limit_luminance(color: vec3<f32>, max_luma: f32) -> vec3<f32> {
+    let luma = luminance(color);
+    if (luma <= max_luma || luma <= 0.00001) {
+        return color;
+    }
+    return color * (max_luma / luma);
+}
+
+const SSGI_MAX_SOURCE_LUMINANCE: f32 = 3.0;
+
 @compute @workgroup_size(8, 8, 1)
 fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let regular_dims = textureDimensions(regular_depth);
@@ -48,16 +64,13 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let regular_pixel = vec2<i32>(regular_pixel_u);
     let scene_dims = textureDimensions(t_scene_color);
     let scale = max(i32(round(ssgi.params2.x)), 1);
-    let center_offset = scale / 2;
-    // Wicked's deinterleave picks the same lattice points that its 16x16
-    // groupshared tile fans out to 2x/4x/8x/16x outputs.
-    let scene_pixel = clamped_pixel(regular_pixel * scale + vec2<i32>(center_offset), scene_dims);
+    let scene_pixel = clamped_pixel(regular_pixel * scale, scene_dims);
 
-    var color = textureLoad(t_scene_color, scene_pixel, 0).rgb;
-    if (all(color <= vec3<f32>(ssgi.params1.w))) {
+    var color = max(textureLoad(t_scene_color, scene_pixel, 0).rgb, vec3<f32>(0.0));
+    if (luminance(color) <= ssgi.params1.w) {
         color = vec3<f32>(0.0);
     }
-    color = max(color * ssgi.params1.z, vec3<f32>(0.0));
+    color = limit_luminance(color, SSGI_MAX_SOURCE_LUMINANCE) * ssgi.params1.z;
 
     let depth = textureLoad(t_scene_depth, scene_pixel, 0);
     let normal = textureLoad(t_scene_normal, scene_pixel, 0);

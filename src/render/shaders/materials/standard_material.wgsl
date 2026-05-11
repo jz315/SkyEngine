@@ -37,12 +37,13 @@ struct ShadowUniform {
     // xyz: normalized light direction, w: receiver normal bias.
     light_direction: vec4<f32>,
     cascade_splits: vec4<f32>,
-    // x: compare bias, y: world units per texel, z: filter radius, w: light depth range.
+    // x: compare bias, y: world units per texel, z: Wicked-style filter radius, w: light depth range.
     cascade_params: array<vec4<f32>, 4>,
     shadow_atlas_mul_add: vec4<f32>,
     // xy: atlas reciprocal resolution, z: guard-band texels, w: filter mode.
     shadow_atlas_resolution_rcp: vec4<f32>,
-    // x: cascade count, y: cascade blend, z: coverage debug flag, w: enabled flag.
+    // x: cascade count, y: cascade blend, z: material shadow debug mode,
+    // w: enabled plus temporal rotation seed in the fractional part.
     shadow_params: vec4<f32>,
 };
 
@@ -80,13 +81,30 @@ const SHADOW_CASCADE_MAX: u32 = 4u;
 const SHADOW_FILTER_FIXED_PCF: u32 = 0u;
 const SHADOW_FILTER_DITHERED_PCF: u32 = 1u;
 const SHADOW_FILTER_PCSS: u32 = 2u;
-const SHADOW_PCSS_BLOCKER_SAMPLES: u32 = 8u;
+const SHADOW_PCSS_BLOCKER_GRID_RADIUS: i32 = 2;
+const SHADOW_PCSS_BLOCKER_TAP_COUNT: f32 = 100.0;
 const SHADOW_PCF_STEPS_MIN: u32 = 10u;
 const SHADOW_PCF_STEPS_MAX: u32 = 16u;
 const SHADOW_PCSS_MAX_FILTER_TEXELS: f32 = 36.0;
+const SHADOW_FILTER_RADIUS_SCALE: f32 = 8.0;
+const SHADOW_FILTER_RADIUS_BIAS: f32 = 2.0;
+const SHADOW_PCSS_BLOCKER_GRID_STEP_SCALE: f32 = 4.0;
+const SHADOW_PCSS_BLOCKER_DEPTH_BIAS_TEXELS: f32 = 6.0;
+const SHADOW_PCSS_PENUMBRA_SCALE: f32 = 200.0;
+const SHADOW_PCSS_MAX_PENUMBRA_SCALE: f32 = 4.0;
 const SHADOW_RECEIVER_NORMAL_TEXEL_BIAS: f32 = 0.25;
 const SHADOW_COMPARE_TEXEL_BIAS_BASE: f32 = 0.25;
 const SHADOW_COMPARE_TEXEL_BIAS_SLOPE: f32 = 0.75;
+const SHADOW_MATERIAL_COMPARE_BIAS_SCALE: f32 = 0.0;
+const SHADOW_DEBUG_NONE: u32 = 0u;
+const SHADOW_DEBUG_SAMPLED_CASCADE: u32 = 1u;
+const SHADOW_DEBUG_SPLIT_COVERAGE: u32 = 2u;
+const SHADOW_DEBUG_FADE: u32 = 3u;
+const SHADOW_DEBUG_COMPARE_DELTA: u32 = 4u;
+const SHADOW_DEBUG_BIAS: u32 = 5u;
+const SHADOW_DEBUG_PCSS: u32 = 6u;
+const SHADOW_DEBUG_DIRECT_LIGHTING: u32 = 7u;
+const SHADOW_DEBUG_INDIRECT_LIGHTING: u32 = 8u;
 const LIGHT_KIND_POINT: u32 = 0u;
 const LIGHT_KIND_DIRECTIONAL: u32 = 1u;
 const LIGHT_KIND_SPOT: u32 = 2u;
@@ -183,6 +201,10 @@ fn shadow_cascade_count() -> u32 {
     return clamp(u32(max(shadow.shadow_params.x, 1.0)), 1u, SHADOW_CASCADE_MAX);
 }
 
+fn shadow_debug_mode() -> u32 {
+    return u32(clamp(round(shadow.shadow_params.z), 0.0, 8.0));
+}
+
 fn shadow_cascade_index(view_depth: f32) -> u32 {
     let cascade_count = shadow_cascade_count();
     var cascade = 0u;
@@ -192,6 +214,15 @@ fn shadow_cascade_index(view_depth: f32) -> u32 {
         }
     }
     return cascade;
+}
+
+fn shadow_receiver_view_depth(world_position: vec3<f32>) -> f32 {
+    let view_position = camera.view * vec4<f32>(world_position, 1.0);
+    return max(-view_position.z, 0.0);
+}
+
+fn shadow_primary_cascade(world_position: vec3<f32>, cascade_count: u32) -> u32 {
+    return min(shadow_cascade_index(shadow_receiver_view_depth(world_position)), cascade_count - 1u);
 }
 
 struct ShadowCascadeProjection {
@@ -227,6 +258,49 @@ fn shadow_cascade_edge_fade(light_ndc: vec3<f32>, blend_width: f32) -> f32 {
     return max(max(edge.x, edge.y), edge.z);
 }
 
+fn shadow_cascade_split_blend_width(cascade_before_split: u32) -> f32 {
+    if (shadow.shadow_params.y <= 0.0) {
+        return 0.0;
+    }
+
+    let far_split = shadow.cascade_splits[cascade_before_split];
+    var near_split = 0.0;
+    if (cascade_before_split > 0u) {
+        near_split = shadow.cascade_splits[cascade_before_split - 1u];
+    }
+    let cascade_depth = max(far_split - near_split, 0.0001);
+    return cascade_depth * clamp(shadow.shadow_params.y, 0.0, 0.5);
+}
+
+fn shadow_cascade_far_split_fade(view_depth: f32, cascade: u32, cascade_count: u32) -> f32 {
+    if (cascade + 1u >= cascade_count) {
+        return 0.0;
+    }
+
+    let blend_depth = shadow_cascade_split_blend_width(cascade);
+    if (blend_depth <= 0.0001) {
+        return 0.0;
+    }
+    let split = shadow.cascade_splits[cascade];
+    let half_width = blend_depth * 0.5;
+    return smoothstep(split - half_width, split + half_width, view_depth);
+}
+
+fn shadow_cascade_near_split_fade(view_depth: f32, cascade: u32) -> f32 {
+    if (cascade == 0u) {
+        return 1.0;
+    }
+
+    let cascade_before_split = cascade - 1u;
+    let blend_depth = shadow_cascade_split_blend_width(cascade_before_split);
+    if (blend_depth <= 0.0001) {
+        return 1.0;
+    }
+    let split = shadow.cascade_splits[cascade_before_split];
+    let half_width = blend_depth * 0.5;
+    return smoothstep(split - half_width, split + half_width, view_depth);
+}
+
 fn shadow_border_clamp(cascade: u32) -> vec4<f32> {
     // WickedEngine shadow_border_clamp(): clamp to the last texel center to avoid
     // filtering into neighboring atlas rects.
@@ -251,6 +325,21 @@ fn shadow_sampling_mode() -> u32 {
     return min(u32(max(shadow.shadow_atlas_resolution_rcp.w, 0.0)), SHADOW_FILTER_PCSS);
 }
 
+fn shadow_temporal_rotation_seed() -> f32 {
+    return fract(max(shadow.shadow_params.w, 0.0));
+}
+
+fn shadow_filter_radius_texels(light_radius: f32) -> f32 {
+    if (light_radius <= 0.0) {
+        return 0.0;
+    }
+    return clamp(
+        light_radius * SHADOW_FILTER_RADIUS_SCALE + SHADOW_FILTER_RADIUS_BIAS,
+        SHADOW_FILTER_RADIUS_BIAS,
+        SHADOW_PCSS_MAX_FILTER_TEXELS,
+    );
+}
+
 fn shadow_receiver_ndotl(normal: vec3<f32>) -> f32 {
     let light_to_receiver = safe_normalize(-shadow.light_direction.xyz);
     return clamp(dot(safe_normalize(normal), light_to_receiver), 0.0, 1.0);
@@ -264,18 +353,51 @@ fn shadow_receiver_bias_world(normal: vec3<f32>, cascade: u32) -> f32 {
     return max(max(shadow.light_direction.w, 0.0), texel_bias);
 }
 
-fn shadow_biased_receiver_position(world_position: vec3<f32>, normal: vec3<f32>, cascade: u32) -> vec3<f32> {
-    return world_position + safe_normalize(normal) * shadow_receiver_bias_world(normal, cascade);
+fn shadow_compare_depth(cascade: u32, depth: f32, normal: vec3<f32>) -> f32 {
+    return clamp(depth - shadow_compare_bias_depth(cascade, normal), 0.0, 1.0);
 }
 
-fn shadow_compare_depth(cascade: u32, depth: f32, normal: vec3<f32>) -> f32 {
+fn shadow_compare_bias_depth(cascade: u32, normal: vec3<f32>) -> f32 {
     let cascade_params = shadow.cascade_params[cascade];
     let texel_world_size = max(cascade_params.y, 0.000001);
     let depth_range = max(cascade_params.w, texel_world_size);
     let ndotl = shadow_receiver_ndotl(normal);
     let texel_depth_bias = (texel_world_size / depth_range)
         * (SHADOW_COMPARE_TEXEL_BIAS_BASE + SHADOW_COMPARE_TEXEL_BIAS_SLOPE * (1.0 - ndotl));
-    return depth - max(cascade_params.x, texel_depth_bias);
+    let normal_depth_bias = shadow_receiver_bias_world(normal, cascade) / depth_range;
+    return max(max(cascade_params.x * SHADOW_MATERIAL_COMPARE_BIAS_SCALE, texel_depth_bias), normal_depth_bias);
+}
+
+fn shadow_pcss_blocker_depth_bias(cascade: u32) -> f32 {
+    let cascade_params = shadow.cascade_params[cascade];
+    let texel_world_size = max(cascade_params.y, 0.000001);
+    let depth_range = max(cascade_params.w, texel_world_size);
+    return (texel_world_size / depth_range) * SHADOW_PCSS_BLOCKER_DEPTH_BIAS_TEXELS;
+}
+
+fn shadow_receiver_plane_depth_gradient(cascade: u32, world_dx: vec3<f32>, world_dy: vec3<f32>) -> vec2<f32> {
+    let light_dx = shadow.light_view_proj[cascade] * vec4<f32>(world_dx, 0.0);
+    let light_dy = shadow.light_view_proj[cascade] * vec4<f32>(world_dy, 0.0);
+    let uv_dx = vec2<f32>(light_dx.x * 0.5, light_dx.y * -0.5) * shadow.shadow_atlas_mul_add.xy;
+    let uv_dy = vec2<f32>(light_dy.x * 0.5, light_dy.y * -0.5) * shadow.shadow_atlas_mul_add.xy;
+    let det = uv_dx.x * uv_dy.y - uv_dx.y * uv_dy.x;
+    if (abs(det) <= 0.00000001) {
+        return vec2<f32>(0.0);
+    }
+    return vec2<f32>(
+        (light_dx.z * uv_dy.y - light_dy.z * uv_dx.y) / det,
+        (uv_dx.x * light_dy.z - uv_dy.x * light_dx.z) / det,
+    );
+}
+
+fn shadow_receiver_plane_compare_depth(
+    center_uv: vec2<f32>,
+    sample_uv: vec2<f32>,
+    compare_depth: f32,
+    depth_gradient: vec2<f32>,
+) -> f32 {
+    let plane_bias = dot(depth_gradient, sample_uv - center_uv);
+    return clamp(compare_depth + clamp(plane_bias, -0.01, 0.01), 0.0, 1.0);
 }
 
 fn shadow_interleaved_gradient_noise(pixel: vec2<f32>) -> f32 {
@@ -295,9 +417,15 @@ fn shadow_load_depth(sample_uv: vec2<f32>) -> f32 {
     return textureLoad(t_shadow, vec2<i32>(floor(clamped)), 0);
 }
 
+fn shadow_load_compare_depth(sample_uv: vec2<f32>, cascade: u32) -> f32 {
+    let border = shadow_border_clamp(cascade);
+    return shadow_load_depth(clamp(sample_uv, border.xy, border.zw));
+}
+
 fn shadow_filter_pcf(
     uv: vec2<f32>,
     compare_depth: f32,
+    depth_gradient: vec2<f32>,
     spread: vec2<f32>,
     uv_min: vec2<f32>,
     uv_max: vec2<f32>,
@@ -312,70 +440,104 @@ fn shadow_filter_pcf(
         }
         let disk = shadow_rotate_disk(SHADOW_VOGEL_POINTS[i], rotation);
         let sample_uv = clamp(uv + disk * spread, uv_min, uv_max);
-        let pcf = textureSampleCompare(t_shadow, s_shadow, sample_uv, compare_depth);
-        visibility += shadow_apply_transparent(sample_uv, compare_depth, pcf);
+        let sample_compare_depth = shadow_receiver_plane_compare_depth(uv, sample_uv, compare_depth, depth_gradient);
+        let pcf = textureSampleCompare(t_shadow, s_shadow, sample_uv, sample_compare_depth);
+        visibility += shadow_apply_transparent(sample_uv, sample_compare_depth, pcf);
     }
     return visibility / f32(steps);
 }
 
+struct ShadowPcssBlocker {
+    average_gap: f32,
+    count: f32,
+};
+
 fn shadow_find_blocker(
+    cascade: u32,
     uv: vec2<f32>,
     compare_depth: f32,
+    depth_gradient: vec2<f32>,
     spread: vec2<f32>,
     uv_min: vec2<f32>,
     uv_max: vec2<f32>,
-    rotation: f32,
-) -> vec2<f32> {
-    var average_blocker = 0.0;
+    _rotation: f32,
+) -> ShadowPcssBlocker {
+    var average_receiver_gap = 0.0;
     var blocker_count = 0.0;
-    for (var i = 0u; i < SHADOW_PCSS_BLOCKER_SAMPLES; i = i + 1u) {
-        let disk = shadow_rotate_disk(SHADOW_VOGEL_POINTS[i], rotation);
-        let sample_uv = clamp(uv + disk * spread, uv_min, uv_max);
-        let sample_depth = shadow_load_depth(sample_uv);
-        if (sample_depth < compare_depth) {
-            average_blocker += sample_depth;
-            blocker_count += 1.0;
+    let blocker_depth_bias = shadow_pcss_blocker_depth_bias(cascade);
+    for (var x = -SHADOW_PCSS_BLOCKER_GRID_RADIUS; x <= SHADOW_PCSS_BLOCKER_GRID_RADIUS; x = x + 1) {
+        for (var y = -SHADOW_PCSS_BLOCKER_GRID_RADIUS; y <= SHADOW_PCSS_BLOCKER_GRID_RADIUS; y = y + 1) {
+            let base_offset = vec2<f32>(f32(x), f32(y)) * SHADOW_PCSS_BLOCKER_GRID_STEP_SCALE * spread;
+            for (var tap = 0u; tap < 4u; tap = tap + 1u) {
+                let tap_offset = vec2<f32>(
+                    select(-0.5, 0.5, (tap & 1u) != 0u),
+                    select(-0.5, 0.5, (tap & 2u) != 0u),
+                ) * shadow.shadow_atlas_resolution_rcp.xy;
+                let sample_uv = clamp(uv + base_offset + tap_offset, uv_min, uv_max);
+                let sample_depth = shadow_load_depth(sample_uv);
+                let sample_compare_depth = shadow_receiver_plane_compare_depth(uv, sample_uv, compare_depth, depth_gradient);
+                let receiver_gap = sample_compare_depth - sample_depth;
+                if (receiver_gap > blocker_depth_bias) {
+                    average_receiver_gap += receiver_gap - blocker_depth_bias;
+                    blocker_count += 1.0;
+                }
+            }
         }
     }
-    return vec2<f32>(average_blocker / max(blocker_count, 1.0), blocker_count);
+    return ShadowPcssBlocker(average_receiver_gap / max(blocker_count, 1.0), blocker_count);
+}
+
+fn shadow_pcss_filter_texels(base_filter_texels: f32, average_gap: f32) -> f32 {
+    let penumbra = clamp(
+        max(average_gap, 0.0) * SHADOW_PCSS_PENUMBRA_SCALE,
+        0.0,
+        SHADOW_PCSS_MAX_PENUMBRA_SCALE,
+    );
+    return clamp(
+        base_filter_texels * penumbra,
+        SHADOW_FILTER_RADIUS_BIAS,
+        min(base_filter_texels * SHADOW_PCSS_MAX_PENUMBRA_SCALE, SHADOW_PCSS_MAX_FILTER_TEXELS),
+    );
 }
 
 fn shadow_filter_pcss(
+    cascade: u32,
     uv: vec2<f32>,
     compare_depth: f32,
+    depth_gradient: vec2<f32>,
     light_radius: f32,
-    texel_world_size: f32,
-    depth_range: f32,
     uv_min: vec2<f32>,
     uv_max: vec2<f32>,
     rotation: f32,
 ) -> vec3<f32> {
-    let min_filter_texels = 3.0;
-    let min_filter_world = texel_world_size * min_filter_texels;
-    let requested_radius_world = max(light_radius, min_filter_world);
-    let blocker_search_world = max(requested_radius_world * 5.0, min_filter_world);
-    let blocker_search_texels = clamp(
-        blocker_search_world / max(texel_world_size, 0.000001),
-        min_filter_texels,
-        SHADOW_PCSS_MAX_FILTER_TEXELS,
+    let base_filter_texels = shadow_filter_radius_texels(light_radius);
+    let blocker_spread = shadow.shadow_atlas_resolution_rcp.xy * base_filter_texels;
+    let blocker = shadow_find_blocker(
+        cascade,
+        uv,
+        compare_depth,
+        depth_gradient,
+        blocker_spread,
+        uv_min,
+        uv_max,
+        rotation,
     );
-    let blocker_spread = shadow.shadow_atlas_resolution_rcp.xy * blocker_search_texels;
-    let blocker = shadow_find_blocker(uv, compare_depth, blocker_spread, uv_min, uv_max, rotation);
-    if (blocker.y < 0.5) {
+    if (blocker.count < 0.5) {
         return vec3<f32>(1.0);
     }
 
-    let receiver_gap_world = max(compare_depth - blocker.x, 0.0) * max(depth_range, texel_world_size);
-    let penumbra_world = min_filter_world + receiver_gap_world * max(light_radius, 0.01);
-    let filter_texels = clamp(
-        penumbra_world / max(texel_world_size, 0.000001),
-        min_filter_texels,
-        blocker_search_texels,
-    );
-    let filter_scale = (filter_texels / min_filter_texels) * (filter_texels / min_filter_texels);
-    let step_count = min(SHADOW_PCF_STEPS_MIN + u32(ceil(filter_scale)), SHADOW_PCF_STEPS_MAX);
+    let filter_texels = shadow_pcss_filter_texels(base_filter_texels, blocker.average_gap);
     let filter_spread = shadow.shadow_atlas_resolution_rcp.xy * filter_texels;
-    return shadow_filter_pcf(uv, compare_depth, filter_spread, uv_min, uv_max, rotation, step_count);
+    return shadow_filter_pcf(
+        uv,
+        compare_depth,
+        depth_gradient,
+        filter_spread,
+        uv_min,
+        uv_max,
+        rotation,
+        SHADOW_PCF_STEPS_MAX,
+    );
 }
 
 fn shadow_apply_transparent(sample_uv: vec2<f32>, compare_depth: f32, pcf: f32) -> vec3<f32> {
@@ -397,13 +559,14 @@ fn shadow_sample_projected_cascade(
     depth: f32,
     normal: vec3<f32>,
     screen_pixel: vec2<f32>,
+    world_dx: vec3<f32>,
+    world_dy: vec3<f32>,
 ) -> vec3<f32> {
     let cascade_params = shadow.cascade_params[cascade];
     let uv = shadow_2d_uv(local_uv, cascade);
     let compare_depth = shadow_compare_depth(cascade, depth, normal);
+    let depth_gradient = shadow_receiver_plane_depth_gradient(cascade, world_dx, world_dy);
     let light_radius = cascade_params.z;
-    let texel_world_size = max(cascade_params.y, 0.000001);
-    let depth_range = max(cascade_params.w, texel_world_size);
     if (shadow.shadow_atlas_resolution_rcp.x <= 0.0 || shadow.shadow_atlas_resolution_rcp.y <= 0.0) {
         let pcf = textureSampleCompare(t_shadow, s_shadow, uv, compare_depth);
         return shadow_apply_transparent(uv, compare_depth, pcf);
@@ -417,89 +580,192 @@ fn shadow_sample_projected_cascade(
     let uv_min = border.xy;
     let uv_max = border.zw;
     let mode = shadow_sampling_mode();
+    let temporal_seed = shadow_temporal_rotation_seed();
     let random_angle = shadow_interleaved_gradient_noise(
-        floor(screen_pixel) + vec2<f32>(f32(cascade) * 19.19, 0.0)
+        floor(screen_pixel) + vec2<f32>(temporal_seed * 256.0, temporal_seed * 163.0)
     ) * 6.28318531;
     let rotation = select(
         0.0,
         random_angle,
         mode == SHADOW_FILTER_DITHERED_PCF || mode == SHADOW_FILTER_PCSS,
     );
+    let filter_texels = shadow_filter_radius_texels(light_radius);
+    if (filter_texels <= 0.0) {
+        let sample_uv = clamp(uv, uv_min, uv_max);
+        let pcf = textureSampleCompare(t_shadow, s_shadow, sample_uv, compare_depth);
+        return shadow_apply_transparent(sample_uv, compare_depth, pcf);
+    }
     if (mode == SHADOW_FILTER_PCSS) {
         return shadow_filter_pcss(
+            cascade,
             uv,
             compare_depth,
+            depth_gradient,
             light_radius,
-            texel_world_size,
-            depth_range,
             uv_min,
             uv_max,
             rotation,
         );
     }
 
-    let min_spread_texels = select(2.0, 3.0, mode == SHADOW_FILTER_DITHERED_PCF);
-    let filter_texels = clamp(
-        max(light_radius, 0.0) / texel_world_size,
-        min_spread_texels,
-        SHADOW_PCSS_MAX_FILTER_TEXELS,
-    );
     let spread = shadow.shadow_atlas_resolution_rcp.xy * filter_texels;
-    return shadow_filter_pcf(uv, compare_depth, spread, uv_min, uv_max, rotation, SHADOW_PCF_STEPS_MAX);
+    return shadow_filter_pcf(
+        uv,
+        compare_depth,
+        depth_gradient,
+        spread,
+        uv_min,
+        uv_max,
+        rotation,
+        SHADOW_PCF_STEPS_MAX,
+    );
 }
 
-fn shadow_sample_cascade(receiver_position: vec3<f32>, normal: vec3<f32>, cascade: u32, screen_pixel: vec2<f32>) -> vec3<f32> {
-    let projection = shadow_project_cascade(receiver_position, cascade);
+fn shadow_sample_biased_cascade(
+    world_position: vec3<f32>,
+    normal: vec3<f32>,
+    cascade: u32,
+    screen_pixel: vec2<f32>,
+    world_dx: vec3<f32>,
+    world_dy: vec3<f32>,
+) -> vec3<f32> {
+    let projection = shadow_project_cascade(world_position, cascade);
+    return shadow_sample_projected_cascade(
+        cascade,
+        projection.local_uv,
+        projection.depth,
+        normal,
+        screen_pixel,
+        world_dx,
+        world_dy,
+    );
+}
+
+fn shadow_sample_cascade_if_inside(
+    world_position: vec3<f32>,
+    normal: vec3<f32>,
+    cascade: u32,
+    screen_pixel: vec2<f32>,
+    world_dx: vec3<f32>,
+    world_dy: vec3<f32>,
+) -> vec3<f32> {
+    let projection = shadow_project_cascade(world_position, cascade);
     if (projection.inside < 0.5) {
         return vec3<f32>(1.0);
     }
-    return shadow_sample_projected_cascade(cascade, projection.local_uv, projection.depth, normal, screen_pixel);
+    return shadow_sample_projected_cascade(
+        cascade,
+        projection.local_uv,
+        projection.depth,
+        normal,
+        screen_pixel,
+        world_dx,
+        world_dy,
+    );
 }
 
-fn shadow_transmittance(world_position: vec3<f32>, normal: vec3<f32>, screen_pixel: vec2<f32>) -> vec3<f32> {
+fn shadow_next_inside_cascade(world_position: vec3<f32>, start_cascade: u32, cascade_count: u32) -> u32 {
+    for (var cascade = start_cascade; cascade < SHADOW_CASCADE_MAX; cascade = cascade + 1u) {
+        if (cascade >= cascade_count) {
+            break;
+        }
+        let projection = shadow_project_cascade(world_position, cascade);
+        if (projection.inside > 0.5) {
+            return cascade;
+        }
+    }
+    return cascade_count;
+}
+
+fn shadow_active_cascade(world_position: vec3<f32>, primary_cascade: u32, cascade_count: u32) -> u32 {
+    let projection = shadow_project_cascade(world_position, primary_cascade);
+    if (projection.inside > 0.5) {
+        return primary_cascade;
+    }
+    return shadow_next_inside_cascade(world_position, primary_cascade + 1u, cascade_count);
+}
+
+fn shadow_transmittance(
+    world_position: vec3<f32>,
+    normal: vec3<f32>,
+    screen_pixel: vec2<f32>,
+    world_dx: vec3<f32>,
+    world_dy: vec3<f32>,
+) -> vec3<f32> {
     if (shadow.shadow_params.w < 0.5 || material.shadow.x < 0.5) {
         return vec3<f32>(1.0);
     }
 
     let cascade_count = shadow_cascade_count();
-    for (var cascade = 0u; cascade < SHADOW_CASCADE_MAX; cascade = cascade + 1u) {
-        if (cascade >= cascade_count) {
-            break;
-        }
-
-        let receiver_position = shadow_biased_receiver_position(world_position, normal, cascade);
-        let projection = shadow_project_cascade(receiver_position, cascade);
-        if (projection.inside < 0.5) {
-            continue;
-        }
-
-        let transmittance = shadow_sample_projected_cascade(cascade, projection.local_uv, projection.depth, normal, screen_pixel);
-        if (cascade + 1u >= cascade_count) {
-            return transmittance;
-        }
-
-        let cascade_fade = shadow_cascade_edge_fade(projection.light_ndc, shadow.shadow_params.y);
-        if (cascade_fade <= 0.0) {
-            return transmittance;
-        }
-
-        let fallback_cascade = cascade + 1u;
-        let fallback_position = shadow_biased_receiver_position(world_position, normal, fallback_cascade);
-        let fallback_projection = shadow_project_cascade(fallback_position, fallback_cascade);
-        var fallback_transmittance = transmittance;
-        if (fallback_projection.inside > 0.5) {
-            fallback_transmittance = shadow_sample_projected_cascade(
-                fallback_cascade,
-                fallback_projection.local_uv,
-                fallback_projection.depth,
-                normal,
-                screen_pixel,
-            );
-        }
-        return mix(transmittance, fallback_transmittance, cascade_fade);
+    let primary_cascade = shadow_primary_cascade(world_position, cascade_count);
+    let cascade = shadow_active_cascade(world_position, primary_cascade, cascade_count);
+    if (cascade >= cascade_count) {
+        return vec3<f32>(1.0);
     }
 
-    return vec3<f32>(1.0);
+    let projection = shadow_project_cascade(world_position, cascade);
+    let transmittance = shadow_sample_biased_cascade(
+        world_position,
+        normal,
+        cascade,
+        screen_pixel,
+        world_dx,
+        world_dy,
+    );
+
+    let view_depth = shadow_receiver_view_depth(world_position);
+    var blended_transmittance = transmittance;
+
+    let near_split_fade = shadow_cascade_near_split_fade(view_depth, cascade);
+    if (near_split_fade < 1.0 && cascade > 0u) {
+        let previous_transmittance = shadow_sample_cascade_if_inside(
+            world_position,
+            normal,
+            cascade - 1u,
+            screen_pixel,
+            world_dx,
+            world_dy,
+        );
+        blended_transmittance = mix(previous_transmittance, blended_transmittance, near_split_fade);
+    }
+
+    let far_split_fade = shadow_cascade_far_split_fade(view_depth, cascade, cascade_count);
+    if (far_split_fade > 0.0 && cascade + 1u < cascade_count) {
+        let fallback_cascade = shadow_next_inside_cascade(world_position, cascade + 1u, cascade_count);
+        if (fallback_cascade < cascade_count) {
+            let fallback_transmittance = shadow_sample_cascade_if_inside(
+                world_position,
+                normal,
+                fallback_cascade,
+                screen_pixel,
+                world_dx,
+                world_dy,
+            );
+            blended_transmittance = mix(blended_transmittance, fallback_transmittance, far_split_fade);
+        }
+    }
+
+    let edge_fade = shadow_cascade_edge_fade(projection.light_ndc, shadow.shadow_params.y);
+    if (edge_fade <= 0.0) {
+        return blended_transmittance;
+    }
+    if (cascade + 1u >= cascade_count) {
+        return mix(blended_transmittance, vec3<f32>(1.0), edge_fade);
+    }
+
+    let fallback_cascade = shadow_next_inside_cascade(world_position, cascade + 1u, cascade_count);
+    if (fallback_cascade >= cascade_count) {
+        return mix(blended_transmittance, vec3<f32>(1.0), edge_fade);
+    }
+    let fallback_transmittance = shadow_sample_cascade_if_inside(
+        world_position,
+        normal,
+        fallback_cascade,
+        screen_pixel,
+        world_dx,
+        world_dy,
+    );
+    return mix(blended_transmittance, fallback_transmittance, edge_fade);
 }
 
 fn shadow_cascade_debug_tint(cascade: u32) -> vec3<f32> {
@@ -521,38 +787,199 @@ fn shadow_cascade_coverage_color(world_position: vec3<f32>, normal: vec3<f32>) -
     }
 
     let cascade_count = shadow_cascade_count();
-    for (var cascade = 0u; cascade < SHADOW_CASCADE_MAX; cascade = cascade + 1u) {
-        if (cascade >= cascade_count) {
-            break;
-        }
-
-        let receiver_position = shadow_biased_receiver_position(world_position, normal, cascade);
-        let projection = shadow_project_cascade(receiver_position, cascade);
-        if (projection.inside < 0.5) {
-            continue;
-        }
-
-        let tint = shadow_cascade_debug_tint(cascade);
-        if (cascade + 1u >= cascade_count) {
-            return tint;
-        }
-
-        let cascade_fade = shadow_cascade_edge_fade(projection.light_ndc, shadow.shadow_params.y);
-        if (cascade_fade <= 0.0) {
-            return tint;
-        }
-
-        let fallback_cascade = cascade + 1u;
-        let fallback_position = shadow_biased_receiver_position(world_position, normal, fallback_cascade);
-        let fallback_projection = shadow_project_cascade(fallback_position, fallback_cascade);
-        var fallback_tint = tint;
-        if (fallback_projection.inside > 0.5) {
-            fallback_tint = shadow_cascade_debug_tint(fallback_cascade);
-        }
-        let blended = mix(tint, fallback_tint, cascade_fade);
-        return mix(blended, vec3<f32>(1.0), cascade_fade * 0.18);
+    let primary_cascade = shadow_primary_cascade(world_position, cascade_count);
+    let cascade = shadow_active_cascade(world_position, primary_cascade, cascade_count);
+    if (cascade >= cascade_count) {
+        return vec3<f32>(0.0);
     }
 
+    let projection = shadow_project_cascade(world_position, cascade);
+    let tint = shadow_cascade_debug_tint(cascade);
+    let view_depth = shadow_receiver_view_depth(world_position);
+    var blended = tint;
+    let near_split_fade = shadow_cascade_near_split_fade(view_depth, cascade);
+    if (near_split_fade < 1.0 && cascade > 0u) {
+        blended = mix(shadow_cascade_debug_tint(cascade - 1u), blended, near_split_fade);
+    }
+    let far_split_fade = shadow_cascade_far_split_fade(view_depth, cascade, cascade_count);
+    if (far_split_fade > 0.0 && cascade + 1u < cascade_count) {
+        blended = mix(blended, shadow_cascade_debug_tint(cascade + 1u), far_split_fade);
+    }
+    let edge_fade = shadow_cascade_edge_fade(projection.light_ndc, shadow.shadow_params.y);
+    if (edge_fade <= 0.0) {
+        return blended;
+    }
+    if (cascade + 1u >= cascade_count) {
+        return mix(blended, vec3<f32>(0.0), edge_fade);
+    }
+    let fallback_cascade = shadow_next_inside_cascade(world_position, cascade + 1u, cascade_count);
+    if (fallback_cascade >= cascade_count) {
+        return mix(blended, vec3<f32>(0.0), edge_fade);
+    }
+    let fallback_tint = shadow_cascade_debug_tint(fallback_cascade);
+    blended = mix(blended, fallback_tint, edge_fade);
+    return mix(blended, vec3<f32>(1.0), edge_fade * 0.18);
+}
+
+fn shadow_split_coverage_color(world_position: vec3<f32>) -> vec3<f32> {
+    if (shadow.shadow_params.w < 0.5 || material.shadow.x < 0.5) {
+        return vec3<f32>(0.0);
+    }
+
+    return shadow_cascade_debug_tint(shadow_cascade_index(shadow_receiver_view_depth(world_position)));
+}
+
+fn shadow_fade_debug_color(world_position: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
+    if (shadow.shadow_params.w < 0.5 || material.shadow.x < 0.5) {
+        return vec3<f32>(0.0);
+    }
+
+    let cascade_count = shadow_cascade_count();
+    let primary_cascade = shadow_primary_cascade(world_position, cascade_count);
+    let cascade = shadow_active_cascade(world_position, primary_cascade, cascade_count);
+    if (cascade >= cascade_count) {
+        return vec3<f32>(0.0);
+    }
+
+    let projection = shadow_project_cascade(world_position, cascade);
+    let view_depth = shadow_receiver_view_depth(world_position);
+    let split_fade = max(
+        1.0 - shadow_cascade_near_split_fade(view_depth, cascade),
+        shadow_cascade_far_split_fade(view_depth, cascade, cascade_count),
+    );
+    let fade = max(shadow_cascade_edge_fade(projection.light_ndc, shadow.shadow_params.y), split_fade);
+    return mix(vec3<f32>(0.02, 0.02, 0.02), vec3<f32>(1.0, 0.85, 0.12), fade);
+}
+
+fn shadow_compare_delta_debug_color(world_position: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
+    if (shadow.shadow_params.w < 0.5 || material.shadow.x < 0.5) {
+        return vec3<f32>(0.0);
+    }
+
+    let cascade_count = shadow_cascade_count();
+    let primary_cascade = shadow_primary_cascade(world_position, cascade_count);
+    let cascade = shadow_active_cascade(world_position, primary_cascade, cascade_count);
+    if (cascade >= cascade_count) {
+        return vec3<f32>(0.0);
+    }
+
+    let projection = shadow_project_cascade(world_position, cascade);
+    let uv = shadow_2d_uv(projection.local_uv, cascade);
+    let stored_depth = shadow_load_compare_depth(uv, cascade);
+    let compare_depth = shadow_compare_depth(cascade, projection.depth, normal);
+    let delta = compare_depth - stored_depth;
+    let scale = 180.0;
+    let shadowed = clamp(delta * scale, 0.0, 1.0);
+    let lit = clamp(-delta * scale, 0.0, 1.0);
+    let near = 1.0 - clamp(abs(delta) * scale * 8.0, 0.0, 1.0);
+    return vec3<f32>(shadowed, near, lit);
+}
+
+fn shadow_bias_debug_color(world_position: vec3<f32>, normal: vec3<f32>) -> vec3<f32> {
+    if (shadow.shadow_params.w < 0.5 || material.shadow.x < 0.5) {
+        return vec3<f32>(0.0);
+    }
+
+    let cascade_count = shadow_cascade_count();
+    let primary_cascade = shadow_primary_cascade(world_position, cascade_count);
+    let cascade = shadow_active_cascade(world_position, primary_cascade, cascade_count);
+    if (cascade >= cascade_count) {
+        return vec3<f32>(0.0);
+    }
+
+    let cascade_params = shadow.cascade_params[cascade];
+    let texel_world_size = max(cascade_params.y, 0.000001);
+    let depth_range = max(cascade_params.w, texel_world_size);
+    let normal_bias_texels = shadow_receiver_bias_world(normal, cascade) / texel_world_size;
+    let compare_bias_texels = shadow_compare_bias_depth(cascade, normal) * depth_range / texel_world_size;
+    let filter_texels = shadow_filter_radius_texels(cascade_params.z);
+    return vec3<f32>(
+        clamp(normal_bias_texels / 2.0, 0.0, 1.0),
+        clamp(compare_bias_texels / 2.0, 0.0, 1.0),
+        clamp(filter_texels / SHADOW_PCSS_MAX_FILTER_TEXELS, 0.0, 1.0),
+    );
+}
+
+fn shadow_pcss_debug_color(
+    world_position: vec3<f32>,
+    normal: vec3<f32>,
+    world_dx: vec3<f32>,
+    world_dy: vec3<f32>,
+) -> vec3<f32> {
+    if (shadow.shadow_params.w < 0.5 || material.shadow.x < 0.5) {
+        return vec3<f32>(0.0);
+    }
+
+    let cascade_count = shadow_cascade_count();
+    let primary_cascade = shadow_primary_cascade(world_position, cascade_count);
+    let cascade = shadow_active_cascade(world_position, primary_cascade, cascade_count);
+    if (cascade >= cascade_count) {
+        return vec3<f32>(0.0);
+    }
+
+    let projection = shadow_project_cascade(world_position, cascade);
+    let uv = shadow_2d_uv(projection.local_uv, cascade);
+    let compare_depth = shadow_compare_depth(cascade, projection.depth, normal);
+    let depth_gradient = shadow_receiver_plane_depth_gradient(cascade, world_dx, world_dy);
+    let base_filter_texels = shadow_filter_radius_texels(shadow.cascade_params[cascade].z);
+    let blocker = shadow_find_blocker(
+        cascade,
+        uv,
+        compare_depth,
+        depth_gradient,
+        shadow.shadow_atlas_resolution_rcp.xy * base_filter_texels,
+        shadow_border_clamp(cascade).xy,
+        shadow_border_clamp(cascade).zw,
+        0.0,
+    );
+    let penumbra = clamp(
+        max(blocker.average_gap, 0.0) * SHADOW_PCSS_PENUMBRA_SCALE,
+        0.0,
+        SHADOW_PCSS_MAX_PENUMBRA_SCALE,
+    );
+    let filter_texels = select(
+        0.0,
+        shadow_pcss_filter_texels(base_filter_texels, blocker.average_gap),
+        blocker.count >= 0.5,
+    );
+    return vec3<f32>(
+        clamp(blocker.count / SHADOW_PCSS_BLOCKER_TAP_COUNT, 0.0, 1.0),
+        clamp(penumbra / SHADOW_PCSS_MAX_PENUMBRA_SCALE, 0.0, 1.0),
+        clamp(filter_texels / SHADOW_PCSS_MAX_FILTER_TEXELS, 0.0, 1.0),
+    );
+}
+
+fn shadow_debug_color(
+    world_position: vec3<f32>,
+    normal: vec3<f32>,
+    world_dx: vec3<f32>,
+    world_dy: vec3<f32>,
+) -> vec3<f32> {
+    let mode = shadow_debug_mode();
+    if (mode == SHADOW_DEBUG_SAMPLED_CASCADE) {
+        return shadow_cascade_coverage_color(world_position, normal);
+    }
+    if (mode == SHADOW_DEBUG_SPLIT_COVERAGE) {
+        return shadow_split_coverage_color(world_position);
+    }
+    if (mode == SHADOW_DEBUG_FADE) {
+        return shadow_fade_debug_color(world_position, normal);
+    }
+    if (mode == SHADOW_DEBUG_COMPARE_DELTA) {
+        return shadow_compare_delta_debug_color(world_position, normal);
+    }
+    if (mode == SHADOW_DEBUG_BIAS) {
+        return shadow_bias_debug_color(world_position, normal);
+    }
+    if (mode == SHADOW_DEBUG_PCSS) {
+        return shadow_pcss_debug_color(world_position, normal, world_dx, world_dy);
+    }
+    if (mode == SHADOW_DEBUG_DIRECT_LIGHTING) {
+        return vec3<f32>(0.0);
+    }
+    if (mode == SHADOW_DEBUG_INDIRECT_LIGHTING) {
+        return vec3<f32>(0.0);
+    }
     return vec3<f32>(0.0);
 }
 
@@ -581,12 +1008,95 @@ fn oct_encode(normal: vec3<f32>) -> vec2<f32> {
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let base = textureSample(t_albedo, s_albedo, input.uv) * material.albedo;
+    let world_dx = dpdx(input.world_position);
+    let world_dy = dpdy(input.world_position);
     if (material.shadow.z > 0.5 && base.a < material.shadow.y) {
         discard;
     }
     let normal = safe_normalize(input.normal);
-    if (shadow.shadow_params.z > 0.5 && material.shadow.x > 0.5) {
-        return vec4<f32>(shadow_cascade_coverage_color(input.world_position, normal), base.a);
+    if (shadow_debug_mode() != SHADOW_DEBUG_NONE && material.shadow.x > 0.5) {
+        let mode = shadow_debug_mode();
+        if (mode == SHADOW_DEBUG_DIRECT_LIGHTING) {
+            var lighting = vec3<f32>(0.0);
+            let view_dir = safe_normalize(camera.camera.xyz - input.world_position);
+            let metallic = clamp(material.params.x, 0.0, 1.0);
+            let roughness = clamp(material.params.y, 0.05, 1.0);
+            let f0 = mix(vec3<f32>(0.04), base.rgb, metallic);
+            let ndotv = max(dot(normal, view_dir), 0.0);
+            for (var i: u32 = 0u; i < light_meta.count; i = i + 1u) {
+                let light = light_table[i];
+                let light_kind = u32(round(light.falloff.y));
+                if (light_kind == LIGHT_KIND_DIRECTIONAL) {
+                    let light_dir = safe_normalize(-light.pos_radius.xyz);
+                    let ndotl = max(dot(normal, light_dir), 0.0);
+                    if (ndotl <= 0.0001) {
+                        continue;
+                    }
+                    var shadow_term = vec3<f32>(1.0);
+                    if (shadow.shadow_params.w > 0.5 &&
+                        material.shadow.x > 0.5 &&
+                        dot(light_dir, normalize(-shadow.light_direction.xyz)) > 0.999) {
+                        shadow_term = shadow_transmittance(
+                            input.world_position,
+                            normal,
+                            input.clip_position.xy,
+                            world_dx,
+                            world_dy,
+                        );
+                    }
+                    let half_dir = safe_normalize(light_dir + view_dir);
+                    let fresnel = fresnel_schlick(max(dot(half_dir, view_dir), 0.0), f0);
+                    let distribution = distribution_ggx(normal, half_dir, roughness);
+                    let geometry = geometry_smith(normal, view_dir, light_dir, roughness);
+                    let specular = fresnel * (distribution * geometry / max(4.0 * ndotv * ndotl, 0.0001));
+                    let diffuse = (vec3<f32>(1.0) - fresnel) * (1.0 - metallic) * base.rgb / 3.14159265;
+                    lighting += (diffuse + specular) * light.color.rgb * ndotl * shadow_term;
+                    continue;
+                }
+                let light_vector = light.pos_radius.xyz - input.world_position;
+                let dist = length(light_vector);
+                let radius = light.pos_radius.w;
+                if (radius <= 0.0 || dist >= radius) {
+                    continue;
+                }
+                let attenuation = pow(
+                    max(1.0 - dist / radius, 0.0),
+                    max(light.falloff.x, 0.001),
+                );
+                let light_dir = light_vector / max(dist, 0.0001);
+                let ndotl = max(dot(normal, light_dir), 0.0);
+                if (ndotl <= 0.0001) {
+                    continue;
+                }
+                var spot_term = 1.0;
+                if (light_kind == LIGHT_KIND_SPOT) {
+                    let spot_direction = safe_normalize(light.dir_shadow.xyz);
+                    let cone_cos = dot(spot_direction, -light_dir);
+                    let inner_cos = light.falloff.z;
+                    let outer_cos = light.falloff.w;
+                    spot_term = clamp((cone_cos - outer_cos) / max(inner_cos - outer_cos, 0.0001), 0.0, 1.0);
+                    if (spot_term <= 0.0001) {
+                        continue;
+                    }
+                    spot_term = spot_term * spot_term;
+                }
+                let half_dir = safe_normalize(light_dir + view_dir);
+                let fresnel = fresnel_schlick(max(dot(half_dir, view_dir), 0.0), f0);
+                let distribution = distribution_ggx(normal, half_dir, roughness);
+                let geometry = geometry_smith(normal, view_dir, light_dir, roughness);
+                let specular = fresnel * (distribution * geometry / max(4.0 * ndotv * ndotl, 0.0001));
+                let diffuse = (vec3<f32>(1.0) - fresnel) * (1.0 - metallic) * base.rgb / 3.14159265;
+                lighting += (diffuse + specular) * light.color.rgb * ndotl * attenuation * spot_term;
+            }
+            return vec4<f32>(lighting, base.a);
+        }
+        if (mode == SHADOW_DEBUG_INDIRECT_LIGHTING) {
+            let metallic = clamp(material.params.x, 0.0, 1.0);
+            let roughness = clamp(material.params.y, 0.05, 1.0);
+            let indirect = gi_sample_indirect_diffuse(input.world_position, normal, base.rgb, metallic, roughness);
+            return vec4<f32>(indirect, base.a);
+        }
+        return vec4<f32>(shadow_debug_color(input.world_position, normal, world_dx, world_dy), base.a);
     }
     if (gi_debug_mode() != 0u) {
         return vec4<f32>(gi_debug_color(input.world_position, normal), base.a);
@@ -611,7 +1121,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             if (shadow.shadow_params.w > 0.5 &&
                 material.shadow.x > 0.5 &&
                 dot(light_dir, normalize(-shadow.light_direction.xyz)) > 0.999) {
-                shadow_term = shadow_transmittance(input.world_position, normal, input.clip_position.xy);
+                shadow_term = shadow_transmittance(
+                    input.world_position,
+                    normal,
+                    input.clip_position.xy,
+                    world_dx,
+                    world_dy,
+                );
             }
             let half_dir = safe_normalize(light_dir + view_dir);
             let fresnel = fresnel_schlick(max(dot(half_dir, view_dir), 0.0), f0);

@@ -33,7 +33,7 @@ impl UiBackend for LegacyUiBackend {
     }
 
     fn begin_frame(&mut self, ctx: UiBeginFrameContext<'_>) {
-        update_ui(ctx.world, ctx.input, ctx.surface_size);
+        update_ui(ctx.world, ctx.input, ctx.logical_surface_size);
         self.capture = legacy_capture(ctx.world.get_resource::<UiState>());
     }
 

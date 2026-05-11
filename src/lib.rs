@@ -72,7 +72,7 @@ pub mod input;
 #[cfg(feature = "app")]
 pub mod app;
 
-#[cfg(feature = "ui")]
+#[cfg(any(feature = "ui-core", feature = "ui-legacy", feature = "yakui-ui"))]
 pub mod ui;
 
 #[cfg(feature = "audio")]

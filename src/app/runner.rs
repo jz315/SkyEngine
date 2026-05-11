@@ -20,6 +20,7 @@
 //!     .run(Game);
 //! ```
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -134,6 +135,40 @@ fn write_new_diagnostics<W: std::io::Write>(
     };
     let events = diagnostics.events_since(cursor);
     write_diagnostic_events(writer, events.iter(), console)
+}
+
+fn save_requested_screenshots(renderer: &mut dyn SceneRenderer, requests: &mut Vec<PathBuf>) {
+    if requests.is_empty() {
+        return;
+    }
+
+    let Some(gpu) = renderer.wgpu_mut() else {
+        for path in requests.drain(..) {
+            eprintln!(
+                "[SkyEngine] Screenshot request ignored for {}: active renderer does not support wgpu surface readback",
+                path.display()
+            );
+        }
+        return;
+    };
+
+    for path in requests.drain(..) {
+        match gpu.capture_surface_screenshot_png(&path) {
+            Ok(()) => eprintln!("[SkyEngine] Screenshot saved: {}", path.display()),
+            Err(error) => eprintln!(
+                "[SkyEngine] Screenshot failed for {}: {error}",
+                path.display()
+            ),
+        }
+    }
+}
+
+fn default_screenshot_path() -> PathBuf {
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    std::env::temp_dir().join(format!("skyengine-screenshot-{timestamp}.png"))
 }
 
 // ── AppState trait ──────────────────────────────────────────────────────────
@@ -298,12 +333,13 @@ pub struct FrameContext<'a> {
     window: &'a Window,
     exit_requested: &'a mut bool,
     redraw_requested: &'a mut bool,
+    screenshot_requests: &'a mut Vec<PathBuf>,
     #[cfg(feature = "egui")]
     egui: &'a mut Option<crate::app::egui_integration::EguiIntegration>,
 }
 
 /// Short-lived UI facade for backend-neutral UI operations.
-#[cfg(feature = "ui")]
+#[cfg(feature = "ui-core")]
 pub struct UiFrame<'ctx, 'frame> {
     ctx: &'ctx mut FrameContext<'frame>,
 }
@@ -501,6 +537,22 @@ impl<'a> FrameContext<'a> {
         self.window.set_title(title);
     }
 
+    /// Save the fully rendered surface frame to a PNG before it is presented.
+    ///
+    /// Requests are drained by the app runner after `update()` and any built-in
+    /// overlay rendering, but before presenting the frame. The wgpu backend
+    /// currently supports PNG screenshots for RGBA8/BGRA8 presentation formats.
+    pub fn request_screenshot(&mut self, path: impl Into<PathBuf>) {
+        self.screenshot_requests.push(path.into());
+    }
+
+    /// Save the current frame to a timestamped PNG under the system temp directory.
+    pub fn request_screenshot_temp(&mut self) -> PathBuf {
+        let path = default_screenshot_path();
+        self.request_screenshot(path.clone());
+        path
+    }
+
     /// Direct access to the GPU backend.
     ///
     /// Use this for custom render passes, manual texture creation, or
@@ -544,7 +596,7 @@ impl<'a> FrameContext<'a> {
     /// This is the preferred shape for new pluggable UI backend work.
     /// Existing `update_ui` / `render_ui` calls remain available for the
     /// retained ECS UI path.
-    #[cfg(feature = "ui")]
+    #[cfg(feature = "ui-core")]
     pub fn ui(&mut self) -> UiFrame<'_, 'a> {
         UiFrame { ctx: self }
     }
@@ -552,7 +604,7 @@ impl<'a> FrameContext<'a> {
     /// Update native retained UI layout and interaction state.
     ///
     /// Requires `--features ui`.
-    #[cfg(feature = "ui")]
+    #[cfg(feature = "ui-legacy")]
     pub fn update_ui(&mut self) {
         crate::ui::update_ui(self.world, self.input, self.logical_surface_size());
     }
@@ -560,16 +612,23 @@ impl<'a> FrameContext<'a> {
     /// Update all installed game UI backends.
     ///
     /// Requires `--features ui`.
-    #[cfg(feature = "ui")]
+    #[cfg(feature = "ui-core")]
     pub fn update_ui_backends(&mut self) {
-        crate::ui::update_ui_backends(self.world, self.input, self.logical_surface_size());
+        let [width, height] = self.surface_size();
+        crate::ui::update_ui_backends(
+            self.world,
+            Some(self.window),
+            self.input,
+            self.logical_surface_size(),
+            [width as f32, height as f32],
+        );
     }
 
     /// Render native retained UI on top of the current surface frame.
     ///
     /// Call this after `ctx.render()` for the common scene + overlay order.
     /// Requires `--features ui`.
-    #[cfg(feature = "ui")]
+    #[cfg(feature = "ui-legacy")]
     pub fn render_ui(&mut self) {
         let gpu = self
             .renderer
@@ -582,7 +641,7 @@ impl<'a> FrameContext<'a> {
     ///
     /// Call this after `ctx.render()` for the common scene + overlay order.
     /// Requires `--features ui`.
-    #[cfg(feature = "ui")]
+    #[cfg(feature = "ui-core")]
     pub fn render_ui_overlays(&mut self) {
         let gpu = self.renderer.wgpu_mut().expect(
             "FrameContext::render_ui_overlays is only available for the wgpu render backend",
@@ -595,7 +654,7 @@ impl<'a> FrameContext<'a> {
     /// Access native UI state if it has been installed.
     ///
     /// Requires `--features ui`.
-    #[cfg(feature = "ui")]
+    #[cfg(feature = "ui-legacy")]
     pub fn ui_state(&self) -> Option<&crate::ui::UiState> {
         self.world.get_resource::<crate::ui::UiState>()
     }
@@ -603,18 +662,25 @@ impl<'a> FrameContext<'a> {
     /// Returns true when any installed game UI backend wants pointer input.
     ///
     /// Requires `--features ui`.
-    #[cfg(feature = "ui")]
+    #[cfg(feature = "ui-core")]
     pub fn ui_wants_pointer(&self) -> bool {
-        crate::ui::ui_wants_pointer(self.world)
-            || self
-                .ui_state()
-                .is_some_and(crate::ui::UiState::wants_pointer)
+        #[cfg(feature = "ui-legacy")]
+        {
+            crate::ui::ui_wants_pointer(self.world)
+                || self
+                    .ui_state()
+                    .is_some_and(crate::ui::UiState::wants_pointer)
+        }
+        #[cfg(not(feature = "ui-legacy"))]
+        {
+            crate::ui::ui_wants_pointer(self.world)
+        }
     }
 
     /// Returns true when any installed game UI backend wants keyboard input.
     ///
     /// Requires `--features ui`.
-    #[cfg(feature = "ui")]
+    #[cfg(feature = "ui-core")]
     pub fn ui_wants_keyboard(&self) -> bool {
         crate::ui::ui_wants_keyboard(self.world)
     }
@@ -679,7 +745,7 @@ impl<'a> FrameContext<'a> {
     }
 }
 
-#[cfg(feature = "ui")]
+#[cfg(feature = "ui-core")]
 impl<'ctx, 'frame> UiFrame<'ctx, 'frame> {
     /// Update all installed game UI backends.
     pub fn update(&mut self) {
@@ -707,6 +773,13 @@ impl<'ctx, 'frame> UiFrame<'ctx, 'frame> {
         B: crate::ui::UiBackend,
     {
         crate::ui::with_ui_backend_mut(self.ctx.world, f)
+    }
+
+    /// Run a closure against the installed yakui backend when the
+    /// `yakui-ui` feature is enabled.
+    #[cfg(feature = "yakui-ui")]
+    pub fn yakui<R>(&mut self, f: impl FnOnce(&mut crate::ui::YakuiBackend) -> R) -> Option<R> {
+        self.with_backend_mut::<crate::ui::YakuiBackend, R>(f)
     }
 }
 
@@ -938,6 +1011,7 @@ impl RunnerHandler {
                     Ok(()) => {
                         let mut exit_requested = false;
                         let mut redraw_requested = false;
+                        let mut screenshot_requests = Vec::new();
 
                         {
                             let ctx = &mut FrameContext {
@@ -948,6 +1022,7 @@ impl RunnerHandler {
                                 window: &rt.window,
                                 exit_requested: &mut exit_requested,
                                 redraw_requested: &mut redraw_requested,
+                                screenshot_requests: &mut screenshot_requests,
                                 #[cfg(feature = "egui")]
                                 egui: &mut rt.egui,
                             };
@@ -986,6 +1061,7 @@ impl RunnerHandler {
                             }
                         }
 
+                        save_requested_screenshots(rt.renderer.as_mut(), &mut screenshot_requests);
                         rt.window.pre_present_notify();
                         rt.renderer.end_frame();
                         rt.input.begin_frame();
@@ -1274,6 +1350,12 @@ impl ApplicationHandler for RunnerHandler {
             .egui
             .as_mut()
             .is_some_and(|egui| egui.on_window_event(&rt.window, &event));
+        let scale_factor = rt.window.scale_factor() as f32;
+
+        #[cfg(feature = "ui-core")]
+        let ui_consumed = self.world.as_mut().is_some_and(|world| {
+            crate::ui::handle_ui_event(world, Some(&rt.window), &event, scale_factor).consumed
+        });
 
         match event {
             WindowEvent::CloseRequested => {
@@ -1314,12 +1396,22 @@ impl ApplicationHandler for RunnerHandler {
             | WindowEvent::CursorMoved { .. }
             | WindowEvent::MouseInput { .. }
             | WindowEvent::MouseWheel { .. } => {
-                #[cfg(feature = "egui")]
-                let suppressed = egui_consumed;
-                #[cfg(not(feature = "egui"))]
-                let suppressed = false;
+                let suppressed = {
+                    #[cfg(feature = "egui")]
+                    let egui_suppressed = egui_consumed;
+                    #[cfg(not(feature = "egui"))]
+                    let egui_suppressed = false;
 
-                let scale_factor = rt.window.scale_factor() as f32;
+                    #[cfg(feature = "ui-core")]
+                    {
+                        egui_suppressed || ui_consumed
+                    }
+                    #[cfg(not(feature = "ui-core"))]
+                    {
+                        egui_suppressed
+                    }
+                };
+
                 update_input_from_window_event(&mut rt.input, &event, suppressed, scale_factor);
                 self.request_redraw();
             }

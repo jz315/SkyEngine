@@ -48,7 +48,7 @@ impl PostFxPass for DebugView {
             .cloned()
             .unwrap_or_default()
             .debug_view;
-        debug_view.is_enabled() && !matches!(debug_view, RenderDebugView::DirectionalShadowCoverage)
+        debug_view.is_enabled() && !debug_view_is_material_shadow(debug_view)
     }
 
     fn setup(&mut self, ctx: &mut PostFxPassSetupContext<'_, '_>) {
@@ -57,9 +57,7 @@ impl PostFxPass for DebugView {
             .cloned()
             .unwrap_or_default()
             .debug_view;
-        if !debug_view.is_enabled()
-            || matches!(debug_view, RenderDebugView::DirectionalShadowCoverage)
-        {
+        if !debug_view.is_enabled() || debug_view_is_material_shadow(debug_view) {
             return;
         }
 
@@ -165,14 +163,26 @@ impl PostFxPass for DebugView {
             .cloned()
             .unwrap_or_default()
             .debug_view;
-        if debug_view.is_enabled()
-            && !matches!(debug_view, RenderDebugView::DirectionalShadowCoverage)
-        {
+        if debug_view.is_enabled() && !debug_view_is_material_shadow(debug_view) {
             1
         } else {
             0
         }
     }
+}
+
+fn debug_view_is_material_shadow(debug_view: RenderDebugView) -> bool {
+    matches!(
+        debug_view,
+        RenderDebugView::DirectionalShadowCoverage
+            | RenderDebugView::DirectionalShadowSplitCoverage
+            | RenderDebugView::DirectionalShadowFade
+            | RenderDebugView::DirectionalShadowCompareDelta
+            | RenderDebugView::DirectionalShadowBias
+            | RenderDebugView::DirectionalShadowPcss
+            | RenderDebugView::DirectLighting
+            | RenderDebugView::IndirectLighting
+    )
 }
 
 fn debug_view_source(
@@ -201,7 +211,14 @@ fn debug_view_source(
         RenderDebugView::DirectionalShadowMap | RenderDebugView::DirectionalShadowCascade(_) => {
             Some(DebugViewSource::Texture(current_color.handle()))
         }
-        RenderDebugView::DirectionalShadowCoverage => {
+        RenderDebugView::DirectionalShadowCoverage
+        | RenderDebugView::DirectionalShadowSplitCoverage
+        | RenderDebugView::DirectionalShadowFade
+        | RenderDebugView::DirectionalShadowCompareDelta
+        | RenderDebugView::DirectionalShadowBias
+        | RenderDebugView::DirectionalShadowPcss
+        | RenderDebugView::DirectLighting
+        | RenderDebugView::IndirectLighting => {
             Some(DebugViewSource::Texture(current_color.handle()))
         }
     }
@@ -214,7 +231,14 @@ fn debug_view_mode(debug_view: RenderDebugView) -> Option<LowLevelDebugViewMode>
         RenderDebugView::DirectionalShadowMap | RenderDebugView::DirectionalShadowCascade(_) => {
             Some(LowLevelDebugViewMode::ShadowDepth)
         }
-        RenderDebugView::DirectionalShadowCoverage => None,
+        RenderDebugView::DirectionalShadowCoverage
+        | RenderDebugView::DirectionalShadowSplitCoverage
+        | RenderDebugView::DirectionalShadowFade
+        | RenderDebugView::DirectionalShadowCompareDelta
+        | RenderDebugView::DirectionalShadowBias
+        | RenderDebugView::DirectionalShadowPcss
+        | RenderDebugView::DirectLighting
+        | RenderDebugView::IndirectLighting => None,
         RenderDebugView::SceneNormal => Some(LowLevelDebugViewMode::SceneNormal),
         RenderDebugView::Roughness => Some(LowLevelDebugViewMode::Roughness),
         RenderDebugView::Metallic => Some(LowLevelDebugViewMode::Metallic),
@@ -349,5 +373,21 @@ mod tests {
             debug_view_mode(RenderDebugView::DirectionalShadowCoverage),
             None
         );
+        assert_eq!(
+            debug_view_mode(RenderDebugView::DirectionalShadowCompareDelta),
+            None
+        );
+        assert!(debug_view_is_material_shadow(
+            RenderDebugView::DirectionalShadowBias
+        ));
+        assert!(debug_view_is_material_shadow(
+            RenderDebugView::DirectionalShadowPcss
+        ));
+        assert!(debug_view_is_material_shadow(
+            RenderDebugView::DirectLighting
+        ));
+        assert!(debug_view_is_material_shadow(
+            RenderDebugView::IndirectLighting
+        ));
     }
 }

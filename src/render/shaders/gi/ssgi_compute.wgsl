@@ -104,6 +104,25 @@ fn load_normal(pixel: vec2<i32>, dims: vec2<u32>) -> vec3<f32> {
     return decode_view_normal(textureLoad(input_normal, clamped_pixel(pixel, dims), 0).rgb);
 }
 
+fn bilateral_depth_weight(depth_delta: f32) -> f32 {
+    let soft_reject = 1.0 - saturate(depth_delta * max(ssgi.params0.w, 0.0001));
+    return soft_reject * soft_reject * soft_reject * soft_reject;
+}
+
+fn luminance(color: vec3<f32>) -> f32 {
+    return dot(max(color, vec3<f32>(0.0)), vec3<f32>(0.2126, 0.7152, 0.0722));
+}
+
+fn limit_luminance(color: vec3<f32>, max_luma: f32) -> vec3<f32> {
+    let luma = luminance(color);
+    if (luma <= max_luma || luma <= 0.00001) {
+        return color;
+    }
+    return color * (max_luma / luma);
+}
+
+const SSGI_MAX_DIFFUSE_LUMINANCE: f32 = 2.0;
+
 fn compute_diffuse(
     origin_position: vec3<f32>,
     origin_normal: vec3<f32>,
@@ -118,8 +137,17 @@ fn compute_diffuse(
 
     let sample_position = reconstruct_atlas(sample_pixel, dims);
     let origin_to_sample = sample_position - origin_position;
-    var occlusion = saturate(dot(origin_normal, origin_to_sample));
+    let sample_distance = length(origin_to_sample);
+    if (sample_distance <= 0.0001) {
+        return vec3<f32>(0.0);
+    }
+
+    let origin_to_sample_dir = origin_to_sample / sample_distance;
+    let sample_normal = load_normal(sample_pixel, dims);
+    var occlusion = saturate(dot(origin_normal, origin_to_sample_dir));
+    occlusion = occlusion * saturate(dot(sample_normal, -origin_to_sample_dir));
     occlusion = occlusion * saturate(1.0 + origin_to_sample.z * ssgi.params0.w);
+    occlusion = occlusion * bilateral_depth_weight(abs(origin_to_sample.z));
 
     if (occlusion > 0.0) {
         let delta = sample_pixel - origin_pixel;
@@ -135,15 +163,22 @@ fn compute_diffuse(
                 let dt = f32(i) / step_count_f;
                 let z = mix(origin_position.z, sample_position.z, dt);
                 let sample_z = reconstruct_atlas(loc, dims).z;
-                if (sample_z < z - 0.1) {
-                    color = lit_color(loc, dims);
+                let thickness = max(0.02, z * 0.01);
+                if (sample_z < z - thickness) {
+                    let blocker_normal = load_normal(loc, dims);
+                    let same_surface =
+                        dot(blocker_normal, origin_normal) > 0.85 &&
+                        dot(blocker_normal, sample_normal) > 0.85;
+                    if (!same_surface) {
+                        occlusion = 0.0;
+                    }
                     break;
                 }
             }
         }
     }
 
-    return occlusion * color;
+    return limit_luminance(occlusion * color, SSGI_MAX_DIFFUSE_LUMINANCE);
 }
 
 fn diffuse_at_pixel(pixel: vec2<i32>, dims: vec2<u32>) -> vec3<f32> {

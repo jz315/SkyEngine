@@ -1,0 +1,8 @@
+/target
+/Cargo.lock
+
+**/snapshot-images
+**/*.snap.new
+
+## IDE specific files
+/vscode

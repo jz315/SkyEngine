@@ -15,7 +15,32 @@
 //! - `0`-`4`: GI debug off / probes / irradiance / visibility / ray budget
 //! - `F1`: lit scene
 //! - `F2`-`F5`: raw directional shadow cascade 0-3
-//! - `F6`: directional shadow cascade coverage overlay
+//! - `F6`: sampled directional shadow cascade coverage
+//! - `F7`: view-depth split cascade coverage
+//! - `F8`: cascade fade weight
+//! - `F9`: shadow compare-depth delta
+//! - `F10`: shadow bias / texel pressure
+//! - `F11`: PCSS blocker / penumbra / filter size
+//! - `F12`: direct lighting only
+//! - `G`: indirect lighting only
+//! - `C`: contact shadows toggle
+//! - `V`: GI toggle
+//! - `R`: lock/unlock the canonical repro camera
+//!
+//! Automated screenshot probe:
+//! - `SKY_DEMO_SCREENSHOT_PATH=C:\Temp\three_d.png`
+//! - `SKY_DEMO_SCREENSHOT_FRAME=45`
+//! - `SKY_DEMO_EXIT_AFTER_SCREENSHOT=1`
+//! - `SKY_DEMO_LOCK_REPRO_CAMERA=1`
+//! - `SKY_DEMO_CAMERA_YAW=0.0`
+//! - `SKY_DEMO_CAMERA_PITCH=-0.18`
+//! - `SKY_DEMO_CAMERA_DISTANCE=13.0`
+//! - `SKY_DEMO_SHADOW_DEBUG=lit|direct|indirect|ssgi|coverage|split|compare|bias|pcss|fade|cascade0..3`
+//! - `SKY_DEMO_SHADOW_FILTER=fixed|dithered|pcss|sharp`
+//! - `SKY_DEMO_OPEN_CEILING=1`
+//! - `SKY_DEMO_DISABLE_CEILING_SHADOWS=1`
+//! - `SKY_DEMO_DISABLE_WALL_SHADOWS=1`
+//! - `SKY_DEMO_DISABLE_LOCAL_LIGHTS=1`
 //!
 //! ```bash
 //! cargo run --example three_d_demo --features app --release
@@ -31,8 +56,9 @@ use sky_engine::render::gi::providers::{ddgi, ssgi};
 use sky_engine::render::{
     BloomSettings, CameraMarker, Color, ContactShadowsSettings, DirectionalLight,
     GlobalIllumination, MainCamera, MaterialHandle, PointLight, Projection, RenderDebugView,
-    RenderPipelineAsset, RenderSettings, SharpenSettings, SpotLight, StandardMaterial,
-    TemporalAntiAliasingSettings, Texture, ToneMapSettings, Transform, WgpuMeshRenderer,
+    RenderPipelineAsset, RenderSettings, ShadowSamplingMode, SharpenSettings, SpotLight,
+    StandardMaterial, TemporalAntiAliasingSettings, Texture, ToneMapSettings, Transform,
+    WgpuMeshRenderer,
 };
 
 const GROUND_Y: f32 = -1.25;
@@ -41,6 +67,9 @@ const CAMERA_PITCH_MIN: f32 = -0.85;
 const CAMERA_PITCH_MAX: f32 = 0.08;
 const CAMERA_DISTANCE_MIN: f32 = 7.0;
 const CAMERA_DISTANCE_MAX: f32 = 20.0;
+const REPRO_CAMERA_YAW: f32 = 0.0;
+const REPRO_CAMERA_PITCH: f32 = -0.18;
+const REPRO_CAMERA_DISTANCE: f32 = 13.0;
 
 #[derive(Clone, Copy)]
 struct ShowcaseBlock {
@@ -63,6 +92,14 @@ struct OrbitLight {
     base_intensity: f32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DemoShadowFilter {
+    Fixed,
+    Dithered,
+    Pcss,
+    Sharp,
+}
+
 struct ThreeDDemo {
     initialized: bool,
     time: f32,
@@ -74,10 +111,23 @@ struct ThreeDDemo {
     camera_distance: f32,
     gi_debug: ddgi::DdgiDebugMode,
     shadow_debug: RenderDebugView,
+    direct_only: bool,
+    indirect_only: bool,
+    contact_shadows_enabled: bool,
+    gi_enabled: bool,
+    repro_camera_locked: bool,
+    screenshot_path: Option<String>,
+    screenshot_frame: u32,
+    screenshot_taken: bool,
+    exit_after_screenshot: bool,
 }
 
 impl Default for ThreeDDemo {
     fn default() -> Self {
+        let initial_debug = initial_shadow_debug_from_env();
+        let screenshot_path = std::env::var("SKY_DEMO_SCREENSHOT_PATH")
+            .ok()
+            .filter(|value| !value.trim().is_empty());
         Self {
             initialized: false,
             time: 0.0,
@@ -88,7 +138,16 @@ impl Default for ThreeDDemo {
             camera_pitch: -0.18,
             camera_distance: 13.0,
             gi_debug: ddgi::DdgiDebugMode::Off,
-            shadow_debug: RenderDebugView::None,
+            shadow_debug: initial_debug.0,
+            direct_only: initial_debug.1,
+            indirect_only: initial_debug.2,
+            contact_shadows_enabled: !env_flag("SKY_DEMO_DISABLE_CONTACT_SHADOWS"),
+            gi_enabled: !(env_flag("SKY_DEMO_DISABLE_GI") || env_flag("SKY_DEMO_DISABLE_SSGI")),
+            repro_camera_locked: env_flag("SKY_DEMO_LOCK_REPRO_CAMERA"),
+            screenshot_path,
+            screenshot_frame: env_u32("SKY_DEMO_SCREENSHOT_FRAME").unwrap_or(45),
+            screenshot_taken: false,
+            exit_after_screenshot: env_flag("SKY_DEMO_EXIT_AFTER_SCREENSHOT"),
         }
     }
 }
@@ -105,53 +164,90 @@ impl AppState for ThreeDDemo {
         if ctx.input.key_pressed(KeyCode::Space) {
             self.auto_orbit = !self.auto_orbit;
         }
+        if ctx.input.key_pressed(KeyCode::KeyR) {
+            self.repro_camera_locked = !self.repro_camera_locked;
+            if self.repro_camera_locked {
+                self.camera_yaw = repro_camera_yaw();
+                self.camera_pitch = repro_camera_pitch();
+                self.camera_distance = repro_camera_distance();
+                self.auto_orbit = false;
+            }
+        }
         if let Some(debug_mode) = gi_debug_mode_from_input(ctx) {
             self.gi_debug = debug_mode;
-            if let Some(settings) = ctx.world.get_resource_mut::<RenderSettings>() {
-                settings.global_illumination = default_ddgi_global_illumination(debug_mode);
-            }
+            self.gi_enabled = true;
         }
         if let Some(debug_view) = shadow_debug_view_from_input(ctx) {
             self.shadow_debug = debug_view;
-            if let Some(settings) = ctx.world.get_resource_mut::<RenderSettings>() {
-                settings.debug_view = debug_view;
+            self.direct_only = false;
+            self.indirect_only = false;
+        }
+        if ctx.input.key_pressed(KeyCode::F12) {
+            self.direct_only = !self.direct_only;
+            self.indirect_only = false;
+        }
+        if ctx.input.key_pressed(KeyCode::KeyG) {
+            self.indirect_only = !self.indirect_only;
+            self.direct_only = false;
+        }
+        if ctx.input.key_pressed(KeyCode::KeyC) {
+            self.contact_shadows_enabled = !self.contact_shadows_enabled;
+        }
+        if ctx.input.key_pressed(KeyCode::KeyV) {
+            self.gi_enabled = !self.gi_enabled;
+        }
+
+        let active_debug_view = active_debug_view(self);
+        if let Some(settings) = ctx.world.get_resource_mut::<RenderSettings>() {
+            settings.contact_shadows.enabled = self.contact_shadows_enabled;
+            if !self.gi_enabled {
+                settings.global_illumination = GlobalIllumination::Off;
+            } else {
+                settings.global_illumination = default_demo_global_illumination(self.gi_debug);
             }
+            settings.debug_view = active_debug_view;
         }
 
-        let orbit_speed = 0.85;
-        if self.auto_orbit {
-            self.camera_yaw += ctx.dt * 0.28;
-        }
-        if ctx.input.key_held(KeyCode::KeyA) || ctx.input.key_held(KeyCode::ArrowLeft) {
-            self.camera_yaw -= orbit_speed * ctx.dt;
-            self.auto_orbit = false;
-        }
-        if ctx.input.key_held(KeyCode::KeyD) || ctx.input.key_held(KeyCode::ArrowRight) {
-            self.camera_yaw += orbit_speed * ctx.dt;
-            self.auto_orbit = false;
-        }
-        if ctx.input.key_held(KeyCode::ArrowUp) {
-            self.camera_pitch += 0.75 * ctx.dt;
-            self.auto_orbit = false;
-        }
-        if ctx.input.key_held(KeyCode::ArrowDown) {
-            self.camera_pitch -= 0.75 * ctx.dt;
-            self.auto_orbit = false;
-        }
-        if ctx.input.key_held(KeyCode::KeyW) {
-            self.camera_distance -= 7.5 * ctx.dt;
-            self.auto_orbit = false;
-        }
-        if ctx.input.key_held(KeyCode::KeyS) {
-            self.camera_distance += 7.5 * ctx.dt;
-            self.auto_orbit = false;
-        }
+        if self.repro_camera_locked {
+            self.camera_yaw = repro_camera_yaw();
+            self.camera_pitch = repro_camera_pitch();
+            self.camera_distance = repro_camera_distance();
+        } else {
+            let orbit_speed = 0.85;
+            if self.auto_orbit {
+                self.camera_yaw += ctx.dt * 0.28;
+            }
+            if ctx.input.key_held(KeyCode::KeyA) || ctx.input.key_held(KeyCode::ArrowLeft) {
+                self.camera_yaw -= orbit_speed * ctx.dt;
+                self.auto_orbit = false;
+            }
+            if ctx.input.key_held(KeyCode::KeyD) || ctx.input.key_held(KeyCode::ArrowRight) {
+                self.camera_yaw += orbit_speed * ctx.dt;
+                self.auto_orbit = false;
+            }
+            if ctx.input.key_held(KeyCode::ArrowUp) {
+                self.camera_pitch += 0.75 * ctx.dt;
+                self.auto_orbit = false;
+            }
+            if ctx.input.key_held(KeyCode::ArrowDown) {
+                self.camera_pitch -= 0.75 * ctx.dt;
+                self.auto_orbit = false;
+            }
+            if ctx.input.key_held(KeyCode::KeyW) {
+                self.camera_distance -= 7.5 * ctx.dt;
+                self.auto_orbit = false;
+            }
+            if ctx.input.key_held(KeyCode::KeyS) {
+                self.camera_distance += 7.5 * ctx.dt;
+                self.auto_orbit = false;
+            }
 
-        self.camera_distance -= ctx.input.scroll_delta()[1] * 0.45;
-        self.camera_pitch = self.camera_pitch.clamp(CAMERA_PITCH_MIN, CAMERA_PITCH_MAX);
-        self.camera_distance = self
-            .camera_distance
-            .clamp(CAMERA_DISTANCE_MIN, CAMERA_DISTANCE_MAX);
+            self.camera_distance -= ctx.input.scroll_delta()[1] * 0.45;
+            self.camera_pitch = self.camera_pitch.clamp(CAMERA_PITCH_MIN, CAMERA_PITCH_MAX);
+            self.camera_distance = self
+                .camera_distance
+                .clamp(CAMERA_DISTANCE_MIN, CAMERA_DISTANCE_MAX);
+        }
 
         update_camera(
             ctx,
@@ -164,11 +260,21 @@ impl AppState for ThreeDDemo {
 
         ctx.render();
 
+        if !self.screenshot_taken && self.frame_count >= self.screenshot_frame {
+            if let Some(path) = self.screenshot_path.as_ref() {
+                ctx.request_screenshot(path);
+                self.screenshot_taken = true;
+                if self.exit_after_screenshot {
+                    ctx.request_exit();
+                }
+            }
+        }
+
         if render_debug_log_enabled() && self.frame_count % 120 == 0 {
             let stats = ctx.render_stats();
             if let Some(settings) = ctx.world.get_resource::<RenderSettings>() {
                 eprintln!(
-                    "[three_d_demo][frame={}] dt={:.4} fps={:.1} draws={} shadow_draws={} lights={} shadow_atlas={}x{} gi={:?} contact={:?} taa={:?} bloom={:?} tonemap={:?}",
+                    "[three_d_demo][frame={}] dt={:.4} fps={:.1} draws={} shadow_draws={} lights={} shadow_atlas={}x{} camera={} yaw={:.3} pitch={:.3} distance={:.2} gi={:?} contact={:?} taa={:?} bloom={:?} tonemap={:?} debug={:?}",
                     self.frame_count,
                     ctx.dt,
                     if ctx.dt > 0.0 { 1.0 / ctx.dt } else { 0.0 },
@@ -177,11 +283,16 @@ impl AppState for ThreeDDemo {
                     stats.light_count,
                     stats.shadow_atlas_width,
                     stats.shadow_atlas_height,
+                    camera_mode_name(self.repro_camera_locked),
+                    self.camera_yaw,
+                    self.camera_pitch,
+                    self.camera_distance,
                     settings.global_illumination,
                     settings.contact_shadows,
                     settings.temporal_aa,
                     settings.bloom,
-                    settings.tonemap
+                    settings.tonemap,
+                    settings.debug_view
                 );
             }
         }
@@ -202,7 +313,7 @@ impl AppState for ThreeDDemo {
                 .map(|settings| gi_status_name(&settings.global_illumination))
                 .unwrap_or("off");
             ctx.set_title(&format!(
-                "SkyEngine — 3D Demo | {:.0} FPS | {} draws ({} shadow) | {} lights | CSM {}x {}x{} | camera {orbit_mode} | GI {} | shadows {}",
+                "SkyEngine — 3D Demo | {:.0} FPS | {} draws ({} shadow) | {} lights | CSM {}x {}x{} | camera {} / {} | GI {} | shadows {} | direct {} | indirect {} | contact {}",
                 self.fps_smooth,
                 stats.draw_calls,
                 stats.shadow_draw_calls,
@@ -210,10 +321,25 @@ impl AppState for ThreeDDemo {
                 stats.shadow_cascade_count,
                 stats.shadow_atlas_width,
                 stats.shadow_atlas_height,
+                orbit_mode,
+                camera_mode_name(self.repro_camera_locked),
                 gi_label,
-                shadow_debug_name(self.shadow_debug)
+                shadow_debug_name(active_debug_view),
+                if self.direct_only { "on" } else { "off" },
+                if self.indirect_only { "on" } else { "off" },
+                if self.contact_shadows_enabled { "on" } else { "off" },
             ));
         }
+    }
+}
+
+fn active_debug_view(state: &ThreeDDemo) -> RenderDebugView {
+    if state.direct_only {
+        RenderDebugView::DirectLighting
+    } else if state.indirect_only {
+        RenderDebugView::IndirectLighting
+    } else {
+        state.shadow_debug
     }
 }
 
@@ -246,6 +372,16 @@ fn shadow_debug_view_from_input(ctx: &FrameContext) -> Option<RenderDebugView> {
         Some(RenderDebugView::DirectionalShadowCascade(3))
     } else if ctx.input.key_pressed(KeyCode::F6) {
         Some(RenderDebugView::DirectionalShadowCoverage)
+    } else if ctx.input.key_pressed(KeyCode::F7) {
+        Some(RenderDebugView::DirectionalShadowSplitCoverage)
+    } else if ctx.input.key_pressed(KeyCode::F8) {
+        Some(RenderDebugView::DirectionalShadowFade)
+    } else if ctx.input.key_pressed(KeyCode::F9) {
+        Some(RenderDebugView::DirectionalShadowCompareDelta)
+    } else if ctx.input.key_pressed(KeyCode::F10) {
+        Some(RenderDebugView::DirectionalShadowBias)
+    } else if ctx.input.key_pressed(KeyCode::F11) {
+        Some(RenderDebugView::DirectionalShadowPcss)
     } else {
         None
     }
@@ -262,6 +398,14 @@ fn render_debug_log_enabled() -> bool {
         .unwrap_or(false)
 }
 
+fn camera_mode_name(locked: bool) -> &'static str {
+    if locked {
+        "repro"
+    } else {
+        "free"
+    }
+}
+
 fn env_flag(name: &str) -> bool {
     std::env::var(name)
         .map(|value| {
@@ -273,8 +417,112 @@ fn env_flag(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn env_u32(name: &str) -> Option<u32> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+}
+
+fn env_f32(name: &str) -> Option<f32> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<f32>().ok())
+}
+
+fn repro_camera_yaw() -> f32 {
+    env_f32("SKY_DEMO_CAMERA_YAW").unwrap_or(REPRO_CAMERA_YAW)
+}
+
+fn repro_camera_pitch() -> f32 {
+    env_f32("SKY_DEMO_CAMERA_PITCH")
+        .unwrap_or(REPRO_CAMERA_PITCH)
+        .clamp(CAMERA_PITCH_MIN, CAMERA_PITCH_MAX)
+}
+
+fn repro_camera_distance() -> f32 {
+    env_f32("SKY_DEMO_CAMERA_DISTANCE")
+        .unwrap_or(REPRO_CAMERA_DISTANCE)
+        .clamp(CAMERA_DISTANCE_MIN, CAMERA_DISTANCE_MAX)
+}
+
+fn initial_shadow_debug_from_env() -> (RenderDebugView, bool, bool) {
+    let Ok(value) = std::env::var("SKY_DEMO_SHADOW_DEBUG") else {
+        return (RenderDebugView::None, false, false);
+    };
+    match value
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['-', ' '], "_")
+        .as_str()
+    {
+        "none" | "lit" | "off" | "f1" => (RenderDebugView::None, false, false),
+        "cascade0" | "cascade_0" | "f2" => {
+            (RenderDebugView::DirectionalShadowCascade(0), false, false)
+        }
+        "cascade1" | "cascade_1" | "f3" => {
+            (RenderDebugView::DirectionalShadowCascade(1), false, false)
+        }
+        "cascade2" | "cascade_2" | "f4" => {
+            (RenderDebugView::DirectionalShadowCascade(2), false, false)
+        }
+        "cascade3" | "cascade_3" | "f5" => {
+            (RenderDebugView::DirectionalShadowCascade(3), false, false)
+        }
+        "coverage" | "sampled" | "sampled_coverage" | "f6" => {
+            (RenderDebugView::DirectionalShadowCoverage, false, false)
+        }
+        "split" | "split_coverage" | "f7" => (
+            RenderDebugView::DirectionalShadowSplitCoverage,
+            false,
+            false,
+        ),
+        "fade" | "cascade_fade" | "f8" => (RenderDebugView::DirectionalShadowFade, false, false),
+        "compare" | "compare_delta" | "delta" | "f9" => {
+            (RenderDebugView::DirectionalShadowCompareDelta, false, false)
+        }
+        "bias" | "bias_pressure" | "f10" => (RenderDebugView::DirectionalShadowBias, false, false),
+        "pcss" | "pcss_blocker" | "f11" => (RenderDebugView::DirectionalShadowPcss, false, false),
+        "direct" | "direct_only" | "f12" => (RenderDebugView::None, true, false),
+        "indirect" | "indirect_only" => (RenderDebugView::None, false, true),
+        "ssgi" | "indirect_diffuse" | "gi" => (RenderDebugView::IndirectDiffuse, false, false),
+        _ => (RenderDebugView::None, false, false),
+    }
+}
+
+fn shadow_filter_from_env() -> Option<DemoShadowFilter> {
+    let Ok(value) = std::env::var("SKY_DEMO_SHADOW_FILTER") else {
+        return None;
+    };
+    match value
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['-', ' '], "_")
+        .as_str()
+    {
+        "fixed" | "fixed_pcf" | "pcf" => Some(DemoShadowFilter::Fixed),
+        "dithered" | "dithered_pcf" => Some(DemoShadowFilter::Dithered),
+        "pcss" | "soft" => Some(DemoShadowFilter::Pcss),
+        "sharp" | "hard" => Some(DemoShadowFilter::Sharp),
+        _ => None,
+    }
+}
+
+fn apply_shadow_filter_override(light: DirectionalLight) -> DirectionalLight {
+    match shadow_filter_from_env() {
+        Some(DemoShadowFilter::Fixed) => light
+            .shadow_sampling_mode(ShadowSamplingMode::FixedPcf)
+            .shadow_filter_radius(0.05),
+        Some(DemoShadowFilter::Dithered) => light
+            .shadow_sampling_mode(ShadowSamplingMode::DitheredPcf)
+            .shadow_filter_radius(0.05),
+        Some(DemoShadowFilter::Pcss) => light.pcss_shadows(),
+        Some(DemoShadowFilter::Sharp) => light.sharp_shadows(),
+        None => light,
+    }
+}
+
 fn apply_render_debug_overrides(settings: &mut RenderSettings) {
-    if env_flag("SKY_DEMO_DISABLE_SSGI") {
+    if env_flag("SKY_DEMO_DISABLE_GI") || env_flag("SKY_DEMO_DISABLE_SSGI") {
         settings.global_illumination = GlobalIllumination::Off;
     }
     if env_flag("SKY_DEMO_DISABLE_TAA") {
@@ -309,6 +557,23 @@ fn default_ddgi_global_illumination(debug: ddgi::DdgiDebugMode) -> GlobalIllumin
     })
 }
 
+fn default_ssgi_global_illumination() -> GlobalIllumination {
+    ssgi::global_illumination(ssgi::SsgiSettings {
+        intensity: 0.28,
+        radius_pixels: 5.0,
+        depth_rejection: 6.0,
+        normal_power: 12.0,
+    })
+}
+
+fn default_demo_global_illumination(debug: ddgi::DdgiDebugMode) -> GlobalIllumination {
+    if env_flag("SKY_DEMO_USE_DDGI") {
+        default_ddgi_global_illumination(debug)
+    } else {
+        default_ssgi_global_illumination()
+    }
+}
+
 fn gi_status_name(settings: &GlobalIllumination) -> &'static str {
     match settings {
         GlobalIllumination::Off => "off",
@@ -327,7 +592,14 @@ fn shadow_debug_name(view: RenderDebugView) -> &'static str {
         RenderDebugView::DirectionalShadowCascade(2) => "cascade 2",
         RenderDebugView::DirectionalShadowCascade(3) => "cascade 3",
         RenderDebugView::DirectionalShadowCascade(_) => "cascade",
-        RenderDebugView::DirectionalShadowCoverage => "coverage",
+        RenderDebugView::DirectionalShadowCoverage => "sampled coverage",
+        RenderDebugView::DirectionalShadowSplitCoverage => "split coverage",
+        RenderDebugView::DirectionalShadowFade => "cascade fade",
+        RenderDebugView::DirectionalShadowCompareDelta => "compare delta",
+        RenderDebugView::DirectionalShadowBias => "bias pressure",
+        RenderDebugView::DirectionalShadowPcss => "pcss blocker",
+        RenderDebugView::DirectLighting => "direct only",
+        RenderDebugView::IndirectLighting => "indirect only",
         _ => "debug",
     }
 }
@@ -437,14 +709,18 @@ fn initialize_scene(ctx: &mut FrameContext) {
         WgpuMeshRenderer::new(assets.plane_mesh, assets.floor),
     ));
 
-    spawn_static_box(
-        ctx.world,
-        assets.cube_mesh,
-        assets.charcoal,
-        [0.0, GROUND_Y + 6.05, -0.8],
-        [14.8, 0.18, 20.2],
-        [0.0, 0.0, 0.0],
-    );
+    if !env_flag("SKY_DEMO_OPEN_CEILING") {
+        spawn_static_box_with_shadow(
+            ctx.world,
+            assets.cube_mesh,
+            assets.charcoal,
+            [0.0, GROUND_Y + 6.05, -0.8],
+            [14.8, 0.18, 20.2],
+            [0.0, 0.0, 0.0],
+            !env_flag("SKY_DEMO_DISABLE_CEILING_SHADOWS"),
+        );
+    }
+    let wall_casts_shadows = !env_flag("SKY_DEMO_DISABLE_WALL_SHADOWS");
     spawn_static_box(
         ctx.world,
         assets.cube_mesh,
@@ -453,21 +729,23 @@ fn initialize_scene(ctx: &mut FrameContext) {
         [14.8, 6.3, 0.18],
         [0.0, 0.0, 0.0],
     );
-    spawn_static_box(
+    spawn_static_box_with_shadow(
         ctx.world,
         assets.cube_mesh,
         assets.warm_wall,
         [-7.35, GROUND_Y + 3.05, -0.8],
         [0.18, 6.3, 20.2],
         [0.0, 0.0, 0.0],
+        wall_casts_shadows,
     );
-    spawn_static_box(
+    spawn_static_box_with_shadow(
         ctx.world,
         assets.cube_mesh,
         assets.cool_wall,
         [7.35, GROUND_Y + 3.05, -0.8],
         [0.18, 6.3, 20.2],
         [0.0, 0.0, 0.0],
+        wall_casts_shadows,
     );
     spawn_static_box(
         ctx.world,
@@ -566,55 +844,59 @@ fn initialize_scene(ctx: &mut FrameContext) {
         [7.2, 0.10, 0.22],
         [0.0, 0.0, 0.0],
     );
-    ctx.world.spawn((
-        Transform::from_xyz(-4.1, GROUND_Y + 3.75, -5.4).with_scale3(0.35, 0.35, 0.35),
-        WgpuMeshRenderer::new(assets.cube_mesh, assets.teal_emissive),
-        PointLight::new(7.0)
-            .intensity(0.62)
-            .color(Color::rgb(0.28, 0.92, 1.0))
-            .falloff(1.55),
-    ));
-    ctx.world.spawn((
-        Transform::from_xyz(3.8, GROUND_Y + 3.45, -3.7).with_scale3(0.35, 0.35, 0.35),
-        WgpuMeshRenderer::new(assets.cube_mesh, assets.amber_emissive),
-        PointLight::new(7.0)
-            .intensity(0.58)
-            .color(Color::rgb(1.0, 0.76, 0.28))
-            .falloff(1.45),
-    ));
-    ctx.world.spawn((
-        Transform::from_xyz(0.0, GROUND_Y + 4.45, 2.6).with_scale3(0.28, 0.28, 0.28),
-        WgpuMeshRenderer::new(assets.cube_mesh, assets.plaster),
-        PointLight::new(9.0)
-            .intensity(0.16)
-            .color(Color::rgb(1.0, 0.97, 0.90))
-            .falloff(1.10),
-    ));
-    ctx.world.spawn((
-        Transform::from_xyz(-1.8, GROUND_Y + 6.2, -2.1).with_scale3(0.24, 0.24, 0.24),
-        WgpuMeshRenderer::new(assets.cube_mesh, assets.teal_emissive),
-        SpotLight::new(11.0)
-            .intensity(1.15)
-            .color(Color::rgb(0.62, 0.86, 1.0))
-            .direction([0.28, -0.92, -0.26])
-            .cone_angles(18.0_f32.to_radians(), 34.0_f32.to_radians())
-            .falloff(1.8)
-            .shadow_resolution(1024),
-    ));
+    if !env_flag("SKY_DEMO_DISABLE_LOCAL_LIGHTS") {
+        ctx.world.spawn((
+            Transform::from_xyz(-4.1, GROUND_Y + 3.75, -5.4).with_scale3(0.35, 0.35, 0.35),
+            WgpuMeshRenderer::new(assets.cube_mesh, assets.teal_emissive),
+            PointLight::new(7.0)
+                .intensity(0.62)
+                .color(Color::rgb(0.28, 0.92, 1.0))
+                .falloff(1.55),
+        ));
+        ctx.world.spawn((
+            Transform::from_xyz(3.8, GROUND_Y + 3.45, -3.7).with_scale3(0.35, 0.35, 0.35),
+            WgpuMeshRenderer::new(assets.cube_mesh, assets.amber_emissive),
+            PointLight::new(7.0)
+                .intensity(0.58)
+                .color(Color::rgb(1.0, 0.76, 0.28))
+                .falloff(1.45),
+        ));
+        ctx.world.spawn((
+            Transform::from_xyz(0.0, GROUND_Y + 4.45, 2.6).with_scale3(0.28, 0.28, 0.28),
+            WgpuMeshRenderer::new(assets.cube_mesh, assets.plaster),
+            PointLight::new(9.0)
+                .intensity(0.16)
+                .color(Color::rgb(1.0, 0.97, 0.90))
+                .falloff(1.10),
+        ));
+        ctx.world.spawn((
+            Transform::from_xyz(-1.8, GROUND_Y + 6.2, -2.1).with_scale3(0.24, 0.24, 0.24),
+            WgpuMeshRenderer::new(assets.cube_mesh, assets.teal_emissive),
+            SpotLight::new(11.0)
+                .intensity(1.15)
+                .color(Color::rgb(0.62, 0.86, 1.0))
+                .direction([0.28, -0.92, -0.26])
+                .cone_angles(18.0_f32.to_radians(), 34.0_f32.to_radians())
+                .falloff(1.8)
+                .shadow_resolution(1024),
+        ));
+    }
 
-    ctx.world.spawn((DirectionalLight::new([0.58, -1.0, 0.34])
+    let directional_light = DirectionalLight::new([0.58, -1.0, 0.34])
         .intensity(1.88)
         .color(Color::rgb(1.0, 0.96, 0.90))
         .cascade_count(4)
         .cascade_distances([5.5, 13.0, 30.0, 80.0])
         .cascade_blend(0.18)
         .shadow_resolution_per_cascade(2048)
+        .radius(0.055)
         .shadow_bias(0.0008)
         .shadow_depth_bias(3)
         .shadow_slope_bias(1.8)
         .shadow_normal_bias(0.002)
-        .shadow_filter_radius(0.055)
-        .pcss_shadows(),));
+        .pcss_shadows();
+    ctx.world
+        .spawn((apply_shadow_filter_override(directional_light),));
 }
 
 fn update_camera(ctx: &mut FrameContext, yaw: f32, pitch: f32, distance: f32) {
@@ -700,11 +982,23 @@ fn spawn_static_box(
     scale: [f32; 3],
     euler_angles: [f32; 3],
 ) {
+    spawn_static_box_with_shadow(world, mesh, material, position, scale, euler_angles, true);
+}
+
+fn spawn_static_box_with_shadow(
+    world: &mut World,
+    mesh: MeshHandle,
+    material: MaterialHandle,
+    position: [f32; 3],
+    scale: [f32; 3],
+    euler_angles: [f32; 3],
+    casts_shadows: bool,
+) {
     world.spawn((
         Transform::from_xyz(position[0], position[1], position[2])
             .with_scale3(scale[0], scale[1], scale[2])
             .with_euler_angles(euler_angles[0], euler_angles[1], euler_angles[2]),
-        WgpuMeshRenderer::new(mesh, material),
+        WgpuMeshRenderer::new(mesh, material).casts_shadows(casts_shadows),
     ));
 }
 
@@ -1108,12 +1402,7 @@ fn main() {
     let mut render_settings = RenderSettings {
         clear_color: Color::rgb(0.0014, 0.0018, 0.0024),
         ambient_color: Color::rgb(0.007, 0.009, 0.012),
-        global_illumination: ssgi::global_illumination(ssgi::SsgiSettings {
-            intensity: 0.28,
-            radius_pixels: 5.0,
-            depth_rejection: 6.0,
-            normal_power: 12.0,
-        }),
+        global_illumination: default_demo_global_illumination(ddgi::DdgiDebugMode::Off),
         contact_shadows: ContactShadowsSettings {
             enabled: true,
             intensity: 0.68,

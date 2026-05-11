@@ -3,6 +3,8 @@
 use super::*;
 use std::borrow::Cow;
 
+use rustc_hash::FxHashMap;
+
 struct ValidatedBufferToTextureCopy {
     width: u32,
     height: u32,
@@ -11,6 +13,142 @@ struct ValidatedBufferToTextureCopy {
 }
 
 impl RenderGraph {
+    fn trace_aliasing_enabled() -> bool {
+        std::env::var_os("SKY_RENDER_GRAPH_TRACE_ALIAS").is_some()
+    }
+
+    fn texture_label(&self, tex_idx: usize) -> &str {
+        self.textures
+            .get(tex_idx)
+            .map(|desc| desc.name.as_ref())
+            .unwrap_or("<invalid>")
+    }
+
+    fn resource_label(&self, resource: ResourceRef) -> String {
+        match resource {
+            ResourceRef::Surface => "surface".to_string(),
+            ResourceRef::Texture(handle) => {
+                format!("{}#{}", self.texture_label(handle.0), handle.0)
+            }
+            ResourceRef::TextureSubresource(subresource) => format!(
+                "{}#{}[mip {}..{}, layer {}..{}]",
+                self.texture_label(subresource.texture.0),
+                subresource.texture.0,
+                subresource.base_mip_level,
+                subresource.base_mip_level + subresource.mip_level_count,
+                subresource.base_array_layer,
+                subresource.base_array_layer + subresource.array_layer_count
+            ),
+            ResourceRef::Buffer(handle) => format!("buffer#{}", handle.0),
+        }
+    }
+
+    fn trace_aliasing_state(&self, compiled: &[CompiledPass]) {
+        if !Self::trace_aliasing_enabled() {
+            return;
+        }
+
+        eprintln!("[RenderGraph][alias] groups:");
+        for group in &self.alias_groups {
+            if group.members.len() <= 1 {
+                continue;
+            }
+            let members = group
+                .members
+                .iter()
+                .map(|&idx| format!("{}#{}", self.texture_label(idx), idx))
+                .collect::<Vec<_>>()
+                .join(", ");
+            eprintln!("  [{}]", members);
+        }
+
+        eprintln!("[RenderGraph][alias] pass order:");
+        for pass in compiled {
+            let reads = pass
+                .reads
+                .iter()
+                .copied()
+                .map(|resource| self.resource_label(resource))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let writes = pass
+                .writes
+                .iter()
+                .copied()
+                .map(|resource| self.resource_label(resource))
+                .collect::<Vec<_>>()
+                .join(", ");
+            eprintln!(
+                "  {}#{} {:?}: R=[{}] W=[{}]",
+                pass.name, pass.index, pass.pass_type, reads, writes
+            );
+        }
+    }
+
+    #[inline]
+    fn aliased_primary_for_texture(&self, tex_idx: usize) -> Option<usize> {
+        if let Some(&primary) = self.alias_redirects.get(&tex_idx) {
+            return Some(primary);
+        }
+        self.alias_redirects
+            .values()
+            .any(|&primary| primary == tex_idx)
+            .then_some(tex_idx)
+    }
+
+    #[inline]
+    fn resource_texture_index(resource: ResourceRef) -> Option<usize> {
+        match resource {
+            ResourceRef::Texture(handle) => Some(handle.0),
+            ResourceRef::TextureSubresource(subresource) => Some(subresource.texture.0),
+            ResourceRef::Surface | ResourceRef::Buffer(_) => None,
+        }
+    }
+
+    fn flush_before_aliased_owner_change(
+        &self,
+        ctx: &mut GpuContext,
+        pass: &CompiledPass,
+        active_alias_owners: &mut FxHashMap<usize, usize>,
+    ) {
+        if self.alias_redirects.is_empty() {
+            return;
+        }
+
+        for resource in pass.reads.iter().chain(pass.writes.iter()).copied() {
+            let Some(tex_idx) = Self::resource_texture_index(resource) else {
+                continue;
+            };
+            let Some(primary_idx) = self.aliased_primary_for_texture(tex_idx) else {
+                continue;
+            };
+
+            if active_alias_owners
+                .get(&primary_idx)
+                .is_some_and(|&owner_idx| owner_idx != tex_idx)
+                && ctx.has_active_frame()
+            {
+                if Self::trace_aliasing_enabled() {
+                    let old_owner = active_alias_owners[&primary_idx];
+                    eprintln!(
+                        "[RenderGraph][alias] flush before pass {}: {}#{} -> {}#{} (primary {}#{})",
+                        pass.name,
+                        self.texture_label(old_owner),
+                        old_owner,
+                        self.texture_label(tex_idx),
+                        tex_idx,
+                        self.texture_label(primary_idx),
+                        primary_idx
+                    );
+                }
+                ctx.flush("render_graph_encoder_after_alias_owner_change");
+                active_alias_owners.clear();
+            }
+
+            active_alias_owners.insert(primary_idx, tex_idx);
+        }
+    }
+
     fn validate_texture_to_texture_copy(
         &self,
         src: TextureHandle,
@@ -350,6 +488,7 @@ impl RenderGraph {
         self.allocate_physical_resources(ctx);
 
         let compiled = std::mem::take(&mut self.cached_compiled);
+        self.trace_aliasing_state(&compiled);
         let result = {
             let resources = PhysicalResources {
                 handle_token: self.handle_token,
@@ -362,12 +501,21 @@ impl RenderGraph {
             };
 
             let mut err = None;
+            let mut active_alias_owners = FxHashMap::default();
             for pass in &compiled {
+                if Self::trace_aliasing_enabled() {
+                    eprintln!(
+                        "[RenderGraph][alias] executing {}#{}",
+                        pass.name, pass.index
+                    );
+                }
+                self.flush_before_aliased_owner_change(ctx, pass, &mut active_alias_owners);
                 if pass.pass_type == PassType::Copy {
                     if let Err(e) = self.execute_copy_pass(ctx, pass) {
                         err = Some(e);
                         break;
                     }
+                    active_alias_owners.clear();
                 } else {
                     if let Err(e) = run_pass(pass, ctx, &resources) {
                         err = Some(e);
@@ -424,6 +572,7 @@ impl RenderGraph {
         self.allocate_physical_resources(ctx);
 
         let compiled = std::mem::take(&mut self.cached_compiled);
+        self.trace_aliasing_state(&compiled);
         let result = {
             let resources = PhysicalResources {
                 handle_token: self.handle_token,
@@ -436,15 +585,21 @@ impl RenderGraph {
             };
 
             let mut err = None;
+            let mut active_alias_owners = FxHashMap::default();
             for pass in &compiled {
+                self.flush_before_aliased_owner_change(ctx, pass, &mut active_alias_owners);
                 profiler.on_pass_begin(&pass.name, pass.pass_type);
                 let start = std::time::Instant::now();
+                if Self::trace_aliasing_enabled() {
+                    eprintln!("[RenderGraph][alias] begin {}", pass.name);
+                }
                 if pass.pass_type == PassType::Copy {
                     if let Err(e) = self.execute_copy_pass(ctx, pass) {
                         profiler.on_pass_end(&pass.name, start.elapsed());
                         err = Some(e);
                         break;
                     }
+                    active_alias_owners.clear();
                 } else {
                     if let Err(e) = run_pass(pass, ctx, &resources) {
                         profiler.on_pass_end(&pass.name, start.elapsed());
@@ -453,6 +608,9 @@ impl RenderGraph {
                     }
                 }
                 profiler.on_pass_end(&pass.name, start.elapsed());
+                if Self::trace_aliasing_enabled() {
+                    eprintln!("[RenderGraph][alias] end {}", pass.name);
+                }
             }
             err
         };

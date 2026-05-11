@@ -1,0 +1,14 @@
+[package]
+name = "yakui-test"
+description = "Testing utilities for yakui widgets"
+publish = false
+edition = "2021"
+
+[features]
+images = ["yakui-to-image"]
+
+[dependencies]
+yakui-core = { path = "../yakui-core" }
+yakui-to-image = { path = "../yakui-to-image", optional = true }
+
+insta.workspace = true

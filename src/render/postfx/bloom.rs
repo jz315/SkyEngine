@@ -3,7 +3,10 @@
 use crate::gpu::GpuContext;
 use crate::render::gpu::RenderTarget;
 use crate::render::gpu::{FullscreenPass, FullscreenPipeline};
-use crate::render::postfx::PostFx;
+use crate::render::graph::{
+    CompiledPass, PassHandle, PhysicalResources, RenderGraph, RenderGraphError, TargetSize,
+    TextureHandle,
+};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -14,7 +17,46 @@ struct BloomUniform {
 
 const BLOOM_SHADER: &str = include_str!("../shaders/postfx/bloom.wgsl");
 const BLOOM_LEVELS: usize = 6;
-pub(crate) const DRAW_CALLS_PER_APPLY: usize = 4 * BLOOM_LEVELS;
+pub(crate) const BLOOM_GRAPH_PASS_COUNT: usize = 4 * BLOOM_LEVELS;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BloomGraphPassKind {
+    Downsample { level: usize },
+    BlurHorizontal { level: usize },
+    BlurVertical { level: usize },
+    Upsample { level: usize },
+    Combine,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BloomGraphPass {
+    handle: PassHandle,
+    kind: BloomGraphPassKind,
+}
+
+#[derive(Debug, Clone)]
+pub struct BloomGraph {
+    input: TextureHandle,
+    output: TextureHandle,
+    mips: [TextureHandle; BLOOM_LEVELS],
+    scratches: [TextureHandle; BLOOM_LEVELS],
+    passes: Vec<BloomGraphPass>,
+}
+
+impl BloomGraph {
+    #[inline]
+    pub fn output(&self) -> TextureHandle {
+        self.output
+    }
+
+    #[inline]
+    fn pass_kind(&self, handle: PassHandle) -> Option<BloomGraphPassKind> {
+        self.passes
+            .iter()
+            .find(|pass| pass.handle == handle)
+            .map(|pass| pass.kind)
+    }
+}
 
 pub struct Bloom {
     downsample_pipeline: FullscreenPipeline,
@@ -25,8 +67,6 @@ pub struct Bloom {
     dual_bgl: wgpu::BindGroupLayout,
     params_buffer: wgpu::Buffer,
     params_bind_group: wgpu::BindGroup,
-    mip_chain: Vec<RenderTarget>,
-    scratch_chain: Vec<RenderTarget>,
     pub intensity: f32,
     pub spread: f32,
 }
@@ -96,12 +136,7 @@ fn dual_texture_bgl(device: &wgpu::Device) -> wgpu::BindGroupLayout {
 }
 
 impl Bloom {
-    pub fn new(
-        ctx: &GpuContext,
-        width: u32,
-        height: u32,
-        target_format: wgpu::TextureFormat,
-    ) -> Self {
+    pub fn new(ctx: &GpuContext, target_format: wgpu::TextureFormat) -> Self {
         let sample_bgl = texture_sampler_bgl(ctx.device(), "bloom_sample_bgl");
         let dual_bgl = dual_texture_bgl(ctx.device());
 
@@ -187,8 +222,6 @@ impl Bloom {
             "bloom_combine",
         );
 
-        let (mip_chain, scratch_chain) = create_chains(ctx, width, height, target_format);
-
         Self {
             downsample_pipeline,
             blur_pipeline,
@@ -198,24 +231,8 @@ impl Bloom {
             dual_bgl,
             params_buffer,
             params_bind_group,
-            mip_chain,
-            scratch_chain,
             intensity: 1.0,
             spread: 1.0,
-        }
-    }
-
-    pub fn resize(
-        &mut self,
-        ctx: &GpuContext,
-        width: u32,
-        height: u32,
-        target_format: wgpu::TextureFormat,
-    ) {
-        for level in 0..BLOOM_LEVELS {
-            let [lw, lh] = bloom_level_size(width, height, level);
-            self.mip_chain[level].resize(ctx, lw, lh, target_format);
-            self.scratch_chain[level].resize(ctx, lw, lh, target_format);
         }
     }
 
@@ -243,6 +260,261 @@ impl Bloom {
                 },
             ],
         })
+    }
+
+    fn draw_single_input(
+        &mut self,
+        ctx: &mut GpuContext,
+        pipeline_kind: BloomGraphPassKind,
+        input: &RenderTarget,
+        output: &RenderTarget,
+        clear: bool,
+        texel_dir: [f32; 2],
+    ) {
+        let pipeline = match pipeline_kind {
+            BloomGraphPassKind::Downsample { .. } => {
+                self.downsample_pipeline.pipeline(ctx, output.format())
+            }
+            BloomGraphPassKind::BlurHorizontal { .. } | BloomGraphPassKind::BlurVertical { .. } => {
+                self.blur_pipeline.pipeline(ctx, output.format())
+            }
+            BloomGraphPassKind::Upsample { .. } => {
+                self.upsample_pipeline.pipeline(ctx, output.format())
+            }
+            BloomGraphPassKind::Combine => unreachable!("combine has two inputs"),
+        };
+        let input_bg = self.create_sample_bg(ctx, input);
+        self.update_uniform(ctx, texel(input), texel_dir);
+        self.run_single_input(ctx, pipeline.as_ref(), &input_bg, output, clear);
+    }
+
+    fn draw_combine(
+        &mut self,
+        ctx: &mut GpuContext,
+        input: &RenderTarget,
+        bloom: &RenderTarget,
+        output: &RenderTarget,
+    ) {
+        let combine_pipeline = self.combine_pipeline.pipeline(ctx, output.format());
+        self.update_uniform(ctx, [0.0, 0.0], [0.0, 0.0]);
+        let combine_bg = ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bloom_combine_bg"),
+            layout: &self.dual_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(input.view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(ctx.sampler_linear()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(bloom.view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(ctx.sampler_linear()),
+                },
+            ],
+        });
+        let color_attachments = [Some(wgpu::RenderPassColorAttachment {
+            view: output.view(),
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                store: wgpu::StoreOp::Store,
+            },
+        })];
+        let mut frame = ctx.frame();
+        let mut pass = frame.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("bloom_combine_pass"),
+            color_attachments: &color_attachments,
+            depth_stencil_attachment: None,
+            ..Default::default()
+        });
+        pass.set_pipeline(combine_pipeline.as_ref());
+        pass.set_bind_group(0, &combine_bg, &[]);
+        pass.set_bind_group(1, &self.params_bind_group, &[]);
+        FullscreenPass::draw(&mut pass);
+    }
+
+    pub fn setup_graph(
+        graph: &mut RenderGraph,
+        input: TextureHandle,
+        output: TextureHandle,
+        size: TargetSize,
+        format: wgpu::TextureFormat,
+        label: &str,
+    ) -> BloomGraph {
+        let mips = std::array::from_fn(|level| {
+            graph.create_texture(|builder| {
+                builder
+                    .name(format!("{label}_mip_{level}"))
+                    .size(bloom_level_target_size(size, level))
+                    .format(format);
+            })
+        });
+        let scratches = std::array::from_fn(|level| {
+            graph.create_texture(|builder| {
+                builder
+                    .name(format!("{label}_scratch_{level}"))
+                    .size(bloom_level_target_size(size, level))
+                    .format(format);
+            })
+        });
+
+        let mut passes = Vec::with_capacity(BLOOM_GRAPH_PASS_COUNT);
+        let handle = graph.add_render_pass(format!("{label}_downsample_0"), |setup| {
+            setup.read(input);
+            setup.write_color_cleared(0, mips[0], [0.0, 0.0, 0.0, 1.0]);
+        });
+        passes.push(BloomGraphPass {
+            handle,
+            kind: BloomGraphPassKind::Downsample { level: 0 },
+        });
+
+        for level in 1..BLOOM_LEVELS {
+            let handle = graph.add_render_pass(format!("{label}_downsample_{level}"), |setup| {
+                setup.read(mips[level - 1]);
+                setup.write_color_cleared(0, mips[level], [0.0, 0.0, 0.0, 1.0]);
+            });
+            passes.push(BloomGraphPass {
+                handle,
+                kind: BloomGraphPassKind::Downsample { level },
+            });
+        }
+
+        for level in 0..BLOOM_LEVELS {
+            let handle = graph.add_render_pass(format!("{label}_blur_h_{level}"), |setup| {
+                setup.read(mips[level]);
+                setup.write_color_cleared(0, scratches[level], [0.0, 0.0, 0.0, 1.0]);
+            });
+            passes.push(BloomGraphPass {
+                handle,
+                kind: BloomGraphPassKind::BlurHorizontal { level },
+            });
+
+            let handle = graph.add_render_pass(format!("{label}_blur_v_{level}"), |setup| {
+                setup.read(scratches[level]);
+                setup.write_color_cleared(0, mips[level], [0.0, 0.0, 0.0, 1.0]);
+            });
+            passes.push(BloomGraphPass {
+                handle,
+                kind: BloomGraphPassKind::BlurVertical { level },
+            });
+        }
+
+        for level in (1..BLOOM_LEVELS).rev() {
+            let handle = graph.add_render_pass(format!("{label}_upsample_{level}"), |setup| {
+                setup.read(mips[level]);
+                setup.write_color_loaded(0, mips[level - 1]);
+            });
+            passes.push(BloomGraphPass {
+                handle,
+                kind: BloomGraphPassKind::Upsample { level },
+            });
+        }
+
+        let handle = graph.add_render_pass(format!("{label}_combine"), |setup| {
+            setup.read(input);
+            setup.read(mips[0]);
+            setup.write_color_cleared(0, output, [0.0, 0.0, 0.0, 1.0]);
+        });
+        passes.push(BloomGraphPass {
+            handle,
+            kind: BloomGraphPassKind::Combine,
+        });
+
+        BloomGraph {
+            input,
+            output,
+            mips,
+            scratches,
+            passes,
+        }
+    }
+
+    pub fn execute_graph_pass(
+        &mut self,
+        ctx: &mut GpuContext,
+        graph: &BloomGraph,
+        pass: &CompiledPass,
+        resources: &PhysicalResources<'_>,
+    ) -> Result<bool, RenderGraphError> {
+        let Some(kind) = graph.pass_kind(pass.handle) else {
+            return Ok(false);
+        };
+
+        match kind {
+            BloomGraphPassKind::Downsample { level } => {
+                let input_handle = if level == 0 {
+                    graph.input
+                } else {
+                    graph.mips[level - 1]
+                };
+                let input = resources.render_target(input_handle).ok_or_else(|| {
+                    RenderGraphError::ExecutionFailed("bloom missing downsample input".into())
+                })?;
+                let output = resources.render_target(graph.mips[level]).ok_or_else(|| {
+                    RenderGraphError::ExecutionFailed("bloom missing downsample output".into())
+                })?;
+                self.draw_single_input(ctx, kind, input, output, true, [0.0, 0.0]);
+            }
+            BloomGraphPassKind::BlurHorizontal { level } => {
+                let input = resources.render_target(graph.mips[level]).ok_or_else(|| {
+                    RenderGraphError::ExecutionFailed("bloom missing horizontal blur input".into())
+                })?;
+                let output = resources
+                    .render_target(graph.scratches[level])
+                    .ok_or_else(|| {
+                        RenderGraphError::ExecutionFailed(
+                            "bloom missing horizontal blur output".into(),
+                        )
+                    })?;
+                self.draw_single_input(ctx, kind, input, output, true, [1.0, 0.0]);
+            }
+            BloomGraphPassKind::BlurVertical { level } => {
+                let input = resources
+                    .render_target(graph.scratches[level])
+                    .ok_or_else(|| {
+                        RenderGraphError::ExecutionFailed(
+                            "bloom missing vertical blur input".into(),
+                        )
+                    })?;
+                let output = resources.render_target(graph.mips[level]).ok_or_else(|| {
+                    RenderGraphError::ExecutionFailed("bloom missing vertical blur output".into())
+                })?;
+                self.draw_single_input(ctx, kind, input, output, true, [0.0, 1.0]);
+            }
+            BloomGraphPassKind::Upsample { level } => {
+                let input = resources.render_target(graph.mips[level]).ok_or_else(|| {
+                    RenderGraphError::ExecutionFailed("bloom missing upsample input".into())
+                })?;
+                let output = resources
+                    .render_target(graph.mips[level - 1])
+                    .ok_or_else(|| {
+                        RenderGraphError::ExecutionFailed("bloom missing upsample output".into())
+                    })?;
+                self.draw_single_input(ctx, kind, input, output, false, [0.0, 0.0]);
+            }
+            BloomGraphPassKind::Combine => {
+                let input = resources.render_target(graph.input).ok_or_else(|| {
+                    RenderGraphError::ExecutionFailed("bloom missing combine input".into())
+                })?;
+                let bloom = resources.render_target(graph.mips[0]).ok_or_else(|| {
+                    RenderGraphError::ExecutionFailed("bloom missing combine mip".into())
+                })?;
+                let output = resources.render_target(graph.output).ok_or_else(|| {
+                    RenderGraphError::ExecutionFailed("bloom missing combine output".into())
+                })?;
+                self.draw_combine(ctx, input, bloom, output);
+            }
+        }
+
+        Ok(true)
     }
 
     fn run_single_input(
@@ -279,162 +551,21 @@ impl Bloom {
         pass.set_bind_group(1, &self.params_bind_group, &[]);
         FullscreenPass::draw(&mut pass);
     }
-
-    pub fn apply(&mut self, ctx: &mut GpuContext, input: &RenderTarget, output: &RenderTarget) {
-        self.resize(ctx, input.width(), input.height(), output.format());
-        let downsample_pipeline = self.downsample_pipeline.pipeline(ctx, output.format());
-        let blur_pipeline = self.blur_pipeline.pipeline(ctx, output.format());
-        let upsample_pipeline = self.upsample_pipeline.pipeline(ctx, output.format());
-        let combine_pipeline = self.combine_pipeline.pipeline(ctx, output.format());
-
-        let input_bg = self.create_sample_bg(ctx, input);
-        self.update_uniform(ctx, texel(input), [0.0, 0.0]);
-        self.run_single_input(
-            ctx,
-            downsample_pipeline.as_ref(),
-            &input_bg,
-            &self.mip_chain[0],
-            true,
-        );
-
-        for level in 1..BLOOM_LEVELS {
-            let bg = self.create_sample_bg(ctx, &self.mip_chain[level - 1]);
-            self.update_uniform(ctx, texel(&self.mip_chain[level - 1]), [0.0, 0.0]);
-            self.run_single_input(
-                ctx,
-                downsample_pipeline.as_ref(),
-                &bg,
-                &self.mip_chain[level],
-                true,
-            );
-        }
-
-        for level in 0..BLOOM_LEVELS {
-            self.update_uniform(ctx, texel(&self.mip_chain[level]), [1.0, 0.0]);
-            let horizontal_bg = self.create_sample_bg(ctx, &self.mip_chain[level]);
-            self.run_single_input(
-                ctx,
-                blur_pipeline.as_ref(),
-                &horizontal_bg,
-                &self.scratch_chain[level],
-                true,
-            );
-
-            self.update_uniform(ctx, texel(&self.scratch_chain[level]), [0.0, 1.0]);
-            let vertical_bg = self.create_sample_bg(ctx, &self.scratch_chain[level]);
-            self.run_single_input(
-                ctx,
-                blur_pipeline.as_ref(),
-                &vertical_bg,
-                &self.mip_chain[level],
-                true,
-            );
-        }
-
-        for level in (1..BLOOM_LEVELS).rev() {
-            let bg = self.create_sample_bg(ctx, &self.mip_chain[level]);
-            self.update_uniform(ctx, texel(&self.mip_chain[level]), [0.0, 0.0]);
-            self.run_single_input(
-                ctx,
-                upsample_pipeline.as_ref(),
-                &bg,
-                &self.mip_chain[level - 1],
-                false,
-            );
-        }
-
-        self.update_uniform(ctx, [0.0, 0.0], [0.0, 0.0]);
-        let combine_bg = ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("bloom_combine_bg"),
-            layout: &self.dual_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(input.view()),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(ctx.sampler_linear()),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(self.mip_chain[0].view()),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::Sampler(ctx.sampler_linear()),
-                },
-            ],
-        });
-        let color_attachments = [Some(wgpu::RenderPassColorAttachment {
-            view: output.view(),
-            depth_slice: None,
-            resolve_target: None,
-            ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                store: wgpu::StoreOp::Store,
-            },
-        })];
-        let mut frame = ctx.frame();
-        let mut pass = frame.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("bloom_combine_pass"),
-            color_attachments: &color_attachments,
-            depth_stencil_attachment: None,
-            ..Default::default()
-        });
-        pass.set_pipeline(combine_pipeline.as_ref());
-        pass.set_bind_group(0, &combine_bg, &[]);
-        pass.set_bind_group(1, &self.params_bind_group, &[]);
-        FullscreenPass::draw(&mut pass);
-    }
 }
 
-fn create_chains(
-    ctx: &GpuContext,
-    width: u32,
-    height: u32,
-    format: wgpu::TextureFormat,
-) -> (Vec<RenderTarget>, Vec<RenderTarget>) {
-    let mut mip_chain = Vec::with_capacity(BLOOM_LEVELS);
-    let mut scratch_chain = Vec::with_capacity(BLOOM_LEVELS);
-    for level in 0..BLOOM_LEVELS {
-        let [lw, lh] = bloom_level_size(width, height, level);
-        mip_chain.push(RenderTarget::new(
-            ctx,
-            lw,
-            lh,
-            format,
-            format!("bloom_mip_{level}"),
-        ));
-        scratch_chain.push(RenderTarget::new(
-            ctx,
-            lw,
-            lh,
-            format,
-            format!("bloom_scratch_{level}"),
-        ));
-    }
-    (mip_chain, scratch_chain)
-}
-
-fn bloom_level_size(width: u32, height: u32, level: usize) -> [u32; 2] {
+fn bloom_level_target_size(size: TargetSize, level: usize) -> TargetSize {
     let scale = 1u32 << (level as u32 + 1);
-    [(width / scale).max(1), (height / scale).max(1)]
+    match size {
+        TargetSize::Surface => TargetSize::Scale(1.0 / scale as f32),
+        TargetSize::Scale(base) => TargetSize::Scale(base / scale as f32),
+        TargetSize::Exact(width, height) => {
+            TargetSize::Exact((width / scale).max(1), (height / scale).max(1))
+        }
+    }
 }
 
 fn texel(target: &RenderTarget) -> [f32; 2] {
     [1.0 / target.width() as f32, 1.0 / target.height() as f32]
-}
-
-impl PostFx for Bloom {
-    fn apply_to_target(
-        &mut self,
-        ctx: &mut GpuContext,
-        input: &RenderTarget,
-        output: &RenderTarget,
-    ) {
-        Bloom::apply(self, ctx, input, output);
-    }
 }
 
 #[cfg(test)]
@@ -470,53 +601,22 @@ mod tests {
             [64, 64],
         );
 
-        let bloom = Bloom::new(&ctx, 64, 64, wgpu::TextureFormat::Rgba16Float);
+        let bloom = Bloom::new(&ctx, wgpu::TextureFormat::Rgba16Float);
 
-        assert_eq!(bloom.mip_chain.len(), BLOOM_LEVELS);
-        assert_eq!(bloom.scratch_chain.len(), BLOOM_LEVELS);
+        let _ = bloom;
     }
 
     #[test]
-    fn draw_call_accounting_matches_rebuilt_pass_count() {
-        assert_eq!(DRAW_CALLS_PER_APPLY, 24);
+    fn graph_pass_accounting_matches_rebuilt_pass_count() {
+        assert_eq!(BLOOM_GRAPH_PASS_COUNT, 24);
         assert_eq!(
-            DRAW_CALLS_PER_APPLY,
+            BLOOM_GRAPH_PASS_COUNT,
             BLOOM_LEVELS + BLOOM_LEVELS * 2 + (BLOOM_LEVELS - 1) + 1
         );
     }
 
     #[test]
-    fn resize_reformats_internal_targets() {
-        let (device, queue) = create_test_device();
-        let ctx = crate::gpu::GpuContext::new_headless(
-            device,
-            queue,
-            wgpu::TextureFormat::Bgra8Unorm,
-            [64, 64],
-        );
-        let mut bloom = Bloom::new(&ctx, 64, 64, wgpu::TextureFormat::Rgba16Float);
-
-        bloom.resize(&ctx, 96, 64, wgpu::TextureFormat::Rgba8Unorm);
-
-        assert!(bloom
-            .mip_chain
-            .iter()
-            .all(|target| target.format() == wgpu::TextureFormat::Rgba8Unorm));
-        assert!(bloom
-            .scratch_chain
-            .iter()
-            .all(|target| target.format() == wgpu::TextureFormat::Rgba8Unorm));
-        for level in 0..BLOOM_LEVELS {
-            let [width, height] = bloom_level_size(96, 64, level);
-            assert_eq!(bloom.mip_chain[level].width(), width);
-            assert_eq!(bloom.mip_chain[level].height(), height);
-            assert_eq!(bloom.scratch_chain[level].width(), width);
-            assert_eq!(bloom.scratch_chain[level].height(), height);
-        }
-    }
-
-    #[test]
-    fn apply_runs_in_headless_frame() {
+    fn graph_execution_runs_in_headless_frame() {
         let (device, queue) = create_test_device();
         let mut ctx = crate::gpu::GpuContext::new_headless(
             device,
@@ -524,13 +624,49 @@ mod tests {
             wgpu::TextureFormat::Bgra8Unorm,
             [64, 64],
         );
-        let input = RenderTarget::new(&ctx, 64, 64, wgpu::TextureFormat::Rgba16Float, "input");
-        let output = RenderTarget::new(&ctx, 64, 64, wgpu::TextureFormat::Rgba16Float, "output");
-        let mut bloom = Bloom::new(&ctx, 64, 64, wgpu::TextureFormat::Rgba16Float);
+        let mut graph = RenderGraph::new();
+        let input = graph.create_texture(|builder| {
+            builder
+                .name("input")
+                .size(TargetSize::Exact(64, 64))
+                .format(wgpu::TextureFormat::Rgba16Float);
+        });
+        let output = graph.create_texture(|builder| {
+            builder
+                .name("output")
+                .size(TargetSize::Exact(64, 64))
+                .format(wgpu::TextureFormat::Rgba16Float);
+        });
+        graph.add_render_pass("seed_input", |setup| {
+            setup.write_color_cleared(0, input, [1.0, 1.0, 1.0, 1.0]);
+        });
+        let bloom_graph = Bloom::setup_graph(
+            &mut graph,
+            input,
+            output,
+            TargetSize::Exact(64, 64),
+            wgpu::TextureFormat::Rgba16Float,
+            "bloom",
+        );
+        graph.add_render_pass("present_output", |setup| {
+            setup.read(output);
+            setup.write_surface();
+        });
+        graph.compile().expect("bloom graph should compile");
+        assert_eq!(graph.alive_pass_count(), BLOOM_GRAPH_PASS_COUNT + 2);
+
+        let mut bloom = Bloom::new(&ctx, wgpu::TextureFormat::Rgba16Float);
 
         ctx.begin_frame()
             .expect("headless begin_frame should succeed");
-        bloom.apply(&mut ctx, &input, &output);
+        graph
+            .try_execute(&mut ctx, |pass, gpu, resources| {
+                if bloom.execute_graph_pass(gpu, &bloom_graph, pass, resources)? {
+                    return Ok(());
+                }
+                Ok(())
+            })
+            .expect("bloom graph execution should succeed");
         ctx.end_frame();
     }
 }

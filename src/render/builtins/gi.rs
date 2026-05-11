@@ -7,6 +7,7 @@ use crate::render::gi::GiRuntime;
 use crate::render::graph::RenderGraphError;
 use crate::render::pipeline::{ComputePass, PostFxPass};
 use crate::render::SceneView;
+use crate::render::{RenderDebugView, RenderSettings};
 
 #[derive(Default)]
 pub struct GiUpdateCompute;
@@ -83,6 +84,14 @@ impl PostFxPass for GiCompositePass {
         {
             return false;
         }
+        if frame.payload::<RenderSettings>().is_some_and(|settings| {
+            matches!(
+                settings.debug_view,
+                RenderDebugView::DirectLighting | RenderDebugView::IndirectLighting
+            )
+        }) {
+            return false;
+        }
         frame
             .payload::<GiRuntime>()
             .is_some_and(|gi| gi.composite_descriptor().is_some())
@@ -96,6 +105,17 @@ impl PostFxPass for GiCompositePass {
         let Some(gi) = ctx.frame_payload::<GiRuntime>() else {
             return;
         };
+        if ctx
+            .frame_payload::<RenderSettings>()
+            .is_some_and(|settings| {
+                matches!(
+                    settings.debug_view,
+                    RenderDebugView::DirectLighting | RenderDebugView::IndirectLighting
+                )
+            })
+        {
+            return;
+        }
         if gi.composite_descriptor().is_none() {
             return;
         }
@@ -110,6 +130,17 @@ impl PostFxPass for GiCompositePass {
         let Some(gi) = execution.frame_payload::<GiRuntime>() else {
             return Ok(());
         };
+        if execution
+            .frame_payload::<RenderSettings>()
+            .is_some_and(|settings| {
+                matches!(
+                    settings.debug_view,
+                    RenderDebugView::DirectLighting | RenderDebugView::IndirectLighting
+                )
+            })
+        {
+            return Ok(());
+        }
         if gi.composite_descriptor().is_none() {
             return Ok(());
         }

@@ -7,7 +7,9 @@ use crate::render::execution::{
 };
 use crate::render::graph::{CompiledPass, PassFlags, RenderGraphError, ResourceRef, TextureHandle};
 use crate::render::pipeline::PostFxPass;
-use crate::render::postfx::bloom::{Bloom as LowLevelBloom, DRAW_CALLS_PER_APPLY};
+use crate::render::postfx::bloom::{
+    Bloom as LowLevelBloom, BloomGraph as LowLevelBloomGraph, BLOOM_GRAPH_PASS_COUNT,
+};
 use crate::render::postfx::sharpen::Sharpen as LowLevelSharpen;
 use crate::render::postfx::taa::{
     TemporalAntiAliasing as LowLevelTemporalAntiAliasing, TemporalAntiAliasingParams,
@@ -19,6 +21,7 @@ use crate::render::view::{SceneView, SCENE_HDR_FORMAT};
 #[derive(Default)]
 pub struct Bloom {
     runtime: Option<LowLevelBloom>,
+    graphs: Vec<Option<LowLevelBloomGraph>>,
 }
 
 impl PostFxPass for Bloom {
@@ -48,6 +51,13 @@ impl PostFxPass for Bloom {
             return;
         }
 
+        let view_index = ctx
+            .frame()
+            .views()
+            .iter()
+            .position(|view| std::ptr::eq(view, ctx.view()))
+            .expect("postfx setup view should belong to the prepared frame");
+        let bloom_label = format!("{}_view_{}", self.name(), view_index);
         let input = ctx
             .state()
             .current_color()
@@ -55,17 +65,25 @@ impl PostFxPass for Bloom {
         let target_size = ctx.view().target_size();
         let bloom_out = ctx.graph().create_texture(|builder| {
             builder
-                .name("bloom_out")
+                .name(format!("{bloom_label}_out"))
                 .size(crate::render::graph::TargetSize::Exact(
                     target_size[0],
                     target_size[1],
                 ))
                 .format(SCENE_HDR_FORMAT);
         });
-        ctx.graph().add_render_pass(self.name(), |setup| {
-            setup.read(input.handle());
-            setup.write_color(0, bloom_out);
-        });
+        let graph = LowLevelBloom::setup_graph(
+            ctx.graph(),
+            input.handle(),
+            bloom_out,
+            crate::render::graph::TargetSize::Exact(target_size[0], target_size[1]),
+            SCENE_HDR_FORMAT,
+            &bloom_label,
+        );
+        if self.graphs.len() <= view_index {
+            self.graphs.resize_with(view_index + 1, || None);
+        }
+        self.graphs[view_index] = Some(graph);
         ctx.state().set_current_color(bloom_out, SCENE_HDR_FORMAT);
     }
 
@@ -74,22 +92,31 @@ impl PostFxPass for Bloom {
         ctx: &mut PostFxPassExecuteContext<'_, '_>,
     ) -> Result<(), RenderGraphError> {
         let (gpu, pass, resources, execution) = ctx.split();
-        let input_handle = pass_first_read_texture(pass, self.name(), "input");
-        let output_handle = pass_first_write_texture(pass, self.name(), "output");
-        let input_rt = require_render_target(resources, input_handle, self.name(), "input");
-        let output_rt = require_render_target(resources, output_handle, self.name(), "output");
+        let Some(graph) = self
+            .graphs
+            .get(execution.view_index())
+            .and_then(Option::as_ref)
+        else {
+            return Ok(());
+        };
         let settings = execution
             .frame_payload::<RenderSettings>()
             .cloned()
             .unwrap_or_default()
             .bloom;
-        let runtime = self.runtime.get_or_insert_with(|| {
-            LowLevelBloom::new(gpu, input_rt.width(), input_rt.height(), output_rt.format())
-        });
+        let runtime = self
+            .runtime
+            .get_or_insert_with(|| LowLevelBloom::new(gpu, SCENE_HDR_FORMAT));
         runtime.intensity = settings.intensity;
         runtime.spread = settings.spread;
-        runtime.resize(gpu, input_rt.width(), input_rt.height(), output_rt.format());
-        runtime.apply(gpu, input_rt, output_rt);
+        let handled = runtime.execute_graph_pass(gpu, graph, pass, resources)?;
+        if !handled {
+            return Err(RenderGraphError::ExecutionFailed(format!(
+                "{} received unknown graph pass {}",
+                self.name(),
+                pass.name
+            )));
+        }
         Ok(())
     }
 
@@ -101,7 +128,7 @@ impl PostFxPass for Bloom {
             .bloom
             .enabled
         {
-            DRAW_CALLS_PER_APPLY
+            BLOOM_GRAPH_PASS_COUNT
         } else {
             0
         }

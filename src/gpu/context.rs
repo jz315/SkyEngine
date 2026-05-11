@@ -7,7 +7,8 @@
 use std::borrow::Cow;
 use std::num::NonZeroU64;
 use std::ops::{Deref, DerefMut, Range};
-use std::sync::Arc;
+use std::path::Path;
+use std::sync::{mpsc, Arc};
 
 const INITIAL_VERTEX_UPLOAD_BYTES: u64 = 256 * 1024;
 const INITIAL_INDEX_UPLOAD_BYTES: u64 = 128 * 1024;
@@ -54,6 +55,97 @@ impl std::fmt::Display for GpuError {
 }
 
 impl std::error::Error for GpuError {}
+
+/// Errors returned while reading the current surface frame back to the CPU.
+#[derive(Debug)]
+pub enum GpuScreenshotError {
+    NoActiveFrame,
+    NoSurfaceFrame,
+    SurfaceCopyUnsupported,
+    UnsupportedFormat(wgpu::TextureFormat),
+    MapFailed(String),
+    Io(std::io::Error),
+    Image(image::ImageError),
+}
+
+impl std::fmt::Display for GpuScreenshotError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoActiveFrame => write!(f, "screenshot requires an active GPU frame"),
+            Self::NoSurfaceFrame => write!(f, "screenshot requires a surface-backed frame"),
+            Self::SurfaceCopyUnsupported => {
+                write!(
+                    f,
+                    "presentation surface does not support COPY_SRC screenshots"
+                )
+            }
+            Self::UnsupportedFormat(format) => {
+                write!(f, "unsupported screenshot surface format {format:?}")
+            }
+            Self::MapFailed(message) => write!(f, "screenshot readback failed: {message}"),
+            Self::Io(error) => write!(f, "{error}"),
+            Self::Image(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for GpuScreenshotError {}
+
+impl From<std::io::Error> for GpuScreenshotError {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
+impl From<image::ImageError> for GpuScreenshotError {
+    fn from(value: image::ImageError) -> Self {
+        Self::Image(value)
+    }
+}
+
+/// CPU copy of a captured surface frame, stored as tightly-packed RGBA8 pixels.
+#[derive(Debug, Clone)]
+pub struct GpuScreenshot {
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+}
+
+impl GpuScreenshot {
+    #[inline]
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    #[inline]
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    #[inline]
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+
+    /// Write the screenshot as an RGBA PNG.
+    pub fn write_png(&self, path: impl AsRef<Path>) -> Result<(), GpuScreenshotError> {
+        let path = path.as_ref();
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        image::save_buffer(
+            path,
+            &self.data,
+            self.width,
+            self.height,
+            image::ColorType::Rgba8,
+        )?;
+        Ok(())
+    }
+}
 
 /// Helper trait for any color attachment target that can provide a texture view.
 pub trait ColorTargetView {
@@ -667,8 +759,13 @@ impl GpuContext {
             .copied()
             .unwrap_or(caps.formats[0]);
 
+        let mut surface_usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
+        if caps.usages.contains(wgpu::TextureUsages::COPY_SRC) {
+            surface_usage |= wgpu::TextureUsages::COPY_SRC;
+        }
+
         let surface_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: surface_usage,
             format,
             width: size.width.max(1),
             height: size.height.max(1),
@@ -925,6 +1022,127 @@ impl GpuContext {
         self.queue.submit(std::iter::once(finished));
     }
 
+    /// Capture the current surface frame as RGBA8 pixels.
+    ///
+    /// Call this after rendering the frame contents and before [`end_frame`](Self::end_frame).
+    /// The method flushes the active encoder so the copy can be mapped immediately.
+    pub fn capture_surface_screenshot(&mut self) -> Result<GpuScreenshot, GpuScreenshotError> {
+        if self.frame.is_none() {
+            return Err(GpuScreenshotError::NoActiveFrame);
+        }
+        if !self
+            .surface_config
+            .usage
+            .contains(wgpu::TextureUsages::COPY_SRC)
+        {
+            return Err(GpuScreenshotError::SurfaceCopyUnsupported);
+        }
+
+        let format = self.surface_config.format;
+        let convert = match format {
+            wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => {
+                ScreenshotFormatConvert::Rgba
+            }
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb => {
+                ScreenshotFormatConvert::Bgra
+            }
+            _ => return Err(GpuScreenshotError::UnsupportedFormat(format)),
+        };
+
+        let width = self.surface_config.width.max(1);
+        let height = self.surface_config.height.max(1);
+        let tight_row_bytes = width * 4;
+        let padded_row_bytes = align_to_u32(tight_row_bytes, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let buffer_size = padded_row_bytes as u64 * height as u64;
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("surface_screenshot_readback_buffer"),
+            size: buffer_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        {
+            let frame = self
+                .frame
+                .as_mut()
+                .ok_or(GpuScreenshotError::NoActiveFrame)?;
+            let surface_texture = frame
+                .surface_texture
+                .as_ref()
+                .ok_or(GpuScreenshotError::NoSurfaceFrame)?;
+            frame.encoder.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &surface_texture.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &buffer,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(padded_row_bytes),
+                        rows_per_image: Some(height),
+                    },
+                },
+                wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+
+        self.flush("surface_screenshot_after_copy");
+
+        let slice = buffer.slice(..);
+        let (sender, receiver) = mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result.map(|_| ()));
+        });
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        receiver
+            .recv()
+            .map_err(|error| GpuScreenshotError::MapFailed(error.to_string()))?
+            .map_err(|error| GpuScreenshotError::MapFailed(error.to_string()))?;
+
+        let mapped = slice.get_mapped_range();
+        let mut data = vec![0; (tight_row_bytes * height) as usize];
+        for y in 0..height as usize {
+            let src_row = y * padded_row_bytes as usize;
+            let dst_row = y * tight_row_bytes as usize;
+            let src = &mapped[src_row..src_row + tight_row_bytes as usize];
+            let dst = &mut data[dst_row..dst_row + tight_row_bytes as usize];
+            match convert {
+                ScreenshotFormatConvert::Rgba => dst.copy_from_slice(src),
+                ScreenshotFormatConvert::Bgra => {
+                    for (src, dst) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
+                        dst[0] = src[2];
+                        dst[1] = src[1];
+                        dst[2] = src[0];
+                        dst[3] = src[3];
+                    }
+                }
+            }
+        }
+        drop(mapped);
+        buffer.unmap();
+
+        Ok(GpuScreenshot {
+            width,
+            height,
+            data,
+        })
+    }
+
+    /// Capture the current surface frame and write it as a PNG.
+    pub fn capture_surface_screenshot_png(
+        &mut self,
+        path: impl AsRef<Path>,
+    ) -> Result<(), GpuScreenshotError> {
+        self.capture_surface_screenshot()?.write_png(path)
+    }
+
     /// Finish the frame: submit the command encoder and present the surface.
     pub fn end_frame(&mut self) {
         let frame = self
@@ -988,6 +1206,17 @@ impl GpuContext {
 fn align_up(value: u64, alignment: u64) -> u64 {
     debug_assert!(alignment > 0);
     ((value + alignment - 1) / alignment) * alignment
+}
+
+#[inline]
+fn align_to_u32(value: u32, alignment: u32) -> u32 {
+    value.div_ceil(alignment) * alignment
+}
+
+#[derive(Clone, Copy)]
+enum ScreenshotFormatConvert {
+    Rgba,
+    Bgra,
 }
 
 fn grow_buffer_size(current: u64, required: u64) -> u64 {
