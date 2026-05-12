@@ -106,6 +106,8 @@ impl AppState for TutorialUi {
 自定义 UI 配置时，在创建 App 前写：
 
 ```rust
+use sky_engine::plugin::Plugin;
+
 let mut world = World::new();
 sky_engine::ui::UiPlugin::new(sky_engine::ui::UiConfig {
     load_system_fonts: false,

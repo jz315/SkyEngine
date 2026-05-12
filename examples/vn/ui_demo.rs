@@ -9,6 +9,7 @@ use std::time::Instant;
 
 use sky_engine::app::{App, AppConfig, AppState, FrameContext};
 use sky_engine::ecs::{EntityId, World};
+use sky_engine::plugin::Plugin;
 use sky_engine::render::{
     Color, RenderPipelineAsset, RenderSettings, SpriteFeature, TransparentPhase,
 };

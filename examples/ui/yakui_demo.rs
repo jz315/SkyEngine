@@ -6,6 +6,7 @@
 
 use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
 use sky_engine::ecs::World;
+use sky_engine::plugin::Plugin;
 use sky_engine::render::{
     CameraMarker, Color, MainCamera, Projection, RenderPipelineAsset, RenderSettings,
     SpriteFeature, Transform, TransparentPhase,
@@ -36,7 +37,7 @@ impl AppState for YakuiDemo {
             Projection::orthographic(600.0),
             MainCamera,
         ));
-        YakuiUiPlugin.install(ctx.world);
+        YakuiUiPlugin.install(ctx.world).unwrap();
         self.energy = 0.32;
         self.volume = 0.55;
         self.assist = true;

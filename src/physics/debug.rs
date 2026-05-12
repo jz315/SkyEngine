@@ -2,6 +2,7 @@ use std::f32::consts::{PI, TAU};
 
 use crate::ecs::{EntityId, System, World};
 use crate::math::{Transform, Vec2};
+use crate::plugin::{Plugin, PluginResult};
 use crate::render::{Color, SortingLayer, SpriteRenderer};
 
 use super::components::{BodyType2D, Collider2D, ColliderShape2D, RigidBody2D};
@@ -53,7 +54,7 @@ impl Default for PhysicsDebugDrawOptions2D {
 
 /// Resource that owns reusable entities for the physics debug overlay.
 ///
-/// You normally install this with [`install_physics_debug_draw`]. The resource
+/// You normally install this with [`PhysicsDebugPlugin`]. The resource
 /// keeps a reusable pool of sprite-line entities and hides unused lines instead
 /// of respawning every frame.
 #[derive(Default, Debug)]
@@ -167,10 +168,33 @@ impl System for PhysicsDebugDrawSystem {
 
 struct PhysicsDebugDrawInstalled2D;
 
+/// Plugin that installs an every-frame system mirroring physics colliders as sprite lines.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PhysicsDebugPlugin {
+    pub options: PhysicsDebugDrawOptions2D,
+}
+
+impl PhysicsDebugPlugin {
+    pub fn new(options: PhysicsDebugDrawOptions2D) -> Self {
+        Self { options }
+    }
+}
+
+impl Plugin for PhysicsDebugPlugin {
+    fn name(&self) -> &'static str {
+        "physics_debug"
+    }
+
+    fn install(self, world: &mut World) -> PluginResult {
+        install_physics_debug_plugin(world, self.options);
+        Ok(())
+    }
+}
+
 /// Installs an every-frame system that mirrors physics colliders as sprite lines.
 ///
 /// Reinstalling updates options without registering duplicate systems.
-pub fn install_physics_debug_draw(world: &mut World, options: PhysicsDebugDrawOptions2D) {
+fn install_physics_debug_plugin(world: &mut World, options: PhysicsDebugDrawOptions2D) {
     if let Some(debug) = world.get_resource_mut::<PhysicsDebugDraw2D>() {
         debug.set_options(options);
     } else {

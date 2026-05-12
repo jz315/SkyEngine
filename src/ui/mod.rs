@@ -27,7 +27,7 @@ pub use backend::{
 #[cfg(feature = "ui-legacy")]
 pub use backends::legacy::LegacyUiBackend;
 #[cfg(feature = "yakui-ui")]
-pub use backends::yakui::{install_yakui_backend, YakuiBackend, YakuiUiPlugin};
+pub use backends::yakui::{YakuiBackend, YakuiUiPlugin};
 #[cfg(feature = "ui-legacy")]
 pub use components::{
     UiAlign, UiAnchor, UiButton, UiId, UiImage, UiInteraction, UiLayout, UiLength, UiNode, UiPanel,
@@ -48,6 +48,8 @@ pub(crate) use layout::{hit_test_input, rect_map, resolve_world_layout};
 pub(crate) use text::preferred_text_size;
 
 use crate::ecs::World;
+#[cfg(feature = "ui-legacy")]
+use crate::plugin::{Plugin, PluginResult};
 
 #[cfg(feature = "ui-legacy")]
 #[derive(Clone, Debug, Default)]
@@ -60,10 +62,17 @@ impl UiPlugin {
     pub fn new(config: UiConfig) -> Self {
         Self { config }
     }
+}
 
-    pub fn install(self, world: &mut World) {
-        #[cfg(feature = "ui-legacy")]
-        install_ui(world, self.config);
+#[cfg(feature = "ui-legacy")]
+impl Plugin for UiPlugin {
+    fn name(&self) -> &'static str {
+        "ui"
+    }
+
+    fn install(self, world: &mut World) -> PluginResult {
+        install_ui_plugin(world, self.config);
+        Ok(())
     }
 }
 
@@ -73,7 +82,7 @@ impl UiPlugin {
 /// explicit configuration, or let [`update_ui`] / [`render_ui`] lazily install
 /// default resources.
 #[cfg(feature = "ui-legacy")]
-pub fn install_ui(world: &mut World, config: UiConfig) {
+fn install_ui_plugin(world: &mut World, config: UiConfig) {
     world.insert_resource(config.clone());
     install_ui_resources(world, &config);
     install_legacy_backend(world);
@@ -138,6 +147,7 @@ fn install_legacy_backend(world: &mut World) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "ui-legacy")]
     use super::*;
 
     #[cfg(feature = "ui-legacy")]
@@ -157,12 +167,15 @@ mod tests {
     #[cfg(feature = "ui-legacy")]
     #[test]
     fn ui_plugin_installs_configured_runtime_resources() {
+        use crate::plugin::Plugin;
+
         let mut world = World::new();
 
         UiPlugin::new(UiConfig {
             load_system_fonts: false,
         })
-        .install(&mut world);
+        .install(&mut world)
+        .unwrap();
 
         assert!(!world.get_resource::<UiConfig>().unwrap().load_system_fonts);
         assert!(world.get_resource::<UiTheme>().is_some());

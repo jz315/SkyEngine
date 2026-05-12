@@ -12,9 +12,10 @@ use sky_engine::ecs::{EntityId, World};
 use sky_engine::input::KeyCode;
 use sky_engine::math::Vec2;
 use sky_engine::physics::{
-    install_physics, Collider2D, PhysicsConfig2D, PhysicsEvent2D, PhysicsEvents, RigidBody2D,
+    Collider2D, PhysicsConfig2D, PhysicsEvent2D, PhysicsEvents, PhysicsPlugin, RigidBody2D,
     Velocity2D,
 };
+use sky_engine::plugin::Plugin;
 use sky_engine::render::{
     CameraMarker, Color, MainCamera, Projection, RenderPipelineAsset, RenderSettings, SortingLayer,
     SpriteFeature, SpriteRenderer, TiledImport, TiledMapInstance, TiledPhysicsInstance,
@@ -118,7 +119,9 @@ impl TiledPhysicsDemo {
 impl AppState for TiledPhysicsDemo {
     fn setup(&mut self, ctx: &mut SetupContext<'_>) {
         let world = &mut *ctx.world;
-        install_physics(world, PhysicsConfig2D::default());
+        PhysicsPlugin::new(PhysicsConfig2D::default())
+            .install(world)
+            .unwrap();
 
         world.insert_resource(RenderSettings {
             clear_color: Color::rgb(0.035, 0.04, 0.045),

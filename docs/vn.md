@@ -20,6 +20,7 @@ The app-facing path is plugin install plus one VN resource:
 ```rust,no_run
 use sky_engine::app::{App, AppConfig};
 use sky_engine::ecs::World;
+use sky_engine::plugin::Plugin;
 use sky_engine::vn::{VnPlugin, VnResource};
 
 let mut world = World::new();

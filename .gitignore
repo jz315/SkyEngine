@@ -18,6 +18,7 @@
 Thumbs.db
 .DS_Store
 desktop.ini
+/nul
 
 # Temp benchmark output
 bench_*.txt

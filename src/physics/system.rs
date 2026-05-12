@@ -1,4 +1,5 @@
 use crate::ecs::{System, World};
+use crate::plugin::{Plugin, PluginResult};
 
 use super::{PhysicsConfig2D, PhysicsEvents, PhysicsWorld2D};
 
@@ -12,6 +13,29 @@ impl System for PhysicsStepSystem {
 
 struct PhysicsInstalled2D;
 
+/// Plugin that installs the physics world resources and fixed-step physics system.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PhysicsPlugin {
+    pub config: PhysicsConfig2D,
+}
+
+impl PhysicsPlugin {
+    pub fn new(config: PhysicsConfig2D) -> Self {
+        Self { config }
+    }
+}
+
+impl Plugin for PhysicsPlugin {
+    fn name(&self) -> &'static str {
+        "physics"
+    }
+
+    fn install(self, world: &mut World) -> PluginResult {
+        install_physics_plugin(world, self.config);
+        Ok(())
+    }
+}
+
 /// Installs the physics world resources and fixed-step physics system.
 ///
 /// This inserts or updates [`PhysicsWorld2D`], ensures [`PhysicsEvents`] exists,
@@ -19,8 +43,8 @@ struct PhysicsInstalled2D;
 /// once updates the config without adding duplicate systems.
 ///
 /// Group order matters: if you want input/control systems to affect the same
-/// physics tick, create those groups before calling `install_physics`.
-pub fn install_physics(world: &mut World, config: PhysicsConfig2D) {
+/// physics tick, create those groups before installing [`PhysicsPlugin`].
+fn install_physics_plugin(world: &mut World, config: PhysicsConfig2D) {
     if let Some(physics) = world.get_resource_mut::<PhysicsWorld2D>() {
         physics.set_config(config);
     } else {
@@ -44,7 +68,7 @@ pub fn install_physics(world: &mut World, config: PhysicsConfig2D) {
 
 /// Runs one physics step immediately using `world.time.delta`.
 ///
-/// Most apps should use [`install_physics`] and let the scheduler call this.
+/// Most apps should use [`PhysicsPlugin`] and let the scheduler call this.
 /// Manual stepping is useful for deterministic tests or apps that disable
 /// `AppConfig::auto_tick` and tick explicitly from `AppState::update`.
 pub fn step_physics(world: &mut World) {

@@ -9,6 +9,7 @@
 
 use sky_engine::app::{App, AppConfig, AppState, FrameContext};
 use sky_engine::ecs::World;
+use sky_engine::plugin::Plugin;
 use sky_engine::render::{
     CameraMarker, MainCamera, Projection, RenderPipelineAsset, SpriteFeature, Transform,
     TransparentPhase,

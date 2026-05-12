@@ -330,7 +330,8 @@ fn object_shape_name(shape: &TiledObjectShape) -> &'static str {
 mod tests {
     use super::*;
     use crate::asset::{AssetId, Handle, TextureAsset};
-    use crate::physics::{install_physics, PhysicsConfig2D, PhysicsWorld2D};
+    use crate::physics::{PhysicsConfig2D, PhysicsPlugin, PhysicsWorld2D};
+    use crate::plugin::Plugin;
     use crate::render::tilemap::{TiledMapInstance, TiledSpawnOptions};
 
     #[test]
@@ -355,7 +356,9 @@ mod tests {
         )
         .unwrap();
         let mut world = World::new();
-        install_physics(&mut world, PhysicsConfig2D::default());
+        PhysicsPlugin::new(PhysicsConfig2D::default())
+            .install(&mut world)
+            .unwrap();
         let instance =
             TiledPhysicsInstance::spawn(&mut world, &import, [10.0, 20.0], Default::default())
                 .unwrap();
@@ -470,7 +473,9 @@ mod tests {
         )
         .unwrap();
         let mut world = World::new();
-        install_physics(&mut world, PhysicsConfig2D::default());
+        PhysicsPlugin::new(PhysicsConfig2D::default())
+            .install(&mut world)
+            .unwrap();
         let instance =
             TiledPhysicsInstance::spawn(&mut world, &import, [0.0, 0.0], Default::default())
                 .unwrap();

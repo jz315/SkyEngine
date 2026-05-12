@@ -1,6 +1,7 @@
 use std::any::Any;
 
 use crate::ecs::World;
+use crate::plugin::{Plugin, PluginResult};
 
 use super::super::{
     ensure_ui_host, UiBackend, UiBackendId, UiBeginFrameContext, UiCaptureState, UiError,
@@ -13,15 +14,19 @@ use yakui_core::geometry::Vec2;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct YakuiUiPlugin;
 
-impl YakuiUiPlugin {
-    pub fn install(self, world: &mut World) {
-        let _ = self;
-        install_yakui_backend(world);
+impl Plugin for YakuiUiPlugin {
+    fn name(&self) -> &'static str {
+        "yakui-ui"
+    }
+
+    fn install(self, world: &mut World) -> PluginResult {
+        install_yakui_backend_plugin(world);
+        Ok(())
     }
 }
 
 /// Install the experimental yakui backend if it is not already present.
-pub fn install_yakui_backend(world: &mut World) {
+fn install_yakui_backend_plugin(world: &mut World) {
     ensure_ui_host(world);
     super::super::try_with_ui_host_mut(world, |host, _world| {
         if !host.contains(YakuiBackend::ID) {

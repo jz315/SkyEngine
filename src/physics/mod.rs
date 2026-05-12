@@ -11,9 +11,12 @@
 //!
 //! ```rust
 //! # use sky_engine::ecs::World;
-//! # use sky_engine::physics::{install_physics, PhysicsConfig2D};
+//! # use sky_engine::physics::{PhysicsConfig2D, PhysicsPlugin};
+//! # use sky_engine::plugin::Plugin;
 //! let mut world = World::new();
-//! install_physics(&mut world, PhysicsConfig2D::default());
+//! PhysicsPlugin::new(PhysicsConfig2D::default())
+//!     .install(&mut world)
+//!     .unwrap();
 //! ```
 //!
 //! See `docs/physics.md` for the full guide.
@@ -40,10 +43,9 @@ pub use components::{
 pub use config::PhysicsConfig2D;
 #[cfg(feature = "app")]
 pub use debug::{
-    install_physics_debug_draw, sync_physics_debug_draw, PhysicsDebugDraw2D,
-    PhysicsDebugDrawOptions2D,
+    sync_physics_debug_draw, PhysicsDebugDraw2D, PhysicsDebugDrawOptions2D, PhysicsDebugPlugin,
 };
 pub use events::{PhysicsEvent2D, PhysicsEvents};
 pub use queries::{PhysicsQueryFilter2D, RaycastHit2D};
-pub use system::{install_physics, step_physics};
+pub use system::{step_physics, PhysicsPlugin};
 pub use world::PhysicsWorld2D;

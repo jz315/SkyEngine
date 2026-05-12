@@ -10,10 +10,11 @@ use sky_engine::ecs::{EntityId, World};
 use sky_engine::input::KeyCode;
 use sky_engine::math::Vec2;
 use sky_engine::physics::{
-    install_physics, install_physics_debug_draw, sync_physics_debug_draw, Collider2D,
-    PhysicsConfig2D, PhysicsDebugDraw2D, PhysicsDebugDrawOptions2D, PhysicsEvent2D, PhysicsEvents,
+    sync_physics_debug_draw, Collider2D, PhysicsConfig2D, PhysicsDebugDraw2D,
+    PhysicsDebugDrawOptions2D, PhysicsDebugPlugin, PhysicsEvent2D, PhysicsEvents, PhysicsPlugin,
     PhysicsWorld2D, RigidBody2D, Velocity2D,
 };
+use sky_engine::plugin::Plugin;
 use sky_engine::render::{
     CameraMarker, Color, MainCamera, Projection, RenderPipelineAsset, RenderSettings, SortingLayer,
     SpriteFeature, SpriteRenderer, Transform, TransparentPhase,
@@ -64,15 +65,14 @@ impl AppState for PhysicsArcadeDemo {
     fn setup(&mut self, ctx: &mut SetupContext<'_>) {
         let world = &mut *ctx.world;
         self.gravity.install(world);
-        install_physics_debug_draw(
-            world,
-            PhysicsDebugDrawOptions2D {
-                enabled: false,
-                line_thickness: 2.5,
-                z: 0.9,
-                ..Default::default()
-            },
-        );
+        PhysicsDebugPlugin::new(PhysicsDebugDrawOptions2D {
+            enabled: false,
+            line_thickness: 2.5,
+            z: 0.9,
+            ..Default::default()
+        })
+        .install(world)
+        .unwrap();
         self.assets.load(world);
 
         world.insert_resource(RenderSettings {
@@ -393,14 +393,13 @@ struct GravityController {
 
 impl GravityController {
     fn install(&self, world: &mut World) {
-        install_physics(
-            world,
-            PhysicsConfig2D {
-                gravity: self.mode.vector(),
-                fixed_dt: 1.0 / 90.0,
-                pixels_per_meter: 64.0,
-            },
-        );
+        PhysicsPlugin::new(PhysicsConfig2D {
+            gravity: self.mode.vector(),
+            fixed_dt: 1.0 / 90.0,
+            pixels_per_meter: 64.0,
+        })
+        .install(world)
+        .unwrap();
     }
 
     fn cycle(&mut self, world: &mut World) {

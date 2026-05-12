@@ -10,9 +10,10 @@ use sky_engine::ecs::{EntityId, World};
 use sky_engine::input::KeyCode;
 use sky_engine::math::Vec2;
 use sky_engine::physics::{
-    install_physics, Collider2D, PhysicsConfig2D, PhysicsEvent2D, PhysicsEvents, RigidBody2D,
+    Collider2D, PhysicsConfig2D, PhysicsEvent2D, PhysicsEvents, PhysicsPlugin, RigidBody2D,
     Velocity2D,
 };
+use sky_engine::plugin::Plugin;
 use sky_engine::render::{
     CameraMarker, Color, MainCamera, Projection, RenderPipelineAsset, RenderSettings, SortingLayer,
     SpriteFeature, SpriteRenderer, Transform, TransparentPhase,
@@ -500,14 +501,13 @@ impl AppState for NeonDungeonGame {
             clear_color: Color::rgb(0.018, 0.016, 0.03),
             ..Default::default()
         });
-        install_physics(
-            world,
-            PhysicsConfig2D {
-                gravity: Vec2::ZERO,
-                fixed_dt: 1.0 / 90.0,
-                pixels_per_meter: 64.0,
-            },
-        );
+        PhysicsPlugin::new(PhysicsConfig2D {
+            gravity: Vec2::ZERO,
+            fixed_dt: 1.0 / 90.0,
+            pixels_per_meter: 64.0,
+        })
+        .install(world)
+        .unwrap();
         spawn_camera(world);
         spawn_background(world);
     }

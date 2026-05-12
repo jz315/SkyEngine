@@ -6,6 +6,7 @@
 
 use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
 use sky_engine::ecs::World;
+use sky_engine::plugin::Plugin;
 use sky_engine::render::{
     CameraMarker, Color as RenderColor, MainCamera, Projection, RenderPipelineAsset,
     RenderSettings, SpriteFeature, Transform, TransparentPhase,
@@ -40,7 +41,7 @@ impl AppState for WeirdYakuiLab {
             Projection::orthographic(760.0),
             MainCamera,
         ));
-        YakuiUiPlugin.install(ctx.world);
+        YakuiUiPlugin.install(ctx.world).unwrap();
 
         self.wobble = 0.42;
         self.chaos = 0.68;

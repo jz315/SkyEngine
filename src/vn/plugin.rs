@@ -1,11 +1,11 @@
 use crate::ecs::World;
+use crate::plugin::{Plugin, PluginResult};
 use crate::vn::preferences::VnPreferences;
 use crate::vn::resource::VnResource;
 use crate::vn::rollback::VnRollbackStack;
 use crate::vn::systems::{
     vn_input_system, vn_load_system, vn_script_system, vn_ui_system, VnSystemConfig,
 };
-use crate::vn::VnRuntimeResult;
 
 #[derive(Clone, Debug)]
 pub struct VnPlugin {
@@ -60,8 +60,14 @@ impl VnPlugin {
         self.sprite_presentation = enabled;
         self
     }
+}
 
-    pub fn install(self, world: &mut World) -> VnRuntimeResult<()> {
+impl Plugin for VnPlugin {
+    fn name(&self) -> &'static str {
+        "vn"
+    }
+
+    fn install(self, world: &mut World) -> PluginResult {
         let _builtin_ui = self.builtin_ui;
         let _sprite_presentation = self.sprite_presentation;
         world.insert_resource(VnResource::new(

@@ -1,5 +1,6 @@
 use crate::ecs::World;
 use crate::math::{Transform, Vec2};
+use crate::plugin::Plugin;
 
 use super::*;
 
@@ -10,21 +11,24 @@ fn run_fixed(world: &mut World, dt: f32) {
 #[test]
 fn physics_feature_does_not_require_app() {
     let mut world = World::new();
-    install_physics(&mut world, PhysicsConfig2D::default());
+    PhysicsPlugin::new(PhysicsConfig2D::default())
+        .install(&mut world)
+        .unwrap();
     assert!(world.get_resource::<PhysicsWorld2D>().is_some());
 }
 
 #[test]
 fn reinstall_updates_fixed_step() {
     let mut world = World::new();
-    install_physics(&mut world, PhysicsConfig2D::default());
-    install_physics(
-        &mut world,
-        PhysicsConfig2D {
-            fixed_dt: 1.0 / 30.0,
-            ..Default::default()
-        },
-    );
+    PhysicsPlugin::new(PhysicsConfig2D::default())
+        .install(&mut world)
+        .unwrap();
+    PhysicsPlugin::new(PhysicsConfig2D {
+        fixed_dt: 1.0 / 30.0,
+        ..Default::default()
+    })
+    .install(&mut world)
+    .unwrap();
     world.spawn((
         Transform::from_xy(0.0, 0.0),
         RigidBody2D::static_body(),
@@ -47,13 +51,12 @@ fn reinstall_updates_fixed_step() {
 #[test]
 fn dynamic_body_syncs_transform_and_velocity() {
     let mut world = World::new();
-    install_physics(
-        &mut world,
-        PhysicsConfig2D {
-            gravity: Vec2::new(0.0, -32.0),
-            ..Default::default()
-        },
-    );
+    PhysicsPlugin::new(PhysicsConfig2D {
+        gravity: Vec2::new(0.0, -32.0),
+        ..Default::default()
+    })
+    .install(&mut world)
+    .unwrap();
     let entity = world.spawn((
         Transform::from_xy(0.0, 32.0),
         RigidBody2D::dynamic().lock_rotation(),
@@ -72,7 +75,9 @@ fn dynamic_body_syncs_transform_and_velocity() {
 #[test]
 fn kinematic_body_is_blocked_by_static_collider() {
     let mut world = World::new();
-    install_physics(&mut world, PhysicsConfig2D::default());
+    PhysicsPlugin::new(PhysicsConfig2D::default())
+        .install(&mut world)
+        .unwrap();
     world.spawn((
         Transform::from_xy(32.0, 0.0),
         RigidBody2D::static_body(),
@@ -96,7 +101,9 @@ fn kinematic_body_is_blocked_by_static_collider() {
 #[test]
 fn trigger_events_are_queued() {
     let mut world = World::new();
-    install_physics(&mut world, PhysicsConfig2D::default());
+    PhysicsPlugin::new(PhysicsConfig2D::default())
+        .install(&mut world)
+        .unwrap();
     let trigger = world.spawn((
         Transform::from_xy(16.0, 0.0),
         RigidBody2D::static_body(),
@@ -126,7 +133,9 @@ fn trigger_events_are_queued() {
 #[test]
 fn raycast_and_overlap_return_entities() {
     let mut world = World::new();
-    install_physics(&mut world, PhysicsConfig2D::default());
+    PhysicsPlugin::new(PhysicsConfig2D::default())
+        .install(&mut world)
+        .unwrap();
     let wall = world.spawn((
         Transform::from_xy(32.0, 0.0),
         RigidBody2D::static_body(),
@@ -147,7 +156,9 @@ fn raycast_and_overlap_return_entities() {
 #[test]
 fn raycast_filter_can_exclude_entity_and_sensors() {
     let mut world = World::new();
-    install_physics(&mut world, PhysicsConfig2D::default());
+    PhysicsPlugin::new(PhysicsConfig2D::default())
+        .install(&mut world)
+        .unwrap();
     let trigger = world.spawn((
         Transform::from_xy(16.0, 0.0),
         RigidBody2D::static_body(),
@@ -199,7 +210,9 @@ fn raycast_filter_can_exclude_entity_and_sensors() {
 #[test]
 fn raycast_all_returns_hits_sorted_by_distance() {
     let mut world = World::new();
-    install_physics(&mut world, PhysicsConfig2D::default());
+    PhysicsPlugin::new(PhysicsConfig2D::default())
+        .install(&mut world)
+        .unwrap();
     let first = world.spawn((
         Transform::from_xy(24.0, 0.0),
         RigidBody2D::static_body(),
@@ -234,7 +247,9 @@ fn raycast_all_returns_hits_sorted_by_distance() {
 #[test]
 fn overlap_filter_splits_sensors_and_solids() {
     let mut world = World::new();
-    install_physics(&mut world, PhysicsConfig2D::default());
+    PhysicsPlugin::new(PhysicsConfig2D::default())
+        .install(&mut world)
+        .unwrap();
     let solid = world.spawn((
         Transform::from_xy(0.0, 0.0),
         RigidBody2D::static_body(),
@@ -266,7 +281,9 @@ fn overlap_filter_splits_sensors_and_solids() {
 #[test]
 fn query_filter_respects_collision_groups() {
     let mut world = World::new();
-    install_physics(&mut world, PhysicsConfig2D::default());
+    PhysicsPlugin::new(PhysicsConfig2D::default())
+        .install(&mut world)
+        .unwrap();
     let blue_group = CollisionGroups2D::new(0b0001, 0b0010);
     let red_group = CollisionGroups2D::new(0b0100, 0b0010);
     let query_group = CollisionGroups2D::new(0b0010, 0b0001);
@@ -300,7 +317,9 @@ fn query_filter_respects_collision_groups() {
 #[test]
 fn despawn_cleans_internal_handles() {
     let mut world = World::new();
-    install_physics(&mut world, PhysicsConfig2D::default());
+    PhysicsPlugin::new(PhysicsConfig2D::default())
+        .install(&mut world)
+        .unwrap();
     let entity = world.spawn((
         Transform::from_xy(0.0, 0.0),
         RigidBody2D::static_body(),

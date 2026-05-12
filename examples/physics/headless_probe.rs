@@ -13,9 +13,10 @@ use std::time::Instant;
 use sky_engine::ecs::{EntityId, World};
 use sky_engine::math::{Transform, Vec2};
 use sky_engine::physics::{
-    install_physics, Collider2D, PhysicsConfig2D, PhysicsEvent2D, PhysicsEvents, PhysicsWorld2D,
+    Collider2D, PhysicsConfig2D, PhysicsEvent2D, PhysicsEvents, PhysicsPlugin, PhysicsWorld2D,
     RigidBody2D, Velocity2D,
 };
+use sky_engine::plugin::Plugin;
 
 const ARENA_W: f32 = 820.0;
 const ARENA_H: f32 = 560.0;
@@ -165,14 +166,13 @@ struct ProbeWorld {
 impl ProbeWorld {
     fn new(config: &Config) -> Self {
         let mut world = World::new();
-        install_physics(
-            &mut world,
-            PhysicsConfig2D {
-                gravity: Vec2::new(0.0, -900.0),
-                fixed_dt: FIXED_DT,
-                pixels_per_meter: 64.0,
-            },
-        );
+        PhysicsPlugin::new(PhysicsConfig2D {
+            gravity: Vec2::new(0.0, -900.0),
+            fixed_dt: FIXED_DT,
+            pixels_per_meter: 64.0,
+        })
+        .install(&mut world)
+        .unwrap();
         spawn_scene(&mut world);
 
         let mut spawner = ToySpawner::new(0x5EED_2026);

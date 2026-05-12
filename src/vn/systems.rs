@@ -559,6 +559,7 @@ fn push_action_binding(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugin::Plugin;
     use crate::vn::script::YarnScript;
     use crate::vn::{VnLoaderStatus, VnPlugin, VnResource};
 

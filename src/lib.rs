@@ -49,6 +49,7 @@ pub mod action_queue;
 pub mod diagnostics;
 pub mod ecs;
 pub mod math;
+pub mod plugin;
 pub mod reflect;
 
 #[cfg(feature = "scene")]

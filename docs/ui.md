@@ -33,6 +33,7 @@ ctx.render_ui();
 
 ```rust
 use sky_engine::ecs::World;
+use sky_engine::plugin::Plugin;
 use sky_engine::ui::{UiConfig, UiPlugin};
 
 let mut world = World::new();
@@ -44,7 +45,7 @@ UiPlugin::new(UiConfig {
 
 自动安装会插入 `UiConfig`、`UiTheme`、`UiState`、`UiEvents`、`UiFontBook`。默认会尝试系统字体；没有可用字体时 quad UI 仍然渲染。
 
-底层/非 App 用法仍然可以直接调用 `install_ui(world, config)`，但普通游戏和示例应走 `UiPlugin::install`。
+底层/非 App 用法同样走 `UiPlugin::install`。
 
 ## Components
 
