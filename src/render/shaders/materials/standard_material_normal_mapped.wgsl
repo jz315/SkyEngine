@@ -230,10 +230,6 @@ fn shadow_receiver_view_depth(world_position: vec3<f32>) -> f32 {
     return max(-view_position.z, 0.0);
 }
 
-fn shadow_primary_cascade(world_position: vec3<f32>, cascade_count: u32) -> u32 {
-    return min(shadow_cascade_index(shadow_receiver_view_depth(world_position)), cascade_count - 1u);
-}
-
 struct ShadowCascadeProjection {
     light_ndc: vec3<f32>,
     local_uv: vec2<f32>,
@@ -265,49 +261,6 @@ fn shadow_cascade_edge_fade(light_ndc: vec3<f32>, blend_width: f32) -> f32 {
     let shadow_box = vec3<f32>(light_ndc.xy, light_ndc.z * 2.0 - 1.0);
     let edge = clamp((abs(shadow_box) - vec3<f32>(fade_start)) / width, vec3<f32>(0.0), vec3<f32>(1.0));
     return max(max(edge.x, edge.y), edge.z);
-}
-
-fn shadow_cascade_split_blend_width(cascade_before_split: u32) -> f32 {
-    if (shadow.shadow_params.y <= 0.0) {
-        return 0.0;
-    }
-
-    let far_split = shadow.cascade_splits[cascade_before_split];
-    var near_split = 0.0;
-    if (cascade_before_split > 0u) {
-        near_split = shadow.cascade_splits[cascade_before_split - 1u];
-    }
-    let cascade_depth = max(far_split - near_split, 0.0001);
-    return cascade_depth * clamp(shadow.shadow_params.y, 0.0, 0.5);
-}
-
-fn shadow_cascade_far_split_fade(view_depth: f32, cascade: u32, cascade_count: u32) -> f32 {
-    if (cascade + 1u >= cascade_count) {
-        return 0.0;
-    }
-
-    let blend_depth = shadow_cascade_split_blend_width(cascade);
-    if (blend_depth <= 0.0001) {
-        return 0.0;
-    }
-    let split = shadow.cascade_splits[cascade];
-    let half_width = blend_depth * 0.5;
-    return smoothstep(split - half_width, split + half_width, view_depth);
-}
-
-fn shadow_cascade_near_split_fade(view_depth: f32, cascade: u32) -> f32 {
-    if (cascade == 0u) {
-        return 1.0;
-    }
-
-    let cascade_before_split = cascade - 1u;
-    let blend_depth = shadow_cascade_split_blend_width(cascade_before_split);
-    if (blend_depth <= 0.0001) {
-        return 1.0;
-    }
-    let split = shadow.cascade_splits[cascade_before_split];
-    let half_width = blend_depth * 0.5;
-    return smoothstep(split - half_width, split + half_width, view_depth);
 }
 
 fn shadow_border_clamp(cascade: u32) -> vec4<f32> {
@@ -686,12 +639,10 @@ fn shadow_next_inside_cascade(world_position: vec3<f32>, start_cascade: u32, cas
     return cascade_count;
 }
 
-fn shadow_active_cascade(world_position: vec3<f32>, primary_cascade: u32, cascade_count: u32) -> u32 {
-    let projection = shadow_project_cascade(world_position, primary_cascade);
-    if (projection.inside > 0.5) {
-        return primary_cascade;
-    }
-    return shadow_next_inside_cascade(world_position, primary_cascade + 1u, cascade_count);
+fn shadow_active_cascade(world_position: vec3<f32>, cascade_count: u32) -> u32 {
+    // Match WickedEngine's directional shadow selection: try the tightest
+    // cascade first and only fall through when the receiver is outside it.
+    return shadow_next_inside_cascade(world_position, 0u, cascade_count);
 }
 
 fn shadow_transmittance(
@@ -706,8 +657,7 @@ fn shadow_transmittance(
     }
 
     let cascade_count = shadow_cascade_count();
-    let primary_cascade = shadow_primary_cascade(world_position, cascade_count);
-    let cascade = shadow_active_cascade(world_position, primary_cascade, cascade_count);
+    let cascade = shadow_active_cascade(world_position, cascade_count);
     if (cascade >= cascade_count) {
         return vec3<f32>(1.0);
     }
@@ -722,37 +672,7 @@ fn shadow_transmittance(
         world_dy,
     );
 
-    let view_depth = shadow_receiver_view_depth(world_position);
     var blended_transmittance = transmittance;
-
-    let near_split_fade = shadow_cascade_near_split_fade(view_depth, cascade);
-    if (near_split_fade < 1.0 && cascade > 0u) {
-        let previous_transmittance = shadow_sample_cascade_if_inside(
-            world_position,
-            normal,
-            cascade - 1u,
-            screen_pixel,
-            world_dx,
-            world_dy,
-        );
-        blended_transmittance = mix(previous_transmittance, blended_transmittance, near_split_fade);
-    }
-
-    let far_split_fade = shadow_cascade_far_split_fade(view_depth, cascade, cascade_count);
-    if (far_split_fade > 0.0 && cascade + 1u < cascade_count) {
-        let fallback_cascade = shadow_next_inside_cascade(world_position, cascade + 1u, cascade_count);
-        if (fallback_cascade < cascade_count) {
-            let fallback_transmittance = shadow_sample_cascade_if_inside(
-                world_position,
-                normal,
-                fallback_cascade,
-                screen_pixel,
-                world_dx,
-                world_dy,
-            );
-            blended_transmittance = mix(blended_transmittance, fallback_transmittance, far_split_fade);
-        }
-    }
 
     let edge_fade = shadow_cascade_edge_fade(projection.light_ndc, shadow.shadow_params.y);
     if (edge_fade <= 0.0) {
@@ -796,24 +716,13 @@ fn shadow_cascade_coverage_color(world_position: vec3<f32>, normal: vec3<f32>) -
     }
 
     let cascade_count = shadow_cascade_count();
-    let primary_cascade = shadow_primary_cascade(world_position, cascade_count);
-    let cascade = shadow_active_cascade(world_position, primary_cascade, cascade_count);
+    let cascade = shadow_active_cascade(world_position, cascade_count);
     if (cascade >= cascade_count) {
         return vec3<f32>(0.0);
     }
 
     let projection = shadow_project_cascade(world_position, cascade);
-    let tint = shadow_cascade_debug_tint(cascade);
-    let view_depth = shadow_receiver_view_depth(world_position);
-    var blended = tint;
-    let near_split_fade = shadow_cascade_near_split_fade(view_depth, cascade);
-    if (near_split_fade < 1.0 && cascade > 0u) {
-        blended = mix(shadow_cascade_debug_tint(cascade - 1u), blended, near_split_fade);
-    }
-    let far_split_fade = shadow_cascade_far_split_fade(view_depth, cascade, cascade_count);
-    if (far_split_fade > 0.0 && cascade + 1u < cascade_count) {
-        blended = mix(blended, shadow_cascade_debug_tint(cascade + 1u), far_split_fade);
-    }
+    var blended = shadow_cascade_debug_tint(cascade);
     let edge_fade = shadow_cascade_edge_fade(projection.light_ndc, shadow.shadow_params.y);
     if (edge_fade <= 0.0) {
         return blended;
@@ -844,19 +753,13 @@ fn shadow_fade_debug_color(world_position: vec3<f32>, normal: vec3<f32>) -> vec3
     }
 
     let cascade_count = shadow_cascade_count();
-    let primary_cascade = shadow_primary_cascade(world_position, cascade_count);
-    let cascade = shadow_active_cascade(world_position, primary_cascade, cascade_count);
+    let cascade = shadow_active_cascade(world_position, cascade_count);
     if (cascade >= cascade_count) {
         return vec3<f32>(0.0);
     }
 
     let projection = shadow_project_cascade(world_position, cascade);
-    let view_depth = shadow_receiver_view_depth(world_position);
-    let split_fade = max(
-        1.0 - shadow_cascade_near_split_fade(view_depth, cascade),
-        shadow_cascade_far_split_fade(view_depth, cascade, cascade_count),
-    );
-    let fade = max(shadow_cascade_edge_fade(projection.light_ndc, shadow.shadow_params.y), split_fade);
+    let fade = shadow_cascade_edge_fade(projection.light_ndc, shadow.shadow_params.y);
     return mix(vec3<f32>(0.02, 0.02, 0.02), vec3<f32>(1.0, 0.85, 0.12), fade);
 }
 
@@ -866,8 +769,7 @@ fn shadow_compare_delta_debug_color(world_position: vec3<f32>, normal: vec3<f32>
     }
 
     let cascade_count = shadow_cascade_count();
-    let primary_cascade = shadow_primary_cascade(world_position, cascade_count);
-    let cascade = shadow_active_cascade(world_position, primary_cascade, cascade_count);
+    let cascade = shadow_active_cascade(world_position, cascade_count);
     if (cascade >= cascade_count) {
         return vec3<f32>(0.0);
     }
@@ -890,8 +792,7 @@ fn shadow_bias_debug_color(world_position: vec3<f32>, normal: vec3<f32>) -> vec3
     }
 
     let cascade_count = shadow_cascade_count();
-    let primary_cascade = shadow_primary_cascade(world_position, cascade_count);
-    let cascade = shadow_active_cascade(world_position, primary_cascade, cascade_count);
+    let cascade = shadow_active_cascade(world_position, cascade_count);
     if (cascade >= cascade_count) {
         return vec3<f32>(0.0);
     }
@@ -920,8 +821,7 @@ fn shadow_pcss_debug_color(
     }
 
     let cascade_count = shadow_cascade_count();
-    let primary_cascade = shadow_primary_cascade(world_position, cascade_count);
-    let cascade = shadow_active_cascade(world_position, primary_cascade, cascade_count);
+    let cascade = shadow_active_cascade(world_position, cascade_count);
     if (cascade >= cascade_count) {
         return vec3<f32>(0.0);
     }

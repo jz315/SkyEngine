@@ -120,27 +120,32 @@
 - Target execution renders against the supplied target hierarchy directly.
 
 ## High-Level Integration
-- High-level integration lives directly in `src/render/live2d/`.
-- `Live2DFeature` is the registration/runtime bridge used by `RenderRuntime`.
+- High-level integration lives directly in `src/render/live2d/`, but the module itself is crate-visible (`pub(crate)` from `render/mod.rs`).
+- `Live2DFeature` is the registration/runtime bridge used by `RenderRuntime` and is re-exported from `sky_engine::render` when `live2d` is enabled.
 - `Live2DFeature`:
   - extracts visible `Live2DModelInstance`s from ECS
   - collects/filters views
   - prepares one `PreparedLive2DFrame` per visible instance/view pair
   - submits matching `PhaseItem`s into `TransparentPhase`
-- `DrawLive2D` is a standalone draw function:
+- `DrawLive2D` is a crate-internal standalone draw function:
   - it runs from the shared transparent phase
   - it resolves the prepared frame for the current entity
   - it executes Live2D mask/model/offscreen/composite work against the active render target
 - Live2D now enters the shared frame pipeline through feature registration + phase items, not through a separate legacy high-level integration object.
 
 ## Public Surface Notes
-- `crate::render::live2d` keeps the high-frequency re-exports:
+- `sky_engine::render` re-exports the app-facing Live2D feature and ECS components when `live2d` is enabled:
+  - `Live2DFeature`
+  - `Live2DModelInstance`
+  - `Live2DAnimator`
+  - `Live2DCommand`
+  - `Live2DCommands`
+- `sky_engine::render::expert::live2d` exposes low-level Live2D types and submodules:
   - `Live2DModelResource`
   - `Live2DUserModel`
   - `Live2DRenderer`
   - `PreparedLive2DFrame`
   - `Live2DModel`
-- `crate::render::expert::live2d` exposes the low-level submodules by responsibility:
   - `asset`
   - `model`
   - `runtime`

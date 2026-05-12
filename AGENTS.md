@@ -1,83 +1,54 @@
 # AGENTS.md
 
 ## Overview
-- This repo is a Rust game engine with a chunk-based ECS core and a `wgpu`-based 2D rendering framework.
+- This repo is a Rust game engine with a chunk-based ECS core, an app runner, asset/audio/video/UI/runtime modules, and a programmable render stack.
 - **ECS**: the performance-critical paths are typed prepared queries, chunk iteration, and structural entity/component transitions. Entities, bundles, typed queries, optional query params, filters, deferred commands, resources, and a lightweight system schedule are all in active use.
-- **Rendering**: the default high-level path is `RenderComposer` + registration-driven `RenderPipelineAsset` / `RenderPipelineBuilder`, with built-in `SpriteFeature`, `OpaquePhase`, `TransparentPhase`, and optional `Live2DFeature`. Internally, execution is shared through `PreparedFrame` / `PreparedView`, `FramePipeline`, and `RenderGraph`. The GPU backend is `wgpu`.
-- **App lifecycle**: `App` manages the winit event loop, GPU context, and frame lifecycle behind the `app` feature flag.
+- **Rendering**: the current high-level `wgpu` path is `RenderPipelineAsset` / `RenderPipelineBuilder` -> `RenderRuntime`, installed through the app-facing `SceneRenderer` backend wrapper. Built-ins include `SpriteFeature`, `TilemapFeature`, `OpaquePhase`, `TransparentPhase`, material prepasses, shadows, GI steps, and post-fx. Internally, execution is shared through `PreparedFrame` / `PreparedView`, `FramePipeline`, and `RenderGraph`.
+- **Renderer backends**: `WgpuSceneRenderer` wraps `RenderRuntime`. Optional Kajiya and Renderling backends consume a backend-neutral `SceneSnapshot` extracted from ECS.
+- **App lifecycle**: `App` owns the winit event loop, active `SceneRenderer`, input resource sync, optional asset/audio/video service updates, diagnostics, screenshots, and frame present lifecycle behind the `app` feature flag.
+- **UI**: current UI is feature-gated. `ui-core` provides `UiHost` / `UiBackend`; `ui-legacy` adapts the retained ECS UI; `yakui-ui` installs the experimental yakui backend; `egui` is a separate immediate-mode overlay integration under `src/app/egui_integration.rs`.
 - Benchmarks are Criterion-based under `benches/`, with a single canonical `fair` target and engine-specific implementations split under `benches/fair/`.
 
 ## Canonical API Surface
-- **ECS** entry points: `sky_engine::ecs` — `World`, `EntityId`, `Bundle`, `PreparedQuery`, `Commands`, `With`, `Without`, `System`, `Time`.
-- **Render** entry points: `sky_engine::render` — `RenderComposer`, `RenderPipelineAsset`, `RenderPipelineBuilder`, `RenderFeature`, `RenderPhase`, `SpriteFeature`, `Camera`, `Color`, `Texture`.
-- **Expert render** entry points: `sky_engine::render::expert` — `FramePipeline`, `RenderGraph`, `DrawFunction`, `OpaquePhase`, `TransparentPhase`, passes, post-fx, targets, and lower-level GPU composition primitives.
-- **GPU** entry points: `sky_engine::gpu` — `GpuContext` (wraps wgpu device/queue/surface).
-- **Input** entry points: `sky_engine::input` (behind `features = ["app"]`) — `Input`, `InputActions`, `InputBinding`.
-- **App** entry points: `sky_engine::app` (behind `features = ["app"]`) — `App`, `AppConfig`, `FrameContext`.
+- **ECS** entry points: `sky_engine::ecs` - `World`, `EntityId`, `Bundle`, `PreparedQuery`, `Commands`, `With`, `Without`, `System`, `Time`.
+- **Render** entry points: `sky_engine::render` - `RenderRuntime`, `RenderPipelineAsset`, `RenderPipelineBuilder`, `RenderFeature`, `RenderPhase`, `SpriteFeature`, `TilemapFeature`, `SceneRenderer`, `Camera`, `Color`, `Texture`.
+- **Expert render** entry points: `sky_engine::render::expert` - `FramePipeline`, `RenderGraph`, `DrawFunction`, `OpaquePhase`, `TransparentPhase`, passes, post-fx, targets, and lower-level GPU composition primitives.
+- **GPU** entry points: `sky_engine::gpu` - `GpuContext` (wraps wgpu device/queue/surface).
+- **Input** entry points: `sky_engine::input` (behind `features = ["app"]`) - `Input`, `InputActions`, `InputBinding`, `InteractionContext`.
+- **App** entry points: `sky_engine::app` (behind `features = ["app"]`) - `App`, `AppConfig`, `FrameContext`, `SetupContext`, `AppState`.
+- **Asset** entry points: `sky_engine::asset` (behind `features = ["asset"]`) - `AssetServer`, handles, texture assets, cooked asset support.
+- **UI** entry points: `sky_engine::ui` (behind UI features) - `UiHost`, `UiBackend`, `UiCaptureState`, `UiPlugin` (`ui-legacy`), `YakuiUiPlugin` (`yakui-ui`).
+- **Scene/VN/audio/video** entry points are feature-gated under `sky_engine::scene`, `sky_engine::vn`, `sky_engine::audio`, and `sky_engine::video`.
 - Preferred entity construction is bundle-based: `world.spawn((A, B, ...))` and `world.spawn_batch(...)`.
 - Preferred query construction is typed: `world.query::<Q>()` or `world.query_filtered::<Q, Flt>()`.
 - Low-level compatibility/benchmark helpers live under `sky_engine::ecs::raw`.
 
 ## Repo Map
-- `src/lib.rs`: crate root, global allocator setup, public module exports.
-- `src/ecs/mod.rs`: canonical ECS re-exports.
-- `src/ecs/world.rs`: world storage, entity lifecycle, archetype epoch tracking, resources, structural transitions, and schedule execution.
-- `src/ecs/archetype.rs`: archetype intern table, sorted component sets, builder API, and lookup caches.
-- `src/ecs/chunk.rs`: chunk allocation, aligned column layout, chunk/block pooling, dense storage, and spare-chunk reuse.
-- `src/ecs/bundle.rs`: tuple-based bundle metadata and fast spawn writes.
-- `src/ecs/query/mod.rs`: shared query descriptors, prepared-cache logic, and re-exports.
-- `src/ecs/query/prepared.rs`: typed prepared query API and typed query tests.
-- `src/ecs/query/param.rs`: typed query param/spec machinery, including tuple support and optional params.
-- `src/ecs/query/filter.rs`: `With<T>` / `Without<T>` filter logic and tuple-composed filters.
-- `src/ecs/query/dynamic.rs`: dynamic query compatibility layer (`Query`, `QueryIter`).
-- `src/ecs/commands.rs`: deferred command buffer, spawn batching, per-entity command coalescing, and inline/heap insert payload storage.
-- `src/ecs/system.rs`: `System` trait, system groups, fixed-tick policy, and schedule builder.
-- `src/ecs/resource.rs`: typed singleton resource storage.
-- `src/ecs/entity.rs`: generational entity IDs and entity-location bookkeeping types.
-- `src/ecs/raw.rs`: low-level/raw exports used by benches and archetype-oriented tests.
-- `src/reflect/registry.rs`: runtime type registry, layout metadata, and type-erased drop support.
+- `src/lib.rs`: crate root, global allocator setup, public module exports and feature gates.
+- `src/ecs/`: archetype/chunk ECS, typed queries, bundles, resources, commands, and schedule execution.
+- `src/reflect/`: runtime type registry, layout metadata, and type-erased drop support.
+- `src/math/`: engine-facing math re-exports/types, currently backed by `glam`.
+- `src/action_queue.rs`: lightweight action queue utility.
+- `src/diagnostics/`: diagnostic events, console output, and app-runner reporting support.
+- `src/asset/`: asset registry/server, cooked asset metadata, texture assets, and asset handles.
+- `src/gpu/`: `GpuContext`, headless/device helpers, frame encoder lifecycle, screenshot/readback support.
+- `src/input/`: raw keyboard/mouse input, action maps, input sources, and interaction context.
+- `src/app/`: `App`, `AppConfig`, `FrameContext`, `SetupContext`, winit runner, and optional egui integration.
+- `src/render/`: rendering framework (see `src/render/AGENTS.md` for module-level rules).
+- `src/ui/`: backend-neutral UI host plus legacy ECS and yakui backends (see `src/ui/AGENTS.md`).
+- `src/audio/`: audio server, backend, commands, ECS sync, and audio asset/types.
+- `src/video/`: video server, streamed playback state, commands, FFmpeg backend, and frame queues.
+- `src/scene/`: serializable scene/prefab documents, IDs, validation, capture, and spawning.
+- `src/physics/`: optional Rapier-backed 2D physics runtime.
+- `src/vn/`: visual novel / Galgame script runtime, systems, UI/audio/video bindings, and presentation helpers.
 - `src/main.rs`: scratch/local playground, not the canonical API surface.
 - `benches/common.rs`: shared components, constants, and helpers for all benchmarks.
 - `benches/fair/main.rs`: canonical apples-to-apples comparison entry point against `hecs` and `bevy_ecs`.
 - `benches/fair/sky.rs`, `benches/fair/hecs.rs`, `benches/fair/bevy.rs`: engine-specific fair benchmark implementations.
-- `benches/fair/shared.rs`: shared fair-suite helpers.
-- `examples/ecs/queries.rs`: typed query example.
-- `examples/ecs/commands.rs`: deferred command buffer example.
-- `examples/ecs/systems.rs`: schedule and grouped-system example.
-- `examples/ecs/hello_ecs.rs`: minimal getting-started example.
-- `examples/ecs/tiny_defense.rs`: ECS-only mini game example.
-- `examples/render/`: focused render API showcases (`clear_screen`, `sprite_demo`, `textured_demo`, `lighting_demo`, `render_graph_showcase`, `perf_test`, `renderer_probe`).
-- `examples/live2d/`: Live2D-specific probe/demo entry points (`live2d_demo`, `live2d_probe`).
-- `examples/demo/`: full GPU showcase demos (`boids`, `boids_classic`, `cosmic_jellyfish`, `neon_galaxy`).
-- `examples/legacy/particles.rs`, `examples/legacy/asteroids.rs`, `examples/legacy/snake.rs`: legacy CPU-rendered demos.
-- `examples/compare/boids_hecs.rs`, `examples/compare/boids_bevy.rs`, `examples/compare/boids_bevy_gpu.rs`: comparison examples.
-- `README.md`, `README_EN.md`: user-facing overview and quick-start docs.
+- `examples/`: feature-focused examples split into `ecs`, `render`, `ui`, `vn`, `scene`, `physics`, `live2d`, `demo`, `game`, `compare`, and `legacy`.
+- `docs/`: current user/developer docs. Planning or future architecture notes belong under `docs/plan/`, not in `AGENTS.md`.
+- `README.md`, `README_zh.md`: user-facing overview and quick-start docs.
 - `benches/BENCHMARKS.md`, `benches/BENCHMARKS_CN.md`: benchmark policy, history, and recorded local results.
-- `docs/api.md`: API notes/reference material.
-- `src/gpu/context.rs`: `GpuContext` — wgpu device/queue/surface wrapper, headless mode for tests, frame encoder lifecycle.
-- `src/gpu/mod.rs`: GPU module re-exports.
-- `src/render/`: 2D rendering framework (see `src/render/AGENTS.md` for full module docs).
-- `src/render/mod.rs`: render module re-exports.
-- `src/render/component/`: ECS-facing render components and settings — camera markers/viewports, sprite/mesh/light components, render settings.
-- `src/render/view/`: camera/view/projection/frustum/viewport/transform resolution types used to build `SceneView`s.
-- `src/render/gpu/`: shared GPU resource layer — `Texture`, `RenderTarget`, fullscreen helpers, `GpuScene`, `GpuTableManager`.
-- `src/render/lighting/`: light data, GPU light tables, `LightPass`, and directional shadow support.
-- `src/render/sprite/`: sprite rendering and `SpriteBatch`.
-- `src/render/mesh/`: mesh rendering and `MeshPass`.
-- `src/render/composite/`: `CompositePass` for scene/light composition.
-- `src/render/runtime/`: high-level runtime orchestration around `RenderComposer`.
-- `src/render/runtime/presentation.rs`: internal viewport presentation/blit node used by the runtime.
-- `src/render/runtime/stats.rs`: render timing helpers and `RenderTimingStats`.
-- `src/render/execution/`: generic prepared-frame execution backbone around `FramePipeline`.
-- `src/render/graph/`: declarative render graph system (see `src/render/graph/AGENTS.md` for detailed docs).
-- `src/render/pipeline/`: registration-driven pipeline builder/runtime traits, asset descriptors, and phase/pass/postfx/compute extension points.
-- `src/render/postfx/`: post-processing effects — `Bloom`, `ToneMap`, `Vignette`.
-- `src/render/resources/`: shared resource systems — `TextureAtlas`, `Blackboard`, `Material*`.
-- `src/render/shaders/`: all WGSL shader sources.
-- `src/render/live2d/`: Live2D Cubism model renderer (see `src/render/live2d/AGENTS.md`, feature-gated).
-- `src/app/runner.rs`: `App` — winit event loop, frame lifecycle, GPU context management.
-- `src/app/config.rs`: `AppConfig` — window title, size, vsync.
-- `src/input/`: `Input`, action maps, bindings, and raw keyboard/mouse state helpers.
 
 ## Current Query Model
 - Preferred runtime path: `world.query::<Q>() -> PreparedQuery<Q>` and `world.query_filtered::<Q, Flt>() -> PreparedQuery<Q, Flt>`.
@@ -104,6 +75,24 @@
 - Scheduling uses `world.group("name")`, `tick()`, `tick_with_delta()`, and `shutdown()`.
 - Groups run in creation order; fixed-timestep groups accumulate time and may run multiple substeps per frame.
 
+## Current App and Module Installation Model
+- There is not currently one universal engine-level `Plugin` trait in `src/app`.
+- Existing installable modules use local installer shapes:
+  - `UiPlugin::install(world)` for the legacy retained UI resources/backend.
+  - `YakuiUiPlugin::install(world)` for the experimental yakui UI backend.
+  - `VnPlugin::install(world)` for visual-novel runtime resources and systems.
+- Keep `AGENTS.md` files factual. Do not add future plugin-system plans here; put proposals under `docs/plan/`.
+- `App::with_render_pipeline(...)` installs a `RenderPipelineAsset`; `WgpuSceneRenderer` materializes it as a `RenderRuntime` after GPU creation.
+- `FrameContext` is the app-facing per-frame access point for rendering, backend-neutral render assets, texture readiness, screenshots, UI facade methods, egui overlays, and wgpu escape hatches.
+
+## Current UI Model
+- `ui-core` owns the backend-neutral UI host contract: `UiHost`, `UiBackend`, `UiBackendId`, `UiCaptureState`, event handling, begin-frame updates, and overlay rendering.
+- `ui-legacy` is the current retained ECS UI path. It owns UI components, layout, input, state, text, and direct overlay rendering.
+- `yakui-ui` installs `YakuiBackend` into `UiHost`. It handles winit events, updates yakui state, reports capture, and renders through `yakui_wgpu`.
+- `egui` is independent of `UiHost`; it lives in `src/app/egui_integration.rs` and renders at the end of the app frame.
+- Current UI overlays are rendered after the scene by `FrameContext::render_ui_overlays()`, `FrameContext::render_ui()`, or egui end-frame integration. There is no canonical `UiPhase` in the render pipeline today.
+- UI input capture is expressed through `UiCaptureState` and event `consumed` responses. Preserve this when changing app input routing.
+
 ## Storage and Performance Notes
 - Storage is columnar per chunk, never entity-interleaved.
 - `CHUNK_SIZE` is currently `512 * 1024` bytes in `src/ecs/chunk.rs`.
@@ -118,21 +107,19 @@
 - `Cargo.toml` keeps `[profile.release] debug = true` so profilers can resolve hot code.
 
 ## Benchmark and Test Commands
-- Run all tests (ECS only): `cargo test`
-- Run all tests (ECS + render): `cargo test --features app`
+- Run all tests (ECS/core only): `cargo test`
+- Run all tests with app/render enabled: `cargo test --features app`
 - Run render graph tests: `cargo test --features app graph`
-- Run a specific render test: `cargo test --features app render::graph::tests::linear_chain_orders_correctly`
-- Run reorder tests only: `cargo test --features app reorder::tests`
-- Run alias tests only: `cargo test --features app alias::tests`
+- Run runtime tests: `cargo test --features app render::runtime::tests`
+- Run UI tests: `cargo test --features ui`
+- Run yakui UI tests/builds: `cargo test --features yakui-ui`
+- Run VN tests: `cargo test --features vn`
 - Run render/example compile check after render/app API changes: `cargo check --examples --features app`
+- Run UI example compile check after UI changes: `cargo check --examples --features ui`
 - Run canonical fair comparison: `cargo bench --bench fair`
 - Run all benches: `cargo bench`
 - Run one engine slice: `cargo bench --bench fair -- sky`
 - Run one exact benchmark: `cargo bench --bench fair -- fair_random_access/get/sky --exact`
-- Run legacy CPU demos with `--features demo-legacy` (`particles`, `snake`, `asteroids`).
-- Run render and showcase demos with `--features app` (`boids`, `boids_classic`, `cosmic_jellyfish`, `neon_galaxy`, render examples).
-- Comparison examples require `--features compare` or `--features compare-bevy` depending on the target example.
-- Chunk-size sweeps are done by editing `CHUNK_SIZE` in `src/ecs/chunk.rs` and rerunning the relevant benches.
 - Render graph tests requiring GPU use `create_test_device()` or `GpuContext::new_headless()` and need a GPU-capable environment.
 
 ## Benchmark Policy
@@ -156,9 +143,9 @@
 - If schedule code changes, preserve group creation order and fixed-step accumulator semantics.
 - Do not rely on `src/main.rs` for correctness, benchmarks, or API direction; it is not the source of truth.
 - Examples are useful usage references, but benchmark behavior and correctness expectations come from `src/` tests plus the bench suites.
-- Render and app-facing example builds are part of the compatibility surface. If you change high-level render APIs, `RenderComposer`, `RenderPipelineAsset`, `RenderPipelineBuilder`, `RenderPhase`, `App`, or demo/shared render helpers, run `cargo check --examples --features app` instead of relying only on unit tests.
-- Unify heterogeneous renderers at the composition layer (`RenderComposer` / `RenderPipelineAsset` / `PreparedFrame` / `PreparedView`), not by forcing every renderer feature into one shared scene schema.
-- `GpuScene` is the shared scene upload layer for the current high-level renderer, not the universal frame schema for every future renderer payload.
+- Render and app-facing example builds are part of the compatibility surface. If you change high-level render APIs, `RenderRuntime`, `RenderPipelineAsset`, `RenderPipelineBuilder`, `RenderPhase`, `SceneRenderer`, `App`, or demo/shared render helpers, run `cargo check --examples --features app` instead of relying only on unit tests.
+- Unify heterogeneous renderers at the composition layer (`RenderRuntime` / `RenderPipelineAsset` / `PreparedFrame` / `PreparedView`) or through backend-neutral `SceneSnapshot` for non-runtime backends. Do not force every renderer feature into one shared scene schema.
+- `GpuScene` is the shared scene upload layer for the current high-level wgpu runtime, not the universal frame schema for every backend or future renderer payload.
 - When adding a new renderer family (for example Live2D, text, particles, mesh-like 2D), prefer: family-specific prepare/cache/upload path + feature registration + typed frame/view payload entry.
 - Keep render-phase and draw execution contexts generic. Prefer typed payload access over adding one-off renderer-specific fields to shared execution state.
 - Only introduce shared scene-level abstractions for concepts that are truly cross-feature, such as view/camera/viewport/order/layer semantics. Do not prematurely unify geometry/material/runtime models.
@@ -171,7 +158,7 @@
 - `buffer_usage_for()` must only be called after compilation (enforced by `debug_assert`).
 - `execute_copy_pass()` must remain `&self` (not `&mut self`) to avoid borrow conflicts with `PhysicalResources` during execution.
 - `alias_group_count()` only counts multi-member groups (groups where actual physical sharing occurs).
-- `resource_has_external_sink` and `resource_has_external_source` intentionally share the same implementation — imported resources are both sources and sinks.
+- `resource_has_external_sink` and `resource_has_external_source` intentionally share the same implementation - imported resources are both sources and sinks.
 - Copy passes must flush the current frame encoder before submitting their own command buffers.
 - All new `CopyOp` variants must register proper reads/writes in `CopyPassSetup` for dependency analysis.
 - `queue.write_texture()` (used by `UploadToTexture`) does NOT require 256-byte `bytes_per_row` alignment; `encoder.copy_buffer_to_texture()` does.
@@ -181,8 +168,8 @@
 ## GPU Context Guidelines
 - `GpuContext` wraps the wgpu `Device`, `Queue`, and optional `Surface`.
 - `GpuContext::new_headless()` creates a surfaceless context for unit testing render graph allocation without a window.
-- The `surface` field is `Option<wgpu::Surface>` — always check `has_surface()` before calling surface-dependent methods.
-- Frame lifecycle: `begin_frame()` → encoder operations → `end_frame()` submits and presents.
+- The `surface` field is `Option<wgpu::Surface>` - always check `has_surface()` before calling surface-dependent methods.
+- Frame lifecycle: `begin_frame()` -> encoder operations -> `end_frame()` submits and presents.
 
 ## Commit Hygiene
 - Do not commit profiler artifacts such as `sky-profile*.json.gz` or `*.syms.json`.
