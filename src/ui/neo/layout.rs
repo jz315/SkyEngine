@@ -1,3 +1,4 @@
+use super::text_measure::{measure_text_size, MeasuredText};
 use super::{Align, Element, ElementKind, LayoutRect, Size};
 
 #[derive(Debug, Clone)]
@@ -32,7 +33,12 @@ fn measure_node(element: &Element, available_width: f32, available_height: f32) 
         .map(|child| measure_node(child, child_available_width, child_available_height))
         .collect();
     let content_width = measure_content_width(element, &children, child_available_width);
-    let content_height = measure_content_height(element, &children, child_available_height);
+    let content_height = measure_content_height(
+        element,
+        &children,
+        child_available_width,
+        child_available_height,
+    );
     MeasuredNode {
         width: resolve_width(
             element,
@@ -70,6 +76,9 @@ fn measure_content_width(
     available_width: f32,
 ) -> f32 {
     if children.is_empty() {
+        if element.kind == ElementKind::Text {
+            return measure_text_leaf(element, available_width).width;
+        }
         return if let Size::Fixed(value) = element.width {
             value
         } else {
@@ -98,9 +107,13 @@ fn measure_content_width(
 fn measure_content_height(
     element: &Element,
     children: &[MeasuredNode],
+    available_width: f32,
     available_height: f32,
 ) -> f32 {
     if children.is_empty() {
+        if element.kind == ElementKind::Text {
+            return measure_text_leaf(element, available_width).height;
+        }
         return if let Size::Fixed(value) = element.height {
             value
         } else {
@@ -124,6 +137,37 @@ fn measure_content_height(
         max_height = max_height.max(outer_height(child, measured));
     }
     max_height
+}
+
+fn measure_text_leaf(element: &Element, available_width: f32) -> MeasuredText {
+    let max_width = text_measure_width(element, available_width);
+    measure_text_size(
+        &element.text,
+        &element.font_family,
+        element.font_size,
+        element.font_weight,
+        element.line_height,
+        max_width,
+        element.wrap,
+    )
+}
+
+fn text_measure_width(element: &Element, available_width: f32) -> f32 {
+    match element.width {
+        Size::Fixed(value) => value,
+        Size::Fill => available_width,
+        Size::WrapContent => {
+            if element.text_max_width > 0.0 {
+                element.text_max_width
+            } else if element.max_layout_width > 0.0 {
+                element.max_layout_width
+            } else if element.wrap {
+                available_width
+            } else {
+                0.0
+            }
+        }
+    }
 }
 
 fn resolve_width(element: &Element, content: f32, available: f32) -> f32 {
@@ -668,7 +712,43 @@ mod tests {
         let mut roots = ui.into_roots();
         layout_roots(&mut roots, 640.0, 480.0);
 
-        assert_eq!(roots[0].frame.width, 120.0);
+        assert!(roots[0].frame.width > 0.0);
+        assert!(roots[0].frame.width <= 120.0);
         assert_eq!(roots[0].text_max_width, 120.0);
+    }
+
+    #[test]
+    fn text_wrap_content_uses_natural_text_size() {
+        let mut ui = Ui::new("test");
+        ui.text("label")
+            .text("Sky")
+            .font_size(20.0)
+            .wrap_content()
+            .build();
+        let mut roots = ui.into_roots();
+        layout_roots(&mut roots, 640.0, 480.0);
+
+        assert!(roots[0].frame.width > 0.0);
+        assert!(roots[0].frame.width < 120.0);
+        assert!(roots[0].frame.height > 0.0);
+        assert!(roots[0].frame.height < 60.0);
+    }
+
+    #[test]
+    fn wrapped_text_natural_height_respects_max_width() {
+        let mut ui = Ui::new("test");
+        ui.text("label")
+            .text("SkyEngine layout primitives")
+            .font_size(20.0)
+            .wrap(true)
+            .max_width(80.0)
+            .wrap_content()
+            .build();
+        let mut roots = ui.into_roots();
+        layout_roots(&mut roots, 640.0, 480.0);
+
+        assert!(roots[0].frame.width > 0.0);
+        assert!(roots[0].frame.width <= 80.0);
+        assert!(roots[0].frame.height > 30.0);
     }
 }

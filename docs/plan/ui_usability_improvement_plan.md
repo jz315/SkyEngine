@@ -43,8 +43,7 @@ Phase 1 core primitives are implemented in `ui-neo`:
 
 Still pending:
 
-- intrinsic widget sizing for text and badge-style controls
-- extending the shared widget layout contract beyond button/input where it
+- extending the shared widget layout contract beyond button/input/badge where it
   clearly reduces manual sizing
 - scroll ergonomics
 - migration of one example section away from manual geometry
@@ -56,10 +55,14 @@ Phase 2 has started:
   width from text/icon content when width is not explicit.
 - `widgets::input` accepts the shared sizing contract, including `grow`, so it
   can fill toolbar rows without manual width subtraction.
+- Text `WrapContent` uses shaped natural text size instead of falling back to
+  the full available viewport.
+- `widgets::badge` provides a natural-width badge/chip primitive on top of the
+  shared widget layout contract.
 - Widget internals that use `Fill` are remeasured after parent growth, so
   backgrounds and hit targets follow the final grown frame.
 - `neo_layout_primitives` now uses real `widgets::button` and `widgets::input`
-  in its growing toolbar.
+  in its growing toolbar, and real `widgets::badge` for natural-width chips.
 
 ## Design Principles
 
@@ -266,8 +269,9 @@ Current assessment:
 - `grow` passes for Phase 1: it intentionally covers only row/column main-axis
   expansion and redistributes space when max constraints are hit.
 - Widget ergonomics are partially passing: button and input now share the core
-  sizing contract, but text and badge-like controls still need natural-size
-  work.
+  sizing contract, text has natural `WrapContent`, and badge has a reusable
+  natural-width widget. Remaining widget work should be justified by concrete
+  repeated sizing pain.
 
 ## Helper Policy
 
@@ -314,9 +318,9 @@ Success criteria:
 
 - Improve leaf measurement so `WrapContent` means natural content size.
 - Add widget-level natural sizing for text, button, input, and badge-like
-  controls.
+  controls. Button, input, text, and badge are implemented.
 - Introduce a small shared widget layout contract instead of duplicating fields
-  across every widget builder. Button and input are the first adopters.
+  across every widget builder. Button, input, and badge are the first adopters.
 - Let widget builders expose the same core sizing concepts where appropriate:
   `width`, `height`, `size`, `min_width`, `max_width`, `min_height`,
   `max_height`, and `grow`.

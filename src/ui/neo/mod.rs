@@ -23,6 +23,7 @@ mod layout;
 mod plugin;
 mod renderer;
 mod runtime;
+mod text_measure;
 pub mod widgets;
 mod window;
 

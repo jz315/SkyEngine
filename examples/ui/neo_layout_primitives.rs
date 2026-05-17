@@ -14,7 +14,7 @@ use sky_engine::render::{
     SpriteFeature, Transform, TransparentPhase,
 };
 use sky_engine::ui::neo::widgets;
-use sky_engine::ui::neo::{Align, HorizontalAlign, Size, VerticalAlign};
+use sky_engine::ui::neo::{Align, Size};
 
 const WINDOW_W: u32 = 1100;
 const WINDOW_H: u32 = 760;
@@ -118,7 +118,11 @@ fn header(ui: &mut sky_engine::ui::neo::Ui) {
                         .build();
                 });
 
-            pill(ui, "header.badge", "max 760px", c(0.280, 0.640, 0.960, 1.0));
+            widgets::badge(ui, "header.badge")
+                .text("max 760px")
+                .accent(c(0.280, 0.640, 0.960, 1.0))
+                .min_width(128.0)
+                .build();
         });
 }
 
@@ -233,40 +237,19 @@ fn footer(ui: &mut sky_engine::ui::neo::Ui) {
         .gap(10.0)
         .align_items(Align::Center)
         .content(|ui| {
-            pill(
-                ui,
-                "footer.padding",
-                "padding(28)",
-                c(0.890, 0.560, 0.260, 1.0),
-            );
-            pill(ui, "footer.gap", "gap(18)", c(0.460, 0.820, 0.620, 1.0));
-            pill(
-                ui,
-                "footer.grow",
-                "grow redistribution",
-                c(0.760, 0.620, 0.960, 1.0),
-            );
+            widgets::badge(ui, "footer.padding")
+                .text("padding(28)")
+                .accent(c(0.890, 0.560, 0.260, 1.0))
+                .build();
+            widgets::badge(ui, "footer.gap")
+                .text("gap(18)")
+                .accent(c(0.460, 0.820, 0.620, 1.0))
+                .build();
+            widgets::badge(ui, "footer.grow")
+                .text("grow redistribution")
+                .accent(c(0.760, 0.620, 0.960, 1.0))
+                .build();
         });
-}
-
-fn pill(ui: &mut sky_engine::ui::neo::Ui, id: &str, label: &str, accent: Color) {
-    ui.stack(id).size(128.0, 34.0).content(|ui| {
-        ui.rect(format!("{id}.bg"))
-            .fill()
-            .radius(999.0)
-            .color(c(0.070, 0.092, 0.120, 0.82))
-            .border(1.0, c(accent.r, accent.g, accent.b, 0.46))
-            .build();
-        ui.text(format!("{id}.text"))
-            .fill()
-            .text(label)
-            .font_size(13.0)
-            .line_height(34.0)
-            .horizontal_align(HorizontalAlign::Center)
-            .vertical_align(VerticalAlign::Center)
-            .color(c(0.850, 0.910, 0.970, 1.0))
-            .build();
-    });
 }
 
 fn c(r: f32, g: f32, b: f32, a: f32) -> Color {

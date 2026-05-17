@@ -1,5 +1,6 @@
 //! EUI-NEO component builders ported as primitive composition helpers.
 
+pub mod badge;
 pub mod bar_chart;
 pub mod button;
 pub mod checkbox;
@@ -27,6 +28,7 @@ pub mod theme;
 pub mod time_picker;
 pub mod toast;
 
+pub use badge::{badge, BadgeBuilder, BadgeStyle};
 pub use bar_chart::{barChart, bar_chart, barchart, BarChartBuilder, BarChartStyle};
 pub use button::{button, ButtonBuilder, ButtonStyle};
 pub use checkbox::{checkbox, CheckboxBuilder, CheckboxStyle};
@@ -65,7 +67,7 @@ pub use toast::{toast, ToastBuilder, ToastStyle};
 #[cfg(test)]
 mod tests {
     use super::{
-        barChart, bodyTextStyle, button, checkbox, colorpicker, contextMenu, context_menu,
+        badge, barChart, bodyTextStyle, button, checkbox, colorpicker, contextMenu, context_menu,
         dataTable, datepicker, dialog, dropdown, imageWithStyle, input, lineChart, panelWithStyle,
         pieChart, progress, radio, scroll, segmented, slider, tabs, timepicker, toast,
         toggleSwitch,
@@ -131,6 +133,33 @@ mod tests {
 
         assert_eq!(runtime.find("search").unwrap().frame.width, 352.0);
         assert_eq!(runtime.find("search.hit").unwrap().frame.width, 352.0);
+    }
+
+    #[test]
+    fn badge_uses_natural_width_and_shared_layout_constraints() {
+        let mut runtime = NeoRuntime::new("page");
+        runtime.compose(420.0, 80.0, |ui, _| {
+            ui.row("toolbar").size(420.0, 34.0).gap(10.0).content(|ui| {
+                badge(ui, "ready").text("Ready").build();
+                badge(ui, "state")
+                    .text("Running")
+                    .min_width(120.0)
+                    .grow(1.0)
+                    .build();
+            });
+        });
+
+        let ready = runtime.find("ready").unwrap().frame;
+        assert!(ready.width > 48.0);
+        assert!(ready.width < 120.0);
+        assert_eq!(
+            runtime.find("state").unwrap().frame.width,
+            420.0 - ready.width - 10.0
+        );
+        assert_eq!(
+            runtime.find("state.bg").unwrap().frame.width,
+            runtime.find("state").unwrap().frame.width
+        );
     }
 
     #[test]
