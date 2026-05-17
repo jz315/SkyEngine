@@ -52,6 +52,9 @@ pub mod math;
 pub mod plugin;
 pub mod reflect;
 
+#[cfg(feature = "platform")]
+pub mod platform;
+
 #[cfg(feature = "scene")]
 pub mod scene;
 
@@ -66,6 +69,9 @@ pub mod gpu;
 
 #[cfg(feature = "app")]
 pub mod render;
+
+#[cfg(feature = "app")]
+pub mod tile;
 
 #[cfg(feature = "app")]
 pub mod input;

@@ -1,25 +1,44 @@
 # SkyEngine Render
 
-`sky_engine::render` 是高层 2D 渲染框架，在 `app` feature 下启用。它建立在 `gpu` 模块之上，提供组件、camera/view、sprite、mesh、lighting、postfx、RenderGraph、pipeline/phase、tilemap、Live2D 等能力。
+`sky_engine::render` 是高层渲染 facade，在 `app` feature 下启用。它建立在 `gpu` 模块之上，提供组件、camera/view、sprite、mesh、lighting、postfx、pipeline/phase、tilemap、Live2D 等能力。
 
 更完整的低层 API 表格和 GPU 细节见 [Render API Reference](render_api.md)。架构背景见 [Architecture](architecture.md)。
 
 ## 常用入口
 
+顶层 `sky_engine::render` 面向普通应用和 gameplay 代码：
+
 ```rust
 use sky_engine::render::{
-    Camera, Color, RenderFeature, RenderPhase, RenderPipelineAsset, RenderRuntime,
-    RenderPipelineBuilder, SpriteFeature, Texture,
+    Camera, Color, RenderPipelineAsset, RenderPipelineBuilder, SpriteFeature, Texture,
 };
 ```
 
-专家层：
+高级扩展代码也可以从顶层使用 feature / phase / pass / material 注册 API：
+
+```rust
+use sky_engine::render::{
+    ComputePass, Material, PostFxPass, RenderFeature, RenderPass, RenderPhase,
+};
+```
+
+专家层用于 frame execution、render graph、draw dispatch、GPU table、低层 mesh/target/readback 等 renderer 内部能力：
 
 ```rust
 use sky_engine::render::expert::{
     FramePipeline, RenderGraph, DrawFunction, OpaquePhase, TransparentPhase,
 };
 ```
+
+规则很简单：写游戏内容优先用 `sky_engine::render`；写 renderer family、工具或底层 GPU 编排时用 `sky_engine::render::expert`。顶层暂时保留了一些低层兼容 re-export，但新代码不要把它们当作默认入口。
+
+## API 分层
+
+| 层级 | 入口 | 用途 |
+|------|------|------|
+| 稳定 gameplay API | `sky_engine::render` | camera、render components、sprite、tilemap、light、pipeline asset、backend、texture readiness、render stats |
+| 高级扩展 API | `sky_engine::render` | `RenderFeature`、phase/pass/post-fx、material/shader 注册、自定义 renderer family |
+| 专家 / 低层 API | `sky_engine::render::expert` | `FramePipeline`、`RenderGraph`、`PreparedFrame` / `PreparedView`、draw functions、GPU tables、low-level mesh/target/readback |
 
 ## 推荐高层路径
 

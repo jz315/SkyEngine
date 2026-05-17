@@ -1,5 +1,21 @@
 # SkyEngine Render API Reference
 
+## API Stability Boundary
+
+`sky_engine::render` is the user-facing facade. It should be the first import
+path for gameplay code, scene authoring, renderer installation, common
+components, textures, materials, lights, and supported extension traits.
+
+`sky_engine::render::expert` is the low-level facade for renderer authors and
+engine tools. Use it for `FramePipeline`, `RenderGraph`, prepared frame/view
+payloads, draw functions, phase execution contexts, GPU tables, render targets,
+low-level meshes, and texture readback.
+
+Some low-level types are still re-exported from `sky_engine::render` for
+compatibility while the render stack is evolving. New code should prefer the
+expert path for renderer internals so future top-level facade cleanup does not
+force a broad migration.
+
 ## Architecture Overview
 
 ```text

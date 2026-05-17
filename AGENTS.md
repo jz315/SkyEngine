@@ -6,7 +6,7 @@
 - **Rendering**: the current high-level `wgpu` path is `RenderPipelineAsset` / `RenderPipelineBuilder` -> `RenderRuntime`, installed through the app-facing `SceneRenderer` backend wrapper. Built-ins include `SpriteFeature`, `TilemapFeature`, `OpaquePhase`, `TransparentPhase`, material prepasses, shadows, GI steps, and post-fx. Internally, execution is shared through `PreparedFrame` / `PreparedView`, `FramePipeline`, and `RenderGraph`.
 - **Renderer backends**: `WgpuSceneRenderer` wraps `RenderRuntime`. Optional Kajiya and Renderling backends consume a backend-neutral `SceneSnapshot` extracted from ECS.
 - **App lifecycle**: `App` owns the winit event loop, active `SceneRenderer`, input resource sync, optional asset/audio/video service updates, diagnostics, screenshots, and frame present lifecycle behind the `app` feature flag.
-- **UI**: current UI is feature-gated. `ui-core` provides `UiHost` / `UiBackend`; `ui-legacy` adapts the retained ECS UI; `yakui-ui` installs the experimental yakui backend; `egui` is a separate immediate-mode overlay integration under `src/app/egui_integration.rs`.
+- **UI**: current UI is feature-gated. `ui-core` provides `UiHost` / `UiBackend`; `ui-legacy` adapts the retained ECS UI; `ui-neo` installs the experimental EUI-NEO-style backend; `yakui-ui` installs the experimental yakui backend; `egui` is a separate immediate-mode overlay integration under `src/app/egui_integration.rs`.
 - Benchmarks are Criterion-based under `benches/`, with a single canonical `fair` target and engine-specific implementations split under `benches/fair/`.
 
 ## Canonical API Surface
@@ -17,7 +17,8 @@
 - **Input** entry points: `sky_engine::input` (behind `features = ["app"]`) - `Input`, `InputActions`, `InputBinding`, `InteractionContext`.
 - **App** entry points: `sky_engine::app` (behind `features = ["app"]`) - `App`, `AppConfig`, `FrameContext`, `SetupContext`, `AppState`.
 - **Asset** entry points: `sky_engine::asset` (behind `features = ["asset"]`) - `AssetServer`, handles, texture assets, cooked asset support.
-- **UI** entry points: `sky_engine::ui` (behind UI features) - `UiHost`, `UiBackend`, `UiCaptureState`, `UiPlugin` (`ui-legacy`), `YakuiUiPlugin` (`yakui-ui`).
+- **UI** entry points: `sky_engine::ui` (behind UI features) - `UiHost`, `UiBackend`, `UiCaptureState`, `UiPlugin` (`ui-legacy`), `neo::{NeoUiPlugin, NeoUiBackend, NeoRuntime}` (`ui-neo`), `YakuiUiPlugin` (`yakui-ui`).
+- **Tile scene** entry points: `sky_engine::tile` - `TileMap`, `TileMapDocument`, `TileMapDocumentBuilder`, `TileMapInstance`, `TileMapEditSession`, `TileMapEditSummary`, `TilePalette`, `TileLayer`, `SceneTile`, `TileRef`, `TiledImporter`, `TiledExporter`.
 - **Scene/VN/audio/video** entry points are feature-gated under `sky_engine::scene`, `sky_engine::vn`, `sky_engine::audio`, and `sky_engine::video`.
 - Preferred entity construction is bundle-based: `world.spawn((A, B, ...))` and `world.spawn_batch(...)`.
 - Preferred query construction is typed: `world.query::<Q>()` or `world.query_filtered::<Q, Flt>()`.
@@ -35,7 +36,8 @@
 - `src/input/`: raw keyboard/mouse input, action maps, input sources, and interaction context.
 - `src/app/`: `App`, `AppConfig`, `FrameContext`, `SetupContext`, winit runner, and optional egui integration.
 - `src/render/`: rendering framework (see `src/render/AGENTS.md` for module-level rules).
-- `src/ui/`: backend-neutral UI host plus legacy ECS and yakui backends (see `src/ui/AGENTS.md`).
+- `src/ui/`: backend-neutral UI host plus legacy ECS, EUI-NEO-style, and yakui backends (see `src/ui/AGENTS.md`).
+- `src/tile/`: format-neutral tile scene model, editable documents, palettes, layers, objects, persistence, Tiled import/export facades, and sync into render tilemaps.
 - `src/audio/`: audio server, backend, commands, ECS sync, and audio asset/types.
 - `src/video/`: video server, streamed playback state, commands, FFmpeg backend, and frame queues.
 - `src/scene/`: serializable scene/prefab documents, IDs, validation, capture, and spawning.
@@ -80,18 +82,37 @@
 - Existing installable modules use local installer shapes:
   - `UiPlugin::install(world)` for the legacy retained UI resources/backend.
   - `YakuiUiPlugin::install(world)` for the experimental yakui UI backend.
+  - `NeoUiPlugin::install(world)` for the experimental EUI-NEO-style UI backend.
   - `VnPlugin::install(world)` for visual-novel runtime resources and systems.
 - Keep `AGENTS.md` files factual. Do not add future plugin-system plans here; put proposals under `docs/plan/`.
 - `App::with_render_pipeline(...)` installs a `RenderPipelineAsset`; `WgpuSceneRenderer` materializes it as a `RenderRuntime` after GPU creation.
 - `FrameContext` is the app-facing per-frame access point for rendering, backend-neutral render assets, texture readiness, screenshots, UI facade methods, egui overlays, and wgpu escape hatches.
 
+## Current Tile Scene Model
+- `src/tile/` is the high-level tile scene and authoring layer. It owns `TileMap`, `TileMapDocument`, palettes, layers, tile references, objects, edit summaries/history, persistence, and format import/export.
+- `src/render/tilemap/` is the low-level render implementation. It owns `TilemapStorage`, `TilemapRenderer`, extraction, chunk/GPU caches, draw logic, and the quick render-only Tiled path.
+- Prefer `tile::TileMapDocument` or `tile::TileMap` for game/editor maps that need editing, persistence, palettes, objects, collision, metadata, or format round-tripping.
+- Use `render::TilemapStorage` / `render::TilemapRenderer` directly only for render demos, low-level renderer tests, or code that intentionally bypasses the tile scene model.
+- `TileMapRenderSync` is the bridge from `tile::TileMap` into `render::TilemapStorage` plus `TilemapRenderer` components.
+- Tiled authoring import/export uses `tile::adapters::tiled::TiledImporter` and `TiledExporter`. Do not reintroduce the old `TiledAdapter` / `TmjExporter` names.
+- `render::TiledImport` / `render::TiledMapInstance` remain the render-only fast path for loading Tiled data directly into render entities. Do not use them as the general game/editor tile scene model.
+
 ## Current UI Model
 - `ui-core` owns the backend-neutral UI host contract: `UiHost`, `UiBackend`, `UiBackendId`, `UiCaptureState`, event handling, begin-frame updates, and overlay rendering.
 - `ui-legacy` is the current retained ECS UI path. It owns UI components, layout, input, state, text, and direct overlay rendering.
+- `ui-neo` is the experimental EUI-NEO-style declarative UI path. It owns a Rust port of EUI-NEO's DSL, layout, runtime, animation, widgets, binding helpers, and wgpu overlay renderer under `src/ui/neo/`.
 - `yakui-ui` installs `YakuiBackend` into `UiHost`. It handles winit events, updates yakui state, reports capture, and renders through `yakui_wgpu`.
 - `egui` is independent of `UiHost`; it lives in `src/app/egui_integration.rs` and renders at the end of the app frame.
 - Current UI overlays are rendered after the scene by `FrameContext::render_ui_overlays()`, `FrameContext::render_ui()`, or egui end-frame integration. There is no canonical `UiPhase` in the render pipeline today.
 - UI input capture is expressed through `UiCaptureState` and event `consumed` responses. Preserve this when changing app input routing.
+
+## EUI-NEO Port Rules
+- Local source reference: `C:\Coding\EUI-NEO`. Check it before changing `ui-neo` APIs, widget behavior, layout, event ordering, animation, renderer behavior, or gallery parity.
+- Keep `src/ui/neo/` behavior mechanically traceable to EUI-NEO sources: `core/dsl*.h`, `core/layout.h`, `core/event.h`, `core/animation.h`, `core/image.*`, and `components/*.h`.
+- Preserve EUI-NEO defaults, clamp rules, callback ordering, transition masks, z-index/layering, modal input blocking, focus, clipboard, IME rect, and dirty/redraw behavior unless SkyEngine platform seams require a documented adaptation.
+- Keep reusable widget behavior in `src/ui/neo/widgets/` or shared neo runtime modules. `examples/ui/eui_neo_gallery.rs` is a parity pressure test, not a place to hide missing component behavior.
+- Validate visible UI with SkyEngine's built-in screenshot path (`FrameContext::request_screenshot`) rather than browser screenshots.
+- Keep the EUI-NEO port plan consolidated in `docs/plan/eui_neo_rust_ui_port_plan.md`; remove completed execution plans from that file instead of creating more plan files.
 
 ## Storage and Performance Notes
 - Storage is columnar per chunk, never entity-interleaved.
@@ -112,6 +133,8 @@
 - Run render graph tests: `cargo test --features app graph`
 - Run runtime tests: `cargo test --features app render::runtime::tests`
 - Run UI tests: `cargo test --features ui`
+- Run tile scene tests: `cargo test --features app tile::`
+- Run EUI-NEO-style UI tests/builds: `cargo test --features ui-neo ui::neo` and `cargo check --examples --features ui-neo`
 - Run yakui UI tests/builds: `cargo test --features yakui-ui`
 - Run VN tests: `cargo test --features vn`
 - Run render/example compile check after render/app API changes: `cargo check --examples --features app`
@@ -121,6 +144,7 @@
 - Run one engine slice: `cargo bench --bench fair -- sky`
 - Run one exact benchmark: `cargo bench --bench fair -- fair_random_access/get/sky --exact`
 - Render graph tests requiring GPU use `create_test_device()` or `GpuContext::new_headless()` and need a GPU-capable environment.
+- EUI-NEO visual verification examples support built-in screenshot probes via `SKY_NEO_SCREENSHOT_PATH`, `SKY_NEO_SCREENSHOT_FRAME`, and `SKY_NEO_EXIT_AFTER_SCREENSHOT`; gallery overlay states can be forced with variables such as `SKY_NEO_GALLERY_DIALOG_OPEN`, `SKY_NEO_GALLERY_CONTEXT_OPEN`, `SKY_NEO_GALLERY_DATE_OPEN`, `SKY_NEO_GALLERY_TIME_OPEN`, `SKY_NEO_GALLERY_COLOR_OPEN`, and `SKY_NEO_GALLERY_PAGE`.
 
 ## Benchmark Policy
 - `benches/fair/main.rs` is the only canonical cross-engine comparison suite.
@@ -143,6 +167,7 @@
 - If schedule code changes, preserve group creation order and fixed-step accumulator semantics.
 - Do not rely on `src/main.rs` for correctness, benchmarks, or API direction; it is not the source of truth.
 - Examples are useful usage references, but benchmark behavior and correctness expectations come from `src/` tests plus the bench suites.
+- Keep tile scene API names directional: use importer/exporter names for external formats, edit/refresh names for document mutations and render sync, and reserve `World::spawn` for ECS entity creation in examples where practical.
 - Render and app-facing example builds are part of the compatibility surface. If you change high-level render APIs, `RenderRuntime`, `RenderPipelineAsset`, `RenderPipelineBuilder`, `RenderPhase`, `SceneRenderer`, `App`, or demo/shared render helpers, run `cargo check --examples --features app` instead of relying only on unit tests.
 - Unify heterogeneous renderers at the composition layer (`RenderRuntime` / `RenderPipelineAsset` / `PreparedFrame` / `PreparedView`) or through backend-neutral `SceneSnapshot` for non-runtime backends. Do not force every renderer feature into one shared scene schema.
 - `GpuScene` is the shared scene upload layer for the current high-level wgpu runtime, not the universal frame schema for every backend or future renderer payload.

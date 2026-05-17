@@ -645,8 +645,8 @@ Goal: decide whether yakui becomes the primary game UI path.
 Migration candidates:
 
 - `examples/ui/hud_menu.rs`;
-- `examples/game/lawn_defense.rs`;
-- `examples/game/kenney_platformer.rs`;
+- `examples/game/lawn_defense/main.rs`;
+- `examples/game/kenney_platformer/main.rs`;
 - `examples/vn/ui_demo.rs`;
 - `examples/game/last_light_guild`.
 

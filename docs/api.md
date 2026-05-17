@@ -51,4 +51,5 @@ cargo check --examples --features app
 - Reflect 是基础设施：ECS 使用 layout 反射，Inspector 使用 derive 字段反射，Scene 不依赖 reflect 保存。
 - UI 是游戏运行时模块：原生 retained UI 负责 HUD/Menu，egui 保持 tool/debug overlay 定位。
 - 模块边界清晰：scene/save、physics、render、asset、audio、video 都通过自己的 public API 暴露能力，不塞进一个中心 schema。
+- Render facade 分层：普通场景代码用 `sky_engine::render`，renderer 内部执行、RenderGraph、draw dispatch、GPU table 和低层 mesh/target/readback 用 `sky_engine::render::expert`。
 - API 以人和 AI 都好用为目标：显式入口、稳定名字、少手写注册、文档按模块拆开。
