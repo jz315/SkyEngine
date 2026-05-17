@@ -17,14 +17,25 @@ pub enum RedrawMode {
     Reactive,
 }
 
+/// Unit used by the app runner when applying the initial window size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowSizeMode {
+    /// Interpret [`AppConfig::width`] and [`AppConfig::height`] as logical pixels.
+    Logical,
+    /// Interpret [`AppConfig::width`] and [`AppConfig::height`] as physical pixels.
+    Physical,
+}
+
 /// Configuration for creating a SkyEngine application window.
 pub struct AppConfig {
     /// Window title.
     pub title: String,
-    /// Initial window width in logical pixels.
+    /// Initial window width. See [`AppConfig::size_mode`] for units.
     pub width: u32,
-    /// Initial window height in logical pixels.
+    /// Initial window height. See [`AppConfig::size_mode`] for units.
     pub height: u32,
+    /// Unit used for the initial window size.
+    pub size_mode: WindowSizeMode,
     /// Enable vsync (default: true).
     pub vsync: bool,
     /// Allow window resizing (default: true).
@@ -43,6 +54,8 @@ pub struct AppConfig {
     pub auto_tick: bool,
     /// How redraws are scheduled (default: [`RedrawMode::Continuous`]).
     pub redraw_mode: RedrawMode,
+    /// Optional frame-rate cap. `None` means redraw as fast as the platform allows.
+    pub frame_rate_limit: Option<f64>,
     /// Which diagnostics are mirrored to stderr by the app runner.
     ///
     /// Diagnostics remain available as structured [`Diagnostics`](crate::diagnostics::Diagnostics)
@@ -57,12 +70,14 @@ impl AppConfig {
             title: title.into(),
             width,
             height,
+            size_mode: WindowSizeMode::Logical,
             vsync: true,
             resizable: true,
             exit_on_escape: true,
             max_delta: 0.1,
             auto_tick: true,
             redraw_mode: RedrawMode::Continuous,
+            frame_rate_limit: None,
             diagnostic_console: DiagnosticConsole::default(),
         }
     }
@@ -78,6 +93,17 @@ impl AppConfig {
     #[inline]
     pub fn with_resizable(mut self, resizable: bool) -> Self {
         self.resizable = resizable;
+        self
+    }
+
+    /// Set whether the initial window size is interpreted as physical pixels.
+    #[inline]
+    pub fn with_physical_window_size(mut self, physical: bool) -> Self {
+        self.size_mode = if physical {
+            WindowSizeMode::Physical
+        } else {
+            WindowSizeMode::Logical
+        };
         self
     }
 
@@ -106,6 +132,13 @@ impl AppConfig {
     #[inline]
     pub fn with_redraw_mode(mut self, redraw_mode: RedrawMode) -> Self {
         self.redraw_mode = redraw_mode;
+        self
+    }
+
+    /// Set an application frame-rate cap. Values at or below zero disable the cap.
+    #[inline]
+    pub fn with_frame_rate_limit(mut self, fps: f64) -> Self {
+        self.frame_rate_limit = (fps > 0.0).then_some(fps);
         self
     }
 

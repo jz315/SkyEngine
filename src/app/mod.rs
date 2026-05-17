@@ -4,14 +4,26 @@
 //! to the ECS world.
 
 pub mod config;
+pub(crate) mod diagnostic_console;
+mod frame;
+pub(crate) mod input;
+mod lifecycle;
+pub(crate) mod pacing;
+pub mod platform;
 pub mod runner;
+pub(crate) mod screenshots;
+pub(crate) mod services;
+pub mod windows;
 
 #[cfg(feature = "egui")]
 pub(crate) mod egui_integration;
 
 pub use crate::diagnostics::DiagnosticConsole;
 pub use config::{AppConfig, RedrawMode};
-pub use runner::{App, AppState, FrameContext, SetupContext};
+#[cfg(feature = "ui-core")]
+pub use frame::UiFrame;
+pub use frame::{FrameContext, Windows};
+pub use runner::{App, AppState, SetupContext};
 
 /// Re-export the egui crate for user convenience.
 ///

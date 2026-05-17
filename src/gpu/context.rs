@@ -973,6 +973,110 @@ impl GpuContext {
             .encoder
     }
 
+    /// Copy the current presentation surface into a texture for later sampling.
+    ///
+    /// The caller must ensure no render pass is active, and the target texture
+    /// must be created with `COPY_DST` usage and the active surface format.
+    pub fn copy_current_surface_to_texture(
+        &mut self,
+        target: &wgpu::Texture,
+    ) -> Result<(), GpuScreenshotError> {
+        if self.frame.is_none() {
+            return Err(GpuScreenshotError::NoActiveFrame);
+        }
+        if !self
+            .surface_config
+            .usage
+            .contains(wgpu::TextureUsages::COPY_SRC)
+        {
+            return Err(GpuScreenshotError::SurfaceCopyUnsupported);
+        }
+
+        let width = self.surface_config.width.max(1);
+        let height = self.surface_config.height.max(1);
+        let frame = self
+            .frame
+            .as_mut()
+            .ok_or(GpuScreenshotError::NoActiveFrame)?;
+        let surface_texture = frame
+            .surface_texture
+            .as_ref()
+            .ok_or(GpuScreenshotError::NoSurfaceFrame)?;
+        frame.encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &surface_texture.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture: target,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        Ok(())
+    }
+
+    /// Copy the current presentation surface into a caller-owned texture.
+    ///
+    /// This variant allows the destination extent to be smaller than the full
+    /// surface; callers can then render/blit from that snapshot into another
+    /// target without sampling the swapchain image directly.
+    pub fn copy_current_surface_to_texture_extent(
+        &mut self,
+        target: &wgpu::Texture,
+        extent: wgpu::Extent3d,
+    ) -> Result<(), GpuScreenshotError> {
+        if self.frame.is_none() {
+            return Err(GpuScreenshotError::NoActiveFrame);
+        }
+        if !self
+            .surface_config
+            .usage
+            .contains(wgpu::TextureUsages::COPY_SRC)
+        {
+            return Err(GpuScreenshotError::SurfaceCopyUnsupported);
+        }
+
+        let width = extent.width.min(self.surface_config.width.max(1)).max(1);
+        let height = extent.height.min(self.surface_config.height.max(1)).max(1);
+        let frame = self
+            .frame
+            .as_mut()
+            .ok_or(GpuScreenshotError::NoActiveFrame)?;
+        let surface_texture = frame
+            .surface_texture
+            .as_ref()
+            .ok_or(GpuScreenshotError::NoSurfaceFrame)?;
+        frame.encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &surface_texture.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture: target,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        Ok(())
+    }
+
     /// Whether a frame is currently active.
     #[inline]
     pub fn has_active_frame(&self) -> bool {
