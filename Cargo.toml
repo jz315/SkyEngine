@@ -325,6 +325,11 @@ path = "examples/ui/eui_neo_gallery.rs"
 required-features = ["ui-neo"]
 
 [[example]]
+name = "neo_layout_primitives"
+path = "examples/ui/neo_layout_primitives.rs"
+required-features = ["ui-neo"]
+
+[[example]]
 name = "neo_control_center"
 path = "examples/ui/neo_control_center/main.rs"
 required-features = ["ui-neo"]

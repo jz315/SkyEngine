@@ -207,7 +207,7 @@ fn draw_element(
             font_size: element.font_size,
             font_weight: element.font_weight,
             color: runtime.animated_text_color(element),
-            max_width: element.max_width,
+            max_width: element.text_max_width,
             wrap: element.wrap,
             horizontal_align: element.horizontal_align,
             vertical_align: element.vertical_align,

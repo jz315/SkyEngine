@@ -11,6 +11,7 @@ pub mod dialog;
 pub mod dropdown;
 pub mod image;
 pub mod input;
+pub(crate) mod layout;
 pub mod line_chart;
 pub mod panel;
 pub mod pie_chart;
@@ -88,6 +89,48 @@ mod tests {
         assert!(runtime.find("start.bg").is_some());
         assert!(runtime.find("start.content").is_some());
         assert!(runtime.find("start.text").is_some());
+    }
+
+    #[test]
+    fn button_layout_supports_natural_width_min_width_and_grow() {
+        let mut runtime = NeoRuntime::new("page");
+        runtime.compose(420.0, 80.0, |ui, _| {
+            ui.row("toolbar").size(420.0, 44.0).gap(12.0).content(|ui| {
+                button(ui, "filter")
+                    .text("Filter")
+                    .height(40.0)
+                    .min_width(96.0)
+                    .build();
+                button(ui, "primary")
+                    .text("New Task")
+                    .height(40.0)
+                    .min_width(112.0)
+                    .grow(1.0)
+                    .build();
+            });
+        });
+
+        assert_eq!(runtime.find("filter").unwrap().frame.width, 96.0);
+        assert_eq!(runtime.find("primary").unwrap().frame.width, 312.0);
+        assert_eq!(runtime.find("primary.bg").unwrap().frame.width, 312.0);
+    }
+
+    #[test]
+    fn input_layout_supports_fill_children_when_grown() {
+        let mut runtime = NeoRuntime::new("page");
+        runtime.compose(460.0, 80.0, |ui, _| {
+            ui.row("toolbar").size(460.0, 44.0).gap(12.0).content(|ui| {
+                input(ui, "search")
+                    .height(40.0)
+                    .min_width(180.0)
+                    .grow(1.0)
+                    .build();
+                button(ui, "new").size(96.0, 40.0).text("New").build();
+            });
+        });
+
+        assert_eq!(runtime.find("search").unwrap().frame.width, 352.0);
+        assert_eq!(runtime.find("search.hit").unwrap().frame.width, 352.0);
     }
 
     #[test]

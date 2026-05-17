@@ -131,7 +131,7 @@ impl Default for Size {
     }
 }
 
-/// Insets used for margins and future padding-style APIs.
+/// Insets used for margins and padding.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct EdgeInsets {
     pub left: f32,
@@ -392,6 +392,12 @@ pub struct Element {
     pub width: Size,
     pub height: Size,
     pub margin: EdgeInsets,
+    pub padding: EdgeInsets,
+    pub min_width: f32,
+    pub max_layout_width: f32,
+    pub min_height: f32,
+    pub max_height: f32,
+    pub grow: f32,
     pub spacing: f32,
     pub main_align: Align,
     pub cross_align: Align,
@@ -414,7 +420,7 @@ pub struct Element {
     pub font_size: f32,
     pub font_weight: i32,
     pub text_color: Color,
-    pub max_width: f32,
+    pub text_max_width: f32,
     pub wrap: bool,
     pub horizontal_align: HorizontalAlign,
     pub vertical_align: VerticalAlign,
@@ -459,6 +465,12 @@ impl Element {
             width: Size::WrapContent,
             height: Size::WrapContent,
             margin: EdgeInsets::ZERO,
+            padding: EdgeInsets::ZERO,
+            min_width: 0.0,
+            max_layout_width: 0.0,
+            min_height: 0.0,
+            max_height: 0.0,
+            grow: 0.0,
             spacing: 0.0,
             main_align: Align::Start,
             cross_align: Align::Start,
@@ -479,7 +491,7 @@ impl Element {
             font_size: 16.0,
             font_weight: 400,
             text_color: Color::WHITE,
-            max_width: 0.0,
+            text_max_width: 0.0,
             wrap: false,
             horizontal_align: HorizontalAlign::Left,
             vertical_align: VerticalAlign::Top,

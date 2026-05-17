@@ -113,6 +113,50 @@ impl<'ui> ElementBuilder<'ui> {
         self
     }
 
+    pub fn padding(mut self, value: f32) -> Self {
+        self.element.padding = EdgeInsets::all(value);
+        self
+    }
+
+    pub fn padding_xy(mut self, horizontal: f32, vertical: f32) -> Self {
+        self.element.padding = EdgeInsets::symmetric(horizontal, vertical);
+        self
+    }
+
+    pub fn padding_each(mut self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
+        self.element.padding = EdgeInsets::new(left, top, right, bottom);
+        self
+    }
+
+    pub fn min_width(mut self, value: f32) -> Self {
+        self.element.min_width = value.max(0.0);
+        self
+    }
+
+    pub fn max_width(mut self, value: f32) -> Self {
+        let value = value.max(0.0);
+        self.element.max_layout_width = value;
+        if matches!(self.element.kind, super::ElementKind::Text) {
+            self.element.text_max_width = value;
+        }
+        self
+    }
+
+    pub fn min_height(mut self, value: f32) -> Self {
+        self.element.min_height = value.max(0.0);
+        self
+    }
+
+    pub fn max_height(mut self, value: f32) -> Self {
+        self.element.max_height = value.max(0.0);
+        self
+    }
+
+    pub fn grow(mut self, value: f32) -> Self {
+        self.element.grow = value.max(0.0);
+        self
+    }
+
     pub fn gap(mut self, value: f32) -> Self {
         self.element.spacing = value.max(0.0);
         self
@@ -345,8 +389,8 @@ impl<'ui> ElementBuilder<'ui> {
         self.text_color(value)
     }
 
-    pub fn max_width(mut self, value: f32) -> Self {
-        self.element.max_width = value.max(0.0);
+    pub fn text_max_width(mut self, value: f32) -> Self {
+        self.element.text_max_width = value.max(0.0);
         self
     }
 
@@ -646,6 +690,18 @@ impl<'ui> ElementBuilder<'ui> {
         self.margin_each(left, top, right, bottom)
     }
 
+    pub fn paddingXY(self, horizontal: f32, vertical: f32) -> Self {
+        self.padding_xy(horizontal, vertical)
+    }
+
+    pub fn paddingEach(self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
+        self.padding_each(left, top, right, bottom)
+    }
+
+    pub fn minWidth(self, value: f32) -> Self {
+        self.min_width(value)
+    }
+
     pub fn justifyContent(self, value: Align) -> Self {
         self.justify_content(value)
     }
@@ -724,6 +780,18 @@ impl<'ui> ElementBuilder<'ui> {
 
     pub fn maxWidth(self, value: f32) -> Self {
         self.max_width(value)
+    }
+
+    pub fn minHeight(self, value: f32) -> Self {
+        self.min_height(value)
+    }
+
+    pub fn maxHeight(self, value: f32) -> Self {
+        self.max_height(value)
+    }
+
+    pub fn textMaxWidth(self, value: f32) -> Self {
+        self.text_max_width(value)
     }
 
     pub fn horizontalAlign(self, value: HorizontalAlign) -> Self {

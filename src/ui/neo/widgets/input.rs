@@ -8,11 +8,15 @@ use rustc_hash::FxHashMap;
 use crate::render::Color;
 
 use super::super::{
-    AnimProperty, Binding, Ease, KeyboardEvent, LayoutRect, PointerEvent, Response, Shadow,
+    AnimProperty, Binding, Ease, KeyboardEvent, LayoutRect, PointerEvent, Response, Shadow, Size,
     Transition, Ui, VerticalAlign,
 };
+use super::layout::WidgetLayout;
 use super::text::measure_text_width;
 use super::theme::{self, ThemeColorTokens};
+
+const DEFAULT_WIDTH: f32 = 260.0;
+const DEFAULT_HEIGHT: f32 = 40.0;
 
 type ChangeCallback = Rc<RefCell<Box<dyn FnMut(&str)>>>;
 type EnterCallback = Rc<RefCell<Box<dyn FnMut()>>>;
@@ -72,8 +76,7 @@ pub struct InputBuilder<'ui> {
     text: String,
     placeholder: String,
     multiline: bool,
-    width: f32,
-    height: f32,
+    layout: WidgetLayout,
     inset: f32,
     font_size: f32,
 }
@@ -91,16 +94,64 @@ impl<'ui> InputBuilder<'ui> {
             text: String::new(),
             placeholder: "Input".to_string(),
             multiline: false,
-            width: 260.0,
-            height: 40.0,
+            layout: WidgetLayout::new(DEFAULT_WIDTH, DEFAULT_HEIGHT),
             inset: 12.0,
             font_size: 17.0,
         }
     }
 
-    pub fn size(mut self, width: f32, height: f32) -> Self {
-        self.width = width;
-        self.height = height;
+    pub fn width(mut self, value: impl Into<Size>) -> Self {
+        self.layout = self.layout.width(value);
+        self
+    }
+
+    pub fn height(mut self, value: impl Into<Size>) -> Self {
+        self.layout = self.layout.height(value);
+        self
+    }
+
+    pub fn size(mut self, width: impl Into<Size>, height: impl Into<Size>) -> Self {
+        self.layout = self.layout.size(width, height);
+        self
+    }
+
+    pub fn margin(mut self, value: f32) -> Self {
+        self.layout = self.layout.margin(value);
+        self
+    }
+
+    pub fn margin_xy(mut self, horizontal: f32, vertical: f32) -> Self {
+        self.layout = self.layout.margin_xy(horizontal, vertical);
+        self
+    }
+
+    pub fn margin_each(mut self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
+        self.layout = self.layout.margin_each(left, top, right, bottom);
+        self
+    }
+
+    pub fn min_width(mut self, value: f32) -> Self {
+        self.layout = self.layout.min_width(value);
+        self
+    }
+
+    pub fn max_width(mut self, value: f32) -> Self {
+        self.layout = self.layout.max_width(value);
+        self
+    }
+
+    pub fn min_height(mut self, value: f32) -> Self {
+        self.layout = self.layout.min_height(value);
+        self
+    }
+
+    pub fn max_height(mut self, value: f32) -> Self {
+        self.layout = self.layout.max_height(value);
+        self
+    }
+
+    pub fn grow(mut self, value: f32) -> Self {
+        self.layout = self.layout.grow(value);
         self
     }
 
@@ -195,6 +246,30 @@ impl<'ui> InputBuilder<'ui> {
         self
     }
 
+    pub fn marginXY(self, horizontal: f32, vertical: f32) -> Self {
+        self.margin_xy(horizontal, vertical)
+    }
+
+    pub fn marginEach(self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
+        self.margin_each(left, top, right, bottom)
+    }
+
+    pub fn minWidth(self, value: f32) -> Self {
+        self.min_width(value)
+    }
+
+    pub fn maxWidth(self, value: f32) -> Self {
+        self.max_width(value)
+    }
+
+    pub fn minHeight(self, value: f32) -> Self {
+        self.min_height(value)
+    }
+
+    pub fn maxHeight(self, value: f32) -> Self {
+        self.max_height(value)
+    }
+
     pub fn fontSize(self, value: f32) -> Self {
         self.font_size(value)
     }
@@ -236,7 +311,9 @@ impl<'ui> InputBuilder<'ui> {
         let id = self.id.clone();
         let hit_id = format!("{id}.hit");
         let focused = self.ui.is_focused(&hit_id);
-        let text_width = (self.width - self.inset * 2.0).max(0.0);
+        let width = self.layout.fixed_width_or(DEFAULT_WIDTH);
+        let height = self.layout.fixed_height_or(DEFAULT_HEIGHT);
+        let text_width = (width - self.inset * 2.0).max(0.0);
         let allow_multiline = self.multiline;
         let on_change = self.on_change.clone();
         let on_enter = self.on_enter.clone();
@@ -245,15 +322,14 @@ impl<'ui> InputBuilder<'ui> {
         let text_y = if self.multiline {
             self.inset
         } else {
-            ((self.height - text_line_height) * 0.5).max(0.0)
+            ((height - text_line_height) * 0.5).max(0.0)
         };
         let text_height = if self.multiline {
-            (self.height - self.inset * 2.0).max(0.0)
+            (height - self.inset * 2.0).max(0.0)
         } else {
             text_line_height
         };
         let line_y = text_y;
-        let width = self.width;
         let inset = self.inset;
         let font_size = self.font_size;
 
@@ -278,15 +354,13 @@ impl<'ui> InputBuilder<'ui> {
         let cursor_x = (self.inset
             + measure_width(&snapshot.text, 0, snapshot.cursor, self.font_size)
             - snapshot.horizontal_scroll)
-            .clamp(self.inset, self.inset.max(self.width - self.inset - 2.0));
+            .clamp(self.inset, self.inset.max(width - self.inset - 2.0));
         let selection = selection_range(&snapshot);
         let has_selection = selection.0 != selection.1;
         let selection_x = self.inset
             + measure_width(&snapshot.text, 0, selection.0, self.font_size)
             - snapshot.horizontal_scroll;
         let selection_w = measure_width(&snapshot.text, selection.0, selection.1, self.font_size);
-        let visible_text_width = text_width
-            .max(measure_width(&snapshot.text, 0, snapshot.text.len(), self.font_size) + 24.0);
         let display_text = if empty {
             self.placeholder.clone()
         } else {
@@ -295,8 +369,19 @@ impl<'ui> InputBuilder<'ui> {
 
         self.ui
             .stack(id.clone())
-            .size(self.width, self.height)
+            .size(self.layout.width, self.layout.height)
             .clip()
+            .min_width(self.layout.min_width)
+            .max_width(self.layout.max_width)
+            .min_height(self.layout.min_height)
+            .max_height(self.layout.max_height)
+            .grow(self.layout.grow)
+            .margin_each(
+                self.layout.margin.left,
+                self.layout.margin.top,
+                self.layout.margin.right,
+                self.layout.margin.bottom,
+            )
             .content(|ui| {
                 let press_id = id.clone();
                 let drag_id = id.clone();
@@ -306,7 +391,7 @@ impl<'ui> InputBuilder<'ui> {
                 let enter_callback = on_enter.clone();
 
                 ui.rect(hit_id.clone())
-                    .size(self.width, self.height)
+                    .fill()
                     .states(
                         if focused {
                             self.style.focused
@@ -343,7 +428,6 @@ impl<'ui> InputBuilder<'ui> {
                                 state,
                                 pointer_x(event),
                                 bounds,
-                                width,
                                 inset,
                                 font_size,
                             );
@@ -365,13 +449,13 @@ impl<'ui> InputBuilder<'ui> {
                                 state,
                                 event.x,
                                 state.last_bounds,
-                                width,
                                 inset,
                                 font_size,
                             );
                             state.selection_start = state.drag_anchor;
                             state.selection_end = state.cursor;
-                            sync_scroll(state, (width - inset * 2.0).max(0.0), font_size);
+                            let viewport_width = (state.last_bounds.width - inset * 2.0).max(0.0);
+                            sync_scroll(state, viewport_width, font_size);
                         });
                     })
                     .on_text_input(move |event| {
@@ -383,7 +467,6 @@ impl<'ui> InputBuilder<'ui> {
                                 &event,
                                 allow_multiline,
                                 enter_callback.as_ref(),
-                                width,
                                 inset,
                                 font_size,
                             );
@@ -401,8 +484,7 @@ impl<'ui> InputBuilder<'ui> {
                         .position(selection_x.max(self.inset), line_y)
                         .size(
                             1.0_f32.max(
-                                selection_w
-                                    .min(self.width - self.inset - selection_x.max(self.inset)),
+                                selection_w.min(width - self.inset - selection_x.max(self.inset)),
                             ),
                             text_line_height,
                         )
@@ -413,7 +495,7 @@ impl<'ui> InputBuilder<'ui> {
 
                 ui.text(format!("{id}.text"))
                     .position(self.inset - snapshot.horizontal_scroll, text_y)
-                    .size(visible_text_width, text_height)
+                    .size(Size::fill(), text_height)
                     .text(display_text)
                     .font_size(self.font_size)
                     .line_height(text_line_height)
@@ -428,10 +510,7 @@ impl<'ui> InputBuilder<'ui> {
 
                 if focused {
                     ui.rect(format!("{id}.cursor"))
-                        .position(
-                            cursor_x,
-                            ((self.height - self.font_size * 1.18) * 0.5).max(0.0),
-                        )
+                        .position(cursor_x, ((height - self.font_size * 1.18) * 0.5).max(0.0))
                         .size(1.5, self.font_size * 1.18)
                         .color(self.style.cursor)
                         .radius(1.0)
@@ -584,16 +663,10 @@ fn cursor_from_pointer(
     state: &InputState,
     pointer_x: f32,
     bounds: LayoutRect,
-    width: f32,
     inset: f32,
     font_size: f32,
 ) -> usize {
-    let scale = if width > 0.0 {
-        bounds.width / width
-    } else {
-        1.0
-    };
-    let local_x = (pointer_x - bounds.x) / scale.max(0.001);
+    let local_x = pointer_x - bounds.x;
     let target = local_x - inset + state.horizontal_scroll;
     let mut cursor_x = 0.0;
     let mut index = 0;
@@ -632,7 +705,6 @@ fn apply_keyboard_event(
     event: &KeyboardEvent,
     allow_multiline: bool,
     on_enter: Option<&EnterCallback>,
-    width: f32,
     inset: f32,
     font_size: f32,
 ) -> bool {
@@ -706,6 +778,11 @@ fn apply_keyboard_event(
             (callback.borrow_mut())();
         }
     }
+    let width = if state.last_bounds.width > 0.0 {
+        state.last_bounds.width
+    } else {
+        DEFAULT_WIDTH
+    };
     sync_scroll(state, (width - inset * 2.0).max(0.0), font_size);
     changed
 }
@@ -754,7 +831,6 @@ mod tests {
             },
             false,
             None,
-            260.0,
             12.0,
             17.0,
         ));
@@ -774,7 +850,6 @@ mod tests {
             },
             false,
             None,
-            260.0,
             12.0,
             17.0,
         ));

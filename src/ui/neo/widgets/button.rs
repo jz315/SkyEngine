@@ -3,10 +3,16 @@
 use crate::render::Color;
 
 use super::super::{
-    Align, Border, Ease, HorizontalAlign, LayoutRect, PointerEvent, Response, Shadow, Transition,
-    Ui, VerticalAlign,
+    Align, Border, Ease, HorizontalAlign, LayoutRect, PointerEvent, Response, Shadow, Size,
+    Transition, Ui, VerticalAlign,
 };
+use super::layout::{scale_size, WidgetLayout};
+use super::text::measure_text_width;
 use super::theme::{self, ThemeColorTokens};
+
+const DEFAULT_WIDTH: f32 = 240.0;
+const DEFAULT_HEIGHT: f32 = 70.0;
+const HORIZONTAL_PADDING: f32 = 32.0;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ButtonStyle {
@@ -64,8 +70,7 @@ pub struct ButtonBuilder<'ui> {
     transition: Transition,
     on_click: Option<Box<dyn FnMut()>>,
     on_context_menu: Option<Box<dyn FnMut(PointerEvent, LayoutRect)>>,
-    width: f32,
-    height: f32,
+    layout: WidgetLayout,
     scale: f32,
     font_size: f32,
     icon_size: f32,
@@ -85,8 +90,7 @@ impl<'ui> ButtonBuilder<'ui> {
             transition: Transition::default(),
             on_click: None,
             on_context_menu: None,
-            width: 240.0,
-            height: 70.0,
+            layout: WidgetLayout::new(DEFAULT_WIDTH, DEFAULT_HEIGHT).width(Size::WrapContent),
             scale: 1.0,
             font_size: 0.0,
             icon_size: 0.0,
@@ -96,9 +100,58 @@ impl<'ui> ButtonBuilder<'ui> {
         }
     }
 
-    pub fn size(mut self, width: f32, height: f32) -> Self {
-        self.width = width;
-        self.height = height;
+    pub fn width(mut self, value: impl Into<Size>) -> Self {
+        self.layout = self.layout.width(value);
+        self
+    }
+
+    pub fn height(mut self, value: impl Into<Size>) -> Self {
+        self.layout = self.layout.height(value);
+        self
+    }
+
+    pub fn size(mut self, width: impl Into<Size>, height: impl Into<Size>) -> Self {
+        self.layout = self.layout.size(width, height);
+        self
+    }
+
+    pub fn margin(mut self, value: f32) -> Self {
+        self.layout = self.layout.margin(value);
+        self
+    }
+
+    pub fn margin_xy(mut self, horizontal: f32, vertical: f32) -> Self {
+        self.layout = self.layout.margin_xy(horizontal, vertical);
+        self
+    }
+
+    pub fn margin_each(mut self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
+        self.layout = self.layout.margin_each(left, top, right, bottom);
+        self
+    }
+
+    pub fn min_width(mut self, value: f32) -> Self {
+        self.layout = self.layout.min_width(value);
+        self
+    }
+
+    pub fn max_width(mut self, value: f32) -> Self {
+        self.layout = self.layout.max_width(value);
+        self
+    }
+
+    pub fn min_height(mut self, value: f32) -> Self {
+        self.layout = self.layout.min_height(value);
+        self
+    }
+
+    pub fn max_height(mut self, value: f32) -> Self {
+        self.layout = self.layout.max_height(value);
+        self
+    }
+
+    pub fn grow(mut self, value: f32) -> Self {
+        self.layout = self.layout.grow(value);
         self
     }
 
@@ -257,6 +310,30 @@ impl<'ui> ButtonBuilder<'ui> {
         self.icon_codepoint(codepoint)
     }
 
+    pub fn marginXY(self, horizontal: f32, vertical: f32) -> Self {
+        self.margin_xy(horizontal, vertical)
+    }
+
+    pub fn marginEach(self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
+        self.margin_each(left, top, right, bottom)
+    }
+
+    pub fn minWidth(self, value: f32) -> Self {
+        self.min_width(value)
+    }
+
+    pub fn maxWidth(self, value: f32) -> Self {
+        self.max_width(value)
+    }
+
+    pub fn minHeight(self, value: f32) -> Self {
+        self.min_height(value)
+    }
+
+    pub fn maxHeight(self, value: f32) -> Self {
+        self.max_height(value)
+    }
+
     pub fn fontSize(self, value: f32) -> Self {
         self.font_size(value)
     }
@@ -317,8 +394,8 @@ impl<'ui> ButtonBuilder<'ui> {
         let content_id = format!("{id}.content");
         let text_id = format!("{id}.text");
         let icon_id = format!("{id}.icon");
-        let width = self.width * self.scale;
-        let height = self.height * self.scale;
+        let base_height = self.layout.fixed_height_or(DEFAULT_HEIGHT);
+        let height = base_height * self.scale;
         let font = if self.font_size > 0.0 {
             self.font_size * self.scale
         } else {
@@ -336,11 +413,14 @@ impl<'ui> ButtonBuilder<'ui> {
         } else {
             0.0
         };
-        let label_width = if has_icon {
-            (width - icon_width - gap - 32.0 * self.scale).max(0.0)
+        let measured_text_width = measure_text_width(&self.text, "", font, 400);
+        let natural_width = if has_icon {
+            measured_text_width + icon_width + gap + HORIZONTAL_PADDING * self.scale
         } else {
-            width
+            measured_text_width + HORIZONTAL_PADDING * self.scale
         };
+        let root_width = scale_size(self.layout.width, self.scale, natural_width);
+        let root_height = scale_size(self.layout.height, self.scale, DEFAULT_HEIGHT);
         let mut border = self.style.border;
         border.width *= self.scale;
         let mut shadow = self.style.shadow;
@@ -362,14 +442,13 @@ impl<'ui> ButtonBuilder<'ui> {
         let on_click = self.on_click.take();
         let on_context_menu = self.on_context_menu.take();
 
-        self.ui
-            .stack(id)
-            .size(width, height)
+        self.layout
+            .apply_to_size(self.ui.stack(id), root_width, root_height)
             .visual_state_from(&bg_id, style.press_scale)
             .content(|ui| {
                 let bg = ui
                     .rect(bg_id.as_str())
-                    .size(width, height)
+                    .fill()
                     .states(style.normal, style.hover, style.pressed)
                     .radius(style.radius * self.scale)
                     .opacity(style.opacity)
@@ -391,14 +470,14 @@ impl<'ui> ButtonBuilder<'ui> {
                 bg.build();
 
                 ui.row(content_id)
-                    .size(width, height)
+                    .fill()
                     .gap(gap)
                     .justify_content(Align::Center)
                     .align_items(Align::Center)
                     .content(|ui| {
                         if has_icon {
                             ui.text(icon_id)
-                                .size(icon_width, height)
+                                .size(icon_width, Size::fill())
                                 .text(icon)
                                 .font_family("Icon")
                                 .font_size(icon_font)
@@ -411,7 +490,7 @@ impl<'ui> ButtonBuilder<'ui> {
                         }
 
                         ui.text(text_id)
-                            .size(label_width, height)
+                            .size(Size::fill(), Size::fill())
                             .text(text)
                             .font_size(font)
                             .line_height(font)
