@@ -136,6 +136,20 @@ pub(super) struct TiledJsonTilesetFile {
 pub(super) struct TiledJsonTile {
     pub(super) id: u32,
     #[serde(default)]
+    pub(super) image: Option<String>,
+    #[serde(default)]
+    pub(super) imagewidth: Option<u32>,
+    #[serde(default)]
+    pub(super) imageheight: Option<u32>,
+    #[serde(default)]
+    pub(super) x: Option<u32>,
+    #[serde(default)]
+    pub(super) y: Option<u32>,
+    #[serde(default)]
+    pub(super) width: Option<u32>,
+    #[serde(default)]
+    pub(super) height: Option<u32>,
+    #[serde(default)]
     pub(super) animation: Vec<TiledJsonAnimationFrame>,
     #[serde(default)]
     pub(super) properties: Vec<TiledJsonProperty>,

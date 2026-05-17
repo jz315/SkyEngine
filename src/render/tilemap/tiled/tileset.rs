@@ -4,9 +4,12 @@ use crate::render::component::{TileAnimation, TileAnimationFrame, TilesetTileRec
 
 use super::super::TileId;
 use super::error::TiledImportError;
-use super::json::{TiledJsonTile, TiledJsonTileOffset, TiledJsonTilesetFile, TiledJsonTilesetRef};
+use super::json::{
+    TiledJsonProperty, TiledJsonTile, TiledJsonTileOffset, TiledJsonTilesetFile,
+    TiledJsonTilesetRef,
+};
 use super::properties::{collect_json_properties, collect_tmx_properties};
-use super::types::{TiledProperty, TiledTileset};
+use super::types::{TiledProperty, TiledTileset, TiledTilesetImageSource};
 use super::util::{
     optional_i32_attr, optional_u32_attr, required_attr, required_u32_attr, resolve_path,
 };
@@ -67,25 +70,39 @@ pub(super) fn resolve_json_tilesets(
                         let file: TiledJsonTilesetFile =
                             serde_json::from_str(&text).map_err(TiledImportError::Json)?;
                         let source_base = source_path.parent().unwrap_or(base_dir);
-                        build_tileset(
-                            tileset.firstgid,
-                            file.image.as_deref(),
-                            file.tilewidth,
-                            file.tileheight,
-                            file.columns,
-                            file.tilecount,
-                            file.imagewidth,
-                            file.imageheight,
-                            parse_transparent_color(file.transparentcolor.as_deref())?,
-                            json_tile_offset(file.tileoffset.as_ref()),
-                            collect_json_tile_animations(&file.tiles),
-                            collect_json_properties(&file.properties, source_base)?,
-                            collect_json_tile_properties(&file.tiles, source_base)?,
-                            file.margin,
-                            file.spacing,
-                            source_base,
-                            Some(source_path.clone()),
-                        )?
+                        if file.tiles.iter().any(|tile| tile.image.is_some()) {
+                            build_json_image_collection_tileset(
+                                tileset.firstgid,
+                                file.tilewidth,
+                                file.tileheight,
+                                file.transparentcolor.as_deref(),
+                                file.tileoffset.as_ref(),
+                                &file.properties,
+                                &file.tiles,
+                                source_base,
+                                Some(source_path.clone()),
+                            )?
+                        } else {
+                            build_tileset(
+                                tileset.firstgid,
+                                file.image.as_deref(),
+                                file.tilewidth,
+                                file.tileheight,
+                                file.columns,
+                                file.tilecount,
+                                file.imagewidth,
+                                file.imageheight,
+                                parse_transparent_color(file.transparentcolor.as_deref())?,
+                                json_tile_offset(file.tileoffset.as_ref()),
+                                collect_json_tile_animations(&file.tiles),
+                                collect_json_properties(&file.properties, source_base)?,
+                                collect_json_tile_properties(&file.tiles, source_base)?,
+                                file.margin,
+                                file.spacing,
+                                source_base,
+                                Some(source_path.clone()),
+                            )?
+                        }
                     }
                     "tsx" => load_tmx_tileset_file(tileset.firstgid, &source_path)?,
                     _ => {
@@ -95,25 +112,41 @@ pub(super) fn resolve_json_tilesets(
                     }
                 }
             }
-            None => build_tileset(
-                tileset.firstgid,
-                tileset.image.as_deref(),
-                tileset.tilewidth,
-                tileset.tileheight,
-                tileset.columns,
-                tileset.tilecount,
-                tileset.imagewidth,
-                tileset.imageheight,
-                parse_transparent_color(tileset.transparentcolor.as_deref())?,
-                json_tile_offset(tileset.tileoffset.as_ref()),
-                collect_json_tile_animations(&tileset.tiles),
-                collect_json_properties(&tileset.properties, base_dir)?,
-                collect_json_tile_properties(&tileset.tiles, base_dir)?,
-                tileset.margin,
-                tileset.spacing,
-                base_dir,
-                None,
-            )?,
+            None => {
+                if tileset.tiles.iter().any(|tile| tile.image.is_some()) {
+                    build_json_image_collection_tileset(
+                        tileset.firstgid,
+                        tileset.tilewidth,
+                        tileset.tileheight,
+                        tileset.transparentcolor.as_deref(),
+                        tileset.tileoffset.as_ref(),
+                        &tileset.properties,
+                        &tileset.tiles,
+                        base_dir,
+                        None,
+                    )?
+                } else {
+                    build_tileset(
+                        tileset.firstgid,
+                        tileset.image.as_deref(),
+                        tileset.tilewidth,
+                        tileset.tileheight,
+                        tileset.columns,
+                        tileset.tilecount,
+                        tileset.imagewidth,
+                        tileset.imageheight,
+                        parse_transparent_color(tileset.transparentcolor.as_deref())?,
+                        json_tile_offset(tileset.tileoffset.as_ref()),
+                        collect_json_tile_animations(&tileset.tiles),
+                        collect_json_properties(&tileset.properties, base_dir)?,
+                        collect_json_tile_properties(&tileset.tiles, base_dir)?,
+                        tileset.margin,
+                        tileset.spacing,
+                        base_dir,
+                        None,
+                    )?
+                }
+            }
         };
         resolved.push(resolved_tileset);
     }
@@ -197,10 +230,10 @@ fn build_tmx_image_collection_tileset(
         }
     })?;
 
-    let mut image_source: Option<PathBuf> = None;
-    let mut image_size = [0, 0];
     let mut max_tile_id = 0u32;
-    let mut rects: Vec<Option<TilesetTileRect>> = Vec::new();
+    let mut tiles = Vec::new();
+    let mut unique_images = Vec::<PathBuf>::new();
+    let mut single_image_size = [0, 0];
 
     for tile in tileset
         .children()
@@ -213,15 +246,8 @@ fn build_tmx_image_collection_tileset(
             continue;
         };
         let image_path = resolve_path(base_dir, required_attr(image, "source")?);
-        match &image_source {
-            Some(existing) if existing != &image_path => {
-                return Err(TiledImportError::UnsupportedTileset {
-                    source,
-                    reason: "image collection tilesets using multiple images are not supported",
-                });
-            }
-            Some(_) => {}
-            None => image_source = Some(image_path),
+        if !unique_images.iter().any(|existing| existing == &image_path) {
+            unique_images.push(image_path.clone());
         }
 
         let tile_id = required_u32_attr(tile, "id")?;
@@ -229,6 +255,8 @@ fn build_tmx_image_collection_tileset(
         let y = optional_u32_attr(tile, "y")?.unwrap_or_default();
         let source_width = optional_u32_attr(image, "width")?;
         let source_height = optional_u32_attr(image, "height")?;
+        single_image_size[0] = single_image_size[0].max(source_width.unwrap_or_default());
+        single_image_size[1] = single_image_size[1].max(source_height.unwrap_or_default());
         let width = optional_u32_attr(tile, "width")?
             .or(source_width)
             .unwrap_or(tile_width)
@@ -237,27 +265,42 @@ fn build_tmx_image_collection_tileset(
             .or(source_height)
             .unwrap_or(tile_height)
             .max(1);
-        image_size[0] = image_size[0].max(source_width.unwrap_or_default());
-        image_size[1] = image_size[1].max(source_height.unwrap_or_default());
         max_tile_id = max_tile_id.max(tile_id);
-        if rects.len() <= tile_id as usize {
-            rects.resize(tile_id as usize + 1, None);
-        }
-        rects[tile_id as usize] = Some(TilesetTileRect::new(x, y, width, height));
+        tiles.push(ImageCollectionTile {
+            tile_id,
+            image: image_path,
+            source_rect: TilesetTileRect::new(x, y, width, height),
+        });
     }
 
-    let image_path = image_source.ok_or_else(|| TiledImportError::UnsupportedTileset {
-        source: source.clone(),
-        reason: "only single-image tilesets are supported",
-    })?;
-    if image_size[0] == 0 || image_size[1] == 0 {
-        let (width, height) =
-            image::image_dimensions(&image_path).map_err(|source| TiledImportError::Image {
-                path: image_path.clone(),
-                source,
+    let image_path =
+        unique_images
+            .first()
+            .cloned()
+            .ok_or_else(|| TiledImportError::UnsupportedTileset {
+                source: source.clone(),
+                reason: "only single-image tilesets are supported",
             })?;
-        image_size = [width, height];
-    }
+    let mut rects = vec![None; max_tile_id as usize + 1];
+    let mut tile_images = Vec::new();
+    let image_size = if unique_images.len() <= 1 {
+        for tile in &tiles {
+            rects[tile.tile_id as usize] = Some(tile.source_rect);
+        }
+        let mut image_size = single_image_size;
+        if image_size[0] == 0 || image_size[1] == 0 {
+            let (width, height) =
+                image::image_dimensions(&image_path).map_err(|source| TiledImportError::Image {
+                    path: image_path.clone(),
+                    source,
+                })?;
+            image_size = [width, height];
+        }
+        image_size
+    } else {
+        tile_images = vec![None; rects.len()];
+        pack_image_collection_atlas(&tiles, &mut rects, &mut tile_images)
+    };
 
     let animations = collect_tmx_tile_animations(tileset)?;
     let tile_count = max_tile_id.saturating_add(1).max(rects.len() as u32).max(1);
@@ -285,12 +328,168 @@ fn build_tmx_image_collection_tileset(
         margin: 0,
         spacing: 0,
         tile_rects: rects,
+        tile_images,
         tile_offset: parse_tmx_tile_offset(tileset)?,
         animations,
         properties: collect_tmx_properties(tileset, base_dir)?,
         tile_properties: collect_tmx_tile_properties(tileset, base_dir)?,
         transparent_color: None,
     })
+}
+
+fn build_json_image_collection_tileset(
+    first_gid: u32,
+    tilewidth: Option<u32>,
+    tileheight: Option<u32>,
+    transparent_color: Option<&str>,
+    tileoffset: Option<&TiledJsonTileOffset>,
+    properties: &[TiledJsonProperty],
+    tileset_tiles: &[TiledJsonTile],
+    base_dir: &Path,
+    source: Option<PathBuf>,
+) -> Result<TiledTileset, TiledImportError> {
+    if first_gid == 0 {
+        return Err(TiledImportError::UnsupportedTileset {
+            source,
+            reason: "firstgid must be greater than zero",
+        });
+    }
+
+    let tile_width = tilewidth.ok_or_else(|| TiledImportError::UnsupportedTileset {
+        source: source.clone(),
+        reason: "tileset is missing tilewidth",
+    })?;
+    let tile_height = tileheight.ok_or_else(|| TiledImportError::UnsupportedTileset {
+        source: source.clone(),
+        reason: "tileset is missing tileheight",
+    })?;
+
+    let mut max_tile_id = 0u32;
+    let mut tiles = Vec::new();
+    let mut unique_images = Vec::<PathBuf>::new();
+    let mut single_image_size = [0, 0];
+
+    for tile in tileset_tiles {
+        let Some(image) = tile.image.as_deref() else {
+            continue;
+        };
+        let image_path = resolve_path(base_dir, image);
+        if !unique_images.iter().any(|existing| existing == &image_path) {
+            unique_images.push(image_path.clone());
+        }
+
+        let tile_id = tile.id;
+        let x = tile.x.unwrap_or_default();
+        let y = tile.y.unwrap_or_default();
+        let source_width = tile.imagewidth.or(tile.width);
+        let source_height = tile.imageheight.or(tile.height);
+        single_image_size[0] = single_image_size[0].max(source_width.unwrap_or_default());
+        single_image_size[1] = single_image_size[1].max(source_height.unwrap_or_default());
+        let width = tile.width.or(source_width).unwrap_or(tile_width).max(1);
+        let height = tile.height.or(source_height).unwrap_or(tile_height).max(1);
+        max_tile_id = max_tile_id.max(tile_id);
+        tiles.push(ImageCollectionTile {
+            tile_id,
+            image: image_path,
+            source_rect: TilesetTileRect::new(x, y, width, height),
+        });
+    }
+
+    let image_path =
+        unique_images
+            .first()
+            .cloned()
+            .ok_or_else(|| TiledImportError::UnsupportedTileset {
+                source: source.clone(),
+                reason: "only single-image tilesets are supported",
+            })?;
+    let mut rects = vec![None; max_tile_id as usize + 1];
+    let mut tile_images = Vec::new();
+    let image_size = if unique_images.len() <= 1 {
+        for tile in &tiles {
+            rects[tile.tile_id as usize] = Some(tile.source_rect);
+        }
+        let mut image_size = single_image_size;
+        if image_size[0] == 0 || image_size[1] == 0 {
+            let (width, height) =
+                image::image_dimensions(&image_path).map_err(|source| TiledImportError::Image {
+                    path: image_path.clone(),
+                    source,
+                })?;
+            image_size = [width, height];
+        }
+        image_size
+    } else {
+        tile_images = vec![None; rects.len()];
+        pack_image_collection_atlas(&tiles, &mut rects, &mut tile_images)
+    };
+
+    let animations = collect_json_tile_animations(tileset_tiles);
+    let tile_count = max_tile_id.saturating_add(1).max(rects.len() as u32).max(1);
+    if animations.iter().any(|animation| {
+        animation.tile_id.0 >= tile_count
+            || animation
+                .frames
+                .iter()
+                .any(|frame| frame.tile_id.0 >= tile_count)
+    }) {
+        return Err(TiledImportError::UnsupportedTileset {
+            source,
+            reason: "tileset animation references a tile outside tilecount",
+        });
+    }
+
+    Ok(TiledTileset {
+        first_gid,
+        image: image_path,
+        tile_size: [tile_width, tile_height],
+        columns: tile_count,
+        rows: 1,
+        tile_count,
+        image_size,
+        margin: 0,
+        spacing: 0,
+        tile_rects: rects,
+        tile_images,
+        tile_offset: json_tile_offset(tileoffset),
+        animations,
+        properties: collect_json_properties(properties, base_dir)?,
+        tile_properties: collect_json_tile_properties(tileset_tiles, base_dir)?,
+        transparent_color: parse_transparent_color(transparent_color)?,
+    })
+}
+
+struct ImageCollectionTile {
+    tile_id: u32,
+    image: PathBuf,
+    source_rect: TilesetTileRect,
+}
+
+fn pack_image_collection_atlas(
+    tiles: &[ImageCollectionTile],
+    rects: &mut [Option<TilesetTileRect>],
+    tile_images: &mut [Option<TiledTilesetImageSource>],
+) -> [u32; 2] {
+    let mut ordered = tiles.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|tile| tile.tile_id);
+
+    let mut cursor_x = 0u32;
+    let mut atlas_height = 1u32;
+    for (index, tile) in ordered.into_iter().enumerate() {
+        let source_rect = tile.source_rect;
+        let atlas_rect = TilesetTileRect::new(cursor_x, 0, source_rect.width, source_rect.height);
+        rects[tile.tile_id as usize] = Some(atlas_rect);
+        tile_images[tile.tile_id as usize] = Some(TiledTilesetImageSource {
+            image: tile.image.clone(),
+            source_rect,
+        });
+        cursor_x = cursor_x.saturating_add(source_rect.width);
+        if index + 1 < tiles.len() {
+            cursor_x = cursor_x.saturating_add(1);
+        }
+        atlas_height = atlas_height.max(source_rect.height);
+    }
+    [cursor_x.max(1), atlas_height.max(1)]
 }
 
 fn collect_tmx_tile_animations(
@@ -505,6 +704,7 @@ fn build_tileset(
         margin,
         spacing,
         tile_rects: Vec::new(),
+        tile_images: Vec::new(),
         tile_offset,
         animations,
         properties,

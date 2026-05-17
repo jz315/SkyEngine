@@ -1,19 +1,26 @@
 //! Expert rendering API.
 //!
-//! This namespace preserves the lower-level render graph / pass / target API for
-//! advanced users who want direct control over GPU resources and execution.
-//! The default high-level render story is the registration-driven pipeline in
-//! `sky_engine::render`, while this namespace stays focused on low-level graph
-//! and GPU primitives.
+//! This namespace collects the lower-level render graph, frame execution, pass,
+//! target, draw dispatch, and GPU resource APIs for renderer authors and engine
+//! tools. Normal application code should start from `sky_engine::render`.
+//!
+//! Prefer this namespace when code needs to participate in renderer internals:
+//! `FramePipeline`, `RenderGraph`, `PreparedFrame`, `PreparedView`, phase draw
+//! contexts, draw functions, low-level meshes, GPU tables, render targets, and
+//! direct texture readback. These APIs are public for advanced integration, but
+//! they are not the primary gameplay compatibility surface.
 
 pub use super::composite::CompositePass;
 pub use super::execution::{
-    CompletedViewState, FinalizeExecutionContext, FinalizePhaseState, FrameExecutionStats,
-    FrameFinalizeNode, FramePayloadStore, FramePipeline, FrameSetupNode, FrameViewNode, PhaseState,
-    PreparedFrame, PreparedView, ResourceSlotMap, SceneTexture, SetupExecutionContext,
-    SlotResource, TextureFormat, TextureSlot, ViewExecutionContext, ViewPayloadStore,
+    CompletedViewState, ComputePassExecuteContext, ComputePassSetupContext,
+    FinalizeExecutionContext, FinalizePhaseState, FrameExecutionStats, FrameFinalizeNode,
+    FramePayloadStore, FramePipeline, FrameSetupNode, FrameViewNode, GraphPassExecuteContext,
+    GraphPassSetupContext, PhaseDrawServices, PhaseExecuteContext, PhaseSetupContext, PhaseState,
+    PostFxPassExecuteContext, PostFxPassSetupContext, PreparedFrame, PreparedView,
+    RenderPassExecuteContext, RenderPassSetupContext, ResourceSlotMap, SceneTexture,
+    SetupExecutionContext, SlotResource, TextureFormat, TextureSlot, ViewExecutionContext,
+    ViewPayloadStore,
 };
-pub use super::execution::{GraphPassExecuteContext, GraphPassSetupContext};
 pub use super::extract::{
     ExtractContext, ExtractError, ExtractSchedule, ExtractSprites, Extractor,
 };

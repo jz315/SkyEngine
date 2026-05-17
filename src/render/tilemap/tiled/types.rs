@@ -145,7 +145,15 @@ pub struct TiledTileObject {
     pub flags: TileFlags,
 }
 
-/// Single image tileset metadata imported from Tiled.
+/// Per-tile source image metadata for a Tiled image collection tileset packed
+/// into a runtime atlas.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TiledTilesetImageSource {
+    pub image: PathBuf,
+    pub source_rect: TilesetTileRect,
+}
+
+/// Tileset metadata imported from Tiled.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TiledTileset {
     pub first_gid: u32,
@@ -158,6 +166,7 @@ pub struct TiledTileset {
     pub margin: u32,
     pub spacing: u32,
     pub tile_rects: Vec<Option<TilesetTileRect>>,
+    pub tile_images: Vec<Option<TiledTilesetImageSource>>,
     pub tile_offset: [i32; 2],
     pub animations: Vec<TileAnimation>,
     pub properties: Vec<TiledProperty>,

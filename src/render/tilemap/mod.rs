@@ -26,5 +26,5 @@ pub use storage::{
 };
 pub use tiled::{
     TiledImport, TiledImportError, TiledLayer, TiledObject, TiledObjectLayer, TiledObjectShape,
-    TiledProperty, TiledPropertyValue, TiledTileObject, TiledTileset,
+    TiledProperty, TiledPropertyValue, TiledTileObject, TiledTileset, TiledTilesetImageSource,
 };

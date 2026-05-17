@@ -1,4 +1,20 @@
 //! SkyEngine high-level rendering facade built around programmable scene pipelines.
+//!
+//! This module is the default entry point for application and gameplay code.
+//! Its exports are intentionally grouped by audience:
+//!
+//! - stable gameplay API: cameras, colors, render components, sprites,
+//!   tilemaps, lights, renderer backends, pipeline assets, and runtime stats;
+//! - advanced extension API: feature, phase, pass, post-fx, material, and shader
+//!   registration traits used by custom renderer families;
+//! - compatibility exports for lower-level execution types while the render
+//!   stack is still settling.
+//!
+//! New code that needs direct access to frame execution, render graph resources,
+//! draw functions, GPU tables, low-level meshes, or renderer-owned caches should
+//! prefer [`expert`]. The top-level facade should answer "how do I render my
+//! scene?", while [`expert`] answers "how do I participate in the renderer
+//! internals?".
 
 pub mod animation;
 pub mod asset;
@@ -93,8 +109,8 @@ pub use tilemap::{
     Tile, TileChunkBounds, TileFlags, TileId, TiledImport, TiledImportError, TiledLayer,
     TiledMapInstance, TiledMapInstanceError, TiledObject, TiledObjectLayer, TiledObjectShape,
     TiledProperty, TiledPropertyValue, TiledSpawnOptions, TiledSpawnOrigin, TiledTileObject,
-    TiledTileset, Tilemap, TilemapCacheConfig, TilemapDescriptor, TilemapFeature, TilemapHandle,
-    TilemapStorage,
+    TiledTileset, TiledTilesetImageSource, Tilemap, TilemapCacheConfig, TilemapDescriptor,
+    TilemapFeature, TilemapHandle, TilemapStorage,
 };
 #[cfg(feature = "physics")]
 pub use tilemap::{TiledPhysicsError, TiledPhysicsInstance, TiledPhysicsOptions};

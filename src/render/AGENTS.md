@@ -73,6 +73,7 @@ render/
   - `Material`, `MaterialHandle`, `MaterialRegistry`, `SpriteMaterial`, `UnlitMaterial`, `StandardMaterial`
   - `MeshAsset`, `MeshRenderer`, `WgpuMeshRenderer`
   - `TilemapStorage`, `TilemapRenderer`, `TiledImport`, `TiledMapInstance`
+- `sky_engine::tile` is the preferred high-level API for game/editor tile scenes. Use render tilemap APIs directly only for low-level render paths, quick render-only Tiled loading, or renderer examples/tests.
 - Expert entry points live under `sky_engine::render::expert::*`.
 
 ## Backend Boundary
@@ -123,7 +124,7 @@ render/
 
 ### `sprite/`, `tilemap/`, `mesh/`, and `composite/`
 - `sprite/` owns sprite-specific rendering and `SpriteBatch`.
-- `tilemap/` owns tilemap storage/import/extraction/drawing and `TilemapFeature`.
+- `tilemap/` owns low-level tilemap storage/import/extraction/drawing and `TilemapFeature`.
 - `mesh/` owns `MeshPass`, mesh draw preparation/recording, and mesh-pass errors/tests.
 - `composite/` owns `CompositePass`.
 - If a helper is only used by one renderer family, keep it local to that family rather than promoting it too early.
@@ -237,6 +238,7 @@ render/
 - When a pass needs canonical scene inputs, use the typed scene-input accessors on execution state. `SceneGBufferSlots` is the source of truth; the generic slot map is for ad-hoc resources and does not mirror `scene_*` attachments.
 - Keep Live2D-specific semantics local to `live2d/`.
 - Keep tilemap-specific batching, Tiled import rules, and layer ordering local to `tilemap/`.
+- Keep game/editor tile scene semantics in `src/tile`; do not move palettes, edit history, persistence, object metadata, or `TiledImporter` / `TiledExporter` into render.
 - If you change public render or app-facing APIs, validate examples with `cargo check --examples --features app`.
 
 ## Test Commands

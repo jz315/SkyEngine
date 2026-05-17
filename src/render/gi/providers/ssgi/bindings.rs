@@ -323,10 +323,12 @@ pub(crate) fn binding_location(role: SsgiBindingRole) -> SsgiBindingLocation {
                 binding: 4,
             }
         }
-        SsgiBindingRole::UpsampleHighDiffuseInput | SsgiBindingRole::FinalSceneColor => SsgiBindingLocation {
-            group: 0,
-            binding: 5,
-        },
+        SsgiBindingRole::UpsampleHighDiffuseInput | SsgiBindingRole::FinalSceneColor => {
+            SsgiBindingLocation {
+                group: 0,
+                binding: 5,
+            }
+        }
         SsgiBindingRole::CompositeIndirectDiffuse => SsgiBindingLocation {
             group: 0,
             binding: 0,

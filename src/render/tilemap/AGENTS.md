@@ -1,14 +1,15 @@
 # AGENTS.md — `src/render/tilemap`
 
 ## Overview
-- This module owns SkyEngine's chunked 2D tilemap renderer and the Tiled import bridge.
+- This module owns SkyEngine's low-level chunked 2D tilemap renderer and the render-only Tiled import bridge.
 - Keep tilemap-specific logic here. Do not add Tiled concepts to generic render runtime, phase sorting, sprite, mesh, view, or execution modules unless the concept is truly shared.
+- Game/editor tile scene semantics live in `src/tile/`, not here. `src/tile/` owns `TileMap`, `TileMapDocument`, palettes, edit history, persistence, objects, `TiledImporter`, and `TiledExporter`.
 - The high-level public path is:
   - `TilemapFeature` — registers tilemap extraction and drawing.
   - `TilemapStorage` / `TilemapHandle` — owns large map data outside ECS component storage.
   - `TilemapRenderer` — ECS-facing component in `src/render/component/tilemap.rs`.
   - `TiledImport` — parses `.tmx`, `.tmj`, and `.json` into engine tilemap data.
-  - `TiledMapInstance` — spawns/despawns one imported Tiled map in a `World`.
+  - `TiledMapInstance` — render-only fast path that creates entities/resources for one imported Tiled map.
 - Rendering is transparent-phase, texture-atlas based, and uses instanced quads.
 
 ## File Map
@@ -36,7 +37,8 @@
 ## Architecture
 
 ```text
-Tiled file
+Render-only Tiled path
+  Tiled file
   -> TiledImport
   -> Tilemap + TiledLayer/TiledObjectLayer metadata
   -> TiledMapInstance::spawn(...)
@@ -44,6 +46,14 @@ Tiled file
   -> ExtractTilemaps
   -> TilemapFrameCache
   -> DrawTilemap
+
+Game/editor tile scene path
+  Tiled file or custom authoring data
+  -> tile::adapters::tiled::TiledImporter or tile::TileMapDocument::builder(...)
+  -> tile::TileMapDocument / tile::TileMap
+  -> tile::TileMapInstance / TileMapRenderSync
+  -> TilemapStorage resource + TilemapRenderer entities
+  -> ExtractTilemaps
 ```
 
 ## Data Model
@@ -71,6 +81,7 @@ Tiled file
   - syncs Tiled parallax when the app provides camera position
 - `TiledMapInstance` is not a scene graph. It is a loaded-map handle.
 - Keep `TiledSpawnOptions` small and focused on spawn policy.
+- For editable or persistent maps, prefer `tile::adapters::tiled::TiledImporter` -> `tile::TileMapDocument` -> `tile::TileMapInstance` instead of this render-only instance path.
 
 ## Rendering And Batching
 - Ordinary tilemap layers are extracted into per-view/per-layer GPU instance batches.
@@ -95,12 +106,24 @@ Tiled file
 - Do not make sprites understand tilemaps. Tile object rendering may use `SpriteRenderer`, but the conversion lives here.
 - Do not turn `GpuScene` into a tilemap cache. Tilemap-specific GPU state belongs in `TilemapFrameCache`.
 - Do not use `TiledMapInstance` as a general app scene system.
+- Do not introduce `TiledAdapter` or `TmjExporter`; current tile-scene format facades are `TiledImporter` and `TiledExporter` under `src/tile/adapters/tiled`.
 
 ## Public API Expectations
-- Normal app code should be able to load a map with:
+- Render-only app code can load a Tiled map directly with:
 
 ```rust
 let map = TiledMapInstance::spawn(world, path, TiledSpawnOptions::centered())?;
+```
+
+- Game/editor app code that needs persistence, editing, palettes, object metadata, or export should use the tile scene layer:
+
+```rust
+let document = sky_engine::tile::adapters::tiled::TiledImporter::load_document(path)?;
+let instance = sky_engine::tile::TileMapInstance::spawn_document(
+    world,
+    &document,
+    sky_engine::tile::TileMapSpawnOptions::default(),
+)?;
 ```
 
 - Keep this path simple. Demos should not manually assemble layer entities, storage handles, texture handles, and parallax metadata unless they are demonstrating low-level APIs.

@@ -3,11 +3,9 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use crate::asset::{Handle, TextureAsset, TextureColorSpace};
-#[cfg(test)]
-use crate::render::component::TilesetTileRect;
 use crate::render::component::{
     TilemapDepthSort, TilemapOrientation, TilemapRenderOrder, TilemapRenderer, TilemapStaggerAxis,
-    TilemapStaggerIndex, TilesetGrid,
+    TilemapStaggerIndex, TilesetGrid, TilesetTileRect,
 };
 use crate::render::Color;
 
@@ -52,7 +50,7 @@ use tileset::{resolve_json_tilesets, resolve_tmx_tilesets};
 use tmx::{collect_tmx_child_layers, ParsedObjectLayer};
 pub use types::{
     TiledLayer, TiledObject, TiledObjectLayer, TiledObjectShape, TiledProperty, TiledPropertyValue,
-    TiledTileObject, TiledTileset,
+    TiledTileObject, TiledTileset, TiledTilesetImageSource,
 };
 use util::{
     optional_bool_attr, optional_f32_attr, optional_u32_attr, required_attr, required_u32_attr,
@@ -268,18 +266,11 @@ impl TiledImport {
 }
 
 fn load_tiled_tileset_texture(tileset: &TiledTileset) -> Result<TextureAsset, TiledImportError> {
-    let image = image::open(&tileset.image).map_err(|source| TiledImportError::Image {
-        path: tileset.image.clone(),
-        source,
-    })?;
-    let mut image = image.to_rgba8();
-    if let Some([r, g, b]) = tileset.transparent_color {
-        for pixel in image.as_flat_samples_mut().samples.chunks_exact_mut(4) {
-            if pixel[0] == r && pixel[1] == g && pixel[2] == b {
-                pixel[3] = 0;
-            }
-        }
+    if !tileset.tile_images.is_empty() {
+        return load_tiled_image_collection_atlas(tileset);
     }
+
+    let image = load_tiled_rgba_image(&tileset.image, tileset.transparent_color)?;
     let (width, height) = image.dimensions();
     Ok(TextureAsset::new(
         width,
@@ -287,6 +278,104 @@ fn load_tiled_tileset_texture(tileset: &TiledTileset) -> Result<TextureAsset, Ti
         TextureColorSpace::Srgb,
         image.into_raw(),
     ))
+}
+
+fn load_tiled_rgba_image(
+    path: &Path,
+    transparent_color: Option<[u8; 3]>,
+) -> Result<image::RgbaImage, TiledImportError> {
+    let image = image::open(path).map_err(|source| TiledImportError::Image {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mut image = image.to_rgba8();
+    if let Some([r, g, b]) = transparent_color {
+        for pixel in image.as_flat_samples_mut().samples.chunks_exact_mut(4) {
+            if pixel[0] == r && pixel[1] == g && pixel[2] == b {
+                pixel[3] = 0;
+            }
+        }
+    }
+    Ok(image)
+}
+
+fn load_tiled_image_collection_atlas(
+    tileset: &TiledTileset,
+) -> Result<TextureAsset, TiledImportError> {
+    let [atlas_width, atlas_height] = [tileset.image_size[0].max(1), tileset.image_size[1].max(1)];
+    let mut atlas_pixels = vec![0u8; (atlas_width * atlas_height * 4) as usize];
+    for (tile_id, source) in tileset.tile_images.iter().enumerate() {
+        let Some(source) = source else {
+            continue;
+        };
+        let atlas_rect = tileset
+            .tile_rects
+            .get(tile_id)
+            .and_then(|rect| *rect)
+            .ok_or_else(|| TiledImportError::UnsupportedTileset {
+                source: Some(source.image.clone()),
+                reason: "image collection atlas tile is missing a packed rectangle",
+            })?;
+        let image = load_tiled_rgba_image(&source.image, tileset.transparent_color)?;
+        blit_tiled_image_rect(
+            &image,
+            source.source_rect,
+            &mut atlas_pixels,
+            [atlas_width, atlas_height],
+            atlas_rect,
+            &source.image,
+        )?;
+    }
+
+    Ok(TextureAsset::new(
+        atlas_width,
+        atlas_height,
+        TextureColorSpace::Srgb,
+        atlas_pixels,
+    ))
+}
+
+fn blit_tiled_image_rect(
+    image: &image::RgbaImage,
+    source_rect: TilesetTileRect,
+    atlas_pixels: &mut [u8],
+    atlas_size: [u32; 2],
+    atlas_rect: TilesetTileRect,
+    image_path: &Path,
+) -> Result<(), TiledImportError> {
+    if source_rect.x.saturating_add(source_rect.width) > image.width()
+        || source_rect.y.saturating_add(source_rect.height) > image.height()
+    {
+        return Err(TiledImportError::UnsupportedTileset {
+            source: Some(image_path.to_path_buf()),
+            reason: "image collection tile source rectangle is outside the source image",
+        });
+    }
+    if atlas_rect.x.saturating_add(atlas_rect.width) > atlas_size[0]
+        || atlas_rect.y.saturating_add(atlas_rect.height) > atlas_size[1]
+        || atlas_rect.width != source_rect.width
+        || atlas_rect.height != source_rect.height
+    {
+        return Err(TiledImportError::UnsupportedTileset {
+            source: Some(image_path.to_path_buf()),
+            reason: "image collection atlas rectangle is invalid",
+        });
+    }
+
+    let source_row_stride = image.width() as usize * 4;
+    let atlas_row_stride = atlas_size[0] as usize * 4;
+    let pixels = image.as_raw();
+    let copy_len = source_rect.width as usize * 4;
+    for row in 0..source_rect.height {
+        let source_start =
+            ((source_rect.y + row) as usize * source_row_stride) + source_rect.x as usize * 4;
+        let source_end = source_start + copy_len;
+        let atlas_start =
+            ((atlas_rect.y + row) as usize * atlas_row_stride) + atlas_rect.x as usize * 4;
+        let atlas_end = atlas_start + copy_len;
+        atlas_pixels[atlas_start..atlas_end].copy_from_slice(&pixels[source_start..source_end]);
+    }
+    Ok(())
 }
 
 impl TiledImport {
@@ -721,6 +810,37 @@ mod tests {
                 ]
             }}"#
         )
+    }
+
+    fn write_solid_png(path: &Path, width: u32, height: u32, color: [u8; 4]) {
+        let mut image = image::RgbaImage::new(width, height);
+        for pixel in image.pixels_mut() {
+            *pixel = image::Rgba(color);
+        }
+        image.save(path).expect("write fixture png");
+    }
+
+    fn write_transparent_png_with_rect(
+        path: &Path,
+        width: u32,
+        height: u32,
+        rect: TilesetTileRect,
+        color: [u8; 4],
+    ) {
+        let mut image = image::RgbaImage::new(width, height);
+        for y in rect.y..rect.y + rect.height {
+            for x in rect.x..rect.x + rect.width {
+                image.put_pixel(x, y, image::Rgba(color));
+            }
+        }
+        image.save(path).expect("write fixture png");
+    }
+
+    fn texture_pixel(texture: &TextureAsset, x: u32, y: u32) -> [u8; 4] {
+        let index = ((y * texture.width() + x) * 4) as usize;
+        texture.pixels()[index..index + 4]
+            .try_into()
+            .expect("pixel slice has four channels")
     }
 
     #[test]
@@ -1173,6 +1293,190 @@ mod tests {
         ]) {
             assert!((actual - expected).abs() <= 1e-6);
         }
+    }
+
+    #[test]
+    fn packs_tmx_image_collection_tileset_with_multiple_source_images() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_solid_png(&temp.path().join("red.png"), 2, 2, [255, 0, 0, 255]);
+        write_solid_png(&temp.path().join("green.png"), 3, 1, [0, 255, 0, 255]);
+        std::fs::write(
+            temp.path().join("collection.tsx"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+            <tileset name="collection" tilewidth="3" tileheight="2" tilecount="2" columns="0">
+                <tile id="0" width="2" height="2">
+                    <image width="2" height="2" source="red.png"/>
+                </tile>
+                <tile id="1" width="3" height="1">
+                    <image width="3" height="1" source="green.png"/>
+                </tile>
+            </tileset>"#,
+        )
+        .expect("write tsx");
+        let tmx = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <map version="1.10" orientation="orthogonal" renderorder="right-down" width="2" height="1" tilewidth="3" tileheight="2">
+            <tileset firstgid="1" source="collection.tsx"/>
+            <layer name="Ground" width="2" height="1">
+                <data><tile gid="1"/><tile gid="2"/></data>
+            </layer>
+        </map>"#;
+
+        let import = TiledImport::from_tmx_str(tmx, temp.path())
+            .expect("multi-image image collection should import");
+
+        assert_eq!(import.tileset.image_size, [6, 2]);
+        assert_eq!(import.tileset.tile_rects.len(), 2);
+        assert_eq!(
+            import.tileset.tile_rects[0],
+            Some(TilesetTileRect::new(0, 0, 2, 2))
+        );
+        assert_eq!(
+            import.tileset.tile_rects[1],
+            Some(TilesetTileRect::new(3, 0, 3, 1))
+        );
+        assert_eq!(import.tileset.tile_images.len(), 2);
+
+        let texture = import
+            .load_tileset_texture()
+            .expect("multi-image collection atlas should load");
+        assert_eq!(texture.size(), [6, 2]);
+        assert_eq!(texture_pixel(&texture, 0, 0), [255, 0, 0, 255]);
+        assert_eq!(texture_pixel(&texture, 2, 0), [0, 0, 0, 0]);
+        assert_eq!(texture_pixel(&texture, 3, 0), [0, 255, 0, 255]);
+
+        let grid = import.tileset_grid(Handle::<TextureAsset>::new(crate::asset::AssetId::new()));
+        assert_eq!(grid.tile_draw_size(TileId(0)), Some([2, 2]));
+        assert_eq!(grid.tile_draw_size(TileId(1)), Some([3, 1]));
+        for (actual, expected) in grid
+            .uv_rect(TileId(1))
+            .expect("second tile uv")
+            .into_iter()
+            .zip([0.5, 0.0, 1.0, 0.5])
+        {
+            assert!((actual - expected).abs() <= 1e-6);
+        }
+    }
+
+    #[test]
+    fn imports_inline_json_image_collection_tileset_with_multiple_source_images() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_solid_png(&temp.path().join("red.png"), 2, 2, [255, 0, 0, 255]);
+        write_solid_png(&temp.path().join("green.png"), 3, 1, [0, 255, 0, 255]);
+        let json = r#"{
+            "orientation": "orthogonal",
+            "renderorder": "right-down",
+            "width": 2,
+            "height": 1,
+            "tilewidth": 3,
+            "tileheight": 2,
+            "layers": [{
+                "name": "Ground",
+                "type": "tilelayer",
+                "width": 2,
+                "height": 1,
+                "data": [1, 2]
+            }],
+            "tilesets": [{
+                "firstgid": 1,
+                "name": "collection",
+                "tilewidth": 3,
+                "tileheight": 2,
+                "columns": 2,
+                "tilecount": 2,
+                "tiles": [{
+                    "id": 0,
+                    "image": "red.png",
+                    "imagewidth": 2,
+                    "imageheight": 2,
+                    "width": 2,
+                    "height": 2
+                }, {
+                    "id": 1,
+                    "image": "green.png",
+                    "imagewidth": 3,
+                    "imageheight": 1,
+                    "width": 3,
+                    "height": 1
+                }]
+            }]
+        }"#;
+
+        let import =
+            TiledImport::from_json_str(json, temp.path()).expect("inline image collection import");
+
+        assert_eq!(import.map.tile(0, 0, 0).unwrap().id, TileId(0));
+        assert_eq!(import.map.tile(0, 1, 0).unwrap().id, TileId(1));
+        assert_eq!(import.tileset.image_size, [6, 2]);
+        assert_eq!(
+            import.tileset.tile_rects[0],
+            Some(TilesetTileRect::new(0, 0, 2, 2))
+        );
+        assert_eq!(
+            import.tileset.tile_rects[1],
+            Some(TilesetTileRect::new(3, 0, 3, 1))
+        );
+        assert_eq!(import.tileset.tile_images.len(), 2);
+
+        let texture = import
+            .load_tileset_texture()
+            .expect("inline image collection atlas should load");
+        assert_eq!(texture.size(), [6, 2]);
+        assert_eq!(texture_pixel(&texture, 0, 0), [255, 0, 0, 255]);
+        assert_eq!(texture_pixel(&texture, 2, 0), [0, 0, 0, 0]);
+        assert_eq!(texture_pixel(&texture, 3, 0), [0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn imports_isometric_large_tile_over_small_cell_without_trimming() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_transparent_png_with_rect(
+            &temp.path().join("tower.png"),
+            256,
+            512,
+            TilesetTileRect::new(96, 320, 64, 128),
+            [80, 180, 255, 255],
+        );
+        std::fs::write(
+            temp.path().join("large.tsx"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+            <tileset name="large" tilewidth="256" tileheight="512" tilecount="1" columns="0">
+                <tile id="0" width="256" height="512">
+                    <image width="256" height="512" source="tower.png"/>
+                </tile>
+            </tileset>"#,
+        )
+        .expect("write tsx");
+        let tmx = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <map version="1.10" orientation="isometric" renderorder="right-down" width="1" height="1" tilewidth="256" tileheight="128">
+            <tileset firstgid="1" source="large.tsx"/>
+            <layer name="Ground" width="1" height="1">
+                <data><tile gid="1"/></data>
+            </layer>
+        </map>"#;
+
+        let import = TiledImport::from_tmx_str(tmx, temp.path())
+            .expect("large isometric tile fixture should import");
+        assert_eq!(import.tile_size, [256, 128]);
+        assert_eq!(import.tileset.tile_size, [256, 512]);
+        assert_eq!(import.tileset.tile_draw_size(TileId(0)), [256, 512]);
+
+        let texture = import
+            .load_tileset_texture()
+            .expect("large transparent tile texture should load");
+        assert_eq!(texture.size(), [256, 512]);
+        assert_eq!(texture_pixel(&texture, 0, 0), [0, 0, 0, 0]);
+        assert_eq!(texture_pixel(&texture, 96, 320), [80, 180, 255, 255]);
+
+        let renderer = import
+            .renderer_for_layer(
+                TilemapHandle::new(0, 0),
+                &[Handle::<TextureAsset>::new(crate::asset::AssetId::new())],
+                0,
+            )
+            .expect("layer renderer");
+        assert_eq!(renderer.tile_size, [256.0, 128.0]);
+        assert_eq!(renderer.tile_draw_size, [256.0, 512.0]);
+        assert_eq!(renderer.cell_to_local_origin([0, 0]), [-128.0, -64.0]);
     }
 
     #[test]
