@@ -73,7 +73,7 @@ impl YakuiDemo {
         let mut score = self.score;
 
         let pointer_owned = ctx.ui().wants_pointer();
-        ctx.ui().yakui(|backend| {
+        sky_engine::ui::yakui::run(ctx, |backend| {
             backend.run(|| {
                 use yakui::{colors, Alignment, Color, Dim2, Pivot, Vec2};
 

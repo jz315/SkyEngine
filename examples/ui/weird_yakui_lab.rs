@@ -75,7 +75,7 @@ impl WeirdYakuiLab {
         let pointer_owned = ctx.ui().wants_pointer();
         let keyboard_owned = ctx.ui().wants_keyboard();
 
-        ctx.ui().yakui(|backend| {
+        sky_engine::ui::yakui::run(ctx, |backend| {
             backend.run(|| {
                 use yakui::{
                     colors, Alignment, Color as YColor, Constraints, Dim2, Pivot, Vec2,
