@@ -465,8 +465,8 @@ fn collect_mesh_sources(
     key: &KajiyaMeshKey,
 ) -> Result<KajiyaMeshSources, KajiyaBackendError> {
     let mesh = assets.try_get_id::<MeshAsset>(key.mesh).ok_or_else(|| {
-            KajiyaBackendError::asset(format!("MeshAsset `{}` is not installed", key.mesh))
-        })?;
+        KajiyaBackendError::asset(format!("MeshAsset `{}` is not installed", key.mesh))
+    })?;
 
     let materials = key
         .materials

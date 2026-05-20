@@ -36,8 +36,8 @@ fn render_assets_insert_and_resolve_runtime_assets() {
     let mut assets = RenderAssets::new(&mut world);
 
     let texture = assets.insert_texture(TextureAsset::white_pixel());
-    let material =
-        assets.insert_standard_material(StandardMaterialAsset::new().albedo_texture(texture.clone()));
+    let material = assets
+        .insert_standard_material(StandardMaterialAsset::new().albedo_texture(texture.clone()));
     let mesh = assets.insert_mesh(MeshAsset::from_vertices(
         &[
             Vertex {

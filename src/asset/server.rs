@@ -2046,7 +2046,8 @@ mod tests {
     }
 
     #[test]
-    fn unload_returns_asset_to_unloaded_state() -> Result<(), Box<dyn std::error::Error>> {
+    fn dropping_last_handle_returns_asset_to_unloaded_state(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempdir()?;
         let asset_id = AssetId::new();
         let config = write_manifest(
@@ -2078,7 +2079,7 @@ mod tests {
     }
 
     #[test]
-    fn multiple_loads_require_matching_unloads() -> Result<(), Box<dyn std::error::Error>> {
+    fn multiple_loads_hold_independent_leases() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempdir()?;
         let asset_id = AssetId::new();
         let config = write_manifest(
@@ -2116,7 +2117,7 @@ mod tests {
     }
 
     #[test]
-    fn dependencies_load_transitively_and_unload_with_parent(
+    fn dependencies_load_transitively_and_release_with_parent(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempdir()?;
         let parent_id = AssetId::new();
@@ -2170,8 +2171,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_dependency_request_survives_parent_unload() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn direct_dependency_request_survives_parent_drop() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempdir()?;
         let parent_id = AssetId::new();
         let dependency_id = AssetId::new();
@@ -2227,7 +2227,7 @@ mod tests {
     }
 
     #[test]
-    fn load_by_path_uses_manifest_source_lookup() -> Result<(), Box<dyn std::error::Error>> {
+    fn load_uses_manifest_source_lookup() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempdir()?;
         let asset_root = dir.path().join("assets");
         std::fs::create_dir_all(asset_root.join("nested"))?;

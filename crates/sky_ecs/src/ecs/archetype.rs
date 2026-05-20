@@ -26,6 +26,7 @@ thread_local! {
 #[derive(Debug)]
 pub struct InternalArchetype {
     pub components: SmallVec<[ComponentType; MAX_COMPONENTS]>,
+    pub(crate) drop_component_indices: SmallVec<[u8; MAX_COMPONENTS]>,
     pub alignment: usize,
 }
 
@@ -34,6 +35,7 @@ impl InternalArchetype {
     fn new() -> Self {
         InternalArchetype {
             components: SmallVec::new(),
+            drop_component_indices: SmallVec::new(),
             alignment: 1,
         }
     }
@@ -48,6 +50,13 @@ impl InternalArchetype {
 
     fn build(mut self) -> Self {
         self.components.sort_by_key(|a| a.id());
+        self.drop_component_indices.clear();
+        for (index, component) in self.components.iter().enumerate() {
+            if component.needs_drop() {
+                debug_assert!(index < u8::MAX as usize);
+                self.drop_component_indices.push(index as u8);
+            }
+        }
         self
     }
 }

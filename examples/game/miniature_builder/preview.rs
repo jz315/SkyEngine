@@ -15,7 +15,7 @@ pub struct PreviewEntities {
 pub fn spawn_preview_entities(world: &mut World, assets: &GameAssets) {
     let hover_tile = world.spawn((
         Transform::from_xyz(0.0, 0.0, 0.0),
-            SpriteRenderer::new(assets.hover.width, assets.hover.height)
+        SpriteRenderer::new(assets.hover.width, assets.hover.height)
             .texture(assets.hover.handle.clone())
             .uv(
                 assets.hover.uv[0],

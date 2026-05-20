@@ -373,11 +373,14 @@ impl Chunk {
     /// After this call the component data at that slot is logically
     /// uninitialised and must not be read or dropped again.
     pub(crate) unsafe fn drop_entity_components(&self, entity_index: usize) {
-        for (component_index, component) in self.archetype.components.iter().enumerate() {
-            if let Some(drop_fn) = component.drop_fn() {
-                let ptr = self.component_ptr_unchecked(component_index, entity_index);
-                drop_fn(ptr);
-            }
+        for &component_index in &self.archetype.drop_component_indices {
+            let component_index = component_index as usize;
+            let component = &self.archetype.components[component_index];
+            let drop_fn = component
+                .drop_fn()
+                .expect("drop component index must point to a droppable component");
+            let ptr = self.component_ptr_unchecked(component_index, entity_index);
+            drop_fn(ptr);
         }
     }
 
@@ -403,9 +406,7 @@ impl Chunk {
     /// Must only be called once.  After this call, all component data in
     /// the chunk is logically uninitialised.
     pub(crate) unsafe fn drop_all_entities(&self) {
-        // Fast path: skip entirely if no component in this archetype needs drop.
-        let any_needs_drop = self.archetype.components.iter().any(|c| c.needs_drop());
-        if !any_needs_drop {
+        if self.archetype.drop_component_indices.is_empty() {
             return;
         }
 
