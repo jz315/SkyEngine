@@ -208,18 +208,19 @@ impl TiledImport {
 
     #[inline]
     pub fn tileset_grid(&self, texture: Handle<TextureAsset>) -> TilesetGrid {
-        self.tileset_grid_for(0, texture).unwrap_or_else(|| {
-            TilesetGrid::new(
-                texture,
-                self.tileset.tile_size,
-                self.tileset.columns,
-                self.tileset.rows,
-            )
-            .texture_size(self.tileset.image_size)
-            .margin_spacing(self.tileset.margin, self.tileset.spacing)
-            .tile_rects(self.tileset.tile_rects.clone())
-            .animations(self.tileset.animations.clone())
-        })
+        self.tileset_grid_for(0, texture.clone())
+            .unwrap_or_else(|| {
+                TilesetGrid::new(
+                    texture,
+                    self.tileset.tile_size,
+                    self.tileset.columns,
+                    self.tileset.rows,
+                )
+                .texture_size(self.tileset.image_size)
+                .margin_spacing(self.tileset.margin, self.tileset.spacing)
+                .tile_rects(self.tileset.tile_rects.clone())
+                .animations(self.tileset.animations.clone())
+            })
     }
 
     pub fn renderer_for_layer(
@@ -229,7 +230,7 @@ impl TiledImport {
         layer: u32,
     ) -> Option<TilemapRenderer> {
         let layer_info = self.layers.get(layer as usize)?;
-        let texture = *textures.get(layer_info.tileset_index)?;
+        let texture = textures.get(layer_info.tileset_index)?.clone();
         let tileset = self.tilesets.get(layer_info.tileset_index)?;
         let mut renderer = TilemapRenderer::new(
             map,
@@ -947,10 +948,18 @@ mod tests {
         let texture_a = Handle::<TextureAsset>::new(crate::asset::AssetId::new());
         let texture_b = Handle::<TextureAsset>::new(crate::asset::AssetId::new());
         let renderer_a = import
-            .renderer_for_layer(TilemapHandle::new(0, 0), &[texture_a, texture_b], 0)
+            .renderer_for_layer(
+                TilemapHandle::new(0, 0),
+                &[texture_a.clone(), texture_b.clone()],
+                0,
+            )
             .expect("first split layer should render");
         let renderer_b = import
-            .renderer_for_layer(TilemapHandle::new(0, 0), &[texture_a, texture_b], 1)
+            .renderer_for_layer(
+                TilemapHandle::new(0, 0),
+                &[texture_a.clone(), texture_b.clone()],
+                1,
+            )
             .expect("second split layer should render");
         assert_eq!(renderer_a.tileset.texture, texture_a);
         assert_eq!(renderer_b.tileset.texture, texture_b);

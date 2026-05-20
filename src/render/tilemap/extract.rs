@@ -205,12 +205,12 @@ fn resolve_tileset_texture(
         (Some(server), Some(cache)) => {
             cache
                 .borrow_mut()
-                .texture(ctx.gpu, server, renderer.tileset.texture)
+                .texture(ctx.gpu, server, &renderer.tileset.texture)
         }
         (_, Some(cache)) => {
             cache
                 .borrow_mut()
-                .mark_texture_missing(renderer.tileset.texture);
+                .mark_texture_missing(&renderer.tileset.texture);
             None
         }
         _ => None,
