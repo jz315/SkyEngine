@@ -37,11 +37,11 @@ use sky_engine::audio::register_audio_asset_factories;
 register_audio_asset_factories(&asset_server);
 ```
 
-然后可以通过 `AssetServer` 加载：
+然后可以通过 `Assets` 加载：
 
 ```rust,no_run
-let jump = asset_server.load_by_path::<SoundClip>("audio/jump.ogg")?;
-let music = asset_server.load_by_path::<MusicTrack>("audio/theme.ogg")?;
+let jump = asset_server.load::<SoundClip>("audio/jump.ogg")?;
+let music = asset_server.load::<MusicTrack>("audio/theme.ogg")?;
 # Ok::<(), sky_engine::asset::AssetError>(())
 ```
 

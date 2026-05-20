@@ -11,18 +11,19 @@ sky_engine = { version = "...", features = ["asset"] }
 ```rust
 use sky_engine::asset::{
     Asset, AssetConfig, AssetError, AssetEvent, AssetEventKind, AssetId, AssetRegistryManifest,
-    AssetServer, AssetState, Handle, LoadedAsset, TextureAsset,
+    AssetState, AssetStatus, Assets, Handle, LoadedAsset, TextureAsset, WeakHandle,
 };
 ```
 
 ## 概念
 
 - `AssetId`：稳定 UUID。
-- `Handle<T>`：typed handle，保存 `AssetId` 和 phantom type。
+- `Handle<T>`：强 typed handle，持有 asset lease。最后一个强 handle drop 后，资源会在后续 `Assets::update()` 中自动释放。
+- `WeakHandle<T>`：弱 typed asset identity，只保存 id，不保活资源，适合序列化、编辑器引用和资产描述符。
 - `Asset`：可加载资源 trait。
 - `AssetMeta`：源文件旁的 metadata。
 - `AssetRegistryManifest`：cooked manifest。
-- `AssetServer`：运行时加载、安装、查询、卸载。
+- `Assets`：运行时加载、安装、查询和生命周期管理。
 - `AssetRuntimeFactory`：按 asset 类型创建 runtime asset。
 
 ## AssetConfig
@@ -48,21 +49,22 @@ config.manifest_path()
 config.source_key(path)
 ```
 
-## AssetServer
+## Assets
 
 构造：
 
 ```rust,no_run
-let server = AssetServer::new(config)?;
-let server = AssetServer::with_empty_manifest(config);
+let server = Assets::new(config)?;
+let server = Assets::with_empty_manifest(config);
 # Ok::<(), sky_engine::asset::AssetError>(())
 ```
 
 加载：
 
 ```rust,no_run
-let handle: Handle<TextureAsset> = server.load_by_path("sprites/player.png")?;
-let handle = server.load::<TextureAsset>(asset_id)?;
+let handle: Handle<TextureAsset> = server.load("sprites/player.png")?;
+let handle = server.load_id::<TextureAsset>(asset_id)?;
+let handle = server.load_handle(weak_handle)?;
 let texture = server.load_blocking::<TextureAsset>(asset_id)?;
 # Ok::<(), sky_engine::asset::AssetError>(())
 ```
@@ -78,17 +80,20 @@ server.update()?;
 
 ```rust,no_run
 server.state(&handle) -> AssetState
+server.status(&handle) -> AssetStatus
 server.is_installed(&handle) -> bool
 server.get(&handle) -> Result<Arc<T>, AssetError>
 server.try_get(&handle) -> Option<Arc<T>>
 server.error(&handle) -> Option<AssetError>
 ```
 
-卸载：
+生命周期：
 
 ```rust,no_run
-server.unload(&handle);
-server.unload_untyped(asset_id);
+let weak: WeakHandle<TextureAsset> = handle.downgrade();
+drop(handle);
+server.update()?; // final strong handle drop is observed here
+# Ok::<(), sky_engine::asset::AssetError>(())
 ```
 
 Manifest：
@@ -158,7 +163,7 @@ cargo run --bin sky-cook --features asset -- ...
 
 ## Events
 
-`AssetServer` 提供 cursor 风格事件读取：
+`Assets` 提供 cursor 风格事件读取：
 
 ```rust,no_run
 let mut cursor = server.event_cursor();

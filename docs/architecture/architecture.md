@@ -144,7 +144,7 @@ crate 根部的 feature-gated 模块关系如下：
 | 写 gameplay 状态 | ECS component / resource / system | 把玩法状态放进 renderer cache |
 | 批量遍历实体 | `PreparedQuery` / `for_each_chunk` | 动态 raw query 作为主路径 |
 | 查询中安排结构变化 | `Commands` | active query 内直接 `insert/remove/despawn` |
-| 创建窗口应用 | `App` + `AppConfig` + `AppState` | 手动绕过 runner 复制事件循环 |
+| 创建窗口应用 | `World::install(...)` + `App` + `AppState` | 手动绕过 runner 复制事件循环 |
 | 普通渲染 | `RenderPipelineAsset` + `RenderRuntime` | 直接把所有东西塞进 `GpuContext` |
 | 新 renderer family | `RenderFeature` + extractor / payload / phase | 修改中心 scene struct 承载全部状态 |
 | 低层 GPU 编排 | `RenderGraph` / `FramePipeline` / `render::expert` | 在 App 层手写跨 pass 资源生命周期 |
@@ -246,13 +246,20 @@ flowchart TB
 
 - `src/app/runner.rs`
 - `src/app/config.rs`
+- `src/app/plugins.rs`
 - `src/app/mod.rs`
 - `src/input/`
 
 核心对象：
 
 - `App`
-- `AppConfig`
+- `WindowPlugin`
+- `RunnerPlugin`
+- `InputPlugin`
+- `AssetPlugin`
+- `RenderPlugin`
+- `WindowOptions`
+- `RunnerOptions`
 - `RedrawMode`
 - `AppState`
 - `FrameContext`
@@ -261,19 +268,19 @@ flowchart TB
 
 ### 4.1 App 的职责
 
-`App` 是应用 builder。它接收一个 `AppConfig` 和一个 `World`，可选安装 `RenderPipelineAsset`，然后进入 winit event loop。
+`App` 是一个薄的应用 runner。它只接收已经装配好的 `World`，然后进入 winit event loop；窗口、输入、资产、runner 策略和渲染管线都通过 `world.install(...)` 显式安装。
 
 应用层负责：
 
-- 创建窗口
+- 按 `WindowPlugin` 声明创建窗口
 - 初始化 `GpuContext`
-- 创建或同步 `Input` resource
-- 在启用 `asset` 时插入 / 更新 `AssetServer`
-- 在启用 `audio` 时插入 `AudioServer` / `AudioCommands` 并做帧末同步
+- 在安装 `InputPlugin` 时创建或同步 `Input` resource
+- 在安装 `AssetPlugin` 时插入 / 更新 `AssetServer`
+- 在安装 `AudioPlugin` 时插入 `AudioServer` / `AudioCommands` 并做帧末同步
 - 在启用 `egui` 时接入 egui 输入与 overlay 渲染
-- 每帧按配置驱动 `world.tick_with_delta(dt)`
+- 每帧按 `RunnerPlugin` 策略驱动 `world.tick_with_delta(dt)`
 - 调用用户 `AppState`
-- 在用户调用 `ctx.render()` 时执行安装好的 `RenderRuntime`
+- 在用户调用 `ctx.render()` 时执行 `RenderPlugin` 声明的 `RenderRuntime`
 - 处理 resize、surface lost、timeout、out-of-memory、occluded、shutdown
 
 应用层不负责：
@@ -284,9 +291,20 @@ flowchart TB
 - 资产格式解析细节
 - gameplay 规则
 
-### 4.2 AppConfig
+### 4.2 App Plugins 与 Options
 
-`AppConfig` 定义窗口与帧驱动策略：
+App 层不再使用一个中心化配置对象承载所有配置。窗口、runner、输入、资产、音频、视频和渲染都是独立能力：
+
+| 插件 | 安装内容 |
+|------|----------|
+| `WindowPlugin` | `WindowOptions`，声明窗口标题、尺寸、vsync、resizable |
+| `RunnerPlugin` | `RunnerOptions`，声明自动 tick、delta clamp、redraw mode、帧率限制 |
+| `InputPlugin` | 启用 winit input 到 ECS input resource 的同步 |
+| `AssetPlugin` | `AssetConfig`，声明 app-owned asset service |
+| `RenderPlugin` | `RenderPipelineAsset`，声明高层 scene pipeline |
+| `AudioPlugin` / `VideoPlugin` | feature-gated app service 声明 |
+
+`WindowOptions` 定义窗口策略：
 
 | 字段 | 含义 |
 |------|------|
@@ -294,6 +312,11 @@ flowchart TB
 | `width` / `height` | 初始逻辑尺寸 |
 | `vsync` | 是否启用 vsync |
 | `resizable` | 是否允许 resize |
+
+`RunnerOptions` 定义帧驱动策略：
+
+| 字段 | 含义 |
+|------|------|
 | `exit_on_escape` | 是否按 Escape 退出 |
 | `max_delta` | 自动 tick 的最大帧间隔，避免调试暂停导致模拟爆炸 |
 | `auto_tick` | 是否每帧自动调用 `world.tick_with_delta(dt)` |
@@ -364,7 +387,7 @@ App::run(state)
 - `with_render_runtime_mut(...)`
 - `egui(...)`，仅 `egui` feature
 
-`FrameContext::render()` 要求 `App::with_render_pipeline(...)` 已安装 pipeline，否则会 panic。这是有意的：没有 pipeline 时 App 仍可用于纯 ECS / GPU 自定义流程，但调用高层 render 必须显式安装 renderer。
+`FrameContext::render()` 要求已经安装 `RenderPlugin`，否则会 panic。这是有意的：没有 pipeline 时 App 仍可用于纯 ECS / GPU 自定义流程，但调用高层 render 必须显式安装 renderer。
 
 ### 4.5 Input 同步模型
 
@@ -1644,8 +1667,8 @@ flowchart TB
 
 ```text
 main()
-  -> App::new(AppConfig, World)
-  -> App::with_render_pipeline(RenderPipelineAsset)
+  -> world.install(WindowPlugin / InputPlugin / RenderPlugin / ...)
+  -> App::new(World)
   -> App::run(AppState)
   -> winit resumed:
        create window

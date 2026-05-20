@@ -9,22 +9,27 @@ sky_engine = { version = "...", features = ["app"] }
 常用入口：
 
 ```rust
-use sky_engine::app::{App, AppConfig, AppState, FrameContext, RedrawMode};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, LogPlugin, RedrawMode,
+    RenderPlugin, RunnerPlugin, WindowPlugin,
+};
 ```
 
 ## 最小窗口
 
 ```rust,no_run
-use sky_engine::app::{App, AppConfig, FrameContext};
+use sky_engine::app::{App, FrameContext, InputPlugin, RenderPlugin, WindowPlugin};
 use sky_engine::ecs::World;
-use sky_engine::render::RenderPipelineAsset;
 
 fn main() {
-    App::new(AppConfig::new("Hello", 960, 640), World::new())
-        .with_render_pipeline(RenderPipelineAsset::forward_2d())
-        .run(|ctx: &mut FrameContext| {
-            ctx.render();
-        });
+    let mut world = World::new();
+    world.install(WindowPlugin::new("Hello", 960, 640)).unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(RenderPlugin::forward_2d()).unwrap();
+
+    App::new(world).run(|ctx: &mut FrameContext| {
+        ctx.render();
+    });
 }
 ```
 
@@ -34,7 +39,7 @@ fn main() {
 
 ```rust
 pub trait AppState: 'static {
-    fn setup(&mut self, _world: &mut World, _gpu: &mut GpuContext) {}
+    fn setup(&mut self, _ctx: &mut SetupContext) {}
     fn update(&mut self, ctx: &mut FrameContext);
     fn on_resize(&mut self, _width: u32, _height: u32) {}
     fn shutdown(&mut self, _world: &mut World) {}
@@ -43,7 +48,7 @@ pub trait AppState: 'static {
 
 生命周期：
 
-- `setup`：窗口和 GPU 已准备好，`Input` resource 已存在。适合加载 GPU 资源、创建 texture、spawn 初始实体。
+- `setup`：窗口和 GPU 已准备好；如果安装了 `InputPlugin`，`Input` resource 已存在。适合加载 GPU 资源、创建 texture、spawn 初始实体。
 - `update`：每帧调用。默认情况下 ECS schedule 已经 tick 过。
 - `on_resize`：窗口 resize 后调用。
 - `shutdown`：退出前调用。
@@ -51,16 +56,15 @@ pub trait AppState: 'static {
 示例：
 
 ```rust,no_run
-use sky_engine::app::{App, AppConfig, AppState, FrameContext};
+use sky_engine::app::{App, AppState, FrameContext, InputPlugin, RenderPlugin, SetupContext, WindowPlugin};
 use sky_engine::ecs::World;
-use sky_engine::gpu::GpuContext;
-use sky_engine::render::RenderPipelineAsset;
 
 struct Game;
 
 impl AppState for Game {
-    fn setup(&mut self, world: &mut World, _gpu: &mut GpuContext) {
+    fn setup(&mut self, ctx: &mut SetupContext) {
         // spawn entities, load textures, create resources
+        let _world = &mut ctx.world;
     }
 
     fn update(&mut self, ctx: &mut FrameContext) {
@@ -74,38 +78,75 @@ impl AppState for Game {
 }
 
 fn main() {
-    App::new(AppConfig::new("Game", 1280, 720), World::new())
-        .with_render_pipeline(RenderPipelineAsset::forward_2d())
-        .run(Game);
+    let mut world = World::new();
+    world.install(WindowPlugin::new("Game", 1280, 720)).unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(RenderPlugin::forward_2d()).unwrap();
+
+    App::new(world).run(Game);
 }
 ```
 
-## AppConfig
+## Capability Plugins
 
 ```rust
-AppConfig::new(title, width, height)
-    .with_vsync(true)
-    .with_resizable(true)
-    .with_exit_on_escape(true)
-    .with_max_delta(0.1)
-    .with_auto_tick(true)
-    .with_redraw_mode(RedrawMode::Continuous)
+world.install(WindowPlugin::new("Game", 1280, 720).with_vsync(true))?;
+world.install(RunnerPlugin::game().with_frame_rate_limit(120.0))?;
+world.install(LogPlugin::new())?;
+world.install(InputPlugin)?;
+world.install(AssetPlugin::new("assets"))?;
+world.install(RenderPlugin::forward_2d())?;
 ```
 
-字段：
+原则：
 
-- `title`
-- `width`
-- `height`
-- `vsync`
-- `resizable`
-- `exit_on_escape`
-- `max_delta`
-- `auto_tick`
-- `redraw_mode`
-- `diagnostic_console`
+- 配置写在插件构造器或 builder 方法上。
+- `World::install(...)` 是能力组合入口。
+- `App::new(world)` 只消费已经安装的能力。
+- 没安装某个可选能力，就没有对应行为。
+- 插件自己的硬依赖由插件安装时检查。
 
-`max_delta` 会 clamp frame delta，避免断点、系统卡顿导致物理或动画爆炸。
+`RunnerPlugin::game().with_max_delta(...)` 会 clamp frame delta，避免断点、系统卡顿导致物理或动画爆炸。
+
+## 日志
+
+SkyEngine 使用 Rust 标准 `log` facade。业务代码直接写：
+
+```rust
+log::info!("loaded level");
+log::warn!("missing texture");
+log::error!("renderer failed");
+```
+
+App runner 默认会安装一个轻量 logger；显式配置时使用 `LogPlugin`：
+
+```rust,no_run
+use sky_engine::app::{LogConsole, LogPlugin};
+
+world
+    .install(
+        LogPlugin::new()
+            .with_level(log::LevelFilter::Debug)
+            .with_console(LogConsole::WarningsAndErrors)
+            .with_capacity(2048),
+    )
+    .unwrap();
+```
+
+捕获到的日志保存在 app-owned `LogStore`，不是 ECS resource。`setup` 和 `update` 中可以读取：
+
+```rust,no_run
+fn update(ctx: &mut FrameContext<'_>) {
+    for entry in ctx.logs().entries() {
+        let file = entry.short_file().unwrap_or(&entry.target);
+        let line = entry.line.unwrap_or(0);
+        println!("{file}:{line} {}", entry.message);
+    }
+}
+```
+
+连续重复日志会默认折叠到同一条 `LogEntry`，通过 `repeat_count` 查看次数。
+日志写入线程只投递到有界队列；app runner 每帧 drain 到 `LogStore`，因此热路径不会直接抢 `LogStore` 的锁。
 
 ## RedrawMode
 
@@ -161,10 +202,10 @@ ctx.with_render_runtime_mut(...)
 
 ## 自动 tick
 
-默认 `AppConfig::auto_tick = true`。每帧顺序大致是：
+默认 `RunnerPlugin::game()` 会启用自动 tick。每帧顺序大致是：
 
 ```text
-同步 winit 输入到 Input resource
+如果安装了 InputPlugin，同步 winit 输入到 Input resource
 world.tick_with_frame_delta(clamped_delta, raw_delta)
 AppState::update(ctx)
 render
@@ -179,7 +220,7 @@ render
 手动 tick：
 
 ```rust,no_run
-let config = AppConfig::new("Manual", 960, 720).with_auto_tick(false);
+world.install(RunnerPlugin::game().with_auto_tick(false)).unwrap();
 ```
 
 ```rust,no_run
@@ -195,7 +236,7 @@ fn update(&mut self, ctx: &mut FrameContext<'_>) {
 Runner 会维护：
 
 - `FrameContext::input`
-- `Input` ECS resource
+- `Input` ECS resource，如果安装了 `InputPlugin`
 
 如果使用 action map，可以在 `setup` 插入 `InputActions` resource，然后在系统或 update 中读取。
 
@@ -204,9 +245,8 @@ Runner 会维护：
 典型 app 会安装一个 render pipeline：
 
 ```rust,no_run
-App::new(config, world)
-    .with_render_pipeline(RenderPipelineAsset::forward_2d())
-    .run(Game);
+world.install(RenderPlugin::forward_2d()).unwrap();
+App::new(world).run(Game);
 ```
 
 每帧调用：
@@ -216,19 +256,6 @@ ctx.render();
 ```
 
 如果你手写 GPU pass，可以通过 `ctx.gpu()` 获取 `GpuContext`。
-
-## Diagnostics
-
-`AppConfig::diagnostic_console` 控制哪些 diagnostics 会镜像到 stderr。
-
-```rust,no_run
-use sky_engine::app::{AppConfig, DiagnosticConsole};
-
-let config = AppConfig::new("Tool", 1280, 720)
-    .with_diagnostic_console(DiagnosticConsole::WarningsAndErrors);
-```
-
-结构化事件仍保存在 `Diagnostics` resource 中，不受 console 过滤影响。
 
 ## Feature 关系
 

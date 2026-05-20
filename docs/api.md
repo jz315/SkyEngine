@@ -7,7 +7,6 @@
 - [ECS](ecs.md)：`World`、`EntityId`、`Bundle`、`PreparedQuery`、`Commands`、系统调度、raw API。
 - [Reflect](reflect.md)：底层 `Type` layout 反射、ECS component type 语义别名、`#[derive(Reflect)]` Inspector 反射。
 - [Math](math.md)：`Vec2/Vec3/Vec4`、`Quat`、`Mat4`、`Transform`、`Projection`。
-- [Diagnostics](diagnostics.md)：结构化诊断事件、ring buffer、once 去重、console 输出。
 
 ## 运行时和平台层
 

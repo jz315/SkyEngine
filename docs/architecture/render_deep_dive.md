@@ -568,9 +568,12 @@ render gpu/resources
 普通应用通常这样运行：
 
 ```rust
-App::new(AppConfig::new("Demo", 1280, 720), world)
-    .with_render_pipeline(RenderPipelineAsset::modern_3d())
-    .run(MyApp);
+world.install(WindowPlugin::new("Demo", 1280, 720)).unwrap();
+world.install(InputPlugin).unwrap();
+world.install(AssetPlugin::default()).unwrap();
+world.install(RenderPlugin::modern_3d()).unwrap();
+
+App::new(world).run(MyApp);
 ```
 
 每帧在 `AppState::update` 里调用：
@@ -2268,9 +2271,14 @@ world.spawn((
     MainCamera,
 ));
 
-App::new(AppConfig::new("SkyEngine - 3D Demo", 1280, 720), world)
-    .with_render_pipeline(RenderPipelineAsset::modern_3d())
-    .run(ThreeDDemo::default());
+world
+    .install(WindowPlugin::new("SkyEngine - 3D Demo", 1280, 720))
+    .unwrap();
+world.install(InputPlugin).unwrap();
+world.install(AssetPlugin::default()).unwrap();
+world.install(RenderPlugin::modern_3d()).unwrap();
+
+App::new(world).run(ThreeDDemo::default());
 ```
 
 ### 15.2 第一次 update 初始化场景
@@ -3457,7 +3465,7 @@ commands:
 
 ### 19.5 常见空画面检查顺序
 
-1. App 是否安装了 pipeline：`with_render_pipeline(...)`。
+1. App 是否安装了 pipeline：`world.install(RenderPlugin::...)`。
 2. 每帧是否调用了 `ctx.render()`。
 3. World 是否有 enabled camera。
 4. Camera 是否有合理 projection。
