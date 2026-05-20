@@ -4,7 +4,7 @@
 - This module owns SkyEngine's current game UI integration behind UI feature flags.
 - `ui-core` provides the backend-neutral host contract.
 - `ui-legacy` provides the retained ECS UI implementation and adapts it into `UiHost`.
-- `ui-neo` provides the experimental EUI-NEO-style declarative runtime and adapts it into `UiHost`.
+- `ui-neo` adapts the independent `eui-neo` declarative runtime into `UiHost`.
 - `yakui-ui` installs an experimental yakui backend into the same `UiHost`.
 - `egui` is not part of this module; it is a separate immediate-mode app overlay in `src/app/egui_integration.rs`.
 
@@ -12,7 +12,7 @@
 - `ui-core`: compiles `UiHost`, `UiBackend`, event/capture/render contexts, and `FrameContext::ui()` facade methods.
 - `ui-legacy`: enables retained ECS UI components, layout, input, state, text, renderer, and `LegacyUiBackend`.
 - `ui`: compatibility alias for the current retained ECS UI (`ui-legacy`).
-- `ui-neo`: enables `sky_engine::ui::neo`, `NeoUiBackend`, `NeoUiPlugin`, EUI-NEO-style widgets, glyphon text, HTTP/Bing image loading, and clipboard support.
+- `ui-neo`: enables `sky_engine::ui::neo`, `NeoUiBackend`, `NeoUiPlugin`, `eui-neo` widgets, glyphon text, and SkyEngine-backed HTTP/Bing image loading.
 - `yakui-ui`: enables `YakuiBackend` and `YakuiUiPlugin`.
 
 ## Current Public Surface
@@ -45,7 +45,7 @@
   - `neo::NeoUiPlugin`
   - `neo::install_neo_ui_backend`
   - `neo::NeoUiBackend`
-  - `neo::NeoRuntime`
+  - `neo::Runtime`
   - `neo::Ui`, `neo::NeoState`, `neo::Binding`, and `neo::widgets`
   - `neo::compose`
   - `neo::open_window`
@@ -72,8 +72,7 @@
 - `neo/backend.rs`: `NeoUiBackend` and neo-specific capture/IME/render integration.
 - `neo/window.rs`: auxiliary native window client for neo-driven windows.
 - `neo/input_bridge.rs`: raw input and winit keyboard/IME translation for neo.
-- `neo/`: experimental EUI-NEO-style DSL, layout, event, runtime, animation, draw list, renderer, state binding, and widget port.
-- `neo/widgets/`: EUI-NEO component ports including button, input, dialog, dropdown, context menu, toast, date/time/color pickers, data table, and charts.
+- `neo/`: SkyEngine adapter for the independent `eui-neo` runtime, including backend installation, winit input translation, native windows, image resources, and overlay rendering.
 
 ## App Integration
 - App window events can flow through `handle_ui_event(...)`; backends return `UiEventResponse::consumed()` when they consume an event.
@@ -86,15 +85,15 @@
 - UI overlays currently render after scene rendering directly onto the active wgpu surface frame.
 - The retained UI renderer in `legacy/render.rs` owns its own wgpu pipelines and glyphon renderer.
 - `YakuiBackend` renders through `yakui_wgpu`.
-- `NeoUiBackend` renders through `neo::NeoRenderer`, a wgpu overlay renderer that uses glyphon for text and SkyEngine app/platform seams for screenshots, URLs, clipboard, and image loading.
+- `NeoUiBackend` renders through an internal renderer backed by `eui-neo-wgpu`; text uses glyphon and image resources are resolved through SkyEngine asset/render caches.
 - There is currently no canonical render-pipeline `UiPhase` or `UiFeature`.
 - Do not document a future UI phase/feature as current behavior. If planning that migration, put it under `docs/plan/`.
 
 ## Neo UI Rules
-- Reference repository for behavior parity is `C:\Coding\EUI-NEO`. Check the local source before changing `src/ui/neo/` behavior.
+- Reference repository for behavior parity is `C:\Coding\EUI-NEO`. Check the local source before changing `crates/eui-neo*` or `src/ui/neo/` behavior.
 - Keep widget behavior traceable to EUI-NEO `components/*.h` and runtime/layout/animation behavior traceable to `core/*.h`.
 - Preserve EUI-NEO callback ordering, clamp rules, z-index/layering, modal hit blocking, focus, keyboard, clipboard, IME rect, dirty/redraw, and animation semantics unless there is a documented SkyEngine platform adaptation.
-- Keep reusable behavior in `src/ui/neo/` or `src/ui/neo/widgets/`; examples should demonstrate parity and should not contain hidden widget implementations.
+- Keep reusable behavior in `crates/eui-neo`; `src/ui/neo/` should remain a SkyEngine adapter, and examples should demonstrate parity rather than hide widget implementations.
 - Use engine screenshots through `FrameContext::request_screenshot` for visual checks. The neo examples expose `SKY_NEO_SCREENSHOT_PATH`, `SKY_NEO_SCREENSHOT_FRAME`, and `SKY_NEO_EXIT_AFTER_SCREENSHOT`.
 - Keep active EUI-NEO port tracking in `docs/plan/eui_neo_rust_ui_port_plan.md` only; do not create scattered parity TODO files.
 

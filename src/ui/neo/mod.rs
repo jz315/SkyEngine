@@ -7,48 +7,26 @@
 
 #![allow(non_snake_case)]
 
-mod animation;
 mod api;
 mod backend;
-mod binding;
-mod builder;
+mod color;
 mod config;
-mod draw;
-mod dsl;
-mod element;
-mod event;
-mod fonts;
+mod font_provider;
+mod image_provider;
 mod input_bridge;
-mod layout;
 mod plugin;
 mod renderer;
-mod runtime;
-mod text_measure;
-pub mod widgets;
 mod window;
 
-pub use crate::{
-    neo_bind as bind, neo_bind_array as bind_array, neo_bind_clamped as bind_clamped,
-    neo_bind_clone as bind_clone, neo_bind_eq as bind_eq, neo_bind_max as bind_max,
-};
-pub use animation::{
-    applyEase, apply_ease, hasAnimProperty, has_anim_property, AnimProperty, AnimatedValue, Ease,
-    Lerp, SmoothedValue, Transition,
-};
+/// Re-export of the standalone `eui-neo` core crate.
+pub mod eui {
+    pub use eui_neo::*;
+}
+
 pub use api::{compose, open_window};
 pub use backend::NeoUiBackend;
-pub use binding::{Binding, NeoState};
-pub use builder::{ElementBuilder, Response};
 pub use config::{NeoUiConfig, NeoWindowConfig};
-pub use draw::{UiDrawCommand, UiDrawList, UiImageDraw, UiPolygonDraw, UiRectDraw, UiTextDraw};
-pub use dsl::{Screen, Ui};
-pub use element::{
-    Align, Border, CursorShape, EdgeInsets, Element, ElementKind, Gradient, GradientDirection,
-    HorizontalAlign, ImageFit, IntoPolygonPoints, LayoutRect, Rect, Shadow, Size, Transform, Vec2,
-    VerticalAlign,
-};
-pub use event::{DragEvent, InteractionState, KeyboardEvent, PointerEvent, ScrollEvent};
-pub use layout::{layout_roots, measure_element};
+pub use eui_neo::expert;
+pub use eui_neo::prelude::*;
+pub use eui_neo::{applyEase, apply_ease, hasAnimProperty, has_anim_property};
 pub use plugin::{install_neo_ui_backend, NeoUiPlugin};
-pub use renderer::{NeoRenderStatus, NeoRenderer};
-pub use runtime::{ElementSnapshot, NeoRuntime};

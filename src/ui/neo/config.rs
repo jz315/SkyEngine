@@ -32,8 +32,8 @@ impl NeoWindowConfig {
         self
     }
 
-    pub fn clear_color(mut self, value: crate::render::Color) -> Self {
-        self.clear_color = value;
+    pub fn clear_color(mut self, value: impl Into<crate::render::Color>) -> Self {
+        self.clear_color = value.into();
         self
     }
 }

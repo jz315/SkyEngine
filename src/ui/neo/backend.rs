@@ -1,10 +1,12 @@
 use std::any::Any;
 
+use crate::asset::Assets;
 use crate::input::Input;
 use crate::ui::{
     UiBackend, UiBackendId, UiBeginFrameContext, UiCaptureState, UiError, UiEventContext,
     UiEventResponse, UiRenderContext,
 };
+use eui_neo::Element;
 use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::event::{ElementState, Ime, WindowEvent};
 use winit::keyboard::ModifiersState;
@@ -14,15 +16,13 @@ use super::config::NeoUiConfig;
 use super::input_bridge::{
     keyboard_from_key_event, merge_keyboard_event, pointer_from_input, scroll_from_input,
 };
-use super::{
-    Element, KeyboardEvent, LayoutRect, NeoRenderer, NeoRuntime, PointerEvent, Screen, ScrollEvent,
-    Ui,
-};
+use super::renderer::NeoRenderer;
+use super::{KeyboardEvent, LayoutRect, PointerEvent, Runtime, Screen, ScrollEvent, Ui};
 
 /// Pluggable backend for the neo runtime.
 #[derive(Debug)]
 pub struct NeoUiBackend {
-    runtime: NeoRuntime,
+    runtime: Runtime,
     renderer: Option<NeoRenderer>,
     pending_pointer: PointerEvent,
     pending_scroll: ScrollEvent,
@@ -38,7 +38,7 @@ impl NeoUiBackend {
 
     pub fn new(config: NeoUiConfig) -> Self {
         Self {
-            runtime: NeoRuntime::new(config.page_id),
+            runtime: Runtime::new(config.page_id),
             renderer: None,
             pending_pointer: PointerEvent::default(),
             pending_scroll: ScrollEvent::default(),
@@ -50,11 +50,11 @@ impl NeoUiBackend {
         }
     }
 
-    pub fn runtime(&self) -> &NeoRuntime {
+    pub fn runtime(&self) -> &Runtime {
         &self.runtime
     }
 
-    pub fn runtime_mut(&mut self) -> &mut NeoRuntime {
+    pub fn runtime_mut(&mut self) -> &mut Runtime {
         &mut self.runtime
     }
 
@@ -176,13 +176,17 @@ impl UiBackend for NeoUiBackend {
             {
                 self.renderer = Some(NeoRenderer::new(ctx.gpu));
             }
-            let draw_list = self.runtime.draw_list();
-            let pending_images = self.renderer.as_mut().is_some_and(|renderer| {
-                renderer
-                    .render(ctx.gpu, &draw_list, self.screen)
-                    .pending_images
+            let asset_server = ctx.world.get_resource::<Assets>().cloned();
+            let pending_resources = self.renderer.as_mut().is_some_and(|renderer| {
+                let status = renderer.render(
+                    ctx.gpu,
+                    &mut self.runtime,
+                    asset_server.as_ref(),
+                    ctx.render_assets,
+                );
+                status.pending_images || status.pending_fonts
             });
-            if pending_images {
+            if pending_resources {
                 self.runtime.mark_full_redraw();
                 return Ok(());
             }
@@ -200,7 +204,7 @@ impl UiBackend for NeoUiBackend {
     }
 }
 
-fn tree_has_hover_or_active(element: &Element, runtime: &NeoRuntime) -> bool {
+fn tree_has_hover_or_active(element: &Element, runtime: &Runtime) -> bool {
     let state = runtime.interaction(&element.id);
     state.hovered
         || state.active
