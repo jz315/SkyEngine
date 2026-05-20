@@ -3,7 +3,7 @@ use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::asset::{AssetError, AssetServer, Handle, TextureAsset};
+use crate::asset::{AssetError, Assets, Handle, TextureAsset};
 use crate::ecs::{EntityId, World};
 use crate::render::{Color, SortingLayer, SpriteRenderer, Transform};
 use crate::vn::components::{VnActorSprite, VnBackground};
@@ -138,7 +138,7 @@ impl VnSpriteTextureMap {
         ])
     }
 
-    pub fn refresh_metadata(&mut self, assets: &AssetServer) {
+    pub fn refresh_metadata(&mut self, assets: &Assets) {
         let pending: Vec<_> = self
             .textures
             .iter()
@@ -155,7 +155,7 @@ impl VnSpriteTextureMap {
 
     pub fn request_image_file(
         &mut self,
-        assets: &AssetServer,
+        assets: &Assets,
         asset: impl Into<String>,
         path: impl AsRef<Path>,
     ) -> Result<Handle<TextureAsset>, VnTextureLoadError> {
@@ -173,7 +173,7 @@ impl VnSpriteTextureMap {
 
     pub fn request_image_files_from<A, P>(
         &mut self,
-        assets: &AssetServer,
+        assets: &Assets,
         root: impl AsRef<Path>,
         files: impl IntoIterator<Item = (A, P)>,
     ) -> Result<Vec<Handle<TextureAsset>>, VnTextureLoadError>
@@ -478,7 +478,7 @@ impl ColorAlphaExt for Color {
 
 #[cfg(test)]
 mod tests {
-    use crate::asset::{AssetConfig, AssetServer};
+    use crate::asset::{AssetConfig, Assets};
     use crate::vn::{VnResource, VnRuntime, VnRuntimeEvent, YarnScript};
 
     use super::*;
@@ -536,8 +536,7 @@ title: Start
         let path = temp.path().join("white.png");
         image::save_buffer(&path, &[255, 255, 255, 255], 1, 1, image::ColorType::Rgba8).unwrap();
 
-        let asset_server =
-            AssetServer::with_empty_manifest(AssetConfig::new(temp.path(), "native"));
+        let asset_server = Assets::with_empty_manifest(AssetConfig::new(temp.path(), "native"));
         let mut textures = VnSpriteTextureMap::default();
         textures
             .request_image_files_from(&asset_server, temp.path(), [("vn/white", "white.png")])
@@ -561,8 +560,7 @@ title: Start
         ];
         image::save_buffer(&path, &pixels, 3, 2, image::ColorType::Rgba8).unwrap();
 
-        let asset_server =
-            AssetServer::with_empty_manifest(AssetConfig::new(temp.path(), "native"));
+        let asset_server = Assets::with_empty_manifest(AssetConfig::new(temp.path(), "native"));
         let mut textures = VnSpriteTextureMap::default();
         let handle = textures
             .request_image_file(&asset_server, "vn/pose", temp.path().join("pose.png"))
@@ -588,7 +586,7 @@ title: Start
         }
     }
 
-    fn wait_for_texture(asset_server: &AssetServer, handle: Handle<TextureAsset>) {
+    fn wait_for_texture(asset_server: &Assets, handle: Handle<TextureAsset>) {
         for _ in 0..64 {
             asset_server.update().unwrap();
             if asset_server.is_installed(&handle) {

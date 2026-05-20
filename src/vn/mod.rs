@@ -82,8 +82,7 @@ pub use systems::{
 pub use ui::{VnConfirmKind, VnUiMode, VnUiState};
 #[cfg(feature = "vn-ui")]
 pub use ui_binding::{
-    apply_vn_ui_events, drain_vn_ui_actions, sync_dialogue_ui_to_world, sync_runtime_ui_to_world,
-    sync_runtime_ui_to_world_with_surface, sync_scene_ui_to_world, VnUiEntities, VnUiImageFit,
-    VnUiLayoutPreset, VnUiPresentationConfig,
+    compose_vn_ui, compose_vn_ui_with, drain_vn_ui_actions_to_resource, VnUiActionSink,
+    VnUiComposeContext, VnUiLayoutPreset, VnUiPresentationConfig,
 };
 pub use video::{VnVideoIntent, VnVideoPlayback, VnVideoState};

@@ -14,7 +14,7 @@ use crate::vn::script::{
 use crate::vn::ui::{VnConfirmKind, VnUiMode};
 
 #[cfg(feature = "app")]
-use crate::asset::{AssetConfig, AssetServer};
+use crate::asset::Assets;
 
 #[cfg(feature = "app")]
 use crate::input::{Input, InputActions, InteractionContext, KeyCode, MouseButton};
@@ -107,14 +107,6 @@ pub fn vn_input_system(world: &mut World) {
     #[cfg(feature = "app")]
     actions.extend(collect_vn_actions(world));
 
-    #[cfg(feature = "vn-ui")]
-    match crate::vn::ui_binding::drain_vn_ui_actions(world) {
-        Ok(ui_actions) => actions.extend(ui_actions),
-        Err(error) => {
-            eprintln!("[SkyEngine][VN] UI event failed: {error}");
-        }
-    }
-
     let Some(vn) = world.get_resource_mut::<VnResource>() else {
         return;
     };
@@ -175,21 +167,15 @@ fn prepare_vn_images(
         });
     }
 
-    let asset_server = match world.get_resource::<AssetServer>() {
-        Some(assets) => assets.clone(),
-        None => {
-            let assets = AssetServer::with_empty_manifest(
-                AssetConfig::default().with_background_loading(true),
-            );
-            world.insert_resource(assets.clone());
-            assets
-        }
-    };
+    let assets = world
+        .get_resource::<Assets>()
+        .cloned()
+        .ok_or_else(|| "VN image preparation requires an Assets resource".to_string())?;
 
     let mut texture_map = VnSpriteTextureMap::default();
     for asset in &image_assets {
         texture_map
-            .request_image_file(&asset_server, asset.clone(), asset_root.join(asset))
+            .request_image_file(&assets, asset.clone(), asset_root.join(asset))
             .map_err(|error| error.to_string())?;
     }
     let image_count = image_assets.len();
@@ -201,7 +187,7 @@ fn prepare_vn_images(
 
 #[cfg(feature = "app")]
 fn refresh_vn_texture_metadata(world: &mut World) {
-    let Some(asset_server) = world.get_resource::<AssetServer>().cloned() else {
+    let Some(asset_server) = world.get_resource::<Assets>().cloned() else {
         return;
     };
     let Some(vn) = world.get_resource_mut::<VnResource>() else {
@@ -293,15 +279,10 @@ pub fn vn_script_system(world: &mut World) {
 }
 
 pub fn vn_ui_system(world: &mut World) {
-    #[cfg(feature = "vn-ui")]
-    {
-        crate::vn::ui_binding::sync_runtime_ui_to_world(world);
-    }
-
-    #[cfg(all(feature = "app", not(feature = "vn-ui")))]
+    #[cfg(feature = "app")]
     crate::vn::presentation::sync_runtime_scene_to_world(world);
 
-    #[cfg(not(any(feature = "app", feature = "vn-ui")))]
+    #[cfg(not(feature = "app"))]
     let _ = world;
 }
 
@@ -868,7 +849,7 @@ title: Start
         assert_eq!(textures.size("white.png"), None);
         assert!(textures.get("smile").is_none());
 
-        let assets = world.get_resource::<AssetServer>().unwrap().clone();
+        let assets = world.get_resource::<Assets>().unwrap().clone();
         for _ in 0..64 {
             assets.update().unwrap();
             world.tick_with_delta(0.016);

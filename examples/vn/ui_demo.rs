@@ -1,29 +1,31 @@
-//! Native UI-backed galgame vertical slice using local example assets.
+//! Neo UI-backed galgame vertical slice using local example assets.
 //!
 //! ```bash
 //! cargo run --example vn_ui_demo --features vn-ui
 //! ```
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::Instant;
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext};
-use sky_engine::ecs::{EntityId, World};
-use sky_engine::plugin::Plugin;
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, RunnerPlugin, WindowPlugin,
+};
+use sky_engine::ecs::World;
 use sky_engine::render::{
-    Color, RenderPipelineAsset, RenderSettings, SpriteFeature, TransparentPhase,
+    CameraMarker, Color as RenderColor, MainCamera, Projection, RenderPipelineAsset,
+    RenderSettings, SpriteFeature, Transform, TransparentPhase,
 };
-use sky_engine::ui::{
-    UiButton, UiEventKind, UiEvents, UiId, UiLength, UiNode, UiPanel, UiState, UiText,
-};
+use sky_engine::ui::neo::{widgets, Color, HorizontalAlign, Screen, Ui};
 use sky_engine::vn::{
-    VnAction, VnPlaybackState, VnPlugin, VnResource, VnSaveStore, VnStatus, VnUiMode, YarnProject,
-    YarnScript,
+    compose_vn_ui_with, VnAction, VnPlaybackState, VnPlugin, VnResource, VnSaveStore, VnStatus,
+    VnUiComposeContext, VnUiMode, YarnProject, YarnScript,
 };
 
-const CORRIDOR_CG: &str = "在校园走廊的长椅上坐着_4K_202604121803.png";
-const ROOM_EDIT_CG: &str = "把图2_的_人换成图一的_202604112345.png";
-const STANDING_POSE: &str = "图2人物站着半身照_202604142337.png";
+const CORRIDOR_CG: &str = "vn/bg/corridor_day.png";
+const ROOM_EDIT_CG: &str = "vn/cg/notebook_secret.png";
+const STANDING_POSE: &str = "vn/characters/chen_anqi/neutral.png";
 const QUICK_SLOT: &str = "quick";
 
 struct VnUiDemo {
@@ -33,6 +35,11 @@ struct VnUiDemo {
     skip_timer: f32,
     profile_frames: Option<u32>,
     last_ready_textures: usize,
+    notice_timer: f32,
+    actions: DemoActionSink,
+    screenshot: ScreenshotProbe,
+    screenshot_state: Option<DemoScreenshotState>,
+    screenshot_state_applied: bool,
 }
 
 impl VnUiDemo {
@@ -47,10 +54,15 @@ impl VnUiDemo {
             skip_timer: 0.0,
             profile_frames,
             last_ready_textures: 0,
+            notice_timer: 0.0,
+            actions: DemoActionSink::default(),
+            screenshot: ScreenshotProbe::default(),
+            screenshot_state: DemoScreenshotState::from_env(),
+            screenshot_state_applied: false,
         }
     }
 
-    fn drive_playback(&mut self, ctx: &mut FrameContext) {
+    fn drive_playback(&mut self, ctx: &mut FrameContext<'_>) {
         if ctx
             .world
             .get_resource::<VnResource>()
@@ -113,25 +125,34 @@ impl VnUiDemo {
         }
     }
 
-    fn sync_demo_hud(&mut self, ctx: &mut FrameContext) {
-        sync_demo_hud(ctx.world);
-    }
-
-    fn sync_title_menu(&mut self, ctx: &mut FrameContext) {
-        sync_title_menu(ctx.world);
-    }
-
-    fn apply_demo_hud_events(&mut self, ctx: &mut FrameContext) {
-        apply_demo_hud_events(ctx.world);
-    }
-
-    fn apply_title_menu_events(&mut self, ctx: &mut FrameContext) {
-        if apply_title_menu_events(ctx.world) == DemoTitleAction::Quit {
-            ctx.request_exit();
+    fn apply_demo_actions(&mut self, ctx: &mut FrameContext<'_>) {
+        for action in self.actions.drain() {
+            match action {
+                DemoUiAction::Start => {
+                    reset_runtime_to_start(ctx.world);
+                    enter_reading_mode(ctx.world);
+                }
+                DemoUiAction::Continue => {
+                    if load_quick_slot(ctx.world).is_ok() {
+                        enter_reading_mode(ctx.world);
+                    }
+                }
+                DemoUiAction::Quit => ctx.request_exit(),
+                DemoUiAction::Save => {
+                    if save_quick_slot(ctx.world).is_ok() {
+                        self.notice_timer = 1.4;
+                    }
+                }
+                DemoUiAction::Load => {
+                    if load_quick_slot(ctx.world).is_ok() {
+                        self.notice_timer = 1.4;
+                    }
+                }
+            }
         }
     }
 
-    fn profile(&mut self, ctx: &mut FrameContext) {
+    fn profile(&mut self, ctx: &mut FrameContext<'_>) {
         let Some(profile_frames) = self.profile_frames else {
             return;
         };
@@ -166,591 +187,419 @@ impl VnUiDemo {
             ctx.request_exit();
         }
     }
+
+    fn apply_screenshot_state(&mut self, ctx: &mut FrameContext<'_>) {
+        if self.screenshot_state_applied {
+            return;
+        }
+        let Some(state) = self.screenshot_state else {
+            return;
+        };
+        if !ctx
+            .world
+            .get_resource::<VnResource>()
+            .is_some_and(|vn| vn.runtime().is_some())
+        {
+            return;
+        }
+
+        let applied = match state {
+            DemoScreenshotState::Title => {
+                if let Some(vn) = ctx.world.get_resource_mut::<VnResource>() {
+                    vn.ui_mut().enter(VnUiMode::Title);
+                }
+                true
+            }
+            DemoScreenshotState::Reading => prepare_demo_line_state(ctx.world, VnUiMode::Reading),
+            DemoScreenshotState::Choice => prepare_demo_choice_state(ctx.world),
+            DemoScreenshotState::Notice => {
+                if prepare_demo_line_state(ctx.world, VnUiMode::Reading) {
+                    let _ = save_quick_slot(ctx.world);
+                    self.notice_timer = 1.4;
+                    true
+                } else {
+                    false
+                }
+            }
+            DemoScreenshotState::Hidden => prepare_demo_line_state(ctx.world, VnUiMode::Hidden),
+        };
+
+        self.screenshot_state_applied = applied;
+    }
 }
 
 impl AppState for VnUiDemo {
-    fn update(&mut self, ctx: &mut FrameContext) {
+    fn update(&mut self, ctx: &mut FrameContext<'_>) {
         self.frame = self.frame.wrapping_add(1);
+        self.notice_timer = (self.notice_timer - ctx.dt).max(0.0);
         self.drive_playback(ctx);
-        self.sync_title_menu(ctx);
-        self.sync_demo_hud(ctx);
-        ctx.update_ui();
-        self.apply_title_menu_events(ctx);
-        self.apply_demo_hud_events(ctx);
+        self.apply_screenshot_state(ctx);
+
+        let snapshot = DemoUiSnapshot::from_world(ctx.world, self.notice_timer);
+        let actions = self.actions.clone();
+        compose_vn_ui_with(ctx, move |ui, screen, vn_ui| {
+            draw_demo_overlays(ui, screen, vn_ui, &snapshot, &actions);
+        });
+        self.apply_demo_actions(ctx);
+
         ctx.tick();
         ctx.render();
-        ctx.render_ui();
+        ctx.ui().render_overlays();
+        self.screenshot.update(ctx);
         self.profile(ctx);
+        ctx.request_redraw();
+    }
+}
+
+#[derive(Clone, Debug)]
+struct DemoUiSnapshot {
+    mode: VnUiMode,
+    playback: VnPlaybackState,
+    has_save: bool,
+    save_status: String,
+    notice_visible: bool,
+}
+
+impl DemoUiSnapshot {
+    fn from_world(world: &World, notice_timer: f32) -> Self {
+        let mode = world
+            .get_resource::<VnResource>()
+            .map(|vn| vn.ui().mode.clone())
+            .unwrap_or(VnUiMode::Reading);
+        let playback = world
+            .get_resource::<VnResource>()
+            .map(|vn| vn.playback().clone())
+            .unwrap_or_default();
+        let has_save = world
+            .get_resource::<VnResource>()
+            .is_some_and(|vn| vn.saves().get(QUICK_SLOT).is_some());
+        Self {
+            mode,
+            playback,
+            has_save,
+            save_status: save_status_text(world),
+            notice_visible: notice_timer > 0.0,
+        }
     }
 }
 
 #[derive(Clone, Debug, Default)]
-struct DemoHudEntities {
-    panel: Option<EntityId>,
-    status: Option<EntityId>,
-    auto: Option<EntityId>,
-    skip: Option<EntityId>,
-    save: Option<EntityId>,
-    load: Option<EntityId>,
-    backlog: Option<EntityId>,
-    hide: Option<EntityId>,
-    notice: Option<EntityId>,
-    notice_timer: f32,
+struct DemoActionSink {
+    actions: Rc<RefCell<Vec<DemoUiAction>>>,
 }
 
-#[derive(Clone, Debug, Default)]
-struct DemoTitleEntities {
-    root: Option<EntityId>,
-    title: Option<EntityId>,
-    subtitle: Option<EntityId>,
-    status: Option<EntityId>,
-    start: Option<EntityId>,
-    continue_button: Option<EntityId>,
-    quit: Option<EntityId>,
-}
-
-fn sync_demo_hud(world: &mut World) {
-    let surface = world
-        .get_resource::<UiState>()
-        .map(UiState::surface_size)
-        .filter(|size| size[0] > 0.0 && size[1] > 0.0)
-        .unwrap_or([1280.0, 720.0]);
-    let width = 488.0_f32.min((surface[0] - 32.0).max(300.0));
-    let x = (surface[0] - width - 18.0).max(16.0);
-    let mode = world
-        .get_resource::<VnResource>()
-        .map(|vn| vn.ui().mode.clone())
-        .unwrap_or(VnUiMode::Reading);
-    let visible = matches!(mode, VnUiMode::Reading | VnUiMode::Debug);
-    let playback = world
-        .get_resource::<VnResource>()
-        .map(|vn| vn.playback().clone())
-        .unwrap_or_default();
-
-    let mut entities = world
-        .remove_resource::<DemoHudEntities>()
-        .unwrap_or_default();
-    let panel = ensure_hud_panel(world, &mut entities, x, width);
-    ensure_hud_text(world, &mut entities, panel, &playback);
-    ensure_hud_button(
-        world,
-        &mut entities.auto,
-        panel,
-        "vn.demo.auto",
-        "Auto",
-        [190.0, 10.0],
-        playback.auto_mode,
-    );
-    ensure_hud_button(
-        world,
-        &mut entities.skip,
-        panel,
-        "vn.demo.skip",
-        "Skip",
-        [262.0, 10.0],
-        playback.skip_mode,
-    );
-    ensure_hud_button(
-        world,
-        &mut entities.save,
-        panel,
-        "vn.demo.save",
-        "Save",
-        [334.0, 10.0],
-        false,
-    );
-    ensure_hud_button(
-        world,
-        &mut entities.load,
-        panel,
-        "vn.demo.load",
-        "Load",
-        [406.0, 10.0],
-        false,
-    );
-    ensure_hud_notice(world, &mut entities, panel);
-    set_hud_visible(world, &entities, visible);
-    world.insert_resource(entities);
-}
-
-fn ensure_hud_panel(
-    world: &mut World,
-    entities: &mut DemoHudEntities,
-    x: f32,
-    width: f32,
-) -> EntityId {
-    let entity = live_entity(world, entities.panel).unwrap_or_else(|| {
-        let entity = world.spawn((
-            UiNode::panel(width, 54.0).at(x, 18.0).z(130),
-            UiPanel::new(Color::rgba8(10, 14, 22, 206)),
-        ));
-        entities.panel = Some(entity);
-        entity
-    });
-    if let Some(node) = world.get_mut::<UiNode>(entity) {
-        node.position = [x, 18.0];
-        node.size = [UiLength::Px(width), UiLength::Px(54.0)];
+impl DemoActionSink {
+    fn push(&self, action: DemoUiAction) {
+        self.actions.borrow_mut().push(action);
     }
-    entity
+
+    fn drain(&self) -> Vec<DemoUiAction> {
+        self.actions.borrow_mut().drain(..).collect()
+    }
 }
 
-fn ensure_hud_text(
-    world: &mut World,
-    entities: &mut DemoHudEntities,
-    parent: EntityId,
-    playback: &VnPlaybackState,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DemoUiAction {
+    Start,
+    Continue,
+    Quit,
+    Save,
+    Load,
+}
+
+fn draw_demo_overlays(
+    ui: &mut Ui,
+    screen: Screen,
+    vn_ui: &VnUiComposeContext,
+    snapshot: &DemoUiSnapshot,
+    demo_actions: &DemoActionSink,
 ) {
-    let text = if playback.skip_mode {
+    if snapshot.mode == VnUiMode::Title {
+        draw_title_menu(ui, screen, snapshot, demo_actions);
+    }
+
+    if matches!(snapshot.mode, VnUiMode::Reading | VnUiMode::Debug) {
+        draw_demo_hud(ui, screen, vn_ui, snapshot, demo_actions);
+    }
+}
+
+fn draw_title_menu(
+    ui: &mut Ui,
+    screen: Screen,
+    snapshot: &DemoUiSnapshot,
+    demo_actions: &DemoActionSink,
+) {
+    let title_x = (screen.width * 0.12).max(52.0);
+    let title_y = (screen.height * 0.22).max(96.0);
+    let button_w = 240.0_f32.min((screen.width - 80.0).max(180.0));
+    let button_y = (screen.height * 0.52).max(260.0);
+
+    ui.stack("vn.title")
+        .position(0.0, 0.0)
+        .size(screen.width, screen.height)
+        .z(200)
+        .content(|ui| {
+            ui.rect("vn.title.backdrop")
+                .fill()
+                .color(Color::rgba8(6, 10, 18, 236))
+                .on_click(|| {})
+                .build();
+            ui.text("vn.title.name")
+                .position(title_x, title_y)
+                .size((screen.width * 0.74).max(320.0), 62.0)
+                .text("After School Promise")
+                .font_size(42.0)
+                .line_height(62.0)
+                .color(Color::rgba8(245, 248, 252, 255))
+                .build();
+            ui.text("vn.title.subtitle")
+                .position(title_x + 4.0, title_y + 68.0)
+                .size((screen.width * 0.64).max(280.0), 30.0)
+                .text("SkyEngine Galgame Demo")
+                .font_size(21.0)
+                .line_height(30.0)
+                .color(Color::rgba8(178, 204, 226, 255))
+                .build();
+            ui.text("vn.title.status")
+                .position(title_x + 4.0, title_y + 112.0)
+                .size((screen.width * 0.64).max(280.0), 48.0)
+                .text(snapshot.save_status.clone())
+                .font_size(17.0)
+                .line_height(24.0)
+                .wrap(true)
+                .color(Color::rgba8(210, 224, 238, 255))
+                .build();
+
+            demo_button(
+                ui,
+                "vn.title.start",
+                [title_x, button_y],
+                [button_w, 42.0],
+                "Start",
+                true,
+                {
+                    let actions = demo_actions.clone();
+                    move || actions.push(DemoUiAction::Start)
+                },
+            );
+            demo_button(
+                ui,
+                "vn.title.continue",
+                [title_x, button_y + 54.0],
+                [button_w, 42.0],
+                if snapshot.has_save {
+                    "Continue"
+                } else {
+                    "No Save"
+                },
+                snapshot.has_save,
+                {
+                    let actions = demo_actions.clone();
+                    move || actions.push(DemoUiAction::Continue)
+                },
+            );
+            demo_button(
+                ui,
+                "vn.title.quit",
+                [title_x, button_y + 108.0],
+                [button_w, 42.0],
+                "Quit",
+                true,
+                {
+                    let actions = demo_actions.clone();
+                    move || actions.push(DemoUiAction::Quit)
+                },
+            );
+        });
+}
+
+fn draw_demo_hud(
+    ui: &mut Ui,
+    screen: Screen,
+    vn_ui: &VnUiComposeContext,
+    snapshot: &DemoUiSnapshot,
+    demo_actions: &DemoActionSink,
+) {
+    let width = 488.0_f32.min((screen.width - 32.0).max(300.0));
+    let x = (screen.width - width - 18.0).max(16.0);
+    let mode = if snapshot.playback.skip_mode {
         "SKIP"
-    } else if playback.auto_mode {
+    } else if snapshot.playback.auto_mode {
         "AUTO"
     } else {
         "READ"
     };
-    let entity = live_entity(world, entities.status).unwrap_or_else(|| {
-        let entity = world.spawn((
-            UiNode::panel(164.0, 30.0)
-                .child_of(parent)
-                .at(16.0, 13.0)
-                .z(131)
-                .input_transparent(),
-            UiText::new("")
-                .size(17.0)
-                .color(Color::rgba8(220, 232, 244, 255)),
-        ));
-        entities.status = Some(entity);
-        entity
-    });
-    if let Some(label) = world.get_mut::<UiText>(entity) {
-        label.text = format!("{text}  Space");
-    }
+
+    ui.stack("vn.demo.hud")
+        .position(x, 18.0)
+        .size(width, 82.0)
+        .z(140)
+        .content(|ui| {
+            ui.rect("vn.demo.hud.bg")
+                .size(width, 54.0)
+                .radius(9.0)
+                .color(Color::rgba8(10, 14, 22, 208))
+                .border(1.0, Color::rgba8(140, 180, 215, 72))
+                .shadow(18.0, 0.0, 8.0, Color::rgba8(0, 0, 0, 88))
+                .build();
+            ui.text("vn.demo.hud.status")
+                .position(16.0, 13.0)
+                .size(160.0, 30.0)
+                .text(format!("{mode}  Space"))
+                .font_size(17.0)
+                .line_height(30.0)
+                .color(Color::rgba8(220, 232, 244, 255))
+                .build();
+
+            hud_vn_button(
+                ui,
+                vn_ui,
+                "vn.demo.auto",
+                "Auto",
+                [190.0, 10.0],
+                snapshot.playback.auto_mode,
+                VnAction::Auto,
+            );
+            hud_vn_button(
+                ui,
+                vn_ui,
+                "vn.demo.skip",
+                "Skip",
+                [262.0, 10.0],
+                snapshot.playback.skip_mode,
+                VnAction::Skip,
+            );
+            hud_demo_button(
+                ui,
+                demo_actions,
+                "vn.demo.save",
+                "Save",
+                [334.0, 10.0],
+                DemoUiAction::Save,
+            );
+            hud_demo_button(
+                ui,
+                demo_actions,
+                "vn.demo.load",
+                "Load",
+                [406.0, 10.0],
+                DemoUiAction::Load,
+            );
+
+            if snapshot.notice_visible {
+                ui.text("vn.demo.notice")
+                    .position(width - 106.0, 58.0)
+                    .size(96.0, 22.0)
+                    .text("Saved")
+                    .font_size(15.0)
+                    .line_height(22.0)
+                    .horizontal_align(HorizontalAlign::Right)
+                    .color(Color::rgba8(210, 232, 244, 255))
+                    .build();
+            }
+        });
 }
 
-fn ensure_hud_notice(world: &mut World, entities: &mut DemoHudEntities, parent: EntityId) {
-    let message = if entities.notice_timer > 0.0 {
-        "Saved"
+fn demo_button(
+    ui: &mut Ui,
+    id: &'static str,
+    position: [f32; 2],
+    size: [f32; 2],
+    label: &'static str,
+    enabled: bool,
+    on_click: impl FnMut() + 'static,
+) {
+    let normal = if enabled {
+        Color::rgba8(34, 48, 66, 236)
     } else {
-        ""
+        Color::rgba8(28, 32, 38, 196)
     };
-    let entity = live_entity(world, entities.notice).unwrap_or_else(|| {
-        let entity = world.spawn((
-            UiNode::panel(96.0, 24.0)
-                .child_of(parent)
-                .at(382.0, 54.0)
-                .z(131)
-                .input_transparent(),
-            UiText::new("")
-                .size(15.0)
-                .color(Color::rgba8(210, 232, 244, 255)),
-        ));
-        entities.notice = Some(entity);
-        entity
-    });
-    if let Some(text) = world.get_mut::<UiText>(entity) {
-        text.text = message.to_owned();
-    }
+    ui.stack(format!("{id}.slot"))
+        .position(position[0], position[1])
+        .size(size[0], size[1])
+        .content(|ui| {
+            widgets::button(ui, id)
+                .size(size[0], size[1])
+                .text(label)
+                .font_size(16.0)
+                .radius(8.0)
+                .enabled(enabled)
+                .colors(
+                    normal,
+                    Color::rgba8(66, 92, 122, 246),
+                    Color::rgba8(20, 28, 40, 250),
+                )
+                .text_color(if enabled {
+                    Color::rgba8(246, 249, 252, 255)
+                } else {
+                    Color::rgba8(150, 160, 172, 255)
+                })
+                .on_click(on_click)
+                .build();
+        });
 }
 
-fn ensure_hud_button(
-    world: &mut World,
-    slot: &mut Option<EntityId>,
-    parent: EntityId,
+fn hud_vn_button(
+    ui: &mut Ui,
+    vn_ui: &VnUiComposeContext,
     id: &'static str,
     label: &'static str,
     position: [f32; 2],
     active: bool,
+    action: VnAction,
 ) {
-    let entity = live_entity(world, *slot).unwrap_or_else(|| {
-        let entity = world.spawn((
-            UiNode::panel(62.0, 34.0)
-                .id(UiId::new(id))
-                .child_of(parent)
-                .at(position[0], position[1])
-                .z(131),
-            UiButton::new(label),
-        ));
-        *slot = Some(entity);
-        entity
-    });
-    if let Some(node) = world.get_mut::<UiNode>(entity) {
-        node.position = position;
-    }
-    if let Some(button) = world.get_mut::<UiButton>(entity) {
-        button.label = label.to_owned();
-        button.normal_color = if active {
-            Color::rgba8(90, 140, 190, 242)
-        } else {
-            Color::rgba8(34, 44, 60, 232)
-        };
-        button.hover_color = Color::rgba8(64, 88, 116, 244);
-        button.pressed_color = Color::rgba8(22, 30, 42, 246);
-        button.text_color = Color::rgba8(244, 248, 252, 255);
-    }
+    let sink = vn_ui.action_sink();
+    hud_button(ui, id, label, position, active, move || sink.push(action));
 }
 
-fn set_hud_visible(world: &mut World, entities: &DemoHudEntities, visible: bool) {
-    for entity in [
-        entities.panel,
-        entities.status,
-        entities.auto,
-        entities.skip,
-        entities.save,
-        entities.load,
-        entities.backlog,
-        entities.hide,
-        entities.notice,
-    ]
-    .into_iter()
-    .flatten()
-    {
-        if let Some(node) = world.get_mut::<UiNode>(entity) {
-            node.visible = visible;
-            node.enabled = visible;
-        }
-    }
+fn hud_demo_button(
+    ui: &mut Ui,
+    demo_actions: &DemoActionSink,
+    id: &'static str,
+    label: &'static str,
+    position: [f32; 2],
+    action: DemoUiAction,
+) {
+    let actions = demo_actions.clone();
+    hud_button(ui, id, label, position, false, move || actions.push(action));
 }
 
-fn apply_demo_hud_events(world: &mut World) {
-    let dt = world.time.delta;
-    if let Some(mut entities) = world.remove_resource::<DemoHudEntities>() {
-        entities.notice_timer = (entities.notice_timer - dt).max(0.0);
-        world.insert_resource(entities);
-    }
-
-    let Some(events) = world.get_resource_mut::<UiEvents>() else {
-        return;
-    };
-    let mut actions = Vec::new();
-    let mut demo_actions = Vec::new();
-    let mut retained = Vec::new();
-    for event in events.drain() {
-        let (vn_action, demo_action) = if event.kind == UiEventKind::Clicked {
-            event
-                .id
-                .as_ref()
-                .and_then(|id| match id.as_str() {
-                    "vn.demo.auto" => Some((Some(VnAction::Auto), None)),
-                    "vn.demo.skip" => Some((Some(VnAction::Skip), None)),
-                    "vn.demo.save" => Some((None, Some(DemoSaveAction::Save))),
-                    "vn.demo.load" => Some((None, Some(DemoSaveAction::Load))),
-                    "vn.demo.backlog" => Some((Some(VnAction::Backlog), None)),
-                    "vn.demo.hide" => Some((Some(VnAction::HideUi), None)),
-                    _ => None,
-                })
-                .unwrap_or((None, None))
-        } else {
-            (None, None)
-        };
-        if let Some(action) = vn_action {
-            actions.push(action);
-        } else if let Some(action) = demo_action {
-            demo_actions.push(action);
-        } else {
-            retained.push(event);
-        }
-    }
-    for event in retained {
-        events.push(event);
-    }
-    for action in actions {
-        push_vn_action(world, action);
-    }
-    for action in demo_actions {
-        match action {
-            DemoSaveAction::Save => {
-                if save_quick_slot(world).is_ok() {
-                    flash_hud_notice(world);
-                }
-            }
-            DemoSaveAction::Load => {
-                if load_quick_slot(world).is_ok() {
-                    flash_hud_notice(world);
-                }
-            }
-        }
-    }
-}
-
-fn live_entity(world: &World, entity: Option<EntityId>) -> Option<EntityId> {
-    entity.filter(|entity| world.contains(*entity))
+fn hud_button(
+    ui: &mut Ui,
+    id: &'static str,
+    label: &'static str,
+    position: [f32; 2],
+    active: bool,
+    on_click: impl FnMut() + 'static,
+) {
+    ui.stack(format!("{id}.slot"))
+        .position(position[0], position[1])
+        .size(62.0, 34.0)
+        .content(|ui| {
+            widgets::button(ui, id)
+                .size(62.0, 34.0)
+                .text(label)
+                .font_size(14.0)
+                .radius(8.0)
+                .colors(
+                    if active {
+                        Color::rgba8(90, 140, 190, 242)
+                    } else {
+                        Color::rgba8(34, 44, 60, 232)
+                    },
+                    Color::rgba8(64, 88, 116, 244),
+                    Color::rgba8(22, 30, 42, 246),
+                )
+                .text_color(Color::rgba8(244, 248, 252, 255))
+                .on_click(on_click)
+                .build();
+        });
 }
 
 fn push_vn_action(world: &mut World, action: VnAction) {
     if let Some(vn) = world.get_resource_mut::<VnResource>() {
         vn.push_action(action);
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DemoSaveAction {
-    Save,
-    Load,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum DemoTitleAction {
-    #[default]
-    None,
-    Quit,
-}
-
-fn sync_title_menu(world: &mut World) {
-    let surface = world
-        .get_resource::<UiState>()
-        .map(UiState::surface_size)
-        .filter(|size| size[0] > 0.0 && size[1] > 0.0)
-        .unwrap_or([1280.0, 720.0]);
-    let visible = world
-        .get_resource::<VnResource>()
-        .is_some_and(|vn| vn.ui().mode == VnUiMode::Title);
-    let has_save = world
-        .get_resource::<VnResource>()
-        .is_some_and(|vn| vn.saves().get(QUICK_SLOT).is_some());
-
-    let mut entities = world
-        .remove_resource::<DemoTitleEntities>()
-        .unwrap_or_default();
-    let root = ensure_title_root(world, &mut entities, surface);
-    ensure_title_text(world, &mut entities, root, surface);
-    ensure_title_button(
-        world,
-        &mut entities.start,
-        root,
-        "vn.title.start",
-        "Start",
-        surface,
-        0.0,
-        true,
-    );
-    ensure_title_button(
-        world,
-        &mut entities.continue_button,
-        root,
-        "vn.title.continue",
-        if has_save { "Continue" } else { "No Save" },
-        surface,
-        54.0,
-        has_save,
-    );
-    ensure_title_button(
-        world,
-        &mut entities.quit,
-        root,
-        "vn.title.quit",
-        "Quit",
-        surface,
-        108.0,
-        true,
-    );
-    set_title_visible(world, &entities, visible);
-    world.insert_resource(entities);
-}
-
-fn ensure_title_root(
-    world: &mut World,
-    entities: &mut DemoTitleEntities,
-    surface: [f32; 2],
-) -> EntityId {
-    let entity = live_entity(world, entities.root).unwrap_or_else(|| {
-        let entity = world.spawn((
-            UiNode::panel(surface[0], surface[1]).at(0.0, 0.0).z(200),
-            UiPanel::new(Color::rgba8(6, 10, 18, 232)),
-        ));
-        entities.root = Some(entity);
-        entity
-    });
-    if let Some(node) = world.get_mut::<UiNode>(entity) {
-        node.size = [UiLength::Px(surface[0]), UiLength::Px(surface[1])];
-    }
-    entity
-}
-
-fn ensure_title_text(
-    world: &mut World,
-    entities: &mut DemoTitleEntities,
-    parent: EntityId,
-    surface: [f32; 2],
-) {
-    let title_x = (surface[0] * 0.12).max(52.0);
-    let title_y = (surface[1] * 0.22).max(96.0);
-    let title = live_entity(world, entities.title).unwrap_or_else(|| {
-        let entity = world.spawn((
-            UiNode::panel(surface[0] * 0.72, 64.0)
-                .child_of(parent)
-                .at(title_x, title_y)
-                .z(201)
-                .input_transparent(),
-            UiText::new("After School Promise")
-                .size(42.0)
-                .color(Color::rgba8(245, 248, 252, 255)),
-        ));
-        entities.title = Some(entity);
-        entity
-    });
-    if let Some(node) = world.get_mut::<UiNode>(title) {
-        node.position = [title_x, title_y];
-        node.size = [UiLength::Px(surface[0] * 0.72), UiLength::Px(64.0)];
-    }
-
-    let subtitle = live_entity(world, entities.subtitle).unwrap_or_else(|| {
-        let entity = world.spawn((
-            UiNode::panel(surface[0] * 0.64, 32.0)
-                .child_of(parent)
-                .at(title_x + 4.0, title_y + 68.0)
-                .z(201)
-                .input_transparent(),
-            UiText::new("SkyEngine Galgame Demo")
-                .size(21.0)
-                .color(Color::rgba8(178, 204, 226, 255)),
-        ));
-        entities.subtitle = Some(entity);
-        entity
-    });
-    if let Some(node) = world.get_mut::<UiNode>(subtitle) {
-        node.position = [title_x + 4.0, title_y + 68.0];
-        node.size = [UiLength::Px(surface[0] * 0.64), UiLength::Px(32.0)];
-    }
-
-    let status_text = save_status_text(world);
-    let status = live_entity(world, entities.status).unwrap_or_else(|| {
-        let entity = world.spawn((
-            UiNode::panel(surface[0] * 0.64, 32.0)
-                .child_of(parent)
-                .at(title_x + 4.0, title_y + 112.0)
-                .z(201)
-                .input_transparent(),
-            UiText::new("")
-                .size(17.0)
-                .color(Color::rgba8(210, 224, 238, 255)),
-        ));
-        entities.status = Some(entity);
-        entity
-    });
-    if let Some(text) = world.get_mut::<UiText>(status) {
-        text.text = status_text;
-    }
-}
-
-fn ensure_title_button(
-    world: &mut World,
-    slot: &mut Option<EntityId>,
-    parent: EntityId,
-    id: &'static str,
-    label: &'static str,
-    surface: [f32; 2],
-    y_offset: f32,
-    enabled: bool,
-) {
-    let width = 240.0_f32.min((surface[0] - 80.0).max(180.0));
-    let x = (surface[0] * 0.12).max(52.0);
-    let y = (surface[1] * 0.52).max(260.0) + y_offset;
-    let entity = live_entity(world, *slot).unwrap_or_else(|| {
-        let entity = world.spawn((
-            UiNode::panel(width, 42.0)
-                .id(UiId::new(id))
-                .child_of(parent)
-                .at(x, y)
-                .z(201),
-            UiButton::new(label),
-        ));
-        *slot = Some(entity);
-        entity
-    });
-    if let Some(node) = world.get_mut::<UiNode>(entity) {
-        node.position = [x, y];
-        node.size = [UiLength::Px(width), UiLength::Px(42.0)];
-    }
-    if let Some(button) = world.get_mut::<UiButton>(entity) {
-        button.label = label.to_owned();
-        button.normal_color = if enabled {
-            Color::rgba8(34, 48, 66, 236)
-        } else {
-            Color::rgba8(28, 32, 38, 196)
-        };
-        button.hover_color = Color::rgba8(66, 92, 122, 246);
-        button.pressed_color = Color::rgba8(20, 28, 40, 250);
-        button.text_color = if enabled {
-            Color::rgba8(246, 249, 252, 255)
-        } else {
-            Color::rgba8(150, 160, 172, 255)
-        };
-    }
-}
-
-fn set_title_visible(world: &mut World, entities: &DemoTitleEntities, visible: bool) {
-    for entity in [
-        entities.root,
-        entities.title,
-        entities.subtitle,
-        entities.status,
-    ]
-    .into_iter()
-    .flatten()
-    {
-        if let Some(node) = world.get_mut::<UiNode>(entity) {
-            node.visible = visible;
-            node.enabled = visible;
-        }
-    }
-
-    for entity in [entities.start, entities.continue_button, entities.quit]
-        .into_iter()
-        .flatten()
-    {
-        let disabled_empty_save = world
-            .get::<UiButton>(entity)
-            .is_some_and(|button| button.label == "No Save");
-        if let Some(node) = world.get_mut::<UiNode>(entity) {
-            node.visible = visible;
-            node.enabled = visible && !disabled_empty_save;
-        }
-    }
-}
-
-fn apply_title_menu_events(world: &mut World) -> DemoTitleAction {
-    let Some(events) = world.get_resource_mut::<UiEvents>() else {
-        return DemoTitleAction::None;
-    };
-    let mut title_actions = Vec::new();
-    let mut retained = Vec::new();
-    for event in events.drain() {
-        let action = if event.kind == UiEventKind::Clicked {
-            event.id.as_ref().and_then(|id| match id.as_str() {
-                "vn.title.start" => Some("start"),
-                "vn.title.continue" => Some("continue"),
-                "vn.title.quit" => Some("quit"),
-                _ => None,
-            })
-        } else {
-            None
-        };
-        if let Some(action) = action {
-            title_actions.push(action);
-        } else {
-            retained.push(event);
-        }
-    }
-    for event in retained {
-        events.push(event);
-    }
-
-    let mut output = DemoTitleAction::None;
-    for action in title_actions {
-        match action {
-            "start" => {
-                reset_runtime_to_start(world);
-                enter_reading_mode(world);
-            }
-            "continue" => {
-                if load_quick_slot(world).is_ok() {
-                    enter_reading_mode(world);
-                }
-            }
-            "quit" => output = DemoTitleAction::Quit,
-            _ => {}
-        }
-    }
-    output
 }
 
 fn reset_runtime_to_start(world: &mut World) {
@@ -811,14 +660,6 @@ fn refresh_save_store_from_disk(world: &mut World) {
     }
 }
 
-fn flash_hud_notice(world: &mut World) {
-    let mut entities = world
-        .remove_resource::<DemoHudEntities>()
-        .unwrap_or_default();
-    entities.notice_timer = 1.4;
-    world.insert_resource(entities);
-}
-
 fn save_status_text(world: &World) -> String {
     world
         .get_resource::<VnResource>()
@@ -837,17 +678,166 @@ fn demo_save_path() -> PathBuf {
         .join("saves.toml")
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DemoScreenshotState {
+    Title,
+    Reading,
+    Choice,
+    Notice,
+    Hidden,
+}
+
+impl DemoScreenshotState {
+    fn from_env() -> Option<Self> {
+        let value = std::env::var("SKY_VN_UI_SCREENSHOT_STATE").ok()?;
+        match value.trim().to_ascii_lowercase().as_str() {
+            "title" => Some(Self::Title),
+            "reading" => Some(Self::Reading),
+            "choice" => Some(Self::Choice),
+            "notice" | "save" | "load" => Some(Self::Notice),
+            "hidden" => Some(Self::Hidden),
+            _ => None,
+        }
+    }
+}
+
+fn prepare_demo_line_state(world: &mut World, mode: VnUiMode) -> bool {
+    let Some(vn) = world.get_resource_mut::<VnResource>() else {
+        return false;
+    };
+    vn.ui_mut().enter(VnUiMode::Reading);
+    let prepared = {
+        let Some(runtime) = vn.runtime_mut() else {
+            return false;
+        };
+
+        let mut prepared = false;
+        for _ in 0..64 {
+            match runtime.status() {
+                VnStatus::Line => {
+                    runtime.dialogue_mut().complete_line();
+                    prepared = true;
+                    break;
+                }
+                VnStatus::Ready => {
+                    if runtime.advance().is_err() {
+                        break;
+                    }
+                }
+                VnStatus::Choice => {
+                    prepared = true;
+                    break;
+                }
+                VnStatus::Waiting => runtime.complete_wait(),
+                VnStatus::Ended => break,
+            }
+        }
+        prepared
+    };
+    if prepared {
+        vn.ui_mut().enter(mode);
+    }
+    prepared
+}
+
+fn prepare_demo_choice_state(world: &mut World) -> bool {
+    let Some(vn) = world.get_resource_mut::<VnResource>() else {
+        return false;
+    };
+    vn.ui_mut().enter(VnUiMode::Reading);
+    let Some(runtime) = vn.runtime_mut() else {
+        return false;
+    };
+
+    for _ in 0..96 {
+        match runtime.status() {
+            VnStatus::Choice => return true,
+            VnStatus::Line => {
+                runtime.dialogue_mut().complete_line();
+                if runtime.advance().is_err() {
+                    return false;
+                }
+            }
+            VnStatus::Ready => {
+                if runtime.advance().is_err() {
+                    return false;
+                }
+            }
+            VnStatus::Waiting => runtime.complete_wait(),
+            VnStatus::Ended => return false,
+        }
+    }
+    false
+}
+
+#[derive(Debug)]
+struct ScreenshotProbe {
+    path: Option<String>,
+    frame: u32,
+    frame_count: u32,
+    taken: bool,
+    exit_after: bool,
+}
+
+impl Default for ScreenshotProbe {
+    fn default() -> Self {
+        Self {
+            path: std::env::var("SKY_VN_UI_SCREENSHOT_PATH")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
+            frame: env_u32("SKY_VN_UI_SCREENSHOT_FRAME").unwrap_or(60),
+            frame_count: 0,
+            taken: false,
+            exit_after: env_flag("SKY_VN_UI_EXIT_AFTER_SCREENSHOT"),
+        }
+    }
+}
+
+impl ScreenshotProbe {
+    fn update(&mut self, ctx: &mut FrameContext<'_>) {
+        if !self.taken && self.frame_count >= self.frame {
+            if let Some(path) = self.path.as_ref() {
+                ctx.request_screenshot(path);
+                self.taken = true;
+                if self.exit_after {
+                    ctx.request_exit();
+                }
+            }
+        }
+        self.frame_count = self.frame_count.saturating_add(1);
+    }
+}
+
+fn env_flag(key: &str) -> bool {
+    std::env::var(key)
+        .ok()
+        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+}
+
+fn env_u32(key: &str) -> Option<u32> {
+    std::env::var(key).ok()?.parse().ok()
+}
+
 fn main() {
     let project = demo_project();
     let initial_window_size = project.manifest.resolution;
 
     let mut world = World::new();
     world.insert_resource(RenderSettings {
-        clear_color: sky_engine::render::Color::rgb(0.02, 0.024, 0.032),
+        clear_color: RenderColor::rgb(0.02, 0.024, 0.032),
         ..Default::default()
     });
-    VnPlugin::default()
-        .install(&mut world)
+    world.spawn((
+        Transform::default(),
+        CameraMarker::new(),
+        Projection::orthographic_fixed(
+            initial_window_size[0] as f32,
+            initial_window_size[1] as f32,
+        ),
+        MainCamera,
+    ));
+    world
+        .install(VnPlugin::default())
         .expect("VN plugin should install");
     world
         .get_resource_mut::<VnResource>()
@@ -860,22 +850,28 @@ fn main() {
         vn.ui_mut().enter(VnUiMode::Title);
     }
 
-    App::new(
-        AppConfig::new(
+    world
+        .install(WindowPlugin::new(
             "SkyEngine Galgame - After School Promise",
             initial_window_size[0],
             initial_window_size[1],
-        )
-        .with_auto_tick(false),
-        world,
-    )
-    .with_render_pipeline(
-        RenderPipelineAsset::builder()
-            .add_feature(SpriteFeature::unlit())
-            .add_phase(TransparentPhase::new())
-            .build(),
-    )
-    .run(VnUiDemo::new());
+        ))
+        .unwrap();
+    world
+        .install(RunnerPlugin::game().with_auto_tick(false))
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+    world
+        .install(RenderPlugin::pipeline(
+            RenderPipelineAsset::builder()
+                .add_feature(SpriteFeature::unlit())
+                .add_phase(TransparentPhase::new())
+                .build(),
+        ))
+        .unwrap();
+
+    App::new(world).run(VnUiDemo::new());
 }
 
 fn demo_project() -> YarnProject {
@@ -887,19 +883,12 @@ title: Start
 <<play_bgm "audio/bgm/after_school.ogg" loop=true fade=1.2 volume=0.7>>
 <<show alice "{STANDING_POSE}" at="right" layer=20 opacity=0.98>>
 旁白: 四月最后一天的放学铃，像被雨洗过一样轻。 #line:start.narrator.0001
-旁白: 我把退社申请塞进书包最里层，正打算从走廊尽头溜走。 #line:start.narrator.0002
 Alice: 找到了。你果然会选这条没人经过的路。 #line:start.alice.0001
 我: 如果我说只是路过，你会相信吗？ #line:start.player.0001
 Alice: 不信。你心虚的时候，会把书包带绕在手指上。 #line:start.alice.0002
-<<wait 0.2>>
-Alice: 今天社团要决定文化祭主题。你不来，我们的 Galgame 就只剩标题了。 #line:start.alice.0003
-旁白: 她说“我们的”时，窗外的夕光正好落在她肩上。 #line:start.narrator.0003
 -> 说出退社的事
     <<set $route = "honest">>
     <<jump HonestRoute>>
--> 假装只是忘了时间
-    <<set $route = "gentle">>
-    <<jump GentleRoute>>
 -> 提议先去看美术稿
     <<set $route = "art">>
     <<jump ArtRoute>>
@@ -909,11 +898,7 @@ title: HonestRoute
 ---
 我: 其实我今天是来交退社申请的。 #line:honest.player.0001
 <<move alice to="center">>
-Alice: 嗯。我猜到了。 #line:honest.alice.0001
-我: 那你还来堵我？ #line:honest.player.0002
-Alice: 因为猜到和听你亲口说，是两件事。 #line:honest.alice.0002
-Alice: 你不用一个人把企划、程序、剧本和大家的期待全背起来。 #line:honest.alice.0003
-旁白: 她没有伸手抢走那张纸，只是站近了一点。 #line:honest.narrator.0001
+Alice: 你不用一个人把企划、程序、剧本和大家的期待全背起来。 #line:honest.alice.0001
 -> 把申请书递给她
     <<set $ending = "leave">>
     Alice: 如果这是你认真想过的决定，我会替你好好收下。 #line:honest.leave.alice.0001
@@ -924,34 +909,11 @@ Alice: 你不用一个人把企划、程序、剧本和大家的期待全背起�
     <<jump Ending>>
 ===
 
-title: GentleRoute
----
-我: 抱歉，刚刚在楼下买饮料，忘了时间。 #line:gentle.player.0001
-Alice: 你连瓶子都没拿。 #line:gentle.alice.0001
-我: 店员说今天卖完了。 #line:gentle.player.0002
-Alice: 那我们去买新的。边走边聊。 #line:gentle.alice.0002
-<<move alice to="center">>
-旁白: 她没有戳破我，只把退路变成了一段同行的路。 #line:gentle.narrator.0001
-Alice: 文化祭版本不需要很大。只要有一个让人想点下去的瞬间。 #line:gentle.alice.0003
--> 问她想写什么
-    <<set $ending = "promise">>
-    Alice: 写一个差点放弃的人，被另一个人拉回来的故事。 #line:gentle.promise.alice.0001
-    <<jump Ending>>
--> 说自己可能做不到
-    <<set $ending = "small_step">>
-    Alice: 做不到完整的，就做今晚这一幕。你看，现在已经有开头了。 #line:gentle.small.alice.0001
-    <<jump Ending>>
-===
-
 title: ArtRoute
 ---
 我: 先去社办吧。我想看看新的美术稿。 #line:art.player.0001
-Alice: 你每次逃跑前，都会先确认素材有没有备份。 #line:art.alice.0001
 <<cg "{ROOM_EDIT_CG}" layer=40>>
-旁白: 社办电脑还亮着。屏幕上的合成图，把陌生的房间照成了另一个世界。 #line:art.narrator.0001
-Alice: 这张可以当回忆 CG。角色站进去以后，故事就有了重量。 #line:art.alice.0002
-我: 也可能只是看起来像真的。 #line:art.player.0002
-Alice: Galgame 本来就是这样吧。假的画面，装着真的心情。 #line:art.alice.0003
+Alice: 这张可以当回忆 CG。角色站进去以后，故事就有了重量。 #line:art.alice.0001
 -> 让她站到画面中央
     <<set $ending = "cg">>
     <<move alice to="center">>
@@ -968,22 +930,12 @@ title: Ending
 ---
 <<if $ending == "leave">>
 旁白: 退社申请被她夹进文件夹。纸张合上的声音，比我想象中轻。 #line:end.leave.narrator.0001
-Alice: 明天我还是会把测试版发给你。不是催你，只是想让你看到我们做到了哪里。 #line:end.leave.alice.0001
 <<elseif $ending == "stay">>
 旁白: 被揉皱的纸团落进垃圾桶。故事没有突然变好，但它继续往下一行走。 #line:end.stay.narrator.0001
-Alice: 欢迎回来，主程序。第一件事，把“点击继续”做得更像真正的 Galgame。 #line:end.stay.alice.0001
-<<elseif $ending == "promise">>
-旁白: 自动贩卖机吐出两罐温热的柠檬茶。她把其中一罐贴在我的掌心。 #line:end.promise.narrator.0001
-Alice: 约好了。文化祭前，我们把这个故事做完。 #line:end.promise.alice.0001
-<<elseif $ending == "small_step">>
-旁白: 我们在走廊长椅坐下，把庞大的企划拆成今晚能完成的三件小事。 #line:end.small.narrator.0001
-Alice: 先写标题画面，再写第一句台词。能做到这里，就已经不是零了。 #line:end.small.alice.0001
 <<elseif $ending == "cg">>
 旁白: 她站到画面中央。那一瞬间，我忽然明白所谓完成度，就是有人愿意相信它。 #line:end.cg.narrator.0001
-Alice: 截图留好。以后回看，会知道我们是从这一幕开始认真起来的。 #line:end.cg.alice.0001
 <<else>>
 旁白: 走廊的灯一盏盏亮起，我们把社办门锁好，像给今天的剧情打上句号。 #line:end.corridor.narrator.0001
-Alice: 明天见。下一次，不许在选择支前面存档逃跑。 #line:end.corridor.alice.0001
 <<endif>>
 <<unlock_cg "corridor_promise">>
 <<checkpoint "chapter_01_clear">>

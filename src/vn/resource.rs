@@ -20,7 +20,7 @@ use crate::vn::script::{YarnProject, YarnProjectLoadError, YarnScript};
 use crate::vn::systems::VnSystemConfig;
 use crate::vn::ui::VnUiState;
 #[cfg(feature = "vn-ui")]
-use crate::vn::ui_binding::{VnUiEntities, VnUiPresentationConfig};
+use crate::vn::ui_binding::VnUiPresentationConfig;
 
 #[derive(Clone, Debug)]
 pub struct VnResource {
@@ -44,8 +44,6 @@ pub struct VnResource {
     pub(crate) sprite_textures: VnSpriteTextureMap,
     #[cfg(feature = "vn-audio")]
     pub(crate) audio_bindings: VnAudioBindings,
-    #[cfg(feature = "vn-ui")]
-    pub(crate) ui_entities: VnUiEntities,
     #[cfg(feature = "vn-ui")]
     pub(crate) ui_presentation_config: Option<VnUiPresentationConfig>,
 }
@@ -87,8 +85,6 @@ impl VnResource {
             sprite_textures: VnSpriteTextureMap::default(),
             #[cfg(feature = "vn-audio")]
             audio_bindings: VnAudioBindings::default(),
-            #[cfg(feature = "vn-ui")]
-            ui_entities: VnUiEntities::default(),
             #[cfg(feature = "vn-ui")]
             ui_presentation_config: None,
         }
