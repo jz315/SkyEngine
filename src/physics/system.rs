@@ -70,7 +70,8 @@ fn install_physics_plugin(world: &mut World, config: PhysicsConfig2D) {
 ///
 /// Most apps should use [`PhysicsPlugin`] and let the scheduler call this.
 /// Manual stepping is useful for deterministic tests or apps that disable
-/// `AppConfig::auto_tick` and tick explicitly from `AppState::update`.
+/// `RunnerPlugin::game().with_auto_tick(false)` and tick explicitly from
+/// `AppState::update`.
 pub fn step_physics(world: &mut World) {
     let Some(mut physics) = world.remove_resource::<PhysicsWorld2D>() else {
         return;

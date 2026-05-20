@@ -4,45 +4,54 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 
+use super::font::{FontAsset, FontAssetFactory};
 use super::registry::{AssetRuntimeFactory, ErasedAssetFactory, FactoryAdapter, ManifestIndex};
 use super::texture::{
     decode_texture_source_bytes, TextureAsset, TextureAssetFactory, TextureColorSpace,
 };
 use super::types::{
-    Asset, AssetConfig, AssetError, AssetEvent, AssetEventCursor, AssetEventKind, AssetId,
-    AssetInstallContext, AssetLoadContext, AssetManifestEntry, AssetRegistryManifest, AssetState,
-    Handle, ASSET_SYSTEM_VERSION,
+    Asset, AssetConfig, AssetError, AssetEvent, AssetEventCursor, AssetEventKind,
+    AssetHandleProvider, AssetId, AssetInstallContext, AssetLease, AssetLoadContext,
+    AssetManifestEntry, AssetRegistryManifest, AssetState, AssetStatus, Handle, WeakHandle,
+    ASSET_SYSTEM_VERSION,
 };
 
 const ASSET_EVENT_LOG_CAP: usize = 1024;
 
 #[derive(Clone)]
-pub struct AssetServer {
-    inner: Arc<Mutex<AssetServerInner>>,
+pub struct Assets {
+    inner: Arc<Mutex<AssetsInner>>,
+    release_tx: Sender<AssetId>,
 }
 
-impl std::fmt::Debug for AssetServer {
+impl std::fmt::Debug for Assets {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AssetServer").finish_non_exhaustive()
+        f.debug_struct("Assets").finish_non_exhaustive()
     }
 }
 
-impl AssetServer {
+impl Assets {
     pub fn new(config: AssetConfig) -> Result<Self, AssetError> {
         let manifest = load_manifest(&config)?;
-        let mut inner = AssetServerInner::new(config, manifest);
+        let (release_tx, release_rx) = mpsc::channel();
+        let mut inner = AssetsInner::new(config, manifest, release_rx);
         inner.register_factory(TextureAssetFactory);
+        inner.register_factory(FontAssetFactory);
         Ok(Self {
             inner: Arc::new(Mutex::new(inner)),
+            release_tx,
         })
     }
 
     #[must_use]
     pub fn with_empty_manifest(config: AssetConfig) -> Self {
-        let mut inner = AssetServerInner::new(config, AssetRegistryManifest::default());
+        let (release_tx, release_rx) = mpsc::channel();
+        let mut inner = AssetsInner::new(config, AssetRegistryManifest::default(), release_rx);
         inner.register_factory(TextureAssetFactory);
+        inner.register_factory(FontAssetFactory);
         Self {
             inner: Arc::new(Mutex::new(inner)),
+            release_tx,
         }
     }
 
@@ -50,19 +59,19 @@ impl AssetServer {
     where
         F: AssetRuntimeFactory,
     {
-        let mut inner = self.inner.lock().expect("asset server mutex poisoned");
+        let mut inner = self.inner.lock().expect("assets mutex poisoned");
         inner.register_factory(factory);
     }
 
     pub fn reload_manifest(&self) -> Result<(), AssetError> {
-        let mut inner = self.inner.lock().expect("asset server mutex poisoned");
+        let mut inner = self.inner.lock().expect("assets mutex poisoned");
         let manifest = load_manifest(&inner.config)?;
         inner.set_manifest(manifest);
         Ok(())
     }
 
     pub fn reload_changed(&self) -> Result<Vec<AssetId>, AssetError> {
-        let mut inner = self.inner.lock().expect("asset server mutex poisoned");
+        let mut inner = self.inner.lock().expect("assets mutex poisoned");
         inner.reload_changed()
     }
 
@@ -70,39 +79,53 @@ impl AssetServer {
     pub fn config(&self) -> AssetConfig {
         self.inner
             .lock()
-            .expect("asset server mutex poisoned")
+            .expect("assets mutex poisoned")
             .config
             .clone()
     }
 
-    pub fn load<T: Asset>(&self, id: AssetId) -> Result<Handle<T>, AssetError> {
-        let mut inner = self.inner.lock().expect("asset server mutex poisoned");
-        inner.validate_typed_request::<T>(id)?;
-        inner.queue_request(id, Some(TypeId::of::<T>()));
-        Ok(Handle::new(id))
-    }
-
-    pub fn load_by_path<T: Asset>(&self, path: impl AsRef<Path>) -> Result<Handle<T>, AssetError> {
+    pub fn load<T: Asset>(&self, path: impl AsRef<Path>) -> Result<Handle<T>, AssetError> {
         let path_buf = path.as_ref().to_path_buf();
-        let mut inner = self.inner.lock().expect("asset server mutex poisoned");
+        let mut inner = self.inner.lock().expect("assets mutex poisoned");
         let id = inner
             .lookup_source_asset(&path_buf)
             .ok_or_else(|| AssetError::AssetPathNotFound { path: path_buf })?;
         inner.validate_typed_request::<T>(id)?;
-        inner.queue_request(id, Some(TypeId::of::<T>()));
-        Ok(Handle::new(id))
+        inner.acquire_direct_lease(id, Some(TypeId::of::<T>()));
+        Ok(self.make_handle(id))
+    }
+
+    pub fn load_id<T: Asset>(&self, id: AssetId) -> Result<Handle<T>, AssetError> {
+        let mut inner = self.inner.lock().expect("assets mutex poisoned");
+        inner.validate_typed_request::<T>(id)?;
+        inner.acquire_direct_lease(id, Some(TypeId::of::<T>()));
+        Ok(self.make_handle(id))
+    }
+
+    pub fn load_handle<T: Asset>(&self, handle: WeakHandle<T>) -> Result<Handle<T>, AssetError> {
+        self.load_id(handle.id())
     }
 
     pub fn load_texture(
         &self,
         path_or_key: impl AsRef<Path>,
     ) -> Result<Handle<TextureAsset>, AssetError> {
-        let mut inner = self.inner.lock().expect("asset server mutex poisoned");
-        inner.load_texture(path_or_key.as_ref())
+        let mut inner = self.inner.lock().expect("assets mutex poisoned");
+        let id = inner.load_texture(path_or_key.as_ref())?;
+        Ok(self.make_handle(id))
+    }
+
+    pub fn load_font(
+        &self,
+        path_or_key: impl AsRef<Path>,
+    ) -> Result<Handle<FontAsset>, AssetError> {
+        let mut inner = self.inner.lock().expect("assets mutex poisoned");
+        let id = inner.load_font(path_or_key.as_ref())?;
+        Ok(self.make_handle(id))
     }
 
     pub fn load_blocking<T: Asset>(&self, id: AssetId) -> Result<Arc<T>, AssetError> {
-        let handle = self.load::<T>(id)?;
+        let handle = self.load_id::<T>(id)?;
         for _ in 0..64 {
             self.update()?;
             if self.is_installed(&handle) {
@@ -126,8 +149,13 @@ impl AssetServer {
     }
 
     pub fn update(&self) -> Result<(), AssetError> {
-        let mut inner = self.inner.lock().expect("asset server mutex poisoned");
+        let mut inner = self.inner.lock().expect("assets mutex poisoned");
         inner.apply_update()
+    }
+
+    #[must_use]
+    pub fn status<T: Asset>(&self, handle: &Handle<T>) -> AssetStatus {
+        self.state(handle).into()
     }
 
     #[must_use]
@@ -139,7 +167,7 @@ impl AssetServer {
     pub fn state_untyped(&self, id: AssetId) -> AssetState {
         self.inner
             .lock()
-            .expect("asset server mutex poisoned")
+            .expect("assets mutex poisoned")
             .records
             .get(&id)
             .map(|record| record.state)
@@ -152,25 +180,15 @@ impl AssetServer {
     }
 
     pub fn get<T: Asset>(&self, handle: &Handle<T>) -> Result<Arc<T>, AssetError> {
-        let inner = self.inner.lock().expect("asset server mutex poisoned");
-        let record = inner
-            .records
-            .get(&handle.id())
-            .ok_or(AssetError::AssetNotInstalled {
-                id: handle.id(),
-                state: AssetState::Unloaded,
-            })?;
-        let installed = record
-            .installed
-            .clone()
-            .ok_or(AssetError::AssetNotInstalled {
-                id: handle.id(),
-                state: record.state,
-            })?;
+        self.get_id(handle.id())
+    }
+
+    pub fn get_id<T: Asset>(&self, id: AssetId) -> Result<Arc<T>, AssetError> {
+        let installed = self.inner.get_for_handle(id, T::TYPE, TypeId::of::<T>())?;
         Arc::downcast::<T>(installed).map_err(|_| AssetError::AssetTypeMismatch {
-            id: handle.id(),
+            id,
             expected: T::TYPE,
-            actual: record.asset_type.clone(),
+            actual: "unknown".to_string(),
         })
     }
 
@@ -180,29 +198,25 @@ impl AssetServer {
     }
 
     #[must_use]
+    pub fn try_get_id<T: Asset>(&self, id: AssetId) -> Option<Arc<T>> {
+        self.get_id::<T>(id).ok()
+    }
+
+    #[must_use]
     pub fn error<T: Asset>(&self, handle: &Handle<T>) -> Option<AssetError> {
         self.inner
             .lock()
-            .expect("asset server mutex poisoned")
+            .expect("assets mutex poisoned")
             .records
             .get(&handle.id())
             .and_then(|record| record.error.clone())
-    }
-
-    pub fn unload<T: Asset>(&self, handle: &Handle<T>) {
-        self.unload_untyped(handle.id());
-    }
-
-    pub fn unload_untyped(&self, id: AssetId) {
-        let mut inner = self.inner.lock().expect("asset server mutex poisoned");
-        inner.queue_unload(id);
     }
 
     #[must_use]
     pub fn manifest(&self) -> AssetRegistryManifest {
         self.inner
             .lock()
-            .expect("asset server mutex poisoned")
+            .expect("assets mutex poisoned")
             .manifest
             .manifest
             .clone()
@@ -212,7 +226,7 @@ impl AssetServer {
     pub fn resolve_path(&self, path: impl AsRef<Path>) -> Option<AssetId> {
         self.inner
             .lock()
-            .expect("asset server mutex poisoned")
+            .expect("assets mutex poisoned")
             .lookup_source_asset(path.as_ref())
     }
 
@@ -220,23 +234,24 @@ impl AssetServer {
     pub fn event_cursor(&self) -> AssetEventCursor {
         self.inner
             .lock()
-            .expect("asset server mutex poisoned")
+            .expect("assets mutex poisoned")
             .event_cursor()
     }
 
     pub fn events_since(&self, cursor: &mut AssetEventCursor) -> Vec<AssetEvent> {
         self.inner
             .lock()
-            .expect("asset server mutex poisoned")
+            .expect("assets mutex poisoned")
             .events_since(cursor)
     }
 
     /// Insert an already-built runtime asset that does not come from the cooked manifest.
     pub fn insert_runtime<T: Asset>(&self, asset: T) -> Handle<T> {
         let id = AssetId::new();
-        let mut inner = self.inner.lock().expect("asset server mutex poisoned");
+        let mut inner = self.inner.lock().expect("assets mutex poisoned");
         inner.insert_runtime(id, asset);
-        Handle::new(id)
+        inner.retain_direct_lease(id, Some(TypeId::of::<T>()));
+        self.make_handle(id)
     }
 
     /// Replace an existing runtime asset in-place while keeping its handle stable.
@@ -244,20 +259,87 @@ impl AssetServer {
     /// This is intended for generated runtime content such as streaming video
     /// frames where downstream systems should keep referencing the same handle
     /// while the underlying payload changes.
-    pub fn replace_runtime<T: Asset>(&self, handle: Handle<T>, asset: T) -> Result<(), AssetError> {
-        let mut inner = self.inner.lock().expect("asset server mutex poisoned");
+    pub fn replace_runtime<T: Asset>(
+        &self,
+        handle: &Handle<T>,
+        asset: T,
+    ) -> Result<(), AssetError> {
+        let mut inner = self.inner.lock().expect("assets mutex poisoned");
         inner.replace_runtime(handle.id(), asset)
+    }
+
+    fn make_handle<T: Asset>(&self, id: AssetId) -> Handle<T> {
+        let provider: Arc<dyn AssetHandleProvider> = self.inner.clone();
+        let lease = Arc::new(AssetLease::new(
+            id,
+            self.release_tx.clone(),
+            Arc::downgrade(&provider),
+        ));
+        Handle::from_lease(id, lease)
     }
 }
 
-struct AssetServerInner {
+impl AssetHandleProvider for Mutex<AssetsInner> {
+    fn state_for_handle(&self, id: AssetId) -> AssetState {
+        self.lock()
+            .expect("assets mutex poisoned")
+            .records
+            .get(&id)
+            .map(|record| record.state)
+            .unwrap_or(AssetState::Unloaded)
+    }
+
+    fn error_for_handle(&self, id: AssetId) -> Option<AssetError> {
+        self.lock()
+            .expect("assets mutex poisoned")
+            .records
+            .get(&id)
+            .and_then(|record| record.error.clone())
+    }
+
+    fn get_for_handle(
+        &self,
+        id: AssetId,
+        expected_type: &'static str,
+        expected_type_id: TypeId,
+    ) -> Result<Arc<dyn Any + Send + Sync>, AssetError> {
+        let inner = self.lock().expect("assets mutex poisoned");
+        let record = inner
+            .records
+            .get(&id)
+            .ok_or(AssetError::AssetNotInstalled {
+                id,
+                state: AssetState::Unloaded,
+            })?;
+        if record
+            .requested_type
+            .is_some_and(|type_id| type_id != expected_type_id)
+        {
+            return Err(AssetError::AssetTypeMismatch {
+                id,
+                expected: expected_type,
+                actual: record.asset_type.clone(),
+            });
+        }
+        record
+            .installed
+            .clone()
+            .ok_or(AssetError::AssetNotInstalled {
+                id,
+                state: record.state,
+            })
+    }
+}
+
+struct AssetsInner {
     config: AssetConfig,
     manifest: ManifestIndex,
     factories: HashMap<String, Arc<dyn ErasedAssetFactory>>,
     records: HashMap<AssetId, AssetRecord>,
     raw_textures: HashMap<String, AssetId>,
+    raw_fonts: HashMap<String, AssetId>,
     requests: VecDeque<AssetRequest>,
-    unloads: VecDeque<AssetId>,
+    release_rx: Receiver<AssetId>,
     load_tx: Sender<CompletedLoad>,
     load_rx: Receiver<CompletedLoad>,
     inflight_loads: HashSet<(AssetId, u64)>,
@@ -265,8 +347,12 @@ struct AssetServerInner {
     next_event_sequence: u64,
 }
 
-impl AssetServerInner {
-    fn new(config: AssetConfig, manifest: AssetRegistryManifest) -> Self {
+impl AssetsInner {
+    fn new(
+        config: AssetConfig,
+        manifest: AssetRegistryManifest,
+        release_rx: Receiver<AssetId>,
+    ) -> Self {
         let (load_tx, load_rx) = mpsc::channel();
         Self {
             config,
@@ -274,8 +360,9 @@ impl AssetServerInner {
             factories: HashMap::default(),
             records: HashMap::default(),
             raw_textures: HashMap::default(),
+            raw_fonts: HashMap::default(),
             requests: VecDeque::new(),
-            unloads: VecDeque::new(),
+            release_rx,
             load_tx,
             load_rx,
             inflight_loads: HashSet::default(),
@@ -384,11 +471,11 @@ impl AssetServerInner {
         self.manifest.source_to_id.get(&key).copied()
     }
 
-    fn load_texture(&mut self, path_or_key: &Path) -> Result<Handle<TextureAsset>, AssetError> {
+    fn load_texture(&mut self, path_or_key: &Path) -> Result<AssetId, AssetError> {
         if let Some(id) = self.lookup_source_asset(path_or_key) {
             self.validate_typed_request::<TextureAsset>(id)?;
-            self.queue_request(id, Some(TypeId::of::<TextureAsset>()));
-            return Ok(Handle::new(id));
+            self.acquire_direct_lease(id, Some(TypeId::of::<TextureAsset>()));
+            return Ok(id);
         }
 
         let request = RawTextureRequest::new(&self.config, path_or_key);
@@ -416,7 +503,7 @@ impl AssetServerInner {
         }
 
         if let Some(record) = self.records.get_mut(&id) {
-            record.direct_request_count += 1;
+            record.strong_ref_count += 1;
             if record.requested_type.is_none() {
                 record.requested_type = Some(TypeId::of::<TextureAsset>());
             }
@@ -425,14 +512,58 @@ impl AssetServerInner {
             id,
             requested_type: Some(TypeId::of::<TextureAsset>()),
         });
-        Ok(Handle::new(id))
+        Ok(id)
+    }
+
+    fn load_font(&mut self, path_or_key: &Path) -> Result<AssetId, AssetError> {
+        if let Some(id) = self.lookup_source_asset(path_or_key) {
+            self.validate_typed_request::<FontAsset>(id)?;
+            self.acquire_direct_lease(id, Some(TypeId::of::<FontAsset>()));
+            return Ok(id);
+        }
+
+        let request = RawTextureRequest::new(&self.config, path_or_key);
+        let id = match self.raw_fonts.get(&request.key).copied() {
+            Some(id) => id,
+            None => {
+                let id = AssetId::new();
+                self.raw_fonts.insert(request.key, id);
+                self.records
+                    .insert(id, AssetRecord::new_raw_font(request.path.clone()));
+                id
+            }
+        };
+
+        let factory = self.factories.get(FontAsset::TYPE).ok_or_else(|| {
+            AssetError::FactoryNotRegistered {
+                asset_type: FontAsset::TYPE.to_string(),
+            }
+        })?;
+        if factory.product_type_id() != TypeId::of::<FontAsset>() {
+            return Err(AssetError::Internal {
+                message: "registered font factory product type does not match FontAsset"
+                    .to_string(),
+            });
+        }
+
+        if let Some(record) = self.records.get_mut(&id) {
+            record.strong_ref_count += 1;
+            if record.requested_type.is_none() {
+                record.requested_type = Some(TypeId::of::<FontAsset>());
+            }
+        }
+        self.requests.push_back(AssetRequest {
+            id,
+            requested_type: Some(TypeId::of::<FontAsset>()),
+        });
+        Ok(id)
     }
 
     fn should_track_for_reload(&self, id: AssetId) -> bool {
         self.records.get(&id).is_some_and(|record| {
             !record.runtime
                 && record.raw_source_path.is_none()
-                && (record.direct_request_count > 0
+                && (record.strong_ref_count > 0
                     || record.dependency_ref_count > 0
                     || record.installed.is_some()
                     || record.loaded.is_some()
@@ -440,7 +571,12 @@ impl AssetServerInner {
         })
     }
 
-    fn queue_request(&mut self, id: AssetId, requested_type: Option<TypeId>) {
+    fn acquire_direct_lease(&mut self, id: AssetId, requested_type: Option<TypeId>) {
+        self.retain_direct_lease(id, requested_type);
+        self.requests.push_back(AssetRequest { id, requested_type });
+    }
+
+    fn retain_direct_lease(&mut self, id: AssetId, requested_type: Option<TypeId>) {
         let record = self.records.entry(id).or_insert_with(|| {
             let entry = self
                 .manifest
@@ -448,17 +584,20 @@ impl AssetServerInner {
                 .expect("asset record must exist in manifest");
             AssetRecord::new(id, entry.asset_type.clone())
         });
-        record.direct_request_count += 1;
+        record.strong_ref_count += 1;
 
         if record.requested_type.is_none() {
             record.requested_type = requested_type;
         }
-
-        self.requests.push_back(AssetRequest { id, requested_type });
     }
 
-    fn queue_unload(&mut self, id: AssetId) {
-        self.unloads.push_back(id);
+    fn drain_handle_releases(&mut self) {
+        while let Ok(id) = self.release_rx.try_recv() {
+            if let Some(record) = self.records.get_mut(&id) {
+                record.strong_ref_count = record.strong_ref_count.saturating_sub(1);
+            }
+            self.schedule_release_if_unused(id);
+        }
     }
 
     fn activate_record_for_load(record: &mut AssetRecord, requested_type: Option<TypeId>) {
@@ -549,9 +688,9 @@ impl AssetServerInner {
     }
 
     fn is_referenced(&self, id: AssetId) -> bool {
-        self.records.get(&id).is_some_and(|record| {
-            record.direct_request_count > 0 || record.dependency_ref_count > 0
-        })
+        self.records
+            .get(&id)
+            .is_some_and(|record| record.strong_ref_count > 0 || record.dependency_ref_count > 0)
     }
 
     fn dependency_links(&self, id: AssetId) -> Vec<AssetId> {
@@ -761,11 +900,19 @@ impl AssetServerInner {
             .get(&id)
             .and_then(|record| record.raw_source_path.as_ref())
             .ok_or(AssetError::AssetNotFound { id })?;
-        Ok(raw_texture_manifest_entry(
-            id,
-            self.config.source_key(path),
-            serde_json::json!({ "srgb": true }),
-        ))
+        let record = self
+            .records
+            .get(&id)
+            .ok_or(AssetError::AssetNotFound { id })?;
+        if record.asset_type == FontAsset::TYPE {
+            Ok(raw_font_manifest_entry(id, self.config.source_key(path)))
+        } else {
+            Ok(raw_texture_manifest_entry(
+                id,
+                self.config.source_key(path),
+                serde_json::json!({ "srgb": true }),
+            ))
+        }
     }
 
     fn spawn_load_record(&mut self, id: AssetId) -> Result<bool, AssetError> {
@@ -801,14 +948,7 @@ impl AssetServerInner {
                 if let Some(raw_source_path) = raw_source_path {
                     let bytes = std::fs::read(&raw_source_path)
                         .map_err(|error| map_raw_source_read_error(&raw_source_path, error))?;
-                    let texture = decode_texture_source_bytes(
-                        &raw_source_path,
-                        &bytes,
-                        TextureColorSpace::Srgb,
-                    )?;
-                    let loaded = crate::asset::LoadedAsset::new(
-                        Arc::new(texture) as Arc<dyn Any + Send + Sync>
-                    );
+                    let loaded = load_raw_source_asset(&entry, &raw_source_path, &bytes)?;
                     Ok((loaded, hash_bytes(&bytes)))
                 } else {
                     let bytes = std::fs::read(&cooked_path)
@@ -919,19 +1059,14 @@ impl AssetServerInner {
     }
 
     fn apply_update(&mut self) -> Result<(), AssetError> {
+        self.drain_handle_releases();
+
         while let Some(request) = self.requests.pop_front() {
             let record = self
                 .records
                 .get_mut(&request.id)
                 .ok_or(AssetError::AssetNotFound { id: request.id })?;
             Self::activate_record_for_load(record, request.requested_type);
-        }
-
-        while let Some(id) = self.unloads.pop_front() {
-            if let Some(record) = self.records.get_mut(&id) {
-                record.direct_request_count = record.direct_request_count.saturating_sub(1);
-            }
-            self.schedule_release_if_unused(id);
         }
 
         let _ = self.drain_load_completions()?;
@@ -1080,17 +1215,16 @@ impl AssetServerInner {
         if let Some(raw_source_path) = raw_source_path {
             let bytes = std::fs::read(&raw_source_path)
                 .map_err(|error| map_raw_source_read_error(&raw_source_path, error))?;
-            let result =
-                decode_texture_source_bytes(&raw_source_path, &bytes, TextureColorSpace::Srgb);
+            let result = load_raw_source_asset(&entry, &raw_source_path, &bytes);
 
             match result {
-                Ok(texture) => {
+                Ok(loaded) => {
                     let entry_fingerprint = manifest_entry_fingerprint(&entry)?;
                     let source_hash = hash_bytes(&bytes);
                     self.replace_held_dependencies(id, Vec::new());
 
                     let record = self.records.get_mut(&id).expect("record should exist");
-                    record.loaded = Some(Arc::new(texture));
+                    record.loaded = Some(loaded.loaded);
                     record.dependencies.clear();
                     record.error = None;
                     record.loaded_entry_fingerprint = Some(entry_fingerprint);
@@ -1338,7 +1472,7 @@ struct AssetRecord {
     asset_type: String,
     state: AssetState,
     requested_type: Option<TypeId>,
-    direct_request_count: usize,
+    strong_ref_count: usize,
     dependency_ref_count: usize,
     dependencies: Vec<AssetId>,
     held_dependencies: Vec<AssetId>,
@@ -1359,7 +1493,7 @@ impl AssetRecord {
             asset_type,
             state: AssetState::Unloaded,
             requested_type: None,
-            direct_request_count: 0,
+            strong_ref_count: 0,
             dependency_ref_count: 0,
             dependencies: Vec::new(),
             held_dependencies: Vec::new(),
@@ -1380,7 +1514,28 @@ impl AssetRecord {
             asset_type: TextureAsset::TYPE.to_string(),
             state: AssetState::Unloaded,
             requested_type: Some(TypeId::of::<TextureAsset>()),
-            direct_request_count: 0,
+            strong_ref_count: 0,
+            dependency_ref_count: 0,
+            dependencies: Vec::new(),
+            held_dependencies: Vec::new(),
+            loaded: None,
+            installed: None,
+            error: None,
+            loaded_entry_fingerprint: None,
+            loaded_cooked_hash: None,
+            reload_pending: false,
+            load_generation: 0,
+            runtime: false,
+            raw_source_path: Some(path),
+        }
+    }
+
+    fn new_raw_font(path: PathBuf) -> Self {
+        Self {
+            asset_type: FontAsset::TYPE.to_string(),
+            state: AssetState::Unloaded,
+            requested_type: Some(TypeId::of::<FontAsset>()),
+            strong_ref_count: 0,
             dependency_ref_count: 0,
             dependencies: Vec::new(),
             held_dependencies: Vec::new(),
@@ -1405,7 +1560,7 @@ impl AssetRecord {
             asset_type,
             state: AssetState::Installed,
             requested_type: Some(requested_type),
-            direct_request_count: 1,
+            strong_ref_count: 0,
             dependency_ref_count: 0,
             dependencies: Vec::new(),
             held_dependencies: Vec::new(),
@@ -1446,6 +1601,45 @@ fn raw_texture_manifest_entry(
         dependencies: Vec::new(),
         import_settings,
     }
+}
+
+fn raw_font_manifest_entry(id: AssetId, source_path: String) -> AssetManifestEntry {
+    AssetManifestEntry {
+        asset_id: id,
+        asset_type: FontAsset::TYPE.to_string(),
+        importer: "font.raw".to_string(),
+        cooker: "font.raw_bytes".to_string(),
+        version: 1,
+        source_path,
+        cooked_path: String::new(),
+        dependencies: Vec::new(),
+        import_settings: serde_json::Value::Null,
+    }
+}
+
+fn load_raw_source_asset(
+    entry: &AssetManifestEntry,
+    raw_source_path: &Path,
+    bytes: &[u8],
+) -> Result<crate::asset::LoadedAsset<Arc<dyn Any + Send + Sync>>, AssetError> {
+    if entry.asset_type == TextureAsset::TYPE {
+        let texture = decode_texture_source_bytes(raw_source_path, bytes, TextureColorSpace::Srgb)?;
+        return Ok(crate::asset::LoadedAsset::new(
+            Arc::new(texture) as Arc<dyn Any + Send + Sync>
+        ));
+    }
+    if entry.asset_type == FontAsset::TYPE {
+        return Ok(crate::asset::LoadedAsset::new(
+            Arc::new(FontAsset::new(Arc::<[u8]>::from(bytes.to_vec())))
+                as Arc<dyn Any + Send + Sync>,
+        ));
+    }
+    Err(AssetError::Unsupported {
+        message: format!(
+            "raw source loading is not supported for asset type `{}`",
+            entry.asset_type
+        ),
+    })
 }
 
 fn manifest_entry_fingerprint(entry: &AssetManifestEntry) -> Result<String, AssetError> {
@@ -1715,7 +1909,7 @@ mod tests {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempdir()?;
         let config = write_manifest_entries(dir.path(), Vec::new())?;
-        let server = AssetServer::new(config)?;
+        let server = Assets::new(config)?;
         let mut events = server.event_cursor();
         let handle = server.insert_runtime(DummyAsset("runtime".to_string()));
         let installed_events = server.events_since(&mut events);
@@ -1731,13 +1925,14 @@ mod tests {
         assert_eq!(server.state(&handle), AssetState::Installed);
         assert_eq!(server.get(&handle)?.0, "runtime");
 
-        server.unload(&handle);
+        let handle_id = handle.id();
+        drop(handle);
         server.update()?;
         let unloaded_events = server.events_since(&mut events);
         assert!(unloaded_events
             .iter()
-            .any(|event| { event.id == handle.id() && event.kind == AssetEventKind::Unloaded }));
-        assert_eq!(server.state(&handle), AssetState::Unloaded);
+            .any(|event| { event.id == handle_id && event.kind == AssetEventKind::Unloaded }));
+        assert_eq!(server.state_untyped(handle_id), AssetState::Unloaded);
         Ok(())
     }
 
@@ -1746,12 +1941,12 @@ mod tests {
     {
         let dir = tempdir()?;
         let config = write_manifest_entries(dir.path(), Vec::new())?;
-        let server = AssetServer::new(config)?;
+        let server = Assets::new(config)?;
         let mut events = server.event_cursor();
         let handle = server.insert_runtime(DummyAsset("frame-a".to_string()));
         let _ = server.events_since(&mut events);
 
-        server.replace_runtime(handle, DummyAsset("frame-b".to_string()))?;
+        server.replace_runtime(&handle, DummyAsset("frame-b".to_string()))?;
 
         assert_eq!(server.state(&handle), AssetState::Installed);
         assert_eq!(server.get(&handle)?.0, "frame-b");
@@ -1782,9 +1977,9 @@ mod tests {
         )?;
         std::fs::write(config.cooked_root().join("clip.dummyc"), b"ready")?;
 
-        let server = AssetServer::new(config)?;
+        let server = Assets::new(config)?;
         server.register_factory(DummyFactory);
-        let handle = server.load::<DummyAsset>(asset_id)?;
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
 
         server.update()?;
         assert_eq!(server.state(&handle), AssetState::Installed);
@@ -1813,9 +2008,9 @@ mod tests {
         )?;
         std::fs::write(config.cooked_root().join("clip.dummyc"), b"ready")?;
 
-        let server = AssetServer::new(config)?;
+        let server = Assets::new(config)?;
         server.register_factory(DummyFactory);
-        let handle = server.load::<DummyAsset>(asset_id)?;
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
         let result = server.update();
 
         assert!(matches!(
@@ -1844,8 +2039,8 @@ mod tests {
                 import_settings: serde_json::json!({ "srgb": true }),
             },
         )?;
-        let server = AssetServer::new(config)?;
-        let result = server.load::<DummyAsset>(asset_id);
+        let server = Assets::new(config)?;
+        let result = server.load_id::<DummyAsset>(asset_id);
         assert!(matches!(result, Err(AssetError::AssetTypeMismatch { .. })));
         Ok(())
     }
@@ -1870,14 +2065,15 @@ mod tests {
         )?;
         std::fs::write(config.cooked_root().join("clip.dummyc"), b"ready")?;
 
-        let server = AssetServer::new(config)?;
+        let server = Assets::new(config)?;
         server.register_factory(DummyFactory);
-        let handle = server.load::<DummyAsset>(asset_id)?;
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
         server.update()?;
 
-        server.unload(&handle);
+        let handle_id = handle.id();
+        drop(handle);
         server.update()?;
-        assert_eq!(server.state(&handle), AssetState::Unloaded);
+        assert_eq!(server.state_untyped(handle_id), AssetState::Unloaded);
         Ok(())
     }
 
@@ -1901,20 +2097,21 @@ mod tests {
         )?;
         std::fs::write(config.cooked_root().join("clip.dummyc"), b"ready")?;
 
-        let server = AssetServer::new(config)?;
+        let server = Assets::new(config)?;
         server.register_factory(DummyFactory);
-        let first = server.load::<DummyAsset>(asset_id)?;
-        let second = server.load::<DummyAsset>(asset_id)?;
+        let first = server.load_id::<DummyAsset>(asset_id)?;
+        let second = server.load_id::<DummyAsset>(asset_id)?;
         server.update()?;
 
-        server.unload(&first);
+        drop(first);
         server.update()?;
         assert_eq!(server.state(&second), AssetState::Installed);
         assert_eq!(server.get(&second)?.0, "ready");
 
-        server.unload(&second);
+        let second_id = second.id();
+        drop(second);
         server.update()?;
-        assert_eq!(server.state(&second), AssetState::Unloaded);
+        assert_eq!(server.state_untyped(second_id), AssetState::Unloaded);
         Ok(())
     }
 
@@ -1957,19 +2154,18 @@ mod tests {
             b"dependency",
         )?;
 
-        let server = AssetServer::new(config)?;
+        let server = Assets::new(config)?;
         server.register_factory(DummyFactory);
-        let parent = server.load::<DummyAsset>(parent_id)?;
-        let dependency = Handle::<DummyAsset>::new(dependency_id);
+        let parent = server.load_id::<DummyAsset>(parent_id)?;
         server.update()?;
 
         assert_eq!(server.state(&parent), AssetState::Installed);
-        assert_eq!(server.state(&dependency), AssetState::Installed);
+        assert_eq!(server.state_untyped(dependency_id), AssetState::Installed);
 
-        server.unload(&parent);
+        drop(parent);
         server.update()?;
-        assert_eq!(server.state(&parent), AssetState::Unloaded);
-        assert_eq!(server.state(&dependency), AssetState::Unloaded);
+        assert_eq!(server.state_untyped(parent_id), AssetState::Unloaded);
+        assert_eq!(server.state_untyped(dependency_id), AssetState::Unloaded);
         Ok(())
     }
 
@@ -2012,20 +2208,21 @@ mod tests {
             b"dependency",
         )?;
 
-        let server = AssetServer::new(config)?;
+        let server = Assets::new(config)?;
         server.register_factory(DummyFactory);
-        let parent = server.load::<DummyAsset>(parent_id)?;
-        let dependency = server.load::<DummyAsset>(dependency_id)?;
+        let parent = server.load_id::<DummyAsset>(parent_id)?;
+        let dependency = server.load_id::<DummyAsset>(dependency_id)?;
         server.update()?;
 
-        server.unload(&parent);
+        drop(parent);
         server.update()?;
-        assert_eq!(server.state(&parent), AssetState::Unloaded);
+        assert_eq!(server.state_untyped(parent_id), AssetState::Unloaded);
         assert_eq!(server.state(&dependency), AssetState::Installed);
 
-        server.unload(&dependency);
+        let dependency_id = dependency.id();
+        drop(dependency);
         server.update()?;
-        assert_eq!(server.state(&dependency), AssetState::Unloaded);
+        assert_eq!(server.state_untyped(dependency_id), AssetState::Unloaded);
         Ok(())
     }
 
@@ -2052,14 +2249,63 @@ mod tests {
         )?;
         std::fs::write(config.cooked_root().join("clip.dummyc"), b"ready")?;
 
-        let server = AssetServer::new(config)?;
+        let server = Assets::new(config)?;
         server.register_factory(DummyFactory);
-        let handle =
-            server.load_by_path::<DummyAsset>(asset_root.join("nested").join("clip.dummy"))?;
+        let handle = server.load::<DummyAsset>(asset_root.join("nested").join("clip.dummy"))?;
         server.update()?;
 
         assert_eq!(handle.id(), asset_id);
         assert_eq!(server.get(&handle)?.0, "ready");
+        Ok(())
+    }
+
+    #[test]
+    fn load_font_installs_raw_font_bytes() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        std::fs::write(dir.path().join("title.ttf"), b"fake-font")?;
+
+        let server = Assets::with_empty_manifest(AssetConfig::new(dir.path(), "native"));
+        let handle = server.load_font("title.ttf")?;
+        for _ in 0..16 {
+            server.update()?;
+            if server.is_installed(&handle) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        assert_eq!(server.get(&handle)?.bytes(), b"fake-font");
+        Ok(())
+    }
+
+    #[test]
+    fn load_font_by_asset_id_reads_cooked_font() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let asset_id = AssetId::new();
+        let config = write_manifest_entries(
+            dir.path(),
+            vec![AssetManifestEntry {
+                asset_id,
+                asset_type: FontAsset::TYPE.to_string(),
+                importer: "font.raw".to_string(),
+                cooker: "font.raw_bytes".to_string(),
+                version: 1,
+                source_path: "ui/title.ttf".to_string(),
+                cooked_path: "title.skyfont".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            }],
+        )?;
+        let cooked = super::super::font::encode_font_cooked(&FontAsset::new(Arc::<[u8]>::from(
+            b"cooked-font".to_vec(),
+        )));
+        std::fs::write(config.cooked_root().join("title.skyfont"), cooked)?;
+
+        let server = Assets::new(config)?;
+        let handle = server.load_id::<FontAsset>(asset_id)?;
+        server.update()?;
+
+        assert_eq!(server.get(&handle)?.bytes(), b"cooked-font");
         Ok(())
     }
 
@@ -2074,7 +2320,7 @@ mod tests {
             image::ColorType::Rgba8,
         )?;
 
-        let server = AssetServer::with_empty_manifest(AssetConfig::new(dir.path(), "native"));
+        let server = Assets::with_empty_manifest(AssetConfig::new(dir.path(), "native"));
         let first = server.load_texture("white.png")?;
         let second = server.load_texture(dir.path().join("white.png"))?;
         assert_eq!(first, second);
@@ -2100,7 +2346,7 @@ mod tests {
             image::ColorType::Rgba8,
         )?;
 
-        let server = AssetServer::with_empty_manifest(AssetConfig::new(dir.path(), "native"));
+        let server = Assets::with_empty_manifest(AssetConfig::new(dir.path(), "native"));
         let handle = server.load_texture("pose.png")?;
         wait_for_terminal_texture(&server, &handle)?;
 
@@ -2114,7 +2360,7 @@ mod tests {
     fn load_texture_missing_raw_path_fails_without_panic() -> Result<(), Box<dyn std::error::Error>>
     {
         let dir = tempdir()?;
-        let server = AssetServer::with_empty_manifest(AssetConfig::new(dir.path(), "native"));
+        let server = Assets::with_empty_manifest(AssetConfig::new(dir.path(), "native"));
         let handle = server.load_texture("missing.png")?;
 
         wait_for_terminal_texture(&server, &handle)?;
@@ -2135,7 +2381,7 @@ mod tests {
             image::ColorType::Rgba8,
         )?;
 
-        let server = AssetServer::with_empty_manifest(AssetConfig::new(dir.path(), "native"));
+        let server = Assets::with_empty_manifest(AssetConfig::new(dir.path(), "native"));
         let handle = server.load_texture("white.png")?;
 
         assert_ne!(server.state(&handle), AssetState::Installed);
@@ -2149,7 +2395,7 @@ mod tests {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempdir()?;
         let path = dir.path().join("late.png");
-        let server = AssetServer::with_empty_manifest(AssetConfig::new(dir.path(), "native"));
+        let server = Assets::with_empty_manifest(AssetConfig::new(dir.path(), "native"));
         let handle = server.load_texture("late.png")?;
 
         wait_for_terminal_texture(&server, &handle)?;
@@ -2176,15 +2422,16 @@ mod tests {
             image::ColorType::Rgba8,
         )?;
 
-        let server = AssetServer::with_empty_manifest(AssetConfig::new(dir.path(), "native"));
+        let server = Assets::with_empty_manifest(AssetConfig::new(dir.path(), "native"));
         let first = server.load_texture("white.png")?;
         wait_for_terminal_texture(&server, &first)?;
-        server.unload(&first);
+        let first_id = first.id();
+        drop(first);
         server.update()?;
-        assert_eq!(server.state(&first), AssetState::Unloaded);
+        assert_eq!(server.state_untyped(first_id), AssetState::Unloaded);
 
         let second = server.load_texture("white.png")?;
-        assert_eq!(second, first);
+        assert_eq!(second.id(), first_id);
         wait_for_terminal_texture(&server, &second)?;
         assert_eq!(server.state(&second), AssetState::Installed);
         Ok(())
@@ -2203,7 +2450,7 @@ mod tests {
             serde_json::to_vec_pretty(&AssetRegistryManifest::default())?,
         )?;
 
-        let server = AssetServer::new(config.clone())?;
+        let server = Assets::new(config.clone())?;
         assert_eq!(server.resolve_path(asset_root.join("late.dummy")), None);
 
         let asset_id = AssetId::new();
@@ -2235,7 +2482,7 @@ mod tests {
     }
 
     fn wait_for_terminal_texture(
-        server: &AssetServer,
+        server: &Assets,
         handle: &Handle<TextureAsset>,
     ) -> Result<(), AssetError> {
         for _ in 0..64 {
@@ -2287,9 +2534,9 @@ mod tests {
         std::fs::write(config.cooked_root().join("first.dummyc"), b"first")?;
         std::fs::write(config.cooked_root().join("second.dummyc"), b"second")?;
 
-        let server = AssetServer::new(config)?;
+        let server = Assets::new(config)?;
         server.register_factory(DummyFactory);
-        let handle = server.load::<DummyAsset>(first_id)?;
+        let handle = server.load_id::<DummyAsset>(first_id)?;
         let result = server.update();
 
         assert!(matches!(result, Err(AssetError::DependencyCycle { .. })));
@@ -2318,11 +2565,11 @@ mod tests {
         .with_background_loading(true);
         std::fs::write(config.cooked_root().join("clip.dummyc"), b"ready")?;
 
-        let server = AssetServer::new(config)?;
+        let server = Assets::new(config)?;
         server.register_factory(SlowFactory {
             delay: Duration::from_millis(60),
         });
-        let handle = server.load::<DummyAsset>(asset_id)?;
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
 
         server.update()?;
         assert_eq!(server.state(&handle), AssetState::Loading);
@@ -2358,8 +2605,8 @@ mod tests {
             crate::asset::texture::encode_texture_cooked(&TextureAsset::white_pixel()),
         )?;
 
-        let server = AssetServer::new(config)?;
-        let handle = server.load::<TextureAsset>(asset_id)?;
+        let server = Assets::new(config)?;
+        let handle = server.load_id::<TextureAsset>(asset_id)?;
         server.update()?;
         assert_ne!(server.state(&handle), AssetState::Installed);
 
@@ -2406,10 +2653,10 @@ mod tests {
         std::fs::write(config.cooked_root().join("first.dummyc"), b"first")?;
         std::fs::write(config.cooked_root().join("second.dummyc"), b"second")?;
 
-        let server = AssetServer::new(config)?;
+        let server = Assets::new(config)?;
         server.register_factory(DummyFactory);
-        let first = server.load::<DummyAsset>(first_id)?;
-        let second = server.load::<DummyAsset>(second_id)?;
+        let first = server.load_id::<DummyAsset>(first_id)?;
+        let second = server.load_id::<DummyAsset>(second_id)?;
 
         server.update()?;
         let states = [server.state(&first), server.state(&second)];
@@ -2457,9 +2704,9 @@ mod tests {
         )?;
         std::fs::write(config.cooked_root().join("clip.dummyc"), b"ready")?;
 
-        let server = AssetServer::new(config)?;
+        let server = Assets::new(config)?;
         server.register_factory(DummyFactory);
-        let handle = server.load::<DummyAsset>(asset_id)?;
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
         server.update()?;
 
         let changed = server.reload_changed()?;
@@ -2489,9 +2736,9 @@ mod tests {
         let cooked_path = config.cooked_root().join("clip.dummyc");
         std::fs::write(&cooked_path, b"ready")?;
 
-        let server = AssetServer::new(config)?;
+        let server = Assets::new(config)?;
         server.register_factory(DummyFactory);
-        let handle = server.load::<DummyAsset>(asset_id)?;
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
         server.update()?;
         assert_eq!(server.get(&handle)?.0, "ready");
 
@@ -2541,10 +2788,10 @@ mod tests {
         let dependency_path = config.cooked_root().join("dependency.dummyc");
         std::fs::write(&dependency_path, b"dependency-v1")?;
 
-        let server = AssetServer::new(config)?;
+        let server = Assets::new(config)?;
         let factory = CountingFactory::new();
         server.register_factory(factory.clone());
-        let parent = server.load::<DummyAsset>(parent_id)?;
+        let parent = server.load_id::<DummyAsset>(parent_id)?;
         server.update()?;
         assert_eq!(server.get(&parent)?.0, "parent");
         assert_eq!(factory.load_count(parent_id), 1);

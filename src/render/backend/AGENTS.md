@@ -9,7 +9,7 @@
 - `WgpuSceneRenderer` is the default backend. It owns `GpuContext`, optional `RenderRuntime`, and `WgpuRenderAssetCache`.
 - `KajiyaSceneRenderer` is compiled behind `kajiya-renderer` and consumes `SceneSnapshot`.
 - `RenderlingSceneRenderer` is compiled behind `renderling-renderer` and consumes `SceneSnapshot`.
-- If no render pipeline is supplied, backend selection defaults to wgpu without a `RenderRuntime`; calling `FrameContext::render()` still requires `App::with_render_pipeline(...)`.
+- If no render pipeline is supplied, backend selection defaults to wgpu without a `RenderRuntime`; calling `FrameContext::render()` still requires an installed `RenderPlugin`.
 
 ## Wgpu Runtime Boundary
 - The wgpu backend is allowed to call `RenderRuntime::render_world(gpu, world)`.

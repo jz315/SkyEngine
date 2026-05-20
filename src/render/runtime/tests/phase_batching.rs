@@ -53,7 +53,7 @@ fn transparent_sprite_phase_reports_single_draw_call_for_same_texture_batch() {
             .build(),
     );
 
-    let asset_server = AssetServer::with_empty_manifest(AssetConfig::default());
+    let asset_server = Assets::with_empty_manifest(AssetConfig::default());
     let white = asset_server.insert_runtime(TextureAsset::white_pixel());
 
     let mut world = World::new();

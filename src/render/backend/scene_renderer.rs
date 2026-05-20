@@ -1,6 +1,7 @@
 use crate::ecs::World;
 use crate::gpu::{GpuContext, GpuError, GpuInitError};
 use crate::render::pipeline::RenderBackendKind;
+use crate::render::resources::texture_cache::SharedRenderAssetCache;
 use crate::render::runtime::RenderRuntime;
 use crate::render::view::RenderStats;
 
@@ -82,6 +83,12 @@ pub trait SceneRenderer {
     }
 
     fn wgpu_render_runtime_parts_mut(&mut self) -> Option<(&mut RenderRuntime, &mut GpuContext)> {
+        None
+    }
+
+    fn wgpu_overlay_parts_mut(
+        &mut self,
+    ) -> Option<(&mut GpuContext, Option<&SharedRenderAssetCache>)> {
         None
     }
 }

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use rustc_hash::FxHashMap;
 use winit::window::Window;
 
-use crate::asset::{AssetId, AssetServer, Handle};
+use crate::asset::{AssetId, Assets, Handle};
 use crate::ecs::World;
 use crate::math::Projection;
 use crate::render::asset::{
@@ -46,7 +46,7 @@ pub struct RenderlingSceneRenderer {
     active_lights: Vec<RLight>,
     active_directional_lights: Vec<RDirectionalLight>,
     active_point_lights: Vec<RPointLight>,
-    warned_asset_server: bool,
+    warned_assets: bool,
 }
 
 impl RenderlingSceneRenderer {
@@ -84,7 +84,7 @@ impl RenderlingSceneRenderer {
             active_lights: Vec::new(),
             active_directional_lights: Vec::new(),
             active_point_lights: Vec::new(),
-            warned_asset_server: false,
+            warned_assets: false,
         })
     }
 
@@ -110,7 +110,7 @@ impl RenderlingSceneRenderer {
             active_lights: Vec::new(),
             active_directional_lights: Vec::new(),
             active_point_lights: Vec::new(),
-            warned_asset_server: false,
+            warned_assets: false,
         }
     }
 
@@ -139,7 +139,7 @@ impl RenderlingSceneRenderer {
         self.stats.resident_render_assets = self.mesh_cache.len() + self.material_cache.len();
     }
 
-    fn rebuild_stage_frame(&mut self, assets: Option<&AssetServer>) {
+    fn rebuild_stage_frame(&mut self, assets: Option<&Assets>) {
         self.active_cameras.clear();
         self.active_transforms.clear();
         self.active_renderlets.clear();
@@ -148,15 +148,15 @@ impl RenderlingSceneRenderer {
         self.active_point_lights.clear();
 
         let Some(assets) = assets else {
-            if !self.warned_asset_server && self.snapshot.stats().mesh_instances > 0 {
+            if !self.warned_assets && self.snapshot.stats().mesh_instances > 0 {
                 eprintln!(
-                    "[SkyEngine] Renderling renderer cannot sync MeshAsset handles without an AssetServer resource"
+                    "[SkyEngine] Renderling renderer cannot sync MeshAsset handles without an Assets resource"
                 );
-                self.warned_asset_server = true;
+                self.warned_assets = true;
             }
             return;
         };
-        self.warned_asset_server = false;
+        self.warned_assets = false;
 
         let camera = self
             .snapshot
@@ -243,7 +243,7 @@ impl RenderlingSceneRenderer {
 
     fn sync_mesh_arrays(
         &mut self,
-        assets: &AssetServer,
+        assets: &Assets,
         mesh_id: AssetId,
     ) -> Option<(
         ::renderling::slab::Array<::renderling::stage::Vertex>,
@@ -260,9 +260,9 @@ impl RenderlingSceneRenderer {
         ))
     }
 
-    fn sync_mesh(&mut self, assets: &AssetServer, mesh_id: AssetId) -> Option<&RenderlingMeshGpu> {
+    fn sync_mesh(&mut self, assets: &Assets, mesh_id: AssetId) -> Option<&RenderlingMeshGpu> {
         if !self.mesh_cache.contains_key(&mesh_id) {
-            let mesh = assets.try_get(&Handle::<MeshAsset>::new(mesh_id))?;
+            let mesh = assets.try_get_id::<MeshAsset>(mesh_id)?;
             match build_renderling_mesh(&self.stage, &mesh) {
                 Some(gpu) => {
                     self.mesh_cache.insert(mesh_id, gpu);
@@ -275,9 +275,9 @@ impl RenderlingSceneRenderer {
         self.mesh_cache.get(&mesh_id)
     }
 
-    fn sync_material(&mut self, assets: &AssetServer, material_id: AssetId) -> Option<&RMaterial> {
+    fn sync_material(&mut self, assets: &Assets, material_id: AssetId) -> Option<&RMaterial> {
         if !self.material_cache.contains_key(&material_id) {
-            let material = assets.try_get(&Handle::<StandardMaterialAsset>::new(material_id));
+            let material = assets.try_get_id::<StandardMaterialAsset>(material_id);
             let material = self
                 .stage
                 .new_value(renderling_material(material.as_deref()));
@@ -303,7 +303,7 @@ impl SceneRenderer for RenderlingSceneRenderer {
         self.stats.uploaded_render_assets = 0;
         self.sync_world(world);
         let snapshot = self.snapshot.clone();
-        let assets = world.get_resource::<AssetServer>().cloned();
+        let assets = world.get_resource::<Assets>().cloned();
         self.snapshot = snapshot;
         self.rebuild_stage_frame(assets.as_ref());
 
@@ -548,7 +548,7 @@ fn rvec4(value: [f32; 4]) -> ::renderling::prelude::glam::Vec4 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::asset::{AssetConfig, AssetServer};
+    use crate::asset::{AssetConfig, Assets};
     use crate::ecs::World;
     use crate::render::{
         DirectionalLight, MeshAssetDescriptor, MeshRenderer, MeshVertexLayout, Transform,
@@ -565,7 +565,7 @@ mod tests {
     #[test]
     fn renderling_scene_renderer_uses_neutral_scene_snapshot() {
         let mut world = World::new();
-        let assets = AssetServer::with_empty_manifest(AssetConfig::default());
+        let assets = Assets::with_empty_manifest(AssetConfig::default());
         let mesh = assets.insert_runtime(MeshAsset::from_raw(MeshAssetDescriptor::new(
             bytemuck::cast_slice(&[
                 Vertex {

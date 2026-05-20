@@ -1,4 +1,4 @@
-use crate::asset::{Asset, AssetServer, Handle};
+use crate::asset::{Asset, Assets, Handle};
 use crate::ecs::World;
 use crate::render::component::SpriteRenderer;
 
@@ -104,7 +104,7 @@ impl SpriteAnimator {
 
 /// Advance sprite UV animations and write the active frame into [`SpriteRenderer`].
 pub fn animate_sprites(world: &mut World) {
-    let Some(asset_server) = world.get_resource::<AssetServer>().cloned() else {
+    let Some(asset_server) = world.get_resource::<Assets>().cloned() else {
         return;
     };
     let delta_seconds = world.time.delta.max(0.0);
@@ -167,7 +167,7 @@ fn frame_index_for_phase(frames: &[SpriteAnimationFrame], phase_ms: u32) -> usiz
 
 #[cfg(test)]
 mod tests {
-    use crate::asset::{AssetConfig, AssetId, AssetServer, Handle};
+    use crate::asset::{AssetConfig, AssetId, Assets, Handle};
     use crate::render::component::SpriteRenderer;
 
     use super::*;
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn animate_sprites_switches_uv_and_loops() {
-        let asset_server = AssetServer::with_empty_manifest(AssetConfig::default());
+        let asset_server = Assets::with_empty_manifest(AssetConfig::default());
         let handle = asset_server.insert_runtime(clip());
         let mut world = World::new();
         world.insert_resource(asset_server);
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn animate_sprites_clamps_non_repeating_animation() {
-        let asset_server = AssetServer::with_empty_manifest(AssetConfig::default());
+        let asset_server = Assets::with_empty_manifest(AssetConfig::default());
         let handle = asset_server.insert_runtime(clip());
         let mut world = World::new();
         world.insert_resource(asset_server);
@@ -225,17 +225,17 @@ mod tests {
 
     #[test]
     fn animate_sprites_respects_playing_and_speed() {
-        let asset_server = AssetServer::with_empty_manifest(AssetConfig::default());
+        let asset_server = Assets::with_empty_manifest(AssetConfig::default());
         let handle = asset_server.insert_runtime(clip());
         let mut world = World::new();
         world.insert_resource(asset_server);
         let paused = world.spawn((
             SpriteRenderer::new(16.0, 16.0),
-            SpriteAnimator::new(handle).playing(false),
+            SpriteAnimator::new(handle.clone()).playing(false),
         ));
         let stopped = world.spawn((
             SpriteRenderer::new(16.0, 16.0),
-            SpriteAnimator::new(handle).speed(0.0),
+            SpriteAnimator::new(handle.clone()).speed(0.0),
         ));
         let fast = world.spawn((
             SpriteRenderer::new(16.0, 16.0),
@@ -263,10 +263,10 @@ mod tests {
     fn animate_sprites_skips_missing_inputs() {
         let missing = Handle::<SpriteAnimationClip>::new(AssetId::new());
         let mut world = World::new();
-        world.insert_resource(AssetServer::with_empty_manifest(AssetConfig::default()));
+        world.insert_resource(Assets::with_empty_manifest(AssetConfig::default()));
         world.spawn((
             SpriteRenderer::new(16.0, 16.0),
-            SpriteAnimator::new(missing),
+            SpriteAnimator::new(missing.clone()),
         ));
         world.time.delta = 0.1;
         animate_sprites(&mut world);

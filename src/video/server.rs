@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::asset::{AssetServer, Handle};
+use crate::asset::{Assets, Handle};
 use crate::ecs::World;
 use crate::render::SpriteRenderer;
-use crate::video::assets::{register_video_asset_factories, VideoClip, VideoFrame};
+use crate::video::assets::{VideoClip, VideoFrame};
 use crate::video::commands::{VideoCommand, VideoCommands};
 use crate::video::types::{
     VideoError, VideoInstanceId, VideoPlaybackSettings, VideoPlaybackState, VideoPlayer2D,
@@ -24,9 +24,7 @@ impl std::fmt::Debug for VideoServer {
 }
 
 impl VideoServer {
-    pub fn new(assets: AssetServer) -> Self {
-        register_video_asset_factories(&assets);
-
+    pub fn new(assets: Assets) -> Self {
         let next_instance = Arc::new(AtomicU64::new(1));
         let commands = VideoCommands::new(next_instance.clone());
         Self {
@@ -212,7 +210,7 @@ impl VideoServer {
         }
 
         if player.instance.is_none() && player.autoplay {
-            player.instance = self.try_play_autoplay(player.clip, player.settings);
+            player.instance = self.try_play_autoplay(player.clip.clone(), player.settings);
             player.last_frame_index = None;
         }
 
@@ -220,7 +218,7 @@ impl VideoServer {
             return;
         };
 
-        let (frame_index, frame) = {
+        let (frame_index, texture) = {
             let inner = self.inner.lock().expect("video server mutex poisoned");
             let Some(record) = inner.instances.get(&instance) else {
                 player.instance = None;
@@ -238,11 +236,17 @@ impl VideoServer {
             let Some(frame) = clip.frame(record.frame_index) else {
                 return;
             };
-            (record.frame_index, frame)
+            let Some(texture) = frame
+                .resident_texture()
+                .or_else(|| inner.assets.load_handle(frame.texture()).ok())
+            else {
+                return;
+            };
+            (record.frame_index, texture)
         };
 
         if player.last_frame_index != Some(frame_index) {
-            sprite.texture = Some(frame.texture());
+            sprite.texture = Some(texture);
             player.last_frame_index = Some(frame_index);
         }
     }
@@ -254,7 +258,7 @@ impl VideoServer {
     ) -> Option<VideoInstanceId> {
         let mut inner = self.inner.lock().expect("video server mutex poisoned");
         if inner.assets.try_get(&clip).is_none() {
-            let _ = inner.assets.load::<VideoClip>(clip.id());
+            let _ = inner.assets.load_id::<VideoClip>(clip.id());
             return None;
         }
         let instance = inner.reserve_instance();
@@ -264,7 +268,7 @@ impl VideoServer {
 }
 
 struct VideoServerInner {
-    assets: AssetServer,
+    assets: Assets,
     next_instance: Arc<AtomicU64>,
     instances: HashMap<VideoInstanceId, VideoInstanceRecord>,
 }
@@ -284,7 +288,7 @@ impl VideoServerInner {
         let clip_asset = match self.assets.try_get(&clip) {
             Some(clip_asset) => clip_asset,
             None => {
-                let _ = self.assets.load::<VideoClip>(clip.id());
+                let _ = self.assets.load_id::<VideoClip>(clip.id());
                 return Err(crate::asset::AssetError::AssetNotInstalled {
                     id: clip.id(),
                     state: self.assets.state(&clip),
@@ -385,7 +389,7 @@ mod tests {
     use super::*;
 
     fn server_with_clip() -> (VideoServer, Handle<VideoClip>) {
-        let assets = AssetServer::with_empty_manifest(AssetConfig::default());
+        let assets = Assets::with_empty_manifest(AssetConfig::default());
         let a = assets.insert_runtime(TextureAsset::white_pixel());
         let b = assets.insert_runtime(TextureAsset::checkerboard(
             2,

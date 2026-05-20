@@ -11,7 +11,7 @@ fn sprite_texture_asset_handle_uploads_into_render_cache() {
             .add_phase(crate::render::TransparentPhase::new())
             .build(),
     );
-    let asset_server = AssetServer::with_empty_manifest(AssetConfig::default());
+    let asset_server = Assets::with_empty_manifest(AssetConfig::default());
     let texture = asset_server.insert_runtime(TextureAsset::checkerboard(
         2,
         1,
@@ -20,7 +20,6 @@ fn sprite_texture_asset_handle_uploads_into_render_cache() {
     ));
     let mut world = World::new();
     world.insert_resource(asset_server.clone());
-    world.insert_resource(SharedRenderAssetCache::default());
     world.spawn((
         Transform::default(),
         CameraMarker::new(),
@@ -29,7 +28,7 @@ fn sprite_texture_asset_handle_uploads_into_render_cache() {
     ));
     world.spawn((
         Transform::default(),
-        crate::render::SpriteRenderer::new(8.0, 8.0).texture(texture),
+        crate::render::SpriteRenderer::new(8.0, 8.0).texture(texture.clone()),
     ));
 
     ctx.begin_frame()
@@ -37,13 +36,11 @@ fn sprite_texture_asset_handle_uploads_into_render_cache() {
     renderer.render_world(&mut ctx, &world);
     ctx.end_frame();
 
-    let cache = world
-        .get_resource::<SharedRenderAssetCache>()
-        .expect("render asset cache should exist");
     assert_eq!(
-        cache
+        renderer
+            .render_asset_cache()
             .borrow_mut()
-            .texture_readiness(Some(&asset_server), texture),
+            .texture_readiness(Some(&asset_server), &texture),
         crate::render::TextureReadiness::GpuReady
     );
     let stats = renderer.stats();
@@ -59,11 +56,15 @@ fn sprite_texture_asset_handle_uploads_into_render_cache() {
     renderer.render_world(&mut ctx, &world);
     ctx.end_frame();
 
-    assert!(cache.borrow_mut().contains_texture(texture));
+    assert!(renderer
+        .render_asset_cache()
+        .borrow_mut()
+        .contains_texture(&texture));
     assert_eq!(
-        cache
+        renderer
+            .render_asset_cache()
             .borrow_mut()
-            .texture_readiness(Some(&asset_server), texture),
+            .texture_readiness(Some(&asset_server), &texture),
         crate::render::TextureReadiness::GpuReady
     );
     let stats = renderer.stats();
@@ -71,19 +72,23 @@ fn sprite_texture_asset_handle_uploads_into_render_cache() {
     assert_eq!(stats.uploaded_render_assets, 0);
     assert_eq!(stats.loading_render_assets, 0);
 
-    asset_server.unload(&texture);
+    let texture_id = texture.id();
+    drop(texture);
     asset_server
         .update()
-        .expect("runtime asset unload should update");
+        .expect("runtime asset release should update");
     ctx.begin_frame()
         .expect("third headless begin_frame should succeed");
     renderer.render_world(&mut ctx, &world);
     ctx.end_frame();
 
-    assert!(!cache.borrow_mut().contains_texture(texture));
+    assert!(renderer
+        .render_asset_cache()
+        .borrow_mut()
+        .contains_texture(&Handle::<TextureAsset>::new(texture_id)));
     let stats = renderer.stats();
-    assert_eq!(stats.resident_render_assets, 0);
-    assert_eq!(stats.missing_render_assets, 1);
+    assert_eq!(stats.resident_render_assets, 1);
+    assert_eq!(stats.missing_render_assets, 0);
 }
 
 #[test]
@@ -98,7 +103,7 @@ fn texture_asset_gpu_queue_uploads_requested_textures_on_following_frame() {
             .build(),
     );
 
-    let asset_server = AssetServer::with_empty_manifest(AssetConfig::default());
+    let asset_server = Assets::with_empty_manifest(AssetConfig::default());
     let first = asset_server.insert_runtime(TextureAsset::white_pixel());
     let second = asset_server.insert_runtime(TextureAsset::checkerboard(
         2,
@@ -108,7 +113,6 @@ fn texture_asset_gpu_queue_uploads_requested_textures_on_following_frame() {
     ));
     let mut world = World::new();
     world.insert_resource(asset_server.clone());
-    world.insert_resource(SharedRenderAssetCache::default());
     world.spawn((
         Transform::default(),
         CameraMarker::new(),
@@ -117,11 +121,11 @@ fn texture_asset_gpu_queue_uploads_requested_textures_on_following_frame() {
     ));
     world.spawn((
         Transform::default(),
-        crate::render::SpriteRenderer::new(8.0, 8.0).texture(first),
+        crate::render::SpriteRenderer::new(8.0, 8.0).texture(first.clone()),
     ));
     world.spawn((
         Transform::from_xyz(12.0, 0.0, 0.0),
-        crate::render::SpriteRenderer::new(8.0, 8.0).texture(second),
+        crate::render::SpriteRenderer::new(8.0, 8.0).texture(second.clone()),
     ));
 
     ctx.begin_frame()
@@ -134,19 +138,18 @@ fn texture_asset_gpu_queue_uploads_requested_textures_on_following_frame() {
     assert_eq!(stats.resident_render_assets, 2);
     assert_eq!(stats.loading_render_assets, 2);
     assert_eq!(stats.fallback_render_assets, 2);
-    let cache = world
-        .get_resource::<SharedRenderAssetCache>()
-        .expect("render asset cache should exist");
     assert_eq!(
-        cache
+        renderer
+            .render_asset_cache()
             .borrow_mut()
-            .texture_readiness(Some(&asset_server), first),
+            .texture_readiness(Some(&asset_server), &first),
         crate::render::TextureReadiness::GpuReady
     );
     assert_eq!(
-        cache
+        renderer
+            .render_asset_cache()
             .borrow_mut()
-            .texture_readiness(Some(&asset_server), second),
+            .texture_readiness(Some(&asset_server), &second),
         crate::render::TextureReadiness::GpuReady
     );
 
@@ -173,7 +176,7 @@ fn visible_texture_gpu_requests_are_prepared_before_preloads() {
             .build(),
     );
 
-    let asset_server = AssetServer::with_empty_manifest(AssetConfig::default());
+    let asset_server = Assets::with_empty_manifest(AssetConfig::default());
     let preloads = [
         asset_server.insert_runtime(TextureAsset::checkerboard(
             4,
@@ -203,7 +206,6 @@ fn visible_texture_gpu_requests_are_prepared_before_preloads() {
     let visible = asset_server.insert_runtime(TextureAsset::white_pixel());
     let mut world = World::new();
     world.insert_resource(asset_server.clone());
-    world.insert_resource(SharedRenderAssetCache::default());
     world.spawn((
         Transform::default(),
         CameraMarker::new(),
@@ -212,15 +214,13 @@ fn visible_texture_gpu_requests_are_prepared_before_preloads() {
     ));
     world.spawn((
         Transform::default(),
-        crate::render::SpriteRenderer::new(8.0, 8.0).texture(visible),
+        crate::render::SpriteRenderer::new(8.0, 8.0).texture(visible.clone()),
     ));
 
-    let cache = world
-        .get_resource::<SharedRenderAssetCache>()
-        .expect("render asset cache should exist");
-    for preload in preloads {
+    for preload in &preloads {
         assert_eq!(
-            cache
+            renderer
+                .render_asset_cache()
                 .borrow_mut()
                 .request_texture_gpu(&ctx, &asset_server, preload),
             crate::render::TextureReadiness::GpuQueued
@@ -237,10 +237,18 @@ fn visible_texture_gpu_requests_are_prepared_before_preloads() {
     assert_eq!(stats.queued_render_assets, 1);
     assert_eq!(stats.visible_queued_render_assets, 0);
     assert_eq!(stats.fallback_render_assets, 1);
-    assert!(cache.borrow_mut().contains_texture(visible));
+    assert!(renderer
+        .render_asset_cache()
+        .borrow_mut()
+        .contains_texture(&visible));
     let resident_preloads = preloads
-        .into_iter()
-        .filter(|preload| cache.borrow_mut().contains_texture(*preload))
+        .iter()
+        .filter(|preload| {
+            renderer
+                .render_asset_cache()
+                .borrow_mut()
+                .contains_texture(preload)
+        })
         .count();
     assert_eq!(resident_preloads, 3);
     assert_eq!(stats.uploaded_render_asset_bytes, 3 * 4 * 4 * 4 + 4);
@@ -250,9 +258,15 @@ fn visible_texture_gpu_requests_are_prepared_before_preloads() {
     renderer.render_world(&mut ctx, &world);
     ctx.end_frame();
 
-    assert!(cache.borrow_mut().contains_texture(visible));
-    for preload in preloads {
-        assert!(cache.borrow_mut().contains_texture(preload));
+    assert!(renderer
+        .render_asset_cache()
+        .borrow_mut()
+        .contains_texture(&visible));
+    for preload in &preloads {
+        assert!(renderer
+            .render_asset_cache()
+            .borrow_mut()
+            .contains_texture(preload));
     }
 }
 
@@ -268,11 +282,10 @@ fn runtime_texture_replace_invalidates_gpu_texture_and_queues_reupload() {
             .build(),
     );
 
-    let asset_server = AssetServer::with_empty_manifest(AssetConfig::default());
+    let asset_server = Assets::with_empty_manifest(AssetConfig::default());
     let texture = asset_server.insert_runtime(TextureAsset::white_pixel());
     let mut world = World::new();
     world.insert_resource(asset_server.clone());
-    world.insert_resource(SharedRenderAssetCache::default());
     world.spawn((
         Transform::default(),
         CameraMarker::new(),
@@ -281,7 +294,7 @@ fn runtime_texture_replace_invalidates_gpu_texture_and_queues_reupload() {
     ));
     world.spawn((
         Transform::default(),
-        crate::render::SpriteRenderer::new(8.0, 8.0).texture(texture),
+        crate::render::SpriteRenderer::new(8.0, 8.0).texture(texture.clone()),
     ));
 
     ctx.begin_frame()
@@ -293,14 +306,14 @@ fn runtime_texture_replace_invalidates_gpu_texture_and_queues_reupload() {
     renderer.render_world(&mut ctx, &world);
     ctx.end_frame();
 
-    let cache = world
-        .get_resource::<SharedRenderAssetCache>()
-        .expect("render asset cache should exist");
-    assert!(cache.borrow_mut().contains_texture(texture));
+    assert!(renderer
+        .render_asset_cache()
+        .borrow_mut()
+        .contains_texture(&texture));
 
     asset_server
         .replace_runtime(
-            texture,
+            &texture,
             TextureAsset::checkerboard(2, 1, [255, 255, 255, 255], [32, 32, 32, 255]),
         )
         .expect("runtime texture replace should succeed");
@@ -310,11 +323,15 @@ fn runtime_texture_replace_invalidates_gpu_texture_and_queues_reupload() {
     renderer.render_world(&mut ctx, &world);
     ctx.end_frame();
 
-    assert!(cache.borrow_mut().contains_texture(texture));
+    assert!(renderer
+        .render_asset_cache()
+        .borrow_mut()
+        .contains_texture(&texture));
     assert_eq!(
-        cache
+        renderer
+            .render_asset_cache()
             .borrow_mut()
-            .texture_readiness(Some(&asset_server), texture),
+            .texture_readiness(Some(&asset_server), &texture),
         crate::render::TextureReadiness::GpuReady
     );
     let stats = renderer.stats();
@@ -328,7 +345,10 @@ fn runtime_texture_replace_invalidates_gpu_texture_and_queues_reupload() {
     renderer.render_world(&mut ctx, &world);
     ctx.end_frame();
 
-    assert!(cache.borrow_mut().contains_texture(texture));
+    assert!(renderer
+        .render_asset_cache()
+        .borrow_mut()
+        .contains_texture(&texture));
     assert_eq!(renderer.stats().resident_render_assets, 1);
 }
 
@@ -336,7 +356,7 @@ fn runtime_texture_replace_invalidates_gpu_texture_and_queues_reupload() {
 fn wait_texture_gpu_prepares_queued_texture_immediately() {
     let (device, queue) = create_test_device();
     let ctx = GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [64, 64]);
-    let asset_server = AssetServer::with_empty_manifest(AssetConfig::default());
+    let asset_server = Assets::with_empty_manifest(AssetConfig::default());
     let texture = asset_server.insert_runtime(TextureAsset::checkerboard(
         2,
         1,
@@ -347,21 +367,21 @@ fn wait_texture_gpu_prepares_queued_texture_immediately() {
     assert_eq!(
         cache
             .borrow_mut()
-            .request_texture_gpu(&ctx, &asset_server, texture),
+            .request_texture_gpu(&ctx, &asset_server, &texture),
         crate::render::TextureReadiness::GpuQueued
     );
-    assert!(!cache.borrow_mut().contains_texture(texture));
+    assert!(!cache.borrow_mut().contains_texture(&texture));
 
     assert_eq!(
         cache.borrow_mut().wait_texture_gpu(
             &ctx,
             &asset_server,
-            texture,
+            &texture,
             std::time::Duration::from_millis(1),
         ),
         crate::render::TextureReadiness::GpuReady
     );
-    assert!(cache.borrow_mut().contains_texture(texture));
+    assert!(cache.borrow_mut().contains_texture(&texture));
 }
 
 #[test]
@@ -377,9 +397,7 @@ fn missing_sprite_texture_asset_is_reported_in_render_stats() {
     );
     let missing = Handle::<TextureAsset>::new(AssetId::new());
     let mut world = World::new();
-    world.insert_resource(Diagnostics::default());
-    world.insert_resource(AssetServer::with_empty_manifest(AssetConfig::default()));
-    world.insert_resource(SharedRenderAssetCache::default());
+    world.insert_resource(Assets::with_empty_manifest(AssetConfig::default()));
     world.spawn((
         Transform::default(),
         CameraMarker::new(),
@@ -402,23 +420,4 @@ fn missing_sprite_texture_asset_is_reported_in_render_stats() {
     assert_eq!(stats.loading_render_assets, 0);
     assert_eq!(stats.missing_render_assets, 1);
     assert_eq!(stats.failed_render_assets, 0);
-
-    let diagnostics = world
-        .get_resource::<Diagnostics>()
-        .expect("diagnostics should exist")
-        .entries();
-    assert_eq!(diagnostics.len(), 1);
-    assert_eq!(diagnostics[0].id.as_str(), "render.asset.texture.missing");
-    assert_eq!(diagnostics[0].subsystem, DiagnosticSubsystem::render());
-    assert_eq!(diagnostics[0].severity, DiagnosticSeverity::Warning);
-    assert_eq!(diagnostics[0].title, "Texture asset is missing");
-    assert_eq!(
-        diagnostics[0].help.as_deref(),
-        Some(
-            "Check that the texture is registered in the asset manifest or inserted as a runtime \
-             asset before rendering."
-        )
-    );
-    let missing_id = missing.id().to_string();
-    assert_eq!(diagnostics[0].field("asset_id"), Some(missing_id.as_str()));
 }

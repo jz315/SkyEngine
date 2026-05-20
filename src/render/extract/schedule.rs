@@ -1,4 +1,4 @@
-use crate::asset::AssetServer;
+use crate::asset::Assets;
 use crate::ecs::World;
 use crate::gpu::GpuContext;
 use crate::render::phase::{OpaquePhase, TransparentPhase};
@@ -25,7 +25,7 @@ pub trait Extractor: Send {
 
 pub struct ExtractContext<'a> {
     pub gpu: &'a GpuContext,
-    pub asset_server: Option<&'a AssetServer>,
+    pub asset_server: Option<&'a Assets>,
     pub render_assets: Option<&'a SharedRenderAssetCache>,
     pub material_registry: &'a mut MaterialRegistry,
     pub mesh_registry: &'a MeshRegistry,

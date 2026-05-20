@@ -77,7 +77,7 @@ pub fn create_scene_renderer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::asset::{AssetConfig, AssetServer, TextureAsset};
+    use crate::asset::{AssetConfig, Assets, TextureAsset};
     use crate::ecs::World;
     use crate::gpu::GpuContext;
     use crate::math::Projection;
@@ -148,16 +148,17 @@ mod tests {
         let gpu =
             GpuContext::new_headless(device, queue, ::wgpu::TextureFormat::Bgra8Unorm, [32, 32]);
         let mut render_runtime = RenderRuntime::from_asset(RenderPipelineAsset::builder().build());
-        let assets = AssetServer::with_empty_manifest(AssetConfig::default());
+        let assets = Assets::with_empty_manifest(AssetConfig::default());
 
         let mesh = assets.insert_runtime(triangle_mesh("backend_triangle"));
         let texture = assets.insert_runtime(TextureAsset::white_pixel());
-        let material = assets.insert_runtime(StandardMaterialAsset::new().albedo_texture(texture));
+        let material =
+            assets.insert_runtime(StandardMaterialAsset::new().albedo_texture(texture.clone()));
         let render_assets = SharedRenderAssetCache::default();
 
         let mut cache = super::wgpu_asset_bridge::WgpuRenderAssetCache::default();
         let first = cache
-            .sync_mesh(&gpu, &mut render_runtime, &assets, mesh)
+            .sync_mesh(&gpu, &mut render_runtime, &assets, mesh.clone())
             .expect("mesh should upload");
         let second = cache
             .sync_mesh(&gpu, &mut render_runtime, &assets, mesh)
@@ -171,7 +172,7 @@ mod tests {
             &mut render_runtime,
             &assets,
             &render_assets,
-            material,
+            material.clone(),
         );
         assert!(
             material_first.is_some(),
@@ -180,19 +181,19 @@ mod tests {
         assert_eq!(
             render_assets
                 .borrow_mut()
-                .texture_readiness(Some(&assets), texture),
+                .texture_readiness(Some(&assets), &texture),
             crate::render::TextureReadiness::GpuQueued
         );
         render_assets.borrow_mut().prepare_queued_textures(&gpu);
         assert_eq!(
             render_assets
                 .borrow_mut()
-                .texture_readiness(Some(&assets), texture),
+                .texture_readiness(Some(&assets), &texture),
             crate::render::TextureReadiness::GpuReady
         );
         assets
             .replace_runtime(
-                material,
+                &material,
                 StandardMaterialAsset::new().albedo_texture(texture),
             )
             .expect("runtime material replace should work");
@@ -207,7 +208,7 @@ mod tests {
     #[test]
     fn scene_snapshot_extracts_neutral_3d_scene() {
         let mut world = World::new();
-        let assets = AssetServer::with_empty_manifest(AssetConfig::default());
+        let assets = Assets::with_empty_manifest(AssetConfig::default());
         let mesh = assets.insert_runtime(triangle_mesh("snapshot_triangle"));
         let material = assets.insert_runtime(StandardMaterialAsset::new());
         world.insert_resource(assets);
@@ -313,7 +314,7 @@ mod tests {
     #[test]
     fn kajiya_scene_renderer_uses_neutral_scene_snapshot() {
         let mut world = World::new();
-        let assets = AssetServer::with_empty_manifest(AssetConfig::default());
+        let assets = Assets::with_empty_manifest(AssetConfig::default());
         let mesh = assets.insert_runtime(triangle_mesh("kajiya_snapshot_triangle"));
         let material = assets.insert_runtime(StandardMaterialAsset::new());
         world.insert_resource(assets);

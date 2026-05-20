@@ -2,7 +2,7 @@ use std::{fs, sync::mpsc};
 
 use rustc_hash::FxHashMap;
 
-use crate::asset::{AssetConfig, AssetServer, TextureAsset};
+use crate::asset::{AssetConfig, Assets, TextureAsset};
 use crate::gpu::GpuContext;
 use crate::render::gi::{GiSamplingBinding, NULL_GI_SHADER};
 use crate::render::gpu::{RenderTarget, Texture, TextureCreateDesc};
@@ -299,7 +299,7 @@ fn sprite_extract_schedule_renders_through_transparent_phase() {
     let mut schedule = ExtractSchedule::new();
     schedule.add(ExtractSprites::new(draw_mesh));
 
-    let asset_server = AssetServer::with_empty_manifest(AssetConfig::default());
+    let asset_server = Assets::with_empty_manifest(AssetConfig::default());
     let white = asset_server.insert_runtime(TextureAsset::white_pixel());
 
     let mut world = crate::ecs::World::new();

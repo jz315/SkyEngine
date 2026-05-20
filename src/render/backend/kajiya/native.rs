@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use winit::window::Window;
 
-use crate::{asset::AssetServer, math::Projection};
+use crate::{asset::Assets, math::Projection};
 
 use super::super::{SceneCamera, SceneSnapshot};
 use super::assets::{KajiyaAssetSyncStats, KajiyaRenderAssetCache};
@@ -128,7 +128,7 @@ impl NativeKajiyaRuntime {
     pub(crate) fn render(
         &mut self,
         snapshot: &SceneSnapshot,
-        assets: Option<&AssetServer>,
+        assets: Option<&Assets>,
     ) -> Result<(), KajiyaBackendError> {
         let frame = self.frame_index;
         if self.config.should_trace_frame(frame) {
@@ -160,7 +160,7 @@ impl NativeKajiyaRuntime {
     fn render_inner(
         &mut self,
         snapshot: &SceneSnapshot,
-        assets: Option<&AssetServer>,
+        assets: Option<&Assets>,
     ) -> Result<(), KajiyaBackendError> {
         if self.triangle_only {
             return self.render_triangle();

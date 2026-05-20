@@ -59,7 +59,7 @@ impl Extractor for ExtractSprites {
                 }
 
                 let transform = transforms.get(entity).unwrap_or(*transform);
-                let texture = sprite.texture.and_then(|handle| {
+                let texture = sprite.texture.as_ref().and_then(|handle| {
                     resolve_sprite_texture(gpu, asset_server, render_assets, handle)
                 });
                 let texture_key = texture.as_ref().map_or(usize::MAX, |texture| {
@@ -109,9 +109,9 @@ impl Extractor for ExtractSprites {
 
 fn resolve_sprite_texture(
     gpu: &crate::gpu::GpuContext,
-    asset_server: Option<&crate::asset::AssetServer>,
+    asset_server: Option<&crate::asset::Assets>,
     render_assets: Option<&crate::render::resources::texture_cache::SharedRenderAssetCache>,
-    handle: crate::asset::Handle<crate::asset::TextureAsset>,
+    handle: &crate::asset::Handle<crate::asset::TextureAsset>,
 ) -> Option<crate::render::Texture> {
     match (asset_server, render_assets) {
         (Some(server), Some(cache)) => cache.borrow_mut().texture(gpu, server, handle),

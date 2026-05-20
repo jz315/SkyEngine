@@ -5,7 +5,7 @@ use kira::sound::static_sound::StaticSoundData;
 use kira::sound::streaming::StreamingSoundData;
 
 use crate::asset::{
-    Asset, AssetError, AssetInstallContext, AssetLoadContext, AssetRuntimeFactory, AssetServer,
+    Asset, AssetError, AssetInstallContext, AssetLoadContext, AssetRuntimeFactory, Assets,
     LoadedAsset,
 };
 
@@ -27,7 +27,7 @@ impl Asset for MusicTrack {
     const TYPE: &'static str = "music_track";
 }
 
-pub fn register_audio_asset_factories(asset_server: &AssetServer) {
+pub fn register_audio_asset_factories(asset_server: &Assets) {
     asset_server.register_factory(SoundClipFactory);
     asset_server.register_factory(MusicTrackFactory);
 }

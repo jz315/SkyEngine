@@ -6,6 +6,7 @@ use crate::render::resources::material::{
     Material, MaterialHandle, MaterialRegistry, PipelineCache, TypedMaterialHandle,
 };
 use crate::render::resources::mesh::{Mesh, MeshHandle};
+use crate::render::resources::texture_cache::SharedRenderAssetCache;
 use crate::render::view::RenderStats;
 
 use super::executor::RenderExecutor;
@@ -21,6 +22,7 @@ pub struct RenderRuntime {
     pub(crate) shadows: ShadowRuntime,
     pub(crate) frame: FrameCoordinator,
     pub(crate) executor: RenderExecutor,
+    pub(crate) asset_cache: SharedRenderAssetCache,
 }
 
 impl RenderRuntime {
@@ -65,7 +67,13 @@ impl RenderRuntime {
             },
             frame: FrameCoordinator::new(),
             executor: RenderExecutor::new(),
+            asset_cache: SharedRenderAssetCache::default(),
         }
+    }
+
+    #[inline]
+    pub fn render_asset_cache(&self) -> &SharedRenderAssetCache {
+        &self.asset_cache
     }
 
     #[inline]
