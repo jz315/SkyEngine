@@ -28,8 +28,9 @@ criterion/
 CubismSdkForNative/
 tools/
 
-# Local reference checkouts
-_refs/*
+# Local reference and archive checkouts
+_achieved/
+_refs/
 examples/assets/tiled/tiled/
 
 # Subcrate build artifacts
