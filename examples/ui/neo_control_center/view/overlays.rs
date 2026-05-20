@@ -1,5 +1,5 @@
-use sky_engine::render::Color;
 use sky_engine::ui::neo::widgets;
+use sky_engine::ui::neo::Color;
 use sky_engine::ui::neo::{Align, NeoState, Screen, Ui};
 
 use crate::actions;

@@ -4,7 +4,9 @@
 //! cargo run --example weird_yakui_lab --features yakui-ui --release
 //! ```
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, SetupContext, WindowPlugin,
+};
 use sky_engine::ecs::World;
 use sky_engine::plugin::Plugin;
 use sky_engine::render::{
@@ -441,17 +443,24 @@ fn on_off(value: bool) -> &'static str {
 }
 
 fn main() {
-    App::new(
-        AppConfig::new("SkyEngine - Weird Yakui Lab", WINDOW_W, WINDOW_H)
-            .with_vsync(false)
-            .with_resizable(true),
-        World::new(),
-    )
-    .with_render_pipeline(
-        RenderPipelineAsset::builder()
-            .add_feature(SpriteFeature::unlit())
-            .add_phase(TransparentPhase::new())
-            .build(),
-    )
-    .run(WeirdYakuiLab::default());
+    let mut world = World::new();
+    world
+        .install(
+            WindowPlugin::new("SkyEngine - Weird Yakui Lab", WINDOW_W, WINDOW_H)
+                .with_vsync(false)
+                .with_resizable(true),
+        )
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+    world
+        .install(RenderPlugin::pipeline(
+            RenderPipelineAsset::builder()
+                .add_feature(SpriteFeature::unlit())
+                .add_phase(TransparentPhase::new())
+                .build(),
+        ))
+        .unwrap();
+
+    App::new(world).run(WeirdYakuiLab::default());
 }

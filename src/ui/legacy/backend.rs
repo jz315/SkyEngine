@@ -38,7 +38,7 @@ impl UiBackend for LegacyUiBackend {
     }
 
     fn render_overlay(&mut self, ctx: UiRenderContext<'_>) -> Result<(), UiError> {
-        render_ui(ctx.world, ctx.gpu);
+        render_ui(ctx.world, ctx.gpu, ctx.render_assets);
         Ok(())
     }
 

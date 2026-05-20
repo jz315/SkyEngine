@@ -1,43 +1,19 @@
-use crate::ecs::{EntityId, World};
-use crate::render::Color;
-use crate::ui::{
-    UiAlign, UiAnchor, UiButton, UiEventKind, UiEvents, UiId, UiImage, UiLayout, UiLength, UiNode,
-    UiPanel, UiRect, UiState, UiText,
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use crate::app::FrameContext;
+use crate::ecs::World;
+use crate::render::Color as RenderColor;
+use crate::ui::neo::{
+    self, widgets, Color as NeoColor, HorizontalAlign, Screen, Ui, VerticalAlign,
 };
 use crate::vn::action::VnAction;
-use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-use crate::vn::components::{VnActorSprite, VnBackground, VnChoiceUi, VnDialogueUi, VnSceneLayer};
 use crate::vn::dialogue::VnDialogueState;
-use crate::vn::presentation::VnSpriteTextureMap;
 use crate::vn::resource::VnResource;
-use crate::vn::runtime::{VnRuntime, VnRuntimeEvent, VnRuntimeResult};
-use crate::vn::scene::{VnActor, VnImageLayer, VnSceneState};
 use crate::vn::ui::VnUiMode;
-
-static VN_UI_DEBUG_FRAMES: AtomicUsize = AtomicUsize::new(0);
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum VnUiImageFit {
-    #[default]
-    AutoFill,
-    Contain,
-    FillWidth,
-    FillHeight,
-}
 
 #[derive(Clone, Debug)]
 pub struct VnUiPresentationConfig {
-    /// Scene rectangle in logical screen pixels, with the origin at the
-    /// surface top-left and y increasing downward.
-    pub scene_position: [f32; 2],
-    pub scene_size: [f32; 2],
-    pub background_fit: VnUiImageFit,
-    pub cg_fit: VnUiImageFit,
-    pub actor_height: f32,
-    pub actor_scale: f32,
-    pub actor_positions: BTreeMap<String, [f32; 2]>,
     /// Dialogue panel top-left in logical screen pixels.
     pub dialogue_position: [f32; 2],
     pub dialogue_size: [f32; 2],
@@ -45,47 +21,34 @@ pub struct VnUiPresentationConfig {
     pub choice_position: [f32; 2],
     pub choice_size: [f32; 2],
     pub choice_button_height: f32,
-    pub panel_color: Color,
-    pub choice_panel_color: Color,
-    pub text_color: Color,
-    pub speaker_color: Color,
-    pub muted_text_color: Color,
-    pub button_color: Color,
-    pub button_hover_color: Color,
-    pub button_pressed_color: Color,
+    pub panel_color: RenderColor,
+    pub choice_panel_color: RenderColor,
+    pub text_color: RenderColor,
+    pub speaker_color: RenderColor,
+    pub muted_text_color: RenderColor,
+    pub button_color: RenderColor,
+    pub button_hover_color: RenderColor,
+    pub button_pressed_color: RenderColor,
     pub speaker_font_size: f32,
     pub line_font_size: f32,
 }
 
 impl Default for VnUiPresentationConfig {
     fn default() -> Self {
-        let mut actor_positions = BTreeMap::new();
-        actor_positions.insert("far_left".to_owned(), [0.18, 1.0]);
-        actor_positions.insert("left".to_owned(), [0.32, 1.0]);
-        actor_positions.insert("center".to_owned(), [0.5, 1.0]);
-        actor_positions.insert("right".to_owned(), [0.68, 1.0]);
-        actor_positions.insert("far_right".to_owned(), [0.82, 1.0]);
         Self {
-            scene_position: [0.0, 0.0],
-            scene_size: [1280.0, 720.0],
-            background_fit: VnUiImageFit::AutoFill,
-            cg_fit: VnUiImageFit::AutoFill,
-            actor_height: 0.94,
-            actor_scale: 1.0,
-            actor_positions,
             dialogue_position: [50.0, 516.0],
             dialogue_size: [1180.0, 166.0],
             choice_position: [330.0, 148.0],
             choice_size: [620.0, 260.0],
             choice_button_height: 44.0,
-            panel_color: Color::rgba8(12, 18, 28, 226),
-            choice_panel_color: Color::rgba8(16, 22, 34, 216),
-            text_color: Color::rgba8(244, 248, 252, 255),
-            speaker_color: Color::rgba8(135, 210, 255, 255),
-            muted_text_color: Color::rgba8(176, 188, 204, 255),
-            button_color: Color::rgba8(38, 48, 64, 232),
-            button_hover_color: Color::rgba8(58, 78, 104, 244),
-            button_pressed_color: Color::rgba8(24, 34, 48, 246),
+            panel_color: RenderColor::rgba8(12, 18, 28, 226),
+            choice_panel_color: RenderColor::rgba8(16, 22, 34, 216),
+            text_color: RenderColor::rgba8(244, 248, 252, 255),
+            speaker_color: RenderColor::rgba8(135, 210, 255, 255),
+            muted_text_color: RenderColor::rgba8(176, 188, 204, 255),
+            button_color: RenderColor::rgba8(38, 48, 64, 232),
+            button_hover_color: RenderColor::rgba8(58, 78, 104, 244),
+            button_pressed_color: RenderColor::rgba8(24, 34, 48, 246),
             speaker_font_size: 22.0,
             line_font_size: 24.0,
         }
@@ -97,8 +60,6 @@ impl VnUiPresentationConfig {
         let width = surface_size[0].max(1.0);
         let height = surface_size[1].max(1.0);
         let mut config = Self::default();
-        config.scene_position = [0.0, 0.0];
-        config.scene_size = [width, height];
         config.dialogue_size = [width * 0.92, (height * 0.23).clamp(136.0, 210.0)];
         config.dialogue_position = [
             (width - config.dialogue_size[0]) * 0.5,
@@ -151,8 +112,6 @@ impl VnUiLayoutPreset {
     pub fn fit_config(self, surface_size: [f32; 2]) -> VnUiPresentationConfig {
         let layout = letterbox_layout(surface_size, self.content_size);
         VnUiPresentationConfig {
-            scene_position: [layout.x, layout.y],
-            scene_size: [layout.width, layout.height],
             dialogue_position: [
                 layout.x + layout.width * self.dialogue_x,
                 layout.bottom()
@@ -226,1418 +185,403 @@ fn letterbox_layout(surface_size: [f32; 2], content_size: [f32; 2]) -> VnLetterb
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct VnUiEntities {
-    pub background_image: Option<EntityId>,
-    pub cg_image: Option<EntityId>,
-    pub actors: BTreeMap<String, EntityId>,
-    pub dialogue_panel: Option<EntityId>,
-    pub speaker_text: Option<EntityId>,
-    pub line_text: Option<EntityId>,
-    pub advance_button: Option<EntityId>,
-    pub choice_panel: Option<EntityId>,
-    pub choice_buttons: Vec<EntityId>,
+#[derive(Clone, Default)]
+pub struct VnUiActionSink {
+    actions: Rc<RefCell<Vec<VnAction>>>,
 }
 
-pub fn sync_runtime_ui_to_world(world: &mut World) {
-    let surface_size = world
-        .get_resource::<UiState>()
-        .map(UiState::surface_size)
-        .filter(|size| size[0] > 0.0 && size[1] > 0.0)
-        .unwrap_or_else(|| VnUiPresentationConfig::default().scene_size);
-    sync_runtime_ui_to_world_with_surface(world, surface_size);
-}
-
-pub fn sync_runtime_ui_to_world_with_surface(world: &mut World, surface_size: [f32; 2]) {
-    let Some((dialogue, scene, mode, config, textures, mut entities)) =
-        world.get_resource_mut::<VnResource>().and_then(|vn| {
-            let runtime = vn.runtime()?;
-            Some((
-                runtime.dialogue().clone(),
-                runtime.scene().clone(),
-                vn.ui.clone(),
-                vn.ui_presentation_config
-                    .clone()
-                    .unwrap_or_else(|| VnUiPresentationConfig::for_surface(surface_size)),
-                vn.sprite_textures.clone(),
-                std::mem::take(&mut vn.ui_entities),
-            ))
-        })
-    else {
-        return;
-    };
-    let debug = begin_vn_ui_debug(surface_size, &config, &scene);
-
-    sync_scene_ui_to_world_debug(world, &mut entities, &scene, &config, &textures, debug);
-    sync_dialogue_ui_to_world_debug(world, &mut entities, &dialogue, &mode.mode, &config, debug);
-    if let Some(vn) = world.get_resource_mut::<VnResource>() {
-        vn.ui_entities = entities;
+impl std::fmt::Debug for VnUiActionSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VnUiActionSink")
+            .field("queued", &self.actions.borrow().len())
+            .finish()
     }
 }
 
-pub fn sync_scene_ui_to_world(
-    world: &mut World,
-    entities: &mut VnUiEntities,
-    scene: &VnSceneState,
-    config: &VnUiPresentationConfig,
-    textures: &VnSpriteTextureMap,
-) {
-    sync_scene_ui_to_world_debug(world, entities, scene, config, textures, None);
+impl VnUiActionSink {
+    pub fn push(&self, action: VnAction) {
+        self.actions.borrow_mut().push(action);
+    }
+
+    pub fn drain(&self) -> Vec<VnAction> {
+        self.actions.borrow_mut().drain(..).collect()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.actions.borrow().is_empty()
+    }
 }
 
-fn sync_scene_ui_to_world_debug(
-    world: &mut World,
-    entities: &mut VnUiEntities,
-    scene: &VnSceneState,
-    config: &VnUiPresentationConfig,
-    textures: &VnSpriteTextureMap,
-    debug: Option<VnUiDebugFrame>,
-) {
-    let scene_bounds = (config.scene_position, config.scene_size);
-    sync_image_ui_layer(
-        world,
-        &mut entities.background_image,
-        scene.background.as_ref(),
-        config.background_fit,
-        scene_bounds,
-        textures,
-        "background",
-        debug,
-    );
-    sync_image_ui_layer(
-        world,
-        &mut entities.cg_image,
-        scene.cg.as_ref(),
-        config.cg_fit,
-        scene_bounds,
-        textures,
-        "cg",
-        debug,
-    );
-    sync_actor_ui_layers(world, &mut entities.actors, scene, config, textures, debug);
+#[derive(Clone, Debug)]
+pub struct VnUiComposeContext {
+    mode: VnUiMode,
+    action_sink: VnUiActionSink,
 }
 
-fn sync_image_ui_layer(
-    world: &mut World,
-    slot: &mut Option<EntityId>,
-    layer: Option<&VnImageLayer>,
-    fit: VnUiImageFit,
-    scene_bounds: ([f32; 2], [f32; 2]),
-    textures: &VnSpriteTextureMap,
-    layer_name: &str,
-    debug: Option<VnUiDebugFrame>,
-) {
-    let Some(layer) = layer else {
-        despawn_slot(world, slot);
-        return;
-    };
-    let Some(texture) = textures.get(&layer.asset) else {
-        despawn_slot(world, slot);
-        return;
-    };
-    let (rect, uv_rect) = fitted_image_rect(
-        scene_bounds.0,
-        scene_bounds.1,
-        textures.size(&layer.asset),
-        fit,
-    );
-    debug_log_image_layer(
-        debug,
-        layer_name,
-        &layer.asset,
-        fit,
-        scene_bounds,
-        textures.size(&layer.asset),
-        rect,
-        uv_rect,
-    );
+impl VnUiComposeContext {
+    pub fn mode(&self) -> &VnUiMode {
+        &self.mode
+    }
 
-    let node = UiNode::panel(rect[2], rect[3])
-        .anchor(UiAnchor::TopLeft)
-        .at(rect[0], rect[1])
-        .z(layer.layer)
-        .input_transparent();
-    let image = UiImage::new(texture).uv(uv_rect[0], uv_rect[1], uv_rect[2], uv_rect[3]);
-    let entity = match live_entity(world, *slot) {
-        Some(entity) => {
-            world.insert(entity, node);
-            world.insert(entity, image);
-            entity
+    pub fn action_sink(&self) -> VnUiActionSink {
+        self.action_sink.clone()
+    }
+
+    pub fn push_action(&self, action: VnAction) {
+        self.action_sink.push(action);
+    }
+}
+
+#[derive(Clone, Debug)]
+struct VnUiSnapshot {
+    dialogue: Option<VnDialogueState>,
+    mode: VnUiMode,
+    config: VnUiPresentationConfig,
+}
+
+pub fn compose_vn_ui(ctx: &mut FrameContext<'_>) {
+    let _ = compose_vn_ui_with(ctx, |_, _, _| {});
+}
+
+pub fn compose_vn_ui_with<R>(
+    ctx: &mut FrameContext<'_>,
+    extra: impl FnOnce(&mut Ui, Screen, &VnUiComposeContext) -> R,
+) -> Option<R> {
+    let logical_surface_size = ctx.logical_surface_size();
+    let snapshot = snapshot_from_world(ctx.world, logical_surface_size);
+    let action_sink = ensure_vn_ui_action_sink(ctx.world);
+    let compose_context = VnUiComposeContext {
+        mode: snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.mode.clone())
+            .unwrap_or(VnUiMode::Reading),
+        action_sink: action_sink.clone(),
+    };
+    let output = neo::compose(ctx, move |ui, screen| {
+        if let Some(snapshot) = snapshot.as_ref() {
+            draw_vn_ui(ui, screen, snapshot, &action_sink);
         }
-        None => {
-            let entity = world.spawn((node, image));
-            *slot = Some(entity);
-            entity
-        }
-    };
-    world.insert(
-        entity,
-        VnBackground {
-            asset: layer.asset.clone(),
-            layer: layer.layer,
-        },
-    );
-    world.insert(
-        entity,
-        VnSceneLayer {
-            name: layer_name.to_owned(),
-            order: layer.layer,
-        },
-    );
+        extra(ui, screen, &compose_context)
+    });
+    drain_vn_ui_actions_to_resource(ctx.world);
+    output
 }
 
-fn sync_actor_ui_layers(
-    world: &mut World,
-    entities: &mut BTreeMap<String, EntityId>,
-    scene: &VnSceneState,
-    config: &VnUiPresentationConfig,
-    textures: &VnSpriteTextureMap,
-    debug: Option<VnUiDebugFrame>,
-) {
-    let stale: Vec<_> = entities
-        .keys()
-        .filter(|id| {
-            scene
-                .actors
-                .get(*id)
-                .is_none_or(|actor| !actor.visible || actor_asset(actor).is_none())
-        })
+pub fn drain_vn_ui_actions_to_resource(world: &mut World) -> Vec<VnAction> {
+    let Some(sink) = world.get_resource::<VnUiActionSink>().cloned() else {
+        return Vec::new();
+    };
+    let actions = sink.drain();
+    if !actions.is_empty() {
+        if let Some(vn) = world.get_resource_mut::<VnResource>() {
+            for action in &actions {
+                vn.push_action(*action);
+            }
+        }
+    }
+    actions
+}
+
+fn ensure_vn_ui_action_sink(world: &mut World) -> VnUiActionSink {
+    if !world.contains_resource::<VnUiActionSink>() {
+        world.insert_resource(VnUiActionSink::default());
+    }
+    world
+        .get_resource::<VnUiActionSink>()
+        .expect("VN UI action sink should be installed")
+        .clone()
+}
+
+fn snapshot_from_world(world: &World, surface_size: [f32; 2]) -> Option<VnUiSnapshot> {
+    let vn = world.get_resource::<VnResource>()?;
+    let config = vn
+        .ui_presentation_config()
         .cloned()
-        .collect();
-    for id in stale {
-        if let Some(entity) = entities.remove(&id) {
-            world.despawn(entity);
-        }
-    }
-
-    for actor in scene.actors.values().filter(|actor| actor.visible) {
-        sync_actor_ui_layer(world, entities, actor, config, textures, debug);
-    }
-}
-
-fn sync_actor_ui_layer(
-    world: &mut World,
-    entities: &mut BTreeMap<String, EntityId>,
-    actor: &VnActor,
-    config: &VnUiPresentationConfig,
-    textures: &VnSpriteTextureMap,
-    debug: Option<VnUiDebugFrame>,
-) {
-    let Some(asset) = actor_asset(actor) else {
-        return;
-    };
-    let Some(texture) = textures.get(asset) else {
-        if let Some(entity) = entities.remove(&actor.id) {
-            world.despawn(entity);
-        }
-        return;
-    };
-
-    let [width, height] = actor_size(config, textures.visible_size(asset));
-    let [anchor_x, anchor_y] = actor_anchor(actor, config);
-    let x = config.scene_position[0] + config.scene_size[0] * anchor_x - width * 0.5;
-    let y = config.scene_position[1] + config.scene_size[1] * anchor_y - height;
-    debug_log_actor(
-        debug,
-        actor,
-        asset,
-        textures.size(asset),
-        [anchor_x, anchor_y],
-        [x, y, width, height],
-        config.scene_size,
-    );
-    let node = UiNode::panel(width, height)
-        .anchor(UiAnchor::TopLeft)
-        .at(x, y)
-        .z(actor.layer)
-        .input_transparent();
-    let uv_rect = textures
-        .visible_uv_rect(asset)
-        .unwrap_or([0.0, 0.0, 1.0, 1.0]);
-    let image = UiImage::new(texture)
-        .uv(uv_rect[0], uv_rect[1], uv_rect[2], uv_rect[3])
-        .color(Color::new(1.0, 1.0, 1.0, actor.opacity));
-    let entity = match entities
-        .get(&actor.id)
-        .copied()
-        .filter(|entity| world.contains(*entity))
-    {
-        Some(entity) => {
-            world.insert(entity, node);
-            world.insert(entity, image);
-            entity
-        }
-        None => {
-            let entity = world.spawn((node, image));
-            entities.insert(actor.id.clone(), entity);
-            entity
-        }
-    };
-
-    world.insert(
-        entity,
-        VnActorSprite {
-            actor_id: actor.id.clone(),
-            asset: actor.asset.clone(),
-            expression: actor.expression.clone(),
-            layer: actor.layer,
-            z: actor.z,
-            opacity: actor.opacity,
-        },
-    );
-    world.insert(
-        entity,
-        VnSceneLayer {
-            name: actor.id.clone(),
-            order: actor.layer,
-        },
-    );
-}
-
-fn actor_asset(actor: &VnActor) -> Option<&str> {
-    actor
-        .asset
-        .as_deref()
-        .or(actor.expression.as_deref())
-        .or(Some(actor.id.as_str()))
-}
-
-fn actor_anchor(actor: &VnActor, config: &VnUiPresentationConfig) -> [f32; 2] {
-    let Some(position) = actor.position.as_deref() else {
-        return config
-            .actor_positions
-            .get("center")
-            .copied()
-            .unwrap_or([0.5, 1.0]);
-    };
-    if let Some(named) = config.actor_positions.get(position) {
-        return *named;
-    }
-    parse_xy(position).unwrap_or_else(|| {
-        config
-            .actor_positions
-            .get("center")
-            .copied()
-            .unwrap_or([0.5, 1.0])
+        .unwrap_or_else(|| VnUiPresentationConfig::for_surface(surface_size));
+    Some(VnUiSnapshot {
+        dialogue: vn.runtime().map(|runtime| runtime.dialogue().clone()),
+        mode: vn.ui().mode.clone(),
+        config,
     })
 }
 
-fn actor_size(config: &VnUiPresentationConfig, image_size: Option<[u32; 2]>) -> [f32; 2] {
-    let height = (config.scene_size[1] * config.actor_height * config.actor_scale).max(1.0);
-    let aspect = image_size
-        .filter(|size| size[0] > 0 && size[1] > 0)
-        .map(|size| size[0] as f32 / size[1] as f32)
-        .unwrap_or(0.55);
-    [height * aspect, height]
-}
-
-fn fitted_image_rect(
-    position: [f32; 2],
-    bounds: [f32; 2],
-    image_size: Option<[u32; 2]>,
-    fit: VnUiImageFit,
-) -> ([f32; 4], [f32; 4]) {
-    let Some(image_size) = image_size.filter(|size| size[0] > 0 && size[1] > 0) else {
-        return (
-            [position[0], position[1], bounds[0], bounds[1]],
-            [0.0, 0.0, 1.0, 1.0],
-        );
-    };
-    let image_w = image_size[0] as f32;
-    let image_h = image_size[1] as f32;
-    let bounds_w = bounds[0].max(1.0);
-    let bounds_h = bounds[1].max(1.0);
-
-    match fit {
-        VnUiImageFit::Contain => {
-            let scale = (bounds_w / image_w).min(bounds_h / image_h);
-            let width = image_w * scale;
-            let height = image_h * scale;
-            (
-                [
-                    position[0] + (bounds_w - width) * 0.5,
-                    position[1] + (bounds_h - height) * 0.5,
-                    width,
-                    height,
-                ],
-                [0.0, 0.0, 1.0, 1.0],
-            )
-        }
-        VnUiImageFit::AutoFill => {
-            let target_aspect = bounds_w / bounds_h;
-            let image_aspect = image_w / image_h;
-            let uv = if image_aspect > target_aspect {
-                let visible_width = target_aspect / image_aspect;
-                let margin = (1.0 - visible_width) * 0.5;
-                [margin, 0.0, 1.0 - margin, 1.0]
-            } else {
-                let visible_height = image_aspect / target_aspect;
-                let margin = (1.0 - visible_height) * 0.5;
-                [0.0, margin, 1.0, 1.0 - margin]
-            };
-            ([position[0], position[1], bounds_w, bounds_h], uv)
-        }
-        VnUiImageFit::FillWidth => {
-            let scaled_h = bounds_w * image_h / image_w;
-            if scaled_h <= bounds_h {
-                let y = position[1] + (bounds_h - scaled_h) * 0.5;
-                ([position[0], y, bounds_w, scaled_h], [0.0, 0.0, 1.0, 1.0])
-            } else {
-                let visible_height = bounds_h / scaled_h;
-                let margin = (1.0 - visible_height) * 0.5;
-                (
-                    [position[0], position[1], bounds_w, bounds_h],
-                    [0.0, margin, 1.0, 1.0 - margin],
-                )
-            }
-        }
-        VnUiImageFit::FillHeight => {
-            let scaled_w = bounds_h * image_w / image_h;
-            if scaled_w <= bounds_w {
-                let x = position[0] + (bounds_w - scaled_w) * 0.5;
-                ([x, position[1], scaled_w, bounds_h], [0.0, 0.0, 1.0, 1.0])
-            } else {
-                let visible_width = bounds_w / scaled_w;
-                let margin = (1.0 - visible_width) * 0.5;
-                (
-                    [position[0], position[1], bounds_w, bounds_h],
-                    [margin, 0.0, 1.0 - margin, 1.0],
-                )
-            }
-        }
+fn draw_vn_ui(ui: &mut Ui, _screen: Screen, snapshot: &VnUiSnapshot, action_sink: &VnUiActionSink) {
+    let visible = matches!(snapshot.mode, VnUiMode::Reading | VnUiMode::Debug);
+    if !visible {
+        return;
     }
+    let Some(dialogue) = snapshot.dialogue.as_ref() else {
+        return;
+    };
+
+    draw_dialogue(ui, dialogue, &snapshot.config, action_sink);
+    draw_choices(ui, dialogue, &snapshot.config, action_sink);
 }
 
-fn parse_xy(raw: &str) -> Option<[f32; 2]> {
-    let (x, y) = raw.split_once(',')?;
-    Some([x.trim().parse().ok()?, y.trim().parse().ok()?])
-}
-
-pub fn sync_dialogue_ui_to_world(
-    world: &mut World,
-    entities: &mut VnUiEntities,
+fn draw_dialogue(
+    ui: &mut Ui,
     dialogue: &VnDialogueState,
-    mode: &VnUiMode,
     config: &VnUiPresentationConfig,
+    action_sink: &VnUiActionSink,
 ) {
-    sync_dialogue_ui_to_world_debug(world, entities, dialogue, mode, config, None);
-}
-
-fn sync_dialogue_ui_to_world_debug(
-    world: &mut World,
-    entities: &mut VnUiEntities,
-    dialogue: &VnDialogueState,
-    mode: &VnUiMode,
-    config: &VnUiPresentationConfig,
-    debug: Option<VnUiDebugFrame>,
-) {
-    let visible = matches!(mode, VnUiMode::Reading | VnUiMode::Debug);
-    debug_log_dialogue(debug, config, dialogue, visible);
-    ensure_dialogue_widgets(world, entities, config);
-    ensure_choice_widgets(world, entities, dialogue.choices.len(), config);
-
-    let speaker = dialogue
-        .current_line
-        .as_ref()
-        .and_then(|line| line.speaker.clone())
-        .unwrap_or_default();
-    let line = if dialogue.line_complete {
-        dialogue
-            .current_line
-            .as_ref()
-            .map(|line| line.text.clone())
-            .unwrap_or_default()
+    let Some(line) = dialogue.current_line.as_ref() else {
+        return;
+    };
+    let speaker = line.speaker.clone().unwrap_or_default();
+    let text = if dialogue.line_complete {
+        line.text.clone()
     } else {
         dialogue.visible_text()
     };
+    let [x, y] = config.dialogue_position;
+    let [w, h] = config.dialogue_size;
 
-    set_visible(
-        world,
-        entities.dialogue_panel,
-        visible && dialogue.current_line.is_some(),
-    );
-    set_visible(world, entities.speaker_text, visible && !speaker.is_empty());
-    set_visible(
-        world,
-        entities.line_text,
-        visible && dialogue.current_line.is_some(),
-    );
-    set_visible(
-        world,
-        entities.advance_button,
-        visible && dialogue.current_line.is_some(),
-    );
-    set_text(world, entities.speaker_text, speaker);
-    set_text(world, entities.line_text, line);
+    ui.stack("vn.dialogue")
+        .position(x, y)
+        .size(w, h)
+        .z(100)
+        .content(|ui| {
+            ui.rect("vn.dialogue.panel")
+                .fill()
+                .radius(10.0)
+                .color(to_neo(config.panel_color))
+                .border(1.0, NeoColor::rgba8(170, 206, 238, 88))
+                .shadow(22.0, 0.0, 10.0, NeoColor::rgba8(0, 0, 0, 92))
+                .build();
 
-    let choices_visible = visible && !dialogue.choices.is_empty();
-    set_visible(world, entities.choice_panel, choices_visible);
-    for (index, entity) in entities.choice_buttons.iter().copied().enumerate() {
-        let Some(choice) = dialogue.choices.get(index) else {
-            set_visible(world, Some(entity), false);
-            continue;
-        };
-        set_visible(world, Some(entity), choices_visible);
-        if let Some(button) = world.get_mut::<UiButton>(entity) {
-            button.label = choice.text.clone();
-            if index == dialogue.selected_choice {
-                button.normal_color = config.button_hover_color;
-            } else {
-                button.normal_color = config.button_color;
+            if !speaker.is_empty() {
+                ui.text("vn.dialogue.speaker")
+                    .position(28.0, 17.0)
+                    .size((w - 220.0).max(120.0), 30.0)
+                    .text(speaker)
+                    .font_size(config.speaker_font_size)
+                    .line_height(config.speaker_font_size + 6.0)
+                    .color(to_neo(config.speaker_color))
+                    .build();
             }
-        }
-    }
+
+            ui.text("vn.dialogue.line")
+                .position(28.0, if line.speaker.is_some() { 56.0 } else { 30.0 })
+                .size((w - 158.0).max(180.0), (h - 74.0).max(40.0))
+                .text(text)
+                .font_size(config.line_font_size)
+                .line_height(config.line_font_size + 8.0)
+                .wrap(true)
+                .color(to_neo(config.text_color))
+                .build();
+
+            ui.stack("vn.advance.slot")
+                .position((w - 112.0).max(20.0), (h - 50.0).max(20.0))
+                .size(86.0, 34.0)
+                .content(|ui| {
+                    let button_sink = action_sink.clone();
+                    widgets::button(ui, "vn.advance")
+                        .size(86.0, 34.0)
+                        .text("Next")
+                        .font_size(15.0)
+                        .radius(8.0)
+                        .colors(
+                            to_neo(config.button_color),
+                            to_neo(config.button_hover_color),
+                            to_neo(config.button_pressed_color),
+                        )
+                        .text_color(to_neo(config.text_color))
+                        .on_click(move || button_sink.push(VnAction::Advance))
+                        .build();
+                });
+        });
 }
 
-#[derive(Clone, Copy, Debug)]
-struct VnUiDebugFrame {
-    frame: usize,
-}
-
-fn begin_vn_ui_debug(
-    surface_size: [f32; 2],
-    config: &VnUiPresentationConfig,
-    scene: &VnSceneState,
-) -> Option<VnUiDebugFrame> {
-    let raw = std::env::var("SKY_VN_UI_DEBUG").ok()?;
-    if raw.is_empty() || raw == "0" || raw.eq_ignore_ascii_case("false") {
-        return None;
-    }
-    let limit = raw.parse::<usize>().unwrap_or(12);
-    let frame = VN_UI_DEBUG_FRAMES.fetch_add(1, Ordering::Relaxed);
-    if frame >= limit {
-        return None;
-    }
-    eprintln!(
-        "[SkyEngine][VN UI][frame {frame}] surface={:?} scene_pos={:?} scene_size={:?} bg_fit={:?} cg_fit={:?} bg={:?} cg={:?} actors={}",
-        surface_size,
-        config.scene_position,
-        config.scene_size,
-        config.background_fit,
-        config.cg_fit,
-        scene.background.as_ref().map(|layer| layer.asset.as_str()),
-        scene.cg.as_ref().map(|layer| layer.asset.as_str()),
-        scene.actors.len(),
-    );
-    Some(VnUiDebugFrame { frame })
-}
-
-fn debug_log_image_layer(
-    debug: Option<VnUiDebugFrame>,
-    layer_name: &str,
-    asset: &str,
-    fit: VnUiImageFit,
-    scene_bounds: ([f32; 2], [f32; 2]),
-    image_size: Option<[u32; 2]>,
-    rect: [f32; 4],
-    uv: [f32; 4],
-) {
-    let Some(debug) = debug else {
-        return;
-    };
-    eprintln!(
-        "[SkyEngine][VN UI][frame {}] image layer={} asset={} fit={:?} bounds_pos={:?} bounds_size={:?} image_size={:?} rect={:?} uv={:?}",
-        debug.frame, layer_name, asset, fit, scene_bounds.0, scene_bounds.1, image_size, rect, uv
-    );
-}
-
-fn debug_log_actor(
-    debug: Option<VnUiDebugFrame>,
-    actor: &VnActor,
-    asset: &str,
-    image_size: Option<[u32; 2]>,
-    anchor: [f32; 2],
-    rect: [f32; 4],
-    scene_size: [f32; 2],
-) {
-    let Some(debug) = debug else {
-        return;
-    };
-    eprintln!(
-        "[SkyEngine][VN UI][frame {}] actor id={} asset={} position={:?} image_size={:?} anchor={:?} scene_size={:?} rect={:?} opacity={:.3}",
-        debug.frame, actor.id, asset, actor.position, image_size, anchor, scene_size, rect, actor.opacity
-    );
-}
-
-fn debug_log_dialogue(
-    debug: Option<VnUiDebugFrame>,
-    config: &VnUiPresentationConfig,
+fn draw_choices(
+    ui: &mut Ui,
     dialogue: &VnDialogueState,
-    visible: bool,
+    config: &VnUiPresentationConfig,
+    action_sink: &VnUiActionSink,
 ) {
-    let Some(debug) = debug else {
+    if dialogue.choices.is_empty() {
         return;
-    };
-    eprintln!(
-        "[SkyEngine][VN UI][frame {}] dialogue visible={} has_line={} choices={} panel_pos={:?} panel_size={:?} choice_pos={:?} choice_size={:?} fonts=({:.1},{:.1})",
-        debug.frame,
-        visible,
-        dialogue.current_line.is_some(),
-        dialogue.choices.len(),
-        config.dialogue_position,
-        config.dialogue_size,
-        config.choice_position,
-        config.choice_size,
-        config.speaker_font_size,
-        config.line_font_size,
-    );
-}
+    }
+    let [x, y] = config.choice_position;
+    let [w, h] = config.choice_size;
+    ui.stack("vn.choices")
+        .position(x, y)
+        .size(w, h)
+        .z(110)
+        .content(|ui| {
+            ui.rect("vn.choices.panel")
+                .fill()
+                .radius(12.0)
+                .color(to_neo(config.choice_panel_color))
+                .border(1.0, NeoColor::rgba8(170, 206, 238, 86))
+                .shadow(24.0, 0.0, 12.0, NeoColor::rgba8(0, 0, 0, 96))
+                .build();
 
-pub fn drain_vn_ui_actions(world: &mut World) -> VnRuntimeResult<Vec<VnAction>> {
-    let mut actions = Vec::new();
-    if let Some(events) = world.get_resource_mut::<UiEvents>() {
-        let mut retained = Vec::new();
-        for event in events.drain() {
-            if event.kind == UiEventKind::Clicked {
-                if let Some(id) = event.id.as_ref().and_then(parse_vn_ui_action) {
-                    let action = match id {
-                        VnUiAction::Advance => VnAction::Advance,
-                        VnUiAction::Choice(index) => VnAction::Choice(index),
-                    };
-                    debug_log_ui_action(id);
-                    actions.push(action);
-                    continue;
+            let pad = 18.0;
+            let gap = 10.0;
+            for (index, choice) in dialogue.choices.iter().enumerate() {
+                let button_y = pad + index as f32 * (config.choice_button_height + gap);
+                if button_y + config.choice_button_height > h - pad {
+                    break;
                 }
+                let id = format!("vn.choice.{index}");
+                let selected = index == dialogue.selected_choice;
+                let normal = if selected {
+                    config.button_hover_color
+                } else {
+                    config.button_color
+                };
+                let button_width = (w - pad * 2.0).max(80.0);
+                ui.stack(format!("vn.choice.slot.{index}"))
+                    .position(pad, button_y)
+                    .size(button_width, config.choice_button_height)
+                    .content(|ui| {
+                        let choice_sink = action_sink.clone();
+                        widgets::button(ui, id)
+                            .size(button_width, config.choice_button_height)
+                            .text(choice.text.clone())
+                            .font_size((config.line_font_size - 3.0).max(15.0))
+                            .radius(8.0)
+                            .colors(
+                                to_neo(normal),
+                                to_neo(config.button_hover_color),
+                                to_neo(config.button_pressed_color),
+                            )
+                            .text_color(to_neo(config.text_color))
+                            .on_click(move || choice_sink.push(VnAction::Choice(index)))
+                            .build();
+                    });
             }
-            retained.push(event);
-        }
-        for event in retained {
-            events.push(event);
-        }
-    }
-
-    Ok(actions)
+        });
 }
 
-pub fn apply_vn_ui_events(world: &mut World) -> VnRuntimeResult<Vec<VnRuntimeEvent>> {
-    let actions = drain_vn_ui_actions(world)?;
-    let mut output = Vec::new();
-    let Some(vn) = world.get_resource_mut::<VnResource>() else {
-        return Ok(output);
-    };
-    let Some(runtime) = vn.runtime_mut() else {
-        return Ok(output);
-    };
-
-    for action in actions {
-        if let Some(event) = runtime.apply_action(action)? {
-            let drain_commands = matches!(event, VnRuntimeEvent::Command(_));
-            output.push(event);
-            if drain_commands {
-                drain_runtime_commands(runtime, &mut output)?;
-            }
-        }
-    }
-
-    Ok(output)
+fn to_neo(color: RenderColor) -> NeoColor {
+    NeoColor::new(color.r, color.g, color.b, color.a)
 }
 
-fn debug_log_ui_action(action: VnUiAction) {
-    let Ok(raw) = std::env::var("SKY_VN_UI_DEBUG") else {
-        return;
-    };
-    if raw.is_empty() || raw == "0" || raw.eq_ignore_ascii_case("false") {
-        return;
-    }
-    eprintln!("[SkyEngine][VN UI] action={action:?}");
-}
-
-fn drain_runtime_commands(
-    runtime: &mut VnRuntime,
-    output: &mut Vec<VnRuntimeEvent>,
-) -> VnRuntimeResult<()> {
-    for _ in 0..16 {
-        let Some(VnRuntimeEvent::Command(_)) = output.last() else {
-            break;
-        };
-        output.push(runtime.advance()?);
-    }
-    Ok(())
-}
-
-fn ensure_dialogue_widgets(
-    world: &mut World,
-    entities: &mut VnUiEntities,
-    config: &VnUiPresentationConfig,
+#[allow(dead_code)]
+fn draw_centered_text(
+    ui: &mut Ui,
+    id: impl Into<String>,
+    text: impl Into<String>,
+    color: NeoColor,
+    font_size: f32,
 ) {
-    let panel = match live_entity(world, entities.dialogue_panel) {
-        Some(entity) => entity,
-        None => {
-            let entity = world.spawn((
-                UiNode::panel(config.dialogue_size[0], config.dialogue_size[1])
-                    .anchor(UiAnchor::TopLeft)
-                    .at(config.dialogue_position[0], config.dialogue_position[1])
-                    .z(100),
-                UiPanel::new(config.panel_color),
-                VnDialogueUi,
-            ));
-            entities.dialogue_panel = Some(entity);
-            entity
-        }
-    };
-    if let Some(node) = world.get_mut::<UiNode>(panel) {
-        node.position = config.dialogue_position;
-        node.size = [
-            UiLength::Px(config.dialogue_size[0]),
-            UiLength::Px(config.dialogue_size[1]),
-        ];
-    }
-    if let Some(panel_component) = world.get_mut::<UiPanel>(panel) {
-        panel_component.color = config.panel_color;
-    }
-
-    let speaker = match live_entity(world, entities.speaker_text) {
-        Some(entity) => entity,
-        None => {
-            let entity = world.spawn((
-                UiNode::panel(320.0, 28.0)
-                    .child_of(panel)
-                    .at(28.0, 18.0)
-                    .z(101)
-                    .input_transparent(),
-                UiText::new("")
-                    .size(config.speaker_font_size)
-                    .color(config.speaker_color),
-            ));
-            entities.speaker_text = Some(entity);
-            entity
-        }
-    };
-    if let Some(text) = world.get_mut::<UiText>(speaker) {
-        text.color = config.speaker_color;
-        text.font_size = config.speaker_font_size;
-    }
-
-    let line = match live_entity(world, entities.line_text) {
-        Some(entity) => entity,
-        None => {
-            let entity = world.spawn((
-                UiNode::panel(config.dialogue_size[0] - 120.0, 82.0)
-                    .child_of(panel)
-                    .at(28.0, 56.0)
-                    .z(101)
-                    .input_transparent(),
-                UiText::new("")
-                    .size(config.line_font_size)
-                    .color(config.text_color),
-            ));
-            entities.line_text = Some(entity);
-            entity
-        }
-    };
-    if let Some(node) = world.get_mut::<UiNode>(line) {
-        node.size = [
-            UiLength::Px((config.dialogue_size[0] - 120.0).max(120.0)),
-            UiLength::Px(82.0),
-        ];
-    }
-    if let Some(text) = world.get_mut::<UiText>(line) {
-        text.color = config.text_color;
-        text.font_size = config.line_font_size;
-    }
-
-    let advance = match live_entity(world, entities.advance_button) {
-        Some(entity) => entity,
-        None => {
-            let entity = world.spawn((
-                UiNode::panel(86.0, 34.0)
-                    .id("vn.advance")
-                    .child_of(panel)
-                    .at(
-                        config.dialogue_size[0] - 112.0,
-                        config.dialogue_size[1] - 50.0,
-                    )
-                    .z(101),
-                styled_button("Next", config),
-            ));
-            entities.advance_button = Some(entity);
-            entity
-        }
-    };
-    if let Some(node) = world.get_mut::<UiNode>(advance) {
-        node.position = [
-            (config.dialogue_size[0] - 112.0).max(20.0),
-            (config.dialogue_size[1] - 50.0).max(20.0),
-        ];
-    }
-    if let Some(button) = world.get_mut::<UiButton>(advance) {
-        apply_button_style(button, config);
-    }
-}
-
-fn ensure_choice_widgets(
-    world: &mut World,
-    entities: &mut VnUiEntities,
-    choice_count: usize,
-    config: &VnUiPresentationConfig,
-) {
-    let panel = match live_entity(world, entities.choice_panel) {
-        Some(entity) => entity,
-        None => {
-            let entity = world.spawn((
-                UiNode::panel(config.choice_size[0], config.choice_size[1])
-                    .anchor(UiAnchor::TopLeft)
-                    .at(config.choice_position[0], config.choice_position[1])
-                    .z(110)
-                    .layout(UiLayout::column(
-                        UiRect::new(18.0, 18.0, 18.0, 18.0),
-                        10.0,
-                        UiAlign::Stretch,
-                    )),
-                UiPanel::new(config.choice_panel_color),
-                VnChoiceUi,
-            ));
-            entities.choice_panel = Some(entity);
-            entity
-        }
-    };
-    if let Some(node) = world.get_mut::<UiNode>(panel) {
-        node.position = config.choice_position;
-        node.size = [
-            UiLength::Px(config.choice_size[0]),
-            UiLength::Px(config.choice_size[1]),
-        ];
-    }
-    if let Some(panel_component) = world.get_mut::<UiPanel>(panel) {
-        panel_component.color = config.choice_panel_color;
-    }
-
-    while entities.choice_buttons.len() < choice_count {
-        let index = entities.choice_buttons.len();
-        let id = format!("vn.choice.{index}");
-        let entity = world.spawn((
-            UiNode::panel(1.0, config.choice_button_height)
-                .id(UiId::new(id))
-                .child_of(panel)
-                .width(UiLength::Percent(1.0))
-                .z(111),
-            styled_button("", config),
-        ));
-        entities.choice_buttons.push(entity);
-    }
-
-    for entity in entities.choice_buttons.iter().copied() {
-        if let Some(button) = world.get_mut::<UiButton>(entity) {
-            apply_button_style(button, config);
-        }
-    }
-}
-
-fn live_entity(world: &World, entity: Option<EntityId>) -> Option<EntityId> {
-    entity.filter(|entity| world.contains(*entity))
-}
-
-fn despawn_slot(world: &mut World, slot: &mut Option<EntityId>) {
-    if let Some(entity) = slot.take() {
-        world.despawn(entity);
-    }
-}
-
-fn set_visible(world: &mut World, entity: Option<EntityId>, visible: bool) {
-    if let Some(entity) = entity {
-        if let Some(node) = world.get_mut::<UiNode>(entity) {
-            node.visible = visible;
-            node.enabled = visible;
-        }
-    }
-}
-
-fn set_text(world: &mut World, entity: Option<EntityId>, text: String) {
-    if let Some(entity) = entity {
-        if let Some(ui_text) = world.get_mut::<UiText>(entity) {
-            ui_text.text = text;
-        }
-    }
-}
-
-fn styled_button(label: impl Into<String>, config: &VnUiPresentationConfig) -> UiButton {
-    let mut button = UiButton::new(label);
-    apply_button_style(&mut button, config);
-    button
-}
-
-fn apply_button_style(button: &mut UiButton, config: &VnUiPresentationConfig) {
-    button.normal_color = config.button_color;
-    button.hover_color = config.button_hover_color;
-    button.pressed_color = config.button_pressed_color;
-    button.text_color = config.text_color;
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum VnUiAction {
-    Advance,
-    Choice(usize),
-}
-
-fn parse_vn_ui_action(id: &UiId) -> Option<VnUiAction> {
-    match id.as_str() {
-        "vn.advance" => Some(VnUiAction::Advance),
-        value => value
-            .strip_prefix("vn.choice.")
-            .and_then(|index| index.parse().ok())
-            .map(VnUiAction::Choice),
-    }
+    ui.text(id)
+        .size(1.0, 1.0)
+        .text(text)
+        .font_size(font_size)
+        .line_height(font_size + 4.0)
+        .horizontal_align(HorizontalAlign::Center)
+        .vertical_align(VerticalAlign::Center)
+        .color(color)
+        .build();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::asset::{AssetConfig, AssetServer, TextureAsset};
-    use crate::ui::{UiEvent, UiEvents};
-    use crate::vn::resource::VnResource;
-    use crate::vn::runtime::VnStatus;
-    use crate::vn::script::{VnValue, YarnInstruction, YarnScript};
-
-    fn insert_vn_runtime(world: &mut World, runtime: VnRuntime) {
-        let mut vn = VnResource::default();
-        vn.runtime = Some(runtime);
-        world.insert_resource(vn);
-    }
-
-    fn vn(world: &World) -> &VnResource {
-        world.get_resource::<VnResource>().unwrap()
-    }
-
-    fn vn_mut(world: &mut World) -> &mut VnResource {
-        world.get_resource_mut::<VnResource>().unwrap()
-    }
+    use crate::plugin::Plugin;
+    use crate::ui::neo::{PointerEvent, Runtime};
+    use crate::vn::dialogue::VnDialogueChoice;
+    use crate::vn::script::YarnLine;
+    use crate::vn::VnPlugin;
 
     #[test]
-    fn ui_sync_spawns_dialogue_and_choices() {
-        let mut runtime = choice_runtime();
-        runtime.advance().unwrap();
-        runtime.dialogue_mut().complete_line();
-        runtime.advance().unwrap();
-
+    fn action_sink_drains_actions_into_vn_resource() {
         let mut world = World::new();
-        insert_vn_runtime(&mut world, runtime);
-        sync_runtime_ui_to_world(&mut world);
-
-        let entities = vn(&world).ui_entities.clone();
-        assert!(world
-            .get::<VnDialogueUi>(entities.dialogue_panel.unwrap())
-            .is_some());
-        assert!(world
-            .get::<VnChoiceUi>(entities.choice_panel.unwrap())
-            .is_some());
-        assert_eq!(entities.choice_buttons.len(), 2);
-        assert_eq!(
-            world
-                .get::<UiButton>(entities.choice_buttons[1])
-                .unwrap()
-                .label,
-            "B"
-        );
-    }
-
-    #[test]
-    fn ui_events_choose_active_choice() {
-        let mut runtime = choice_runtime();
-        runtime.advance().unwrap();
-        runtime.dialogue_mut().complete_line();
-        runtime.advance().unwrap();
-
-        let mut world = World::new();
-        insert_vn_runtime(&mut world, runtime);
-        sync_runtime_ui_to_world(&mut world);
-        let entities = vn(&world).ui_entities.clone();
-        world.insert_resource(UiEvents::new());
-        world
-            .get_resource_mut::<UiEvents>()
-            .unwrap()
-            .push(UiEvent::clicked(
-                entities.choice_buttons[1],
-                Some(UiId::new("vn.choice.1")),
-            ));
-
-        let events = apply_vn_ui_events(&mut world).unwrap();
-        assert!(matches!(events.first(), Some(VnRuntimeEvent::Line(_))));
-        assert_eq!(
-            vn(&world).runtime().unwrap().variable("route"),
-            Some(&VnValue::String("b".to_owned()))
-        );
-    }
-
-    #[test]
-    fn ui_events_can_be_drained_as_vn_actions_without_mutating_runtime() {
-        let mut runtime = choice_runtime();
-        runtime.advance().unwrap();
-        runtime.dialogue_mut().complete_line();
-        runtime.advance().unwrap();
-
-        let mut world = World::new();
-        insert_vn_runtime(&mut world, runtime);
-        sync_runtime_ui_to_world(&mut world);
-        let entities = vn(&world).ui_entities.clone();
-        world.insert_resource(UiEvents::new());
-        world
-            .get_resource_mut::<UiEvents>()
-            .unwrap()
-            .push(UiEvent::clicked(
-                entities.choice_buttons[1],
-                Some(UiId::new("vn.choice.1")),
-            ));
-
-        let actions = drain_vn_ui_actions(&mut world).unwrap();
-
-        assert_eq!(actions, vec![VnAction::Choice(1)]);
-        assert_eq!(vn(&world).runtime().unwrap().variable("route"), None);
-    }
-
-    #[test]
-    fn runtime_ui_sync_updates_actor_position_after_move() {
-        let actor = AssetServer::with_empty_manifest(AssetConfig::default())
-            .insert_runtime(TextureAsset::white_pixel());
-        let mut textures = VnSpriteTextureMap::default();
-        textures.insert_with_size("alice_pose", actor, [300, 600]);
-
-        let script = YarnScript::parse_str(
-            r#"
-title: Start
----
-<<show alice "alice_pose" at="right">>
-Alice: Ready. #line:start.1
--> Center
-    <<move alice to="center">>
-    Alice: Center. #line:center.1
-===
-"#,
-        )
-        .unwrap();
-        let mut runtime = VnRuntime::from_script(script, "Start").unwrap();
-        runtime.advance().unwrap();
-        runtime.advance().unwrap();
-
-        let config = VnUiPresentationConfig {
-            scene_position: [0.0, 0.0],
-            scene_size: [1000.0, 600.0],
-            actor_height: 0.9,
-            ..Default::default()
-        };
-        let mut world = World::new();
-        insert_vn_runtime(&mut world, runtime);
-        {
-            let vn = vn_mut(&mut world);
-            vn.sprite_textures = textures;
-            vn.ui_presentation_config = Some(config);
-        }
-        sync_runtime_ui_to_world(&mut world);
-        let actor_entity = vn(&world).ui_entities.actors["alice"];
-        let right_x = world.get::<UiNode>(actor_entity).unwrap().position[0];
-
-        {
-            let runtime = vn_mut(&mut world).runtime_mut().unwrap();
-            runtime.dialogue_mut().complete_line();
-            assert!(matches!(
-                runtime.advance().unwrap(),
-                VnRuntimeEvent::Choices(_)
-            ));
-            runtime.choose(0).unwrap();
-            assert!(matches!(
-                runtime.advance().unwrap(),
-                VnRuntimeEvent::Command(_)
-            ));
-        }
-        crate::vn::systems::vn_ui_system(&mut world);
-
-        let moved_x = world.get::<UiNode>(actor_entity).unwrap().position[0];
-        assert!(
-            moved_x < right_x,
-            "expected center position {moved_x} to be left of right position {right_x}"
-        );
-        assert_eq!(
-            vn(&world).runtime().unwrap().scene().actors["alice"]
-                .position
-                .as_deref(),
-            Some("center")
-        );
-    }
-
-    #[test]
-    fn ui_choice_click_can_execute_move_command_branch() {
-        let actor = AssetServer::with_empty_manifest(AssetConfig::default())
-            .insert_runtime(TextureAsset::white_pixel());
-        let mut textures = VnSpriteTextureMap::default();
-        textures.insert_with_size("alice_pose", actor, [300, 600]);
-
-        let script = YarnScript::parse_str(
-            r#"
-title: Start
----
-<<show alice "alice_pose" at="right">>
-Alice: Ready. #line:start.1
--> Stay
-    Alice: Stay. #line:stay.1
--> Also stay
-    Alice: Also stay. #line:stay.2
--> Center
-    <<move alice to="center">>
-    Alice: Center. #line:center.1
-===
-"#,
-        )
-        .unwrap();
-        let mut runtime = VnRuntime::from_script(script, "Start").unwrap();
-        runtime.advance().unwrap();
-        runtime.advance().unwrap();
-        runtime.dialogue_mut().complete_line();
-        runtime.advance().unwrap();
-
-        let config = VnUiPresentationConfig {
-            scene_position: [0.0, 0.0],
-            scene_size: [1000.0, 600.0],
-            actor_height: 0.9,
-            ..Default::default()
-        };
-        let mut world = World::new();
-        insert_vn_runtime(&mut world, runtime);
-        {
-            let vn = vn_mut(&mut world);
-            vn.sprite_textures = textures;
-            vn.ui_presentation_config = Some(config);
-        }
-        sync_runtime_ui_to_world(&mut world);
-
-        let entities = vn(&world).ui_entities.clone();
-        let actor_entity = entities.actors["alice"];
-        let right_x = world.get::<UiNode>(actor_entity).unwrap().position[0];
-        world.insert_resource(UiEvents::new());
-        world
-            .get_resource_mut::<UiEvents>()
-            .unwrap()
-            .push(UiEvent::clicked(
-                entities.choice_buttons[2],
-                Some(UiId::new("vn.choice.2")),
-            ));
-
-        crate::vn::systems::vn_input_system(&mut world);
-        crate::vn::systems::vn_ui_system(&mut world);
-
-        let moved_x = world.get::<UiNode>(actor_entity).unwrap().position[0];
-        assert!(
-            moved_x < right_x,
-            "expected clicked move choice to move actor from {right_x} to {moved_x}"
-        );
-        let runtime = vn(&world).runtime().unwrap();
-        assert_eq!(
-            runtime.scene().actors["alice"].position.as_deref(),
-            Some("center")
-        );
-        assert_eq!(
-            runtime
-                .dialogue()
-                .current_line
-                .as_ref()
-                .map(|line| line.text.as_str()),
-            Some("Center.")
-        );
-    }
-
-    #[test]
-    fn dialogue_and_choice_positions_are_top_left_screen_pixels() {
-        let mut runtime = choice_runtime();
-        runtime.advance().unwrap();
-        runtime.dialogue_mut().complete_line();
-        runtime.advance().unwrap();
-
-        let config = VnUiPresentationConfig {
-            dialogue_position: [20.0, 300.0],
-            dialogue_size: [400.0, 120.0],
-            choice_position: [90.0, 80.0],
-            choice_size: [300.0, 160.0],
-            ..Default::default()
-        };
-        let mut world = World::new();
-        insert_vn_runtime(&mut world, runtime);
-        vn_mut(&mut world).ui_presentation_config = Some(config);
-
-        sync_runtime_ui_to_world(&mut world);
-
-        let entities = &vn(&world).ui_entities;
-        let dialogue = world
-            .get::<UiNode>(entities.dialogue_panel.unwrap())
+        VnPlugin::default()
+            .without_systems()
+            .install(&mut world)
             .unwrap();
-        let choice = world.get::<UiNode>(entities.choice_panel.unwrap()).unwrap();
-        assert_eq!(dialogue.anchor, UiAnchor::TopLeft);
-        assert_eq!(dialogue.position, [20.0, 300.0]);
-        assert_eq!(choice.anchor, UiAnchor::TopLeft);
-        assert_eq!(choice.position, [90.0, 80.0]);
+        let sink = ensure_vn_ui_action_sink(&mut world);
+        sink.push(VnAction::Auto);
+        sink.push(VnAction::Choice(2));
+
+        let drained = drain_vn_ui_actions_to_resource(&mut world);
+
+        assert_eq!(drained, vec![VnAction::Auto, VnAction::Choice(2)]);
+        let pending: Vec<_> = world
+            .get_resource::<VnResource>()
+            .unwrap()
+            .actions
+            .iter()
+            .copied()
+            .collect();
+        assert_eq!(pending, vec![VnAction::Auto, VnAction::Choice(2)]);
+        assert!(world.get_resource::<VnUiActionSink>().unwrap().is_empty());
     }
 
     #[test]
-    fn scene_ui_sync_uses_image_fit_and_actor_layout() {
-        let asset_server = AssetServer::with_empty_manifest(AssetConfig::default());
-        let background = asset_server.insert_runtime(TextureAsset::white_pixel());
-        let cg = asset_server.insert_runtime(TextureAsset::white_pixel());
-        let actor = asset_server.insert_runtime(TextureAsset::white_pixel());
-        let mut textures = VnSpriteTextureMap::default();
-        textures.insert_with_size("bg", background, [1000, 500]);
-        textures.insert_with_size("cg", cg, [400, 800]);
-        textures.insert_with_size("alice_pose", actor, [300, 600]);
+    fn neo_choice_click_queues_vn_choice_action() {
+        let mut dialogue = VnDialogueState::default();
+        dialogue.set_choices(vec![
+            VnDialogueChoice {
+                text: "A".to_owned(),
+                source_index: 0,
+                condition: None,
+            },
+            VnDialogueChoice {
+                text: "B".to_owned(),
+                source_index: 1,
+                condition: None,
+            },
+        ]);
+        dialogue.selected_choice = 1;
 
-        let script = YarnScript::parse_str(
-            r#"
-title: Start
----
-<<scene "bg" layer=0>>
-<<cg "cg" layer=40>>
-<<show alice "alice_pose" at="right" layer=20 opacity=0.5>>
-===
-"#,
-        )
-        .unwrap();
-        let mut scene = VnSceneState::default();
-        for instruction in &script.node("Start").unwrap().body {
-            if let YarnInstruction::Command(command) = instruction {
-                scene.apply_command(command);
-            }
-        }
-
-        let config = VnUiPresentationConfig {
-            scene_position: [10.0, 20.0],
-            scene_size: [800.0, 600.0],
-            actor_height: 0.9,
-            ..Default::default()
+        let sink = VnUiActionSink::default();
+        let snapshot = VnUiSnapshot {
+            dialogue: Some(dialogue),
+            mode: VnUiMode::Reading,
+            config: VnUiPresentationConfig {
+                choice_position: [100.0, 100.0],
+                choice_size: [320.0, 180.0],
+                choice_button_height: 40.0,
+                ..Default::default()
+            },
         };
-        let mut world = World::new();
-        let mut entities = VnUiEntities::default();
+        let mut runtime = Runtime::new("vn-test");
+        runtime.compose(640.0, 480.0, |ui, screen| {
+            draw_vn_ui(ui, screen, &snapshot, &sink);
+        });
 
-        sync_scene_ui_to_world(&mut world, &mut entities, &scene, &config, &textures);
+        runtime.update_pointer(PointerEvent::pressed_at(124.0, 170.0));
+        runtime.update_pointer(PointerEvent::released_at(124.0, 170.0));
 
-        let background_entity = entities.background_image.unwrap();
-        let background_node = world.get::<UiNode>(background_entity).unwrap();
-        let background_image = world.get::<UiImage>(background_entity).unwrap();
-        assert_eq!(background_node.position, [10.0, 20.0]);
-        assert_eq!(
-            background_node.size,
-            [UiLength::Px(800.0), UiLength::Px(600.0)]
-        );
-        assert_slice_near(background_image.uv_rect, [0.16666666, 0.0, 0.8333333, 1.0]);
-
-        let cg_entity = entities.cg_image.unwrap();
-        let cg_node = world.get::<UiNode>(cg_entity).unwrap();
-        let cg_image = world.get::<UiImage>(cg_entity).unwrap();
-        assert_eq!(cg_node.position, [10.0, 20.0]);
-        assert_eq!(cg_node.size, [UiLength::Px(800.0), UiLength::Px(600.0)]);
-        assert_slice_near(cg_image.uv_rect, [0.0, 0.3125, 1.0, 0.6875]);
-
-        let actor_entity = entities.actors["alice"];
-        let actor_node = world.get::<UiNode>(actor_entity).unwrap();
-        let actor_image = world.get::<UiImage>(actor_entity).unwrap();
-        assert_eq!(actor_node.position, [419.0, 80.0]);
-        assert_eq!(actor_node.size, [UiLength::Px(270.0), UiLength::Px(540.0)]);
-        assert!((actor_image.color.a - 0.5).abs() < 0.001);
+        assert_eq!(sink.drain(), vec![VnAction::Choice(1)]);
     }
 
     #[test]
-    fn image_fit_modes_compute_expected_rects_and_uvs() {
-        let (rect, uv) = fitted_image_rect(
-            [10.0, 20.0],
-            [800.0, 600.0],
-            Some([400, 800]),
-            VnUiImageFit::AutoFill,
-        );
-        assert_slice_near(rect, [10.0, 20.0, 800.0, 600.0]);
-        assert_slice_near(uv, [0.0, 0.3125, 1.0, 0.6875]);
-
-        let (rect, uv) = fitted_image_rect(
-            [10.0, 20.0],
-            [800.0, 600.0],
-            Some([400, 800]),
-            VnUiImageFit::Contain,
-        );
-        assert_slice_near(rect, [260.0, 20.0, 300.0, 600.0]);
-        assert_slice_near(uv, [0.0, 0.0, 1.0, 1.0]);
-
-        let (rect, uv) = fitted_image_rect(
-            [10.0, 20.0],
-            [800.0, 600.0],
-            Some([400, 800]),
-            VnUiImageFit::FillWidth,
-        );
-        assert_slice_near(rect, [10.0, 20.0, 800.0, 600.0]);
-        assert_slice_near(uv, [0.0, 0.3125, 1.0, 0.6875]);
-
-        let (rect, uv) = fitted_image_rect(
-            [10.0, 20.0],
-            [800.0, 600.0],
-            Some([1600, 600]),
-            VnUiImageFit::FillHeight,
-        );
-        assert_slice_near(rect, [10.0, 20.0, 800.0, 600.0]);
-        assert_slice_near(uv, [0.25, 0.0, 0.75, 1.0]);
-    }
-
-    #[test]
-    fn actor_layout_uses_visible_texture_rect() {
-        let asset_server = AssetServer::with_empty_manifest(AssetConfig::default());
-        let actor = asset_server.insert_runtime(TextureAsset::white_pixel());
-        let mut textures = VnSpriteTextureMap::default();
-        textures.insert_with_visible_rect("wide_pose", actor, [1000, 500], [400, 0, 200, 500]);
-
-        let script = YarnScript::parse_str(
-            r#"
-title: Start
----
-<<show alice "wide_pose" at="right" layer=20>>
-===
-"#,
-        )
-        .unwrap();
-        let mut scene = VnSceneState::default();
-        for instruction in &script.node("Start").unwrap().body {
-            if let YarnInstruction::Command(command) = instruction {
-                scene.apply_command(command);
-            }
-        }
-
-        let config = VnUiPresentationConfig {
-            scene_position: [10.0, 20.0],
-            scene_size: [800.0, 600.0],
-            actor_height: 0.9,
-            ..Default::default()
+    fn dialogue_hidden_mode_draws_no_roots() {
+        let mut dialogue = VnDialogueState::default();
+        dialogue.present_line(YarnLine {
+            speaker: Some("Alice".to_owned()),
+            text: "Hello".to_owned(),
+            line_id: None,
+            span: Default::default(),
+        });
+        dialogue.complete_line();
+        let snapshot = VnUiSnapshot {
+            dialogue: Some(dialogue),
+            mode: VnUiMode::Hidden,
+            config: VnUiPresentationConfig::default(),
         };
-        let mut world = World::new();
-        let mut entities = VnUiEntities::default();
+        let sink = VnUiActionSink::default();
+        let mut runtime = Runtime::new("vn-test");
 
-        sync_scene_ui_to_world(&mut world, &mut entities, &scene, &config, &textures);
+        runtime.compose(1280.0, 720.0, |ui, screen| {
+            draw_vn_ui(ui, screen, &snapshot, &sink);
+        });
 
-        let actor_entity = entities.actors["alice"];
-        let actor_node = world.get::<UiNode>(actor_entity).unwrap();
-        let actor_image = world.get::<UiImage>(actor_entity).unwrap();
-        assert_slice_near(
-            [
-                actor_node.position[0],
-                actor_node.position[1],
-                ui_px(actor_node.size[0]),
-                ui_px(actor_node.size[1]),
-            ],
-            [446.0, 80.0, 216.0, 540.0],
-        );
-        assert_slice_near(actor_image.uv_rect, [0.4, 0.0, 0.6, 1.0]);
+        assert!(runtime.roots().is_empty());
     }
 
     #[test]
-    fn surface_sync_uses_current_window_bounds_for_vn_layout() {
-        let asset_server = AssetServer::with_empty_manifest(AssetConfig::default());
-        let background = asset_server.insert_runtime(TextureAsset::white_pixel());
-        let actor = asset_server.insert_runtime(TextureAsset::white_pixel());
-        let mut textures = VnSpriteTextureMap::default();
-        textures.insert_with_size("bg", background, [1600, 900]);
-        textures.insert_with_size("alice_pose", actor, [300, 600]);
+    fn layout_preset_uses_letterboxed_dialogue_coordinates() {
+        let config = VnUiLayoutPreset::wide_16_9([1280.0, 720.0]).fit_config([1600.0, 1000.0]);
 
-        let script = YarnScript::parse_str(
-            r#"
-title: Start
----
-<<scene "bg" layer=0>>
-<<show alice "alice_pose" at="right" layer=20>>
-Alice: Surface sized. #line:start.1
-===
-"#,
-        )
-        .unwrap();
-        let mut runtime = VnRuntime::from_script(script, "Start").unwrap();
-        while runtime.status() == &VnStatus::Ready {
-            let event = runtime.advance().unwrap();
-            if matches!(event, VnRuntimeEvent::Line(_)) {
-                break;
-            }
-        }
-
-        let mut world = World::new();
-        insert_vn_runtime(&mut world, runtime);
-        vn_mut(&mut world).sprite_textures = textures;
-
-        sync_runtime_ui_to_world_with_surface(&mut world, [1600.0, 900.0]);
-
-        let entities = &vn(&world).ui_entities;
-        let background_node = world
-            .get::<UiNode>(entities.background_image.unwrap())
-            .unwrap();
-        assert_eq!(background_node.position, [0.0, 0.0]);
-        assert_eq!(
-            background_node.size,
-            [UiLength::Px(1600.0), UiLength::Px(900.0)]
-        );
-
-        let actor_node = world.get::<UiNode>(entities.actors["alice"]).unwrap();
-        assert_slice_near(
-            [
-                actor_node.position[0],
-                actor_node.position[1],
-                ui_px(actor_node.size[0]),
-                ui_px(actor_node.size[1]),
-            ],
-            [876.5, 54.0, 423.0, 846.0],
-        );
-
-        let dialogue_node = world
-            .get::<UiNode>(entities.dialogue_panel.unwrap())
-            .unwrap();
-        assert_slice_near(
-            [
-                dialogue_node.position[0],
-                dialogue_node.position[1],
-                ui_px(dialogue_node.size[0]),
-                ui_px(dialogue_node.size[1]),
-            ],
-            [64.0, 648.0, 1472.0, 207.0],
-        );
-    }
-
-    #[test]
-    fn texture_map_plain_insert_clears_stale_size() {
-        let asset_server = AssetServer::with_empty_manifest(AssetConfig::default());
-        let first = asset_server.insert_runtime(TextureAsset::white_pixel());
-        let second = asset_server.insert_runtime(TextureAsset::white_pixel());
-        let mut textures = VnSpriteTextureMap::default();
-
-        textures.insert_with_size("asset", first, [320, 240]);
-        assert_eq!(textures.size("asset"), Some([320, 240]));
-
-        textures.insert("asset", second);
-        assert_eq!(textures.size("asset"), None);
-        assert_eq!(textures.get("asset"), Some(second));
-    }
-
-    fn choice_runtime() -> VnRuntime {
-        let script = YarnScript::parse_str(
-            r#"
-title: Start
----
-Hello. #line:start.1
--> A
-    <<set $route = "a">>
-    <<jump Ending>>
--> B
-    <<set $route = "b">>
-    <<jump Ending>>
-===
-
-title: Ending
----
-Done. #line:end.1
-===
-"#,
-        )
-        .unwrap();
-        VnRuntime::from_script(script, "Start").unwrap()
-    }
-
-    fn assert_slice_near(actual: [f32; 4], expected: [f32; 4]) {
-        for (actual, expected) in actual.into_iter().zip(expected) {
-            assert!(
-                (actual - expected).abs() < 0.001,
-                "expected {expected}, got {actual}"
-            );
-        }
-    }
-
-    fn ui_px(length: UiLength) -> f32 {
-        match length {
-            UiLength::Px(value) => value,
-            other => panic!("expected px length, got {other:?}"),
-        }
+        assert!((config.dialogue_position[0] - 62.5).abs() < 0.01);
+        assert!((config.dialogue_position[1] - 695.0).abs() < 0.01);
+        assert!((config.dialogue_size[0] - 1475.0).abs() < 0.01);
+        assert!((config.dialogue_size[1] - 207.5).abs() < 0.01);
     }
 }

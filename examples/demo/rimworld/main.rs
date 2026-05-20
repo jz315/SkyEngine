@@ -1,8 +1,11 @@
 mod model;
 mod systems;
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
-use sky_engine::asset::{cook, AssetConfig, AssetServer, TextureAsset};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, RunnerPlugin,
+    SetupContext, WindowPlugin,
+};
+use sky_engine::asset::{cook, AssetConfig, Assets, TextureAsset};
 use sky_engine::ecs::World;
 use sky_engine::math::{Projection, Transform, Vec2};
 use sky_engine::render::{
@@ -22,17 +25,17 @@ impl AppState for RimworldApp {
         let world = &mut *ctx.world;
         let asset_dir = rimworld_asset_dir();
         let asset_server = world
-            .get_resource::<AssetServer>()
-            .expect("Rimworld should install its AssetServer before setup")
+            .get_resource::<Assets>()
+            .expect("Rimworld should install its Assets before setup")
             .clone();
         let grass = asset_server
-            .load_by_path::<TextureAsset>(asset_dir.join("grass.png"))
+            .load::<TextureAsset>(asset_dir.join("grass.png"))
             .expect("grass texture should be in the cooked manifest");
         let tree = asset_server
-            .load_by_path::<TextureAsset>(asset_dir.join("tree.png"))
+            .load::<TextureAsset>(asset_dir.join("tree.png"))
             .expect("tree texture should be in the cooked manifest");
         let pawn = asset_server
-            .load_by_path::<TextureAsset>(asset_dir.join("person.png"))
+            .load::<TextureAsset>(asset_dir.join("person.png"))
             .expect("pawn texture should be in the cooked manifest");
 
         let ground_entities = world
@@ -90,22 +93,26 @@ impl AppState for RimworldApp {
 
 fn main() {
     let mut world = build_world();
-    world.insert_resource(create_rimworld_asset_server());
+    world.insert_resource(create_rimworld_assets());
     systems::install_systems(&mut world);
+    world
+        .install(WindowPlugin::new("SkyEngine — Rimworld Prototype", 1280, 720).with_vsync(false))
+        .unwrap();
+    world
+        .install(RunnerPlugin::game().with_auto_tick(false))
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+    world
+        .install(RenderPlugin::pipeline(
+            RenderPipelineAsset::builder()
+                .add_feature(SpriteFeature::unlit())
+                .add_phase(TransparentPhase::new())
+                .build(),
+        ))
+        .unwrap();
 
-    App::new(
-        AppConfig::new("SkyEngine — Rimworld Prototype", 1280, 720)
-            .with_vsync(false)
-            .with_auto_tick(false),
-        world,
-    )
-    .with_render_pipeline(
-        RenderPipelineAsset::builder()
-            .add_feature(SpriteFeature::unlit())
-            .add_phase(TransparentPhase::new())
-            .build(),
-    )
-    .run(RimworldApp);
+    App::new(world).run(RimworldApp);
 }
 
 fn rimworld_asset_dir() -> std::path::PathBuf {
@@ -116,10 +123,10 @@ fn rimworld_asset_dir() -> std::path::PathBuf {
         .join("asset")
 }
 
-fn create_rimworld_asset_server() -> AssetServer {
+fn create_rimworld_assets() -> Assets {
     let config = AssetConfig::new(rimworld_asset_dir(), AssetConfig::default_target());
     cook::cook_all(&config).expect("rimworld texture assets should cook");
-    AssetServer::new(config).expect("rimworld asset server should load cooked manifest")
+    Assets::new(config).expect("rimworld assets should load cooked manifest")
 }
 
 fn build_world() -> World {

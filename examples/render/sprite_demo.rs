@@ -1,14 +1,15 @@
 //! GPU-accelerated ECS sprite demo.
 //!
 //! Spawns thousands of coloured sprites as ECS entities and renders them
-//! through the default programmable scene pipeline installed via
-//! `App::with_render_pipeline(...)`.
+//! through the default programmable scene pipeline installed via `RenderPlugin`.
 //!
 //! ```bash
 //! cargo run --example sprite_demo --features app --release
 //! ```
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, WindowPlugin,
+};
 use sky_engine::ecs::World;
 use sky_engine::render::{
     CameraMarker, Color, MainCamera, Projection, RenderPipelineAsset, SpriteFeature,
@@ -114,17 +115,21 @@ fn main() {
         ));
     }
 
-    App::new(
-        AppConfig::new("SkyEngine — ECS Sprite Demo", 960, 640),
-        world,
-    )
-    .with_render_pipeline(
-        RenderPipelineAsset::builder()
-            .add_feature(SpriteFeature::unlit())
-            .add_phase(TransparentPhase::new())
-            .build(),
-    )
-    .run(SpriteDemo {
+    world
+        .install(WindowPlugin::new("SkyEngine — ECS Sprite Demo", 960, 640))
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+    world
+        .install(RenderPlugin::pipeline(
+            RenderPipelineAsset::builder()
+                .add_feature(SpriteFeature::unlit())
+                .add_phase(TransparentPhase::new())
+                .build(),
+        ))
+        .unwrap();
+
+    App::new(world).run(SpriteDemo {
         fps_smooth: 0.0,
         frame_count: 0,
     });

@@ -1,4 +1,4 @@
-use crate::asset::{AssetServer, Handle, TextureAsset, TextureColorSpace};
+use crate::asset::{Assets, Handle, TextureAsset, TextureColorSpace};
 use crate::gpu::GpuContext;
 use crate::render::expert::{Texture, TextureCreateDesc};
 use crate::video::playback::rgba_len;
@@ -9,7 +9,7 @@ use crate::video::VideoError;
 /// Decoders can write each decoded RGBA frame into this buffer. Render-facing
 /// code keeps using the same [`TextureAsset`] handle, so playback does not
 /// allocate one persistent asset per frame.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VideoFrameBuffer {
     handle: Handle<TextureAsset>,
     width: u32,
@@ -19,7 +19,7 @@ pub struct VideoFrameBuffer {
 
 impl VideoFrameBuffer {
     pub fn new(
-        assets: &AssetServer,
+        assets: &Assets,
         width: u32,
         height: u32,
         color_space: TextureColorSpace,
@@ -35,8 +35,8 @@ impl VideoFrameBuffer {
     }
 
     #[must_use]
-    pub fn handle(self) -> Handle<TextureAsset> {
-        self.handle
+    pub fn handle(&self) -> Handle<TextureAsset> {
+        self.handle.clone()
     }
 
     #[must_use]
@@ -51,7 +51,7 @@ impl VideoFrameBuffer {
 
     pub fn write_rgba8(
         &self,
-        assets: &AssetServer,
+        assets: &Assets,
         pixels: impl Into<Vec<u8>>,
     ) -> Result<(), VideoError> {
         let pixels = pixels.into();
@@ -63,7 +63,7 @@ impl VideoFrameBuffer {
             });
         }
         assets.replace_runtime(
-            self.handle,
+            &self.handle,
             TextureAsset::new(self.width, self.height, self.color_space, pixels),
         )?;
         Ok(())
@@ -132,7 +132,7 @@ mod tests {
 
     #[test]
     fn frame_buffer_reuses_handle_when_pixels_change() {
-        let assets = AssetServer::with_empty_manifest(AssetConfig::default());
+        let assets = Assets::with_empty_manifest(AssetConfig::default());
         let buffer = VideoFrameBuffer::new(&assets, 2, 1, TextureColorSpace::Srgb).unwrap();
         let handle = buffer.handle();
 

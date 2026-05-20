@@ -4,30 +4,49 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::asset::{
-    Asset, AssetError, AssetId, AssetInstallContext, AssetLoadContext, AssetRuntimeFactory,
-    AssetServer, Handle, LoadedAsset, TextureAsset,
+    Asset, AssetError, AssetId, AssetInstallContext, AssetLoadContext, AssetRuntimeFactory, Assets,
+    Handle, LoadedAsset, TextureAsset, WeakHandle,
 };
 use crate::video::types::VideoError;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct VideoFrame {
-    texture: Handle<TextureAsset>,
+    texture: WeakHandle<TextureAsset>,
+    resident_texture: Option<Handle<TextureAsset>>,
     duration: Duration,
 }
 
 impl VideoFrame {
     #[must_use]
     pub fn new(texture: Handle<TextureAsset>, duration: Duration) -> Self {
-        Self { texture, duration }
+        Self {
+            texture: texture.downgrade(),
+            resident_texture: Some(texture),
+            duration,
+        }
     }
 
     #[must_use]
-    pub fn texture(self) -> Handle<TextureAsset> {
+    pub fn from_weak(texture: WeakHandle<TextureAsset>, duration: Duration) -> Self {
+        Self {
+            texture,
+            resident_texture: None,
+            duration,
+        }
+    }
+
+    #[must_use]
+    pub fn texture(&self) -> WeakHandle<TextureAsset> {
         self.texture
     }
 
     #[must_use]
-    pub fn duration(self) -> Duration {
+    pub fn resident_texture(&self) -> Option<Handle<TextureAsset>> {
+        self.resident_texture.clone()
+    }
+
+    #[must_use]
+    pub fn duration(&self) -> Duration {
         self.duration
     }
 }
@@ -120,7 +139,7 @@ impl VideoClip {
 
     #[must_use]
     pub fn frame(&self, index: usize) -> Option<VideoFrame> {
-        self.frames.get(index).copied()
+        self.frames.get(index).cloned()
     }
 
     #[must_use]
@@ -139,7 +158,7 @@ impl VideoClip {
     }
 }
 
-pub fn register_video_asset_factories(asset_server: &AssetServer) {
+pub fn register_video_asset_factories(asset_server: &Assets) {
     asset_server.register_factory(VideoClipFactory);
 }
 
@@ -181,8 +200,8 @@ impl AssetRuntimeFactory for VideoClipFactory {
                         ),
                     });
                 }
-                Ok(VideoFrame::new(
-                    Handle::new(frame.texture),
+                Ok(VideoFrame::from_weak(
+                    WeakHandle::new(frame.texture),
                     Duration::from_secs_f64(duration_seconds),
                 ))
             })
@@ -222,21 +241,24 @@ impl VideoFrameDescriptor {
 
 #[cfg(test)]
 mod tests {
+    use crate::asset::AssetConfig;
+
     use super::*;
 
-    fn texture_handle() -> Handle<TextureAsset> {
-        Handle::new(AssetId::new())
+    fn texture_handle(assets: &Assets) -> Handle<TextureAsset> {
+        assets.insert_runtime(TextureAsset::white_pixel())
     }
 
     #[test]
     fn frame_index_uses_cumulative_durations() {
+        let assets = Assets::with_empty_manifest(AssetConfig::default());
         let clip = VideoClip::new(
             2,
             2,
             [
-                VideoFrame::new(texture_handle(), Duration::from_millis(100)),
-                VideoFrame::new(texture_handle(), Duration::from_millis(200)),
-                VideoFrame::new(texture_handle(), Duration::from_millis(100)),
+                VideoFrame::new(texture_handle(&assets), Duration::from_millis(100)),
+                VideoFrame::new(texture_handle(&assets), Duration::from_millis(200)),
+                VideoFrame::new(texture_handle(&assets), Duration::from_millis(100)),
             ],
         )
         .unwrap();

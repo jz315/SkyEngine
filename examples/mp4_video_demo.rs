@@ -7,7 +7,9 @@
 use std::env;
 use std::path::PathBuf;
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, SetupContext, WindowPlugin,
+};
 use sky_engine::ecs::World;
 use sky_engine::render::expert::SpriteBatch;
 use sky_engine::render::{Camera, Color, Sprite};
@@ -101,6 +103,12 @@ fn main() {
         return;
     }
 
-    App::new(AppConfig::new("mp4_video_demo", 1280, 720), World::new())
-        .run(Mp4VideoDemo::new(path));
+    let mut world = World::new();
+    world
+        .install(WindowPlugin::new("mp4_video_demo", 1280, 720))
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+
+    App::new(world).run(Mp4VideoDemo::new(path));
 }

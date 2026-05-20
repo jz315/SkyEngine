@@ -7,11 +7,13 @@
 
 use std::path::PathBuf;
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, WindowPlugin,
+};
 use sky_engine::ecs::World;
 use sky_engine::render::{
-    CameraMarker, Live2DAnimator, Live2DModelInstance, MainCamera, Projection, RenderPipelineAsset,
-    SortingLayer, Transform,
+    CameraMarker, Live2DAnimator, Live2DModelInstance, MainCamera, Projection, SortingLayer,
+    Transform,
 };
 
 const DEFAULT_MODEL_PATH: &str =
@@ -45,7 +47,12 @@ fn main() {
         Live2DAnimator::default(),
     ));
 
-    App::new(AppConfig::new("SkyEngine - Hello Live2D", 1280, 720), world)
-        .with_render_pipeline(RenderPipelineAsset::live2d_2d())
-        .run(HelloLive2D);
+    world
+        .install(WindowPlugin::new("SkyEngine - Hello Live2D", 1280, 720))
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+    world.install(RenderPlugin::live2d_2d()).unwrap();
+
+    App::new(world).run(HelloLive2D);
 }

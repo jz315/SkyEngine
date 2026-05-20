@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use rustc_hash::FxHashMap;
 
-use crate::asset::{AssetError, AssetServer, AssetState, Handle};
+use crate::asset::{AssetError, AssetState, Assets, Handle};
 use crate::audio::{
     AudioBusId, AudioError, AudioInstanceId, AudioPlaybackSettings, AudioServer, AudioTween,
     MusicTrack, SoundClip,
@@ -53,7 +53,7 @@ impl VnAudioBindings {
 
     pub fn sync(
         &mut self,
-        assets: &AssetServer,
+        assets: &Assets,
         audio: &AudioServer,
         volumes: &VnAudioVolumes,
         intents: impl IntoIterator<Item = VnAudioIntent>,
@@ -111,7 +111,7 @@ impl VnAudioBindings {
 
     fn try_apply_intent(
         &mut self,
-        assets: &AssetServer,
+        assets: &Assets,
         audio: &AudioServer,
         volumes: &VnAudioVolumes,
         intent: &VnAudioIntent,
@@ -133,13 +133,13 @@ impl VnAudioBindings {
 
     fn play_bgm(
         &mut self,
-        assets: &AssetServer,
+        assets: &Assets,
         audio: &AudioServer,
         volumes: &VnAudioVolumes,
         bgm: &VnBgmState,
     ) -> Result<VnAudioApplyStatus, VnAudioSystemError> {
         let handle = self.music_handle(assets, &bgm.asset)?;
-        if !asset_ready(assets, &bgm.asset, handle)? {
+        if !asset_ready(assets, &bgm.asset, &handle)? {
             return Ok(VnAudioApplyStatus::Pending);
         }
 
@@ -184,13 +184,13 @@ impl VnAudioBindings {
 
     fn play_sfx(
         &mut self,
-        assets: &AssetServer,
+        assets: &Assets,
         audio: &AudioServer,
         volumes: &VnAudioVolumes,
         event: &VnSfxEvent,
     ) -> Result<VnAudioApplyStatus, VnAudioSystemError> {
         let handle = self.sound_handle(assets, &event.asset)?;
-        if !asset_ready(assets, &event.asset, handle)? {
+        if !asset_ready(assets, &event.asset, &handle)? {
             return Ok(VnAudioApplyStatus::Pending);
         }
 
@@ -210,13 +210,13 @@ impl VnAudioBindings {
 
     fn play_voice(
         &mut self,
-        assets: &AssetServer,
+        assets: &Assets,
         audio: &AudioServer,
         volumes: &VnAudioVolumes,
         voice: &VnVoiceState,
     ) -> Result<VnAudioApplyStatus, VnAudioSystemError> {
         let handle = self.sound_handle(assets, &voice.asset)?;
-        if !asset_ready(assets, &voice.asset, handle)? {
+        if !asset_ready(assets, &voice.asset, &handle)? {
             return Ok(VnAudioApplyStatus::Pending);
         }
 
@@ -252,31 +252,31 @@ impl VnAudioBindings {
 
     fn music_handle(
         &mut self,
-        assets: &AssetServer,
+        assets: &Assets,
         path: &str,
     ) -> Result<Handle<MusicTrack>, VnAudioSystemError> {
         if let Some(handle) = self.music.get(path) {
-            return Ok(*handle);
+            return Ok(handle.clone());
         }
         let handle = assets
-            .load_by_path::<MusicTrack>(Path::new(path))
+            .load::<MusicTrack>(Path::new(path))
             .map_err(|source| VnAudioSystemError::asset(path, source))?;
-        self.music.insert(path.to_owned(), handle);
+        self.music.insert(path.to_owned(), handle.clone());
         Ok(handle)
     }
 
     fn sound_handle(
         &mut self,
-        assets: &AssetServer,
+        assets: &Assets,
         path: &str,
     ) -> Result<Handle<SoundClip>, VnAudioSystemError> {
         if let Some(handle) = self.sounds.get(path) {
-            return Ok(*handle);
+            return Ok(handle.clone());
         }
         let handle = assets
-            .load_by_path::<SoundClip>(Path::new(path))
+            .load::<SoundClip>(Path::new(path))
             .map_err(|source| VnAudioSystemError::asset(path, source))?;
-        self.sounds.insert(path.to_owned(), handle);
+        self.sounds.insert(path.to_owned(), handle.clone());
         Ok(handle)
     }
 }
@@ -295,7 +295,7 @@ pub struct VnAudioSyncReport {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VnAudioSystemError {
-    MissingAssetServer,
+    MissingAssets,
     MissingAudioServer,
     UnknownBus(String),
     Asset {
@@ -324,9 +324,7 @@ impl VnAudioSystemError {
 impl fmt::Display for VnAudioSystemError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MissingAssetServer => {
-                f.write_str("VN audio sync requires an AssetServer resource")
-            }
+            Self::MissingAssets => f.write_str("VN audio sync requires an Assets resource"),
             Self::MissingAudioServer => {
                 f.write_str("VN audio sync requires an AudioServer resource")
             }
@@ -362,9 +360,9 @@ pub fn sync_runtime_audio_to_world(
     }
 
     let assets = world
-        .get_resource::<AssetServer>()
+        .get_resource::<Assets>()
         .cloned()
-        .ok_or(VnAudioSystemError::MissingAssetServer)?;
+        .ok_or(VnAudioSystemError::MissingAssets)?;
     let audio = world
         .get_resource::<AudioServer>()
         .cloned()
@@ -388,9 +386,9 @@ pub fn sync_audio_intents_to_world(
     intents: impl IntoIterator<Item = VnAudioIntent>,
 ) -> Result<VnAudioSyncReport, VnAudioSystemError> {
     let assets = world
-        .get_resource::<AssetServer>()
+        .get_resource::<Assets>()
         .cloned()
-        .ok_or(VnAudioSystemError::MissingAssetServer)?;
+        .ok_or(VnAudioSystemError::MissingAssets)?;
     let audio = world
         .get_resource::<AudioServer>()
         .cloned()
@@ -408,9 +406,9 @@ enum VnAudioApplyStatus {
 }
 
 fn asset_ready<T: crate::asset::Asset>(
-    assets: &AssetServer,
+    assets: &Assets,
     asset: &str,
-    handle: Handle<T>,
+    handle: &Handle<T>,
 ) -> Result<bool, VnAudioSystemError> {
     match assets.state(&handle) {
         AssetState::Installed => Ok(true),

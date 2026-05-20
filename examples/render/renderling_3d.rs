@@ -6,7 +6,9 @@
 
 use std::f32::consts::{FRAC_PI_2, TAU};
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, SetupContext, WindowPlugin,
+};
 use sky_engine::ecs::{EntityId, World};
 use sky_engine::math::{Quat, Vec3};
 use sky_engine::render::{
@@ -229,12 +231,19 @@ impl RenderlingDemo {
 }
 
 fn main() {
-    App::new(
-        AppConfig::new("SkyEngine Renderling Showcase", 1280, 720),
-        World::new(),
-    )
-    .with_render_pipeline(RenderPipelineAsset::renderling_3d())
-    .run(RenderlingDemo::default());
+    let mut world = World::new();
+    world
+        .install(WindowPlugin::new(
+            "SkyEngine Renderling Showcase",
+            1280,
+            720,
+        ))
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+    world.install(RenderPlugin::renderling_3d()).unwrap();
+
+    App::new(world).run(RenderlingDemo::default());
 }
 
 fn plane_mesh() -> MeshAsset {

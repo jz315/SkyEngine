@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
 
-use crate::asset::{AssetServer, Handle, TextureAsset};
+use crate::asset::{Assets, Handle, TextureAsset};
 use crate::ecs::{EntityId, World};
 use crate::render::component::{
     SortingLayer, SpriteAnimationClip, SpriteAnimationFrame, SpriteAnimator, SpriteRenderer,
@@ -83,8 +83,8 @@ pub struct TiledMapInstance {
     origin: [f32; 2],
     parallax_origin: [f32; 2],
     parallax_items: Vec<TiledMapParallaxItem>,
+    #[allow(dead_code)]
     runtime_animation_clips: Vec<Handle<SpriteAnimationClip>>,
-    unload_texture_on_despawn: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -110,15 +110,15 @@ impl TiledMapInstance {
         options: TiledSpawnOptions,
     ) -> Result<Self, TiledMapInstanceError> {
         let asset_server = world
-            .get_resource::<AssetServer>()
+            .get_resource::<Assets>()
             .cloned()
-            .ok_or(TiledMapInstanceError::MissingAssetServer)?;
+            .ok_or(TiledMapInstanceError::MissingAssets)?;
         let textures = import
             .load_tileset_textures()?
             .into_iter()
             .map(|texture| asset_server.insert_runtime(texture))
             .collect::<Vec<_>>();
-        Self::spawn_import_with_textures_internal(world, import, textures, options, true)
+        Self::spawn_import_with_textures_internal(world, import, textures, options)
     }
 
     /// Spawns a Tiled map using a texture handle that has already been loaded.
@@ -131,7 +131,7 @@ impl TiledMapInstance {
         texture: Handle<TextureAsset>,
         options: TiledSpawnOptions,
     ) -> Result<Self, TiledMapInstanceError> {
-        Self::spawn_import_with_textures_internal(world, import, vec![texture], options, false)
+        Self::spawn_import_with_textures_internal(world, import, vec![texture], options)
     }
 
     pub fn spawn_import_with_textures(
@@ -140,7 +140,7 @@ impl TiledMapInstance {
         textures: Vec<Handle<TextureAsset>>,
         options: TiledSpawnOptions,
     ) -> Result<Self, TiledMapInstanceError> {
-        Self::spawn_import_with_textures_internal(world, import, textures, options, false)
+        Self::spawn_import_with_textures_internal(world, import, textures, options)
     }
 
     fn spawn_import_with_textures_internal(
@@ -148,17 +148,16 @@ impl TiledMapInstance {
         import: &TiledImport,
         textures: Vec<Handle<TextureAsset>>,
         options: TiledSpawnOptions,
-        unload_textures_on_despawn: bool,
     ) -> Result<Self, TiledMapInstanceError> {
         if textures.is_empty() || textures.len() < import.tilesets.len() {
             return Err(TiledMapInstanceError::MissingTilesetTexture);
         }
-        let asset_server = world.get_resource::<AssetServer>().cloned();
+        let asset_server = world.get_resource::<Assets>().cloned();
         if options.spawn_tile_objects
             && asset_server.is_none()
             && import_has_animated_tile_objects(import)
         {
-            return Err(TiledMapInstanceError::MissingAssetServer);
+            return Err(TiledMapInstanceError::MissingAssets);
         }
 
         if world.get_resource::<TilemapStorage>().is_none() {
@@ -184,7 +183,7 @@ impl TiledMapInstance {
         let tileset_grids = textures
             .iter()
             .enumerate()
-            .filter_map(|(index, texture)| import.tileset_grid_for(index, *texture))
+            .filter_map(|(index, texture)| import.tileset_grid_for(index, texture.clone()))
             .collect::<Vec<_>>();
         let mut animation_clips = HashMap::new();
         let mut runtime_animation_clips = Vec::new();
@@ -231,7 +230,7 @@ impl TiledMapInstance {
                     let Some(tileset) = tileset_grids.get(tileset_index) else {
                         continue;
                     };
-                    let texture = textures[tileset_index];
+                    let texture = textures[tileset_index].clone();
                     let base_tile_id = tile_id;
                     let current_tile_id = tileset.animated_tile_id(base_tile_id, 0.0);
                     let Some(uv) = sprite_uv_for_tile(tileset, current_tile_id, flags) else {
@@ -287,14 +286,13 @@ impl TiledMapInstance {
 
         Ok(Self {
             map,
-            texture: textures[0],
+            texture: textures[0].clone(),
             textures,
             entities,
             origin,
             parallax_origin,
             parallax_items,
             runtime_animation_clips,
-            unload_texture_on_despawn: unload_textures_on_despawn,
         })
     }
 
@@ -328,13 +326,12 @@ impl TiledMapInstance {
         let Self {
             map,
             texture: _,
-            textures,
+            textures: _,
             entities,
             origin: _,
             parallax_origin: _,
             parallax_items: _,
-            runtime_animation_clips,
-            unload_texture_on_despawn,
+            runtime_animation_clips: _,
         } = self;
 
         for entity in entities {
@@ -343,25 +340,13 @@ impl TiledMapInstance {
         if let Some(storage) = world.get_resource_mut::<TilemapStorage>() {
             let _ = storage.remove(map);
         }
-        if unload_texture_on_despawn {
-            if let Some(asset_server) = world.get_resource::<AssetServer>().cloned() {
-                for texture in &textures {
-                    asset_server.unload(texture);
-                }
-            }
-        }
-        if let Some(asset_server) = world.get_resource::<AssetServer>().cloned() {
-            for clip in &runtime_animation_clips {
-                asset_server.unload(clip);
-            }
-        }
     }
 }
 
 #[derive(Debug)]
 pub enum TiledMapInstanceError {
     Import(TiledImportError),
-    MissingAssetServer,
+    MissingAssets,
     MissingTilesetTexture,
 }
 
@@ -369,7 +354,7 @@ impl fmt::Display for TiledMapInstanceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Import(error) => error.fmt(f),
-            Self::MissingAssetServer => write!(f, "AssetServer resource is missing"),
+            Self::MissingAssets => write!(f, "Assets resource is missing"),
             Self::MissingTilesetTexture => write!(f, "not enough tileset textures were provided"),
         }
     }
@@ -379,7 +364,7 @@ impl std::error::Error for TiledMapInstanceError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Import(error) => Some(error),
-            Self::MissingAssetServer | Self::MissingTilesetTexture => None,
+            Self::MissingAssets | Self::MissingTilesetTexture => None,
         }
     }
 }
@@ -460,7 +445,7 @@ fn tile_object_draw_size(size: [f32; 2], parallax_object: bool) -> [f32; 2] {
 }
 
 fn sprite_animator_for_tile_object(
-    asset_server: Option<&AssetServer>,
+    asset_server: Option<&Assets>,
     tileset: &TilesetGrid,
     tileset_index: usize,
     tile_id: TileId,
@@ -472,7 +457,7 @@ fn sprite_animator_for_tile_object(
         return Ok(None);
     }
     let key = (tileset_index, tile_id, flags);
-    if let Some(clip) = animation_clips.get(&key).copied() {
+    if let Some(clip) = animation_clips.get(&key).cloned() {
         return Ok(Some(SpriteAnimator::new(clip)));
     }
 
@@ -480,10 +465,10 @@ fn sprite_animator_for_tile_object(
     if clip.frames.is_empty() {
         return Ok(None);
     }
-    let asset_server = asset_server.ok_or(TiledMapInstanceError::MissingAssetServer)?;
+    let asset_server = asset_server.ok_or(TiledMapInstanceError::MissingAssets)?;
     let handle = asset_server.insert_runtime(clip);
-    animation_clips.insert(key, handle);
-    runtime_animation_clips.push(handle);
+    animation_clips.insert(key, handle.clone());
+    runtime_animation_clips.push(handle.clone());
     Ok(Some(SpriteAnimator::new(handle)))
 }
 
@@ -585,7 +570,7 @@ fn sprite_uv_for_tile(
 
 #[cfg(test)]
 mod tests {
-    use crate::asset::{AssetConfig, AssetId, AssetServer, AssetState};
+    use crate::asset::{AssetConfig, AssetId, AssetState, Assets};
     use crate::render::animate_sprites;
     use crate::render::component::TileAnimationFrame;
 
@@ -594,7 +579,7 @@ mod tests {
     #[test]
     fn spawns_and_despawns_official_forest_map_instance() {
         let mut world = World::new();
-        world.insert_resource(AssetServer::with_empty_manifest(AssetConfig::default()));
+        world.insert_resource(Assets::with_empty_manifest(AssetConfig::default()));
 
         let map = TiledMapInstance::spawn(
             &mut world,
@@ -616,7 +601,7 @@ mod tests {
     #[test]
     fn animates_official_forest_tile_objects() {
         let mut world = World::new();
-        world.insert_resource(AssetServer::with_empty_manifest(AssetConfig::default()));
+        world.insert_resource(Assets::with_empty_manifest(AssetConfig::default()));
 
         let map = TiledMapInstance::spawn(
             &mut world,
@@ -646,16 +631,16 @@ mod tests {
             .uv;
         assert_ne!(first_uv, second_uv);
 
-        let asset_server = world.get_resource::<AssetServer>().cloned().unwrap();
-        let clip = map.runtime_animation_clips[0];
+        let asset_server = world.get_resource::<Assets>().cloned().unwrap();
+        let clip_id = map.runtime_animation_clips[0].id();
         map.despawn(&mut world);
         asset_server.update().unwrap();
-        assert_eq!(asset_server.state(&clip), AssetState::Unloaded);
+        assert_eq!(asset_server.state_untyped(clip_id), AssetState::Unloaded);
     }
 
     #[test]
     fn tile_object_animation_clips_reuse_handles_per_instance() {
-        let asset_server = AssetServer::with_empty_manifest(AssetConfig::default());
+        let asset_server = Assets::with_empty_manifest(AssetConfig::default());
         let texture = Handle::<TextureAsset>::new(AssetId::new());
         let tileset = TilesetGrid::new(texture, [16, 16], 4, 1).animations([TileAnimation::new(
             TileId(0),

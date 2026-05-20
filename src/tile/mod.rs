@@ -1,48 +1,28 @@
-//! Format-neutral tile scene runtime types.
+//! High-level tilemap API.
 //!
-//! This module is intentionally separate from the Tiled importer. Authoring
-//! adapters should convert into these types; rendering backends can then sync
-//! them into lower-level tilemap storage.
+//! The standard user path is `Tiles -> Map -> typed layers`. Maps are backed by
+//! ECS-owned runtime state; render storage and imported documents are
+//! implementation details of that live map.
 
-pub mod adapters;
-mod document;
 mod edit;
-mod grid;
-mod instance;
-mod layer;
-mod object;
-mod palette;
-mod persistence;
-mod scene;
-mod sync;
+pub(crate) mod io;
+pub(crate) mod model;
+pub(crate) mod render_bridge;
+mod runtime;
 
-pub use document::{
-    TileAuthoringFormat, TileAuthoringMetadata, TileMapDocument, TileMapDocumentBuilder,
-};
 pub use edit::{
-    DirtyCell, DirtyRegion, ObjectChange, PropertyChange, PropertyTarget, TileChange,
-    TileMapEditHistory, TileMapEditSession, TileMapEditSummary,
+    object, Brush, Cell, CollisionLayer, CollisionValue, Map, MapBuilder, MapEditor, MapId,
+    MetadataLayer, ObjectHandle, ObjectId, ObjectLayer, ObjectSpec, ObjectView, Rect, TileError,
+    TileLayer, TileRef, Tiles,
 };
-pub use grid::{
-    CellCoord, CellRect, GridOrientation, GridOrigin, GridSpec, StaggerAxis, StaggerIndex,
-    TileDirection,
-};
-pub use instance::{
-    TileMapInstance, TileMapInstanceError, TileMapSpawnOptions, TileMapSpawnOrigin,
-};
-pub use layer::{
-    ChunkedTileData, CollisionLayerData, LayerData, LayerId, LayerKind, LayerRole,
-    MetadataLayerData, ObjectLayerData, SceneTile, TileLayer, TileLayerData, TileRef,
-};
-pub use object::{
-    Footprint, ObjectPrototypeId, ObjectVisual, ObjectVisualTile, SpriteVisualRef, TileObject,
-    TileObjectId, TileObjectStore,
-};
-pub use palette::{
-    AssetSource, PaletteId, PropertyBag, PropertyValue, RectU, TileAnimation, TileAnimationFrame,
-    TileAtlasImageSource, TileCollision, TileDef, TileDefId, TilePalette, TilePaletteStore,
+pub use model::{
+    AssetSource, CellCoord, CellRect, ChunkedTileData, CollisionLayerData, Color, Footprint,
+    GridOrientation, GridOrigin, GridSpec, LayerData, LayerId, LayerKind, MetadataLayerData,
+    ObjectLayerData, ObjectPrototypeId, ObjectVisual, ObjectVisualTile, PaletteId, PropertyBag,
+    PropertyValue, RectU, SpriteVisualRef, StaggerAxis, StaggerIndex, TileAnimation,
+    TileAnimationFrame, TileAtlasImageSource, TileCell, TileCollision, TileDef, TileDefId,
+    TileDirection, TileFlags, TileLayerData, TilePalette, TilePaletteStore, TileRenderOrder,
     TileTextureSource,
 };
-pub use persistence::{TileDocumentRevision, TileMapDelta, TileMapSnapshot, TilePersistenceError};
-pub use scene::{TileMap, TileMapId, TileMapSize, TileWorld};
-pub use sync::{TileMapRenderData, TileMapRenderLayer, TileMapRenderSync, TileMapRenderSyncError};
+
+pub(crate) use model::{LayerRole, MapData, MapSize, TileObject, TileObjectId};

@@ -2833,6 +2833,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "eui-neo"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.11.1",
+ "cosmic-text 0.18.2",
+ "rustc-hash 2.1.2",
+]
+
+[[package]]
+name = "eui-neo-wgpu"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "eui-neo",
+ "glyphon",
+ "rustc-hash 2.1.2",
+ "wgpu 29.0.3",
+]
+
+[[package]]
+name = "eui-neo-winit"
+version = "0.1.0"
+dependencies = [
+ "eui-neo",
+ "winit",
+]
+
+[[package]]
 name = "event-listener"
 version = "2.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6842,10 +6870,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "sky_ecs"
+version = "0.1.0"
+dependencies = [
+ "lazy_static",
+ "rayon",
+ "rustc-hash 2.1.2",
+ "sky_type",
+ "smallvec",
+]
+
+[[package]]
 name = "sky_engine"
 version = "0.1.0"
 dependencies = [
- "arboard",
  "base64 0.13.1",
  "bevy",
  "bevy_ecs",
@@ -6854,9 +6892,13 @@ dependencies = [
  "bytes",
  "cgmath",
  "criterion",
+ "crossbeam-queue",
  "egui",
  "egui-wgpu",
  "egui-winit",
+ "eui-neo",
+ "eui-neo-wgpu",
+ "eui-neo-winit",
  "exr",
  "ffmpeg-next",
  "flate2",
@@ -6873,6 +6915,7 @@ dependencies = [
  "kira",
  "lazy_static",
  "live2d-cubism-core-sys",
+ "log",
  "mimalloc",
  "minifb",
  "mint",
@@ -6889,7 +6932,9 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-prepper",
+ "sky_ecs",
  "sky_engine_reflect_derive",
+ "sky_type",
  "smallvec",
  "tempfile",
  "toml",
@@ -6914,6 +6959,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "sky_type"
+version = "0.1.0"
+dependencies = [
+ "lazy_static",
+ "rustc-hash 2.1.2",
 ]
 
 [[package]]

@@ -8,7 +8,7 @@ use glyphon::{
 };
 use rustc_hash::FxHashMap;
 
-use crate::asset::{AssetId, AssetServer, Handle, TextureAsset};
+use crate::asset::{AssetId, Assets, Handle, TextureAsset};
 use crate::ecs::{EntityId, World};
 use crate::gpu::GpuContext;
 use crate::render::{Color as SkyColor, SharedRenderAssetCache};
@@ -482,7 +482,7 @@ impl UiRenderer {
     fn image_bind_group(
         &mut self,
         gpu: &GpuContext,
-        assets: Option<&AssetServer>,
+        assets: Option<&Assets>,
         render_assets: Option<&SharedRenderAssetCache>,
         handle: Handle<TextureAsset>,
     ) -> Option<wgpu::BindGroup> {
@@ -529,7 +529,11 @@ impl UiRenderer {
 }
 
 /// Render UI as an overlay on the active surface frame.
-pub fn render_ui(world: &mut World, gpu: &mut GpuContext) {
+pub fn render_ui(
+    world: &mut World,
+    gpu: &mut GpuContext,
+    render_assets: Option<&SharedRenderAssetCache>,
+) {
     if !gpu.has_surface() || !gpu.has_active_frame() {
         return;
     }
@@ -669,10 +673,7 @@ pub fn render_ui(world: &mut World, gpu: &mut GpuContext) {
     }
 
     let font_book = world.get_resource::<UiFontBook>().cloned();
-    let asset_server = world.get_resource::<AssetServer>().cloned();
-    if !world.contains_resource::<SharedRenderAssetCache>() {
-        world.insert_resource(SharedRenderAssetCache::default());
-    }
+    let asset_server = world.get_resource::<Assets>().cloned();
     let mut renderer = world
         .remove_resource::<UiRenderer>()
         .filter(|renderer| renderer.matches_surface(gpu.surface_format()))
@@ -701,7 +702,6 @@ pub fn render_ui(world: &mut World, gpu: &mut GpuContext) {
     };
     let text_ready = renderer.prepare_text(gpu, &text_items, logical_size);
     let image_bind_groups: Vec<_> = {
-        let render_assets = world.get_resource::<SharedRenderAssetCache>();
         let bind_groups: Vec<_> = images
             .iter()
             .map(|image| {

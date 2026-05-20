@@ -1,5 +1,3 @@
-use crate::diagnostics::Diagnostics;
-use crate::ecs::World;
 use crate::gpu::GpuContext;
 use crate::render::resources::texture_cache::{RenderAssetStats, SharedRenderAssetCache};
 
@@ -37,12 +35,9 @@ pub(crate) fn prepare_frame_assets(
 }
 
 pub(crate) fn finish_render_assets(
-    world: &World,
     asset_cache: Option<&SharedRenderAssetCache>,
 ) -> RenderAssetStats {
     asset_cache.map_or(Default::default(), |asset_cache| {
-        asset_cache
-            .borrow_mut()
-            .finish_frame(world.get_resource::<Diagnostics>())
+        asset_cache.borrow_mut().finish_frame()
     })
 }

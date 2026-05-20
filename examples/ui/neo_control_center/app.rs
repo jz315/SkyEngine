@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use sky_engine::app::{AppState, FrameContext, SetupContext};
-use sky_engine::render::{CameraMarker, Color, MainCamera, Projection, RenderSettings, Transform};
+use sky_engine::render::{CameraMarker, MainCamera, Projection, RenderSettings, Transform};
 use sky_engine::ui::neo::NeoState;
 
 use crate::locale;
@@ -32,12 +32,7 @@ impl AppState for NeoControlCenter {
     fn setup(&mut self, ctx: &mut SetupContext<'_>) {
         let shell = theme::resolve(self.state.read(|model| model.theme_mode));
         ctx.world.insert_resource(RenderSettings {
-            clear_color: Color::new(
-                shell.background_bottom.r,
-                shell.background_bottom.g,
-                shell.background_bottom.b,
-                1.0,
-            ),
+            clear_color: shell.background_bottom.into(),
             ..Default::default()
         });
         ctx.world.spawn((

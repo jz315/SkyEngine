@@ -163,7 +163,7 @@ cargo run --example scene_basic --features scene
 高层渲染推荐工作流：
 
 - `clear_screen` 这类最小示例直接走 `ctx.gpu()`，不安装高层管线
-- `App::with_render_pipeline(RenderPipelineAsset::forward_2d())` 安装默认统一场景管线
+- `world.install(RenderPlugin::forward_2d())` 安装默认统一场景管线
 - 在 `update()` 里调用 `ctx.render()`
 - 想改高层执行顺序，就自定义 builder 注册和有序步骤：`phase / compute / pass / postfx / feature`
 - 需要组合更多渲染类型时，在同一条 pipeline 里组合多个 feature、extractor、draw function 和 pipeline step

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use winit::window::Window;
 
-use crate::asset::AssetServer;
+use crate::asset::Assets;
 use crate::ecs::World;
 use crate::render::pipeline::{RenderBackendKind, RenderPipelineAsset};
 use crate::render::view::RenderStats;
@@ -189,11 +189,11 @@ impl SceneRenderer for KajiyaSceneRenderer {
                 scene_stats.cameras,
                 scene_stats.mesh_instances,
                 scene_stats.directional_lights,
-                world.contains_resource::<AssetServer>()
+                world.contains_resource::<Assets>()
             );
         }
         let snapshot = self.snapshot.clone();
-        let assets = world.get_resource::<AssetServer>().cloned();
+        let assets = world.get_resource::<Assets>().cloned();
         if let Some(runtime) = self.ensure_runtime() {
             if trace {
                 eprintln!("[SkyEngine][Kajiya] native render begin frame={}", frame);

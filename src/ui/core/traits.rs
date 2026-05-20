@@ -3,6 +3,7 @@ use std::any::Any;
 use crate::ecs::World;
 use crate::gpu::GpuContext;
 use crate::input::Input;
+use crate::render::SharedRenderAssetCache;
 use winit::event::WindowEvent;
 use winit::window::Window;
 
@@ -83,6 +84,7 @@ impl UiEventResponse {
 pub struct UiRenderContext<'a> {
     pub world: &'a mut World,
     pub gpu: &'a mut GpuContext,
+    pub render_assets: Option<&'a SharedRenderAssetCache>,
 }
 
 /// Error returned by pluggable UI backends.

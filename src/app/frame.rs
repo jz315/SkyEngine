@@ -5,10 +5,11 @@ use std::time::{Duration, Instant};
 
 use winit::window::Window;
 
-use crate::asset::{AssetServer, Handle, TextureAsset};
+use crate::asset::{Assets, Handle, TextureAsset};
 use crate::ecs::{Time, World};
 use crate::gpu::GpuContext;
 use crate::input::raw::Input;
+use crate::logging::LogStore;
 use crate::render::{
     RenderAssets, RenderRuntime, RenderStats, SceneRenderer, SharedRenderAssetCache,
     TextureReadiness,
@@ -46,6 +47,7 @@ pub struct FrameContext<'a> {
     pub(crate) exit_requested: &'a mut bool,
     pub(crate) redraw_requested: &'a mut bool,
     pub(crate) frame_rate_limit: &'a mut Option<f64>,
+    pub(crate) logs: &'a LogStore,
     pub(crate) aux_window_requests: &'a mut Vec<crate::app::windows::WindowRequest>,
     pub(crate) screenshot_requests: &'a mut Vec<PathBuf>,
     #[cfg(feature = "egui")]
@@ -81,34 +83,25 @@ impl<'a> FrameContext<'a> {
     /// Return the current CPU/GPU readiness state for a texture handle.
     ///
     /// This is a non-blocking query. If the CPU asset is unloaded but known to
-    /// the asset server, the query may request CPU loading and report
+    /// the assets, the query may request CPU loading and report
     /// [`TextureReadiness::CpuLoading`].
     pub fn texture_readiness(&mut self, handle: Handle<TextureAsset>) -> TextureReadiness {
-        let asset_server = self.world.get_resource::<AssetServer>().cloned();
-        self.ensure_render_asset_cache();
-        self.world
-            .get_resource::<SharedRenderAssetCache>()
-            .expect("render asset cache should be installed")
+        let asset_server = self.world.get_resource::<Assets>().cloned();
+        let (_, render_assets) = self.render_asset_cache_parts();
+        render_assets
             .borrow_mut()
-            .texture_readiness(asset_server.as_ref(), handle)
+            .texture_readiness(asset_server.as_ref(), &handle)
     }
 
     /// Ensure a CPU-ready texture is queued for GPU upload, without waiting for it.
     pub fn request_texture_gpu(&mut self, handle: Handle<TextureAsset>) -> TextureReadiness {
-        let Some(asset_server) = self.world.get_resource::<AssetServer>().cloned() else {
+        let Some(asset_server) = self.world.get_resource::<Assets>().cloned() else {
             return TextureReadiness::MissingCpu;
         };
-        self.ensure_render_asset_cache();
-        let cache = self
-            .world
-            .get_resource::<SharedRenderAssetCache>()
-            .expect("render asset cache should be installed");
-        let gpu = self.renderer.wgpu_mut().expect(
-            "FrameContext::request_texture_gpu is only available for the wgpu render backend",
-        );
-        cache
+        let (gpu, render_assets) = self.render_asset_cache_parts();
+        render_assets
             .borrow_mut()
-            .request_texture_gpu(gpu, &asset_server, handle)
+            .request_texture_gpu(gpu, &asset_server, &handle)
     }
 
     /// Wait for the CPU-side texture asset to finish loading/decoding.
@@ -117,7 +110,7 @@ impl<'a> FrameContext<'a> {
         handle: Handle<TextureAsset>,
         timeout: Duration,
     ) -> TextureReadiness {
-        let Some(asset_server) = self.world.get_resource::<AssetServer>().cloned() else {
+        let Some(asset_server) = self.world.get_resource::<Assets>().cloned() else {
             return TextureReadiness::MissingCpu;
         };
         let deadline = Instant::now().checked_add(timeout);
@@ -127,7 +120,7 @@ impl<'a> FrameContext<'a> {
                     "[SkyEngine] Asset update failed while waiting for texture CPU data: {error}"
                 );
             }
-            let readiness = self.cpu_texture_readiness(&asset_server, handle);
+            let readiness = self.cpu_texture_readiness(&asset_server, &handle);
             if !matches!(readiness, TextureReadiness::CpuLoading) || timeout.is_zero() {
                 return readiness;
             }
@@ -148,7 +141,7 @@ impl<'a> FrameContext<'a> {
         handle: Handle<TextureAsset>,
         timeout: Duration,
     ) -> TextureReadiness {
-        let Some(asset_server) = self.world.get_resource::<AssetServer>().cloned() else {
+        let Some(asset_server) = self.world.get_resource::<Assets>().cloned() else {
             return TextureReadiness::MissingCpu;
         };
         let deadline = Instant::now().checked_add(timeout);
@@ -158,7 +151,7 @@ impl<'a> FrameContext<'a> {
                     "[SkyEngine] Asset update failed while waiting for texture GPU data: {error}"
                 );
             }
-            match self.cpu_texture_readiness(&asset_server, handle) {
+            match self.cpu_texture_readiness(&asset_server, &handle) {
                 TextureReadiness::CpuReady
                 | TextureReadiness::GpuQueued
                 | TextureReadiness::GpuReady => {}
@@ -176,21 +169,14 @@ impl<'a> FrameContext<'a> {
                 }
             }
 
-            self.ensure_render_asset_cache();
-            let cache = self
-                .world
-                .get_resource::<SharedRenderAssetCache>()
-                .expect("render asset cache should be installed");
-            let gpu = self.renderer.wgpu_mut().expect(
-                "FrameContext::wait_texture_gpu is only available for the wgpu render backend",
-            );
+            let (gpu, render_assets) = self.render_asset_cache_parts();
             let remaining = deadline
                 .map(|deadline| deadline.saturating_duration_since(Instant::now()))
                 .unwrap_or(timeout);
             let readiness =
-                cache
+                render_assets
                     .borrow_mut()
-                    .wait_texture_gpu(gpu, &asset_server, handle, remaining);
+                    .wait_texture_gpu(gpu, &asset_server, &handle, remaining);
             if matches!(
                 readiness,
                 TextureReadiness::GpuReady
@@ -243,6 +229,13 @@ impl<'a> FrameContext<'a> {
     #[inline]
     pub fn render_stats(&self) -> RenderStats {
         self.renderer.stats()
+    }
+
+    /// Recent logs captured by the app-owned logger.
+    #[inline]
+    pub fn logs(&self) -> &LogStore {
+        crate::logging::drain_logger(self.logs);
+        self.logs
     }
 
     /// Create or resolve backend-neutral render assets.
@@ -349,11 +342,10 @@ impl<'a> FrameContext<'a> {
     /// Requires `--features ui`.
     #[cfg(feature = "ui-legacy")]
     pub fn render_ui(&mut self) {
-        let gpu = self
-            .renderer
-            .wgpu_mut()
-            .expect("FrameContext::render_ui is only available for the wgpu render backend");
-        crate::ui::render_ui(self.world, gpu);
+        let Some((gpu, render_assets)) = self.renderer.wgpu_overlay_parts_mut() else {
+            panic!("FrameContext::render_ui is only available for the wgpu render backend");
+        };
+        crate::ui::render_ui(self.world, gpu, render_assets);
     }
 
     /// Render all installed game UI backend overlays on top of the current surface frame.
@@ -362,10 +354,12 @@ impl<'a> FrameContext<'a> {
     /// Requires `--features ui`.
     #[cfg(feature = "ui-core")]
     pub fn render_ui_overlays(&mut self) {
-        let gpu = self.renderer.wgpu_mut().expect(
-            "FrameContext::render_ui_overlays is only available for the wgpu render backend",
-        );
-        if let Err(error) = crate::ui::render_ui_overlays(self.world, gpu) {
+        let Some((gpu, render_assets)) = self.renderer.wgpu_overlay_parts_mut() else {
+            panic!(
+                "FrameContext::render_ui_overlays is only available for the wgpu render backend"
+            );
+        };
+        if let Err(error) = crate::ui::render_ui_overlays(self.world, gpu, render_assets) {
             eprintln!("[SkyEngine] UI overlay rendering failed: {error}");
         }
     }
@@ -465,22 +459,23 @@ impl<'a> FrameContext<'a> {
             .run(self.window, ui_fn);
     }
 
-    fn ensure_render_asset_cache(&mut self) {
-        if !self.world.contains_resource::<SharedRenderAssetCache>() {
-            self.world
-                .insert_resource(SharedRenderAssetCache::default());
-        }
+    fn render_asset_cache_parts(&mut self) -> (&mut GpuContext, &SharedRenderAssetCache) {
+        let Some((gpu, render_assets)) = self.renderer.wgpu_overlay_parts_mut() else {
+            panic!("texture GPU readiness is only available for the wgpu render backend");
+        };
+        let Some(render_assets) = render_assets else {
+            panic!("texture GPU readiness requires RenderPlugin::pipeline(...)");
+        };
+        (gpu, render_assets)
     }
 
     fn cpu_texture_readiness(
         &mut self,
-        asset_server: &AssetServer,
-        handle: Handle<TextureAsset>,
+        asset_server: &Assets,
+        handle: &Handle<TextureAsset>,
     ) -> TextureReadiness {
-        self.ensure_render_asset_cache();
-        self.world
-            .get_resource::<SharedRenderAssetCache>()
-            .expect("render asset cache should be installed")
+        let (_, render_assets) = self.render_asset_cache_parts();
+        render_assets
             .borrow_mut()
             .texture_readiness(Some(asset_server), handle)
     }

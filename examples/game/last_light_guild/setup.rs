@@ -1,4 +1,4 @@
-use sky_engine::asset::{AssetServer, TextureAsset, TextureColorSpace};
+use sky_engine::asset::{Assets, TextureAsset, TextureColorSpace};
 use sky_engine::ecs::{EntityId, World};
 use sky_engine::render::{
     CameraMarker, MainCamera, Projection, RenderSettings, SortingLayer, SpriteRenderer, Tile,
@@ -140,8 +140,8 @@ pub fn build_world() -> World {
 
 pub fn spawn_guild_tilemap(world: &mut World) {
     let asset_server = world
-        .get_resource::<AssetServer>()
-        .expect("App should install AssetServer before setup")
+        .get_resource::<Assets>()
+        .expect("App should install Assets before setup")
         .clone();
     let tileset = asset_server.insert_runtime(make_guild_tileset());
     let tileset_grid = TilesetGrid::new(tileset, [16, 16], 4, 4);

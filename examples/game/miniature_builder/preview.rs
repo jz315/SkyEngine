@@ -16,7 +16,7 @@ pub fn spawn_preview_entities(world: &mut World, assets: &GameAssets) {
     let hover_tile = world.spawn((
         Transform::from_xyz(0.0, 0.0, 0.0),
         SpriteRenderer::new(assets.hover.width, assets.hover.height)
-            .texture(assets.hover.handle)
+            .texture(assets.hover.handle.clone())
             .uv(
                 assets.hover.uv[0],
                 assets.hover.uv[1],
@@ -27,11 +27,11 @@ pub fn spawn_preview_entities(world: &mut World, assets: &GameAssets) {
             .visible(false),
         SortingLayer(10_000),
     ));
-    let first = assets.blueprints[0].rotations[0];
+    let first = assets.blueprints[0].rotations[0].clone();
     let ghost = world.spawn((
         Transform::from_xyz(0.0, 0.0, 0.0),
         SpriteRenderer::new(first.width, first.height)
-            .texture(first.handle)
+            .texture(first.handle.clone())
             .uv(first.uv[0], first.uv[1], first.uv[2], first.uv[3])
             .color(Color::rgba8(255, 255, 255, 165))
             .visible(false),
@@ -63,7 +63,7 @@ pub fn update_preview(world: &mut World) {
         sprite_renderer.width = assets.hover.width * 1.06;
         sprite_renderer.height = assets.hover.height * 1.06;
         sprite_renderer.uv = assets.hover.uv;
-        sprite_renderer.texture = Some(assets.hover.handle);
+        sprite_renderer.texture = Some(assets.hover.handle.clone());
         sprite_renderer.color = frame.hover_color;
     }
     if let Some(sort) = world.get_mut::<SortingLayer>(preview.hover_tile) {
@@ -120,8 +120,8 @@ fn preview_frame(world: &World, assets: &GameAssets) -> Option<PreviewFrame> {
     let base_sort_layer = cell_sort_layer(row, col);
     let occupied = board.cells[cell_index(row, col)].structure.is_some();
     let affordable = board.can_afford(selection.selected, row, col);
-    let blueprint = assets.blueprints[selection.selected];
-    let sprite = blueprint.rotations[selection.orientation];
+    let blueprint = &assets.blueprints[selection.selected];
+    let sprite = &blueprint.rotations[selection.orientation];
 
     Some(PreviewFrame {
         hover_position: tiled_image_center(
@@ -138,7 +138,7 @@ fn preview_frame(world: &World, assets: &GameAssets) -> Option<PreviewFrame> {
         ghost_width: sprite.width,
         ghost_height: sprite.height,
         ghost_uv: sprite.uv,
-        ghost_texture: sprite.handle,
+        ghost_texture: sprite.handle.clone(),
         ghost_color: if occupied {
             Color::rgba8(255, 232, 128, 150)
         } else if affordable {

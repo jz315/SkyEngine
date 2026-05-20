@@ -3,6 +3,7 @@ use super::config::{NeoUiConfig, NeoWindowConfig};
 use super::plugin::install_neo_ui_backend;
 use super::window::NeoAuxWindowClient;
 use super::{Screen, Ui};
+use crate::asset::Assets;
 
 /// Queue a native child window driven by the neo UI runtime.
 pub fn open_window(
@@ -13,8 +14,11 @@ pub fn open_window(
     let window_config =
         crate::app::windows::WindowConfig::new(config.title.clone(), config.width, config.height)
             .modal(config.modal);
-    ctx.windows()
-        .open(window_config, NeoAuxWindowClient::new(config, compose));
+    let asset_server = ctx.world.get_resource::<Assets>().cloned();
+    ctx.windows().open(
+        window_config,
+        NeoAuxWindowClient::new(config, asset_server, compose),
+    );
 }
 
 /// Compose an EUI-NEO-style declarative UI for the current app frame.

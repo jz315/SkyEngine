@@ -133,7 +133,7 @@ world.contains_resource::<R>() -> bool
 world.remove_resource::<R>() -> Option<R>
 ```
 
-适合放输入状态、全局配置、asset server、diagnostics、physics world、game state 等。
+适合放输入状态、全局配置、asset server、physics world、game state 等。
 
 ## PreparedQuery
 

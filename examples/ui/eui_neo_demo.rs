@@ -4,14 +4,16 @@
 //! cargo run --example eui_neo_demo --features ui-neo --release
 //! ```
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, SetupContext, WindowPlugin,
+};
 use sky_engine::ecs::World;
 use sky_engine::render::{
-    CameraMarker, Color, MainCamera, Projection, RenderPipelineAsset, RenderSettings,
-    SpriteFeature, Transform, TransparentPhase,
+    CameraMarker, MainCamera, Projection, RenderPipelineAsset, RenderSettings, SpriteFeature,
+    Transform, TransparentPhase,
 };
 use sky_engine::ui::neo::widgets;
-use sky_engine::ui::neo::{Align, HorizontalAlign};
+use sky_engine::ui::neo::{Align, Color, HorizontalAlign};
 
 const WINDOW_W: u32 = 800;
 const WINDOW_H: u32 = 600;
@@ -24,7 +26,7 @@ struct EuiNeoDemo {
 impl AppState for EuiNeoDemo {
     fn setup(&mut self, ctx: &mut SetupContext<'_>) {
         ctx.world.insert_resource(RenderSettings {
-            clear_color: Color::new(0.16, 0.18, 0.20, 1.0),
+            clear_color: Color::new(0.16, 0.18, 0.20, 1.0).into(),
             ..Default::default()
         });
         ctx.world.spawn((
@@ -147,17 +149,24 @@ fn env_u32(key: &str) -> Option<u32> {
 }
 
 fn main() {
-    App::new(
-        AppConfig::new("Hello EUI", WINDOW_W, WINDOW_H)
-            .with_vsync(false)
-            .with_resizable(true),
-        World::new(),
-    )
-    .with_render_pipeline(
-        RenderPipelineAsset::builder()
-            .add_feature(SpriteFeature::unlit())
-            .add_phase(TransparentPhase::new())
-            .build(),
-    )
-    .run(EuiNeoDemo::default());
+    let mut world = World::new();
+    world
+        .install(
+            WindowPlugin::new("Hello EUI", WINDOW_W, WINDOW_H)
+                .with_vsync(false)
+                .with_resizable(true),
+        )
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+    world
+        .install(RenderPlugin::pipeline(
+            RenderPipelineAsset::builder()
+                .add_feature(SpriteFeature::unlit())
+                .add_phase(TransparentPhase::new())
+                .build(),
+        ))
+        .unwrap();
+
+    App::new(world).run(EuiNeoDemo::default());
 }

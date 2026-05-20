@@ -10,7 +10,7 @@
 //! cargo run --example neon_galaxy --features app --release
 //! ```
 
-use sky_engine::app::{App, AppConfig};
+use sky_engine::app::{App, AssetPlugin, InputPlugin, WindowPlugin};
 use sky_engine::ecs::World;
 use sky_engine::gpu::GpuContext;
 use sky_engine::render::expert::{
@@ -291,15 +291,21 @@ fn main() {
         s.write_surface();
     });
 
-    let world = World::new();
+    let mut world = World::new();
 
     eprintln!("[neon_galaxy] Move the mouse to control the torch light.");
 
-    App::new(
-        AppConfig::new("SkyEngine — \u{2726} Neon Galaxy \u{2726}", 1280, 720),
-        world,
-    )
-    .run(move |ctx: &mut sky_engine::app::FrameContext| {
+    world
+        .install(WindowPlugin::new(
+            "SkyEngine — \u{2726} Neon Galaxy \u{2726}",
+            1280,
+            720,
+        ))
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+
+    App::new(world).run(move |ctx: &mut sky_engine::app::FrameContext| {
         ctx.world.tick();
         sim_time += ctx.dt;
         let time = sim_time;

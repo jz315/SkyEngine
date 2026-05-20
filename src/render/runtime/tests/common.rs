@@ -1,9 +1,6 @@
 #![allow(unused_imports)]
 
-pub(super) use crate::asset::{AssetConfig, AssetId, AssetServer, Handle, TextureAsset};
-pub(super) use crate::diagnostics::{
-    DiagnosticSeverity, DiagnosticSubsystem, Diagnostics, EngineDiagnosticKind,
-};
+pub(super) use crate::asset::{AssetConfig, AssetId, Assets, Handle, TextureAsset};
 #[cfg(feature = "live2d")]
 pub(super) use crate::ecs::EntityId;
 pub(super) use crate::ecs::World;

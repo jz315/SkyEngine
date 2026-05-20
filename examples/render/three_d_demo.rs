@@ -47,7 +47,9 @@
 //! ```
 
 use glam::{Mat3 as GlamMat3, Quat as GlamQuat, Vec3 as GlamVec3};
-use sky_engine::app::{App, AppConfig, AppState, FrameContext};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, WindowPlugin,
+};
 use sky_engine::ecs::{With, World};
 use sky_engine::input::KeyCode;
 use sky_engine::math::{Quat, Vec3};
@@ -56,9 +58,8 @@ use sky_engine::render::gi::providers::{ddgi, ssgi};
 use sky_engine::render::{
     BloomSettings, CameraMarker, Color, ContactShadowsSettings, DirectionalLight,
     GlobalIllumination, MainCamera, MaterialHandle, PointLight, Projection, RenderDebugView,
-    RenderPipelineAsset, RenderSettings, ShadowSamplingMode, SharpenSettings, SpotLight,
-    StandardMaterial, TemporalAntiAliasingSettings, Texture, ToneMapSettings, Transform,
-    WgpuMeshRenderer,
+    RenderSettings, ShadowSamplingMode, SharpenSettings, SpotLight, StandardMaterial,
+    TemporalAntiAliasingSettings, Texture, ToneMapSettings, Transform, WgpuMeshRenderer,
 };
 
 const GROUND_Y: f32 = -1.25;
@@ -702,7 +703,7 @@ fn initialize_scene(ctx: &mut FrameContext) {
                 amber_emissive: amber_emissive.into(),
             }
         })
-        .expect("three_d_demo requires App::with_render_pipeline(...)");
+        .expect("three_d_demo requires RenderPlugin::pipeline(...)");
 
     ctx.world.spawn((
         Transform::from_xyz(0.0, GROUND_Y, -0.8).with_scale3(14.5, 1.0, 20.0),
@@ -1449,7 +1450,12 @@ fn main() {
         MainCamera,
     ));
 
-    App::new(AppConfig::new("SkyEngine — 3D Demo", 1280, 720), world)
-        .with_render_pipeline(RenderPipelineAsset::modern_3d())
-        .run(ThreeDDemo::default());
+    world
+        .install(WindowPlugin::new("SkyEngine — 3D Demo", 1280, 720))
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+    world.install(RenderPlugin::modern_3d()).unwrap();
+
+    App::new(world).run(ThreeDDemo::default());
 }

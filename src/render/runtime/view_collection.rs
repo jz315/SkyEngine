@@ -1,12 +1,13 @@
-use crate::diagnostics::{Diagnostics, EngineDiagnosticKind};
 use crate::ecs::{EntityId, PreparedQuery, World};
 use crate::render::component::{Camera, CameraViewport, MainCamera, Transform};
 use crate::render::view::{
     build_scene_view, Projection, ResolvedSceneTransforms, SceneTransformResolver, SceneView,
 };
+use rustc_hash::FxHashSet;
 
 pub(crate) struct WorldViewCollector {
     transform_resolver: SceneTransformResolver,
+    logged_missing_projection: FxHashSet<EntityId>,
     view_query: PreparedQuery<(
         &'static Transform,
         &'static Camera,
@@ -62,7 +63,7 @@ impl WorldViewCollector {
         );
 
         if let Some(entity) = missing_projection_entity {
-            self.report_missing_projection(world, entity);
+            self.log_missing_projection(entity);
         }
 
         if views.is_empty() {
@@ -77,10 +78,13 @@ impl WorldViewCollector {
         views
     }
 
-    fn report_missing_projection(&mut self, world: &World, entity: EntityId) {
-        let kind = EngineDiagnosticKind::CameraMissingProjection { entity };
-        if let Some(diagnostics) = world.get_resource::<Diagnostics>() {
-            let _ = diagnostics.report_once(kind);
+    fn log_missing_projection(&mut self, entity: EntityId) {
+        if self.logged_missing_projection.insert(entity) {
+            log::warn!(
+                target: "sky_engine::render::camera",
+                "render.camera.missing_projection: camera {:?} has no Projection; using an implicit orthographic view whose visible height matches the current viewport",
+                entity,
+            );
         }
     }
 }
@@ -100,6 +104,7 @@ impl Default for WorldViewCollector {
     fn default() -> Self {
         Self {
             transform_resolver: SceneTransformResolver::default(),
+            logged_missing_projection: FxHashSet::default(),
             view_query: PreparedQuery::new(),
         }
     }

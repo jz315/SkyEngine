@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use winit::window::Window;
 
-use crate::asset::{AssetServer, Handle};
+use crate::asset::{Assets, Handle};
 use crate::ecs::World;
 use crate::gpu::GpuContext;
 use crate::render::asset::{MeshAsset, StandardMaterialAsset};
@@ -66,7 +66,7 @@ impl WgpuSceneRenderer {
 
     pub fn sync_mesh_asset(
         &mut self,
-        assets: &AssetServer,
+        assets: &Assets,
         handle: Handle<MeshAsset>,
     ) -> Option<MeshHandle> {
         let render_runtime = self.render_runtime.as_mut()?;
@@ -76,7 +76,7 @@ impl WgpuSceneRenderer {
 
     pub fn sync_standard_material_asset(
         &mut self,
-        assets: &AssetServer,
+        assets: &Assets,
         render_assets: &SharedRenderAssetCache,
         handle: Handle<StandardMaterialAsset>,
     ) -> Option<MaterialHandle> {
@@ -107,7 +107,7 @@ impl SceneRenderer for WgpuSceneRenderer {
     fn render_world(&mut self, world: &World) {
         self.render_runtime
             .as_mut()
-            .expect("FrameContext::render requires App::with_render_pipeline(...)")
+            .expect("FrameContext::render requires RenderPlugin::pipeline(...)")
             .render_world(&mut self.gpu, world);
     }
 
@@ -158,5 +158,15 @@ impl SceneRenderer for WgpuSceneRenderer {
     fn wgpu_render_runtime_parts_mut(&mut self) -> Option<(&mut RenderRuntime, &mut GpuContext)> {
         let render_runtime = self.render_runtime.as_mut()?;
         Some((render_runtime, &mut self.gpu))
+    }
+
+    fn wgpu_overlay_parts_mut(
+        &mut self,
+    ) -> Option<(&mut GpuContext, Option<&SharedRenderAssetCache>)> {
+        let render_assets = self
+            .render_runtime
+            .as_ref()
+            .map(RenderRuntime::render_asset_cache);
+        Some((&mut self.gpu, render_assets))
     }
 }

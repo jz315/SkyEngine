@@ -18,20 +18,24 @@ sky_engine = { version = "...", features = ["vn"] }
 The app-facing path is plugin install plus one VN resource:
 
 ```rust,no_run
-use sky_engine::app::{App, AppConfig};
+use sky_engine::app::{App, AssetPlugin, InputPlugin, RenderPlugin, WindowPlugin};
 use sky_engine::ecs::World;
-use sky_engine::plugin::Plugin;
 use sky_engine::vn::{VnPlugin, VnResource};
 
 let mut world = World::new();
-VnPlugin::default().install(&mut world)?;
+world.install(VnPlugin::default())?;
 
 world
     .get_resource_mut::<VnResource>()
     .expect("VnPlugin installs VnResource")
     .load_project_path("assets/vn/project.vn.toml")?;
 
-App::new(AppConfig::new("Sky VN", 1280, 720), world).run(|ctx| {
+world.install(WindowPlugin::new("Sky VN", 1280, 720))?;
+world.install(InputPlugin)?;
+world.install(AssetPlugin::default())?;
+world.install(RenderPlugin::forward_2d())?;
+
+App::new(world).run(|ctx| {
     ctx.render();
 });
 # Ok::<(), Box<dyn std::error::Error>>(())

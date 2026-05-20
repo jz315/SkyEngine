@@ -1,4 +1,4 @@
-use crate::asset::AssetServer;
+use crate::asset::Assets;
 use crate::ecs::World;
 use crate::gpu::GpuContext;
 use crate::render::resources::texture_cache::SharedRenderAssetCache;
@@ -28,9 +28,11 @@ impl Default for FrameCoordinator {
 
 impl RenderRuntime {
     pub fn render_world(&mut self, gpu: &mut GpuContext, world: &World) {
+        let asset_cache = &self.asset_cache;
         self.frame.render_world(
             gpu,
             world,
+            asset_cache,
             FrameRuntimeParts {
                 plan: &mut self.plan,
                 resources: &mut self.resources,
@@ -47,24 +49,24 @@ impl FrameCoordinator {
         &mut self,
         gpu: &mut GpuContext,
         world: &World,
+        asset_cache: &SharedRenderAssetCache,
         mut parts: FrameRuntimeParts<'_>,
     ) {
-        let asset_cache = world.get_resource::<SharedRenderAssetCache>();
-        let asset_server = world.get_resource::<AssetServer>().cloned();
-        let inputs = begin_frame_inputs(&mut parts, gpu, world, asset_cache);
+        let asset_server = world.get_resource::<Assets>().cloned();
+        let inputs = begin_frame_inputs(&mut parts, gpu, world, Some(asset_cache));
         let mut extracted = extract_frame(
             &mut parts,
             gpu,
             world,
             &inputs,
-            asset_cache,
+            Some(asset_cache),
             asset_server.as_ref(),
         );
-        prepare_frame_assets(&mut parts, gpu, asset_cache);
+        prepare_frame_assets(&mut parts, gpu, Some(asset_cache));
         let uploads = upload_scene_data(&mut parts, gpu, world, &inputs, &mut extracted);
         prepare_global_illumination(&mut parts, gpu, &extracted, &uploads);
         let shadows = prepare_shadows(&mut parts, gpu, &extracted, &uploads);
-        let render_asset_stats = finish_render_assets(world, asset_cache);
+        let render_asset_stats = finish_render_assets(Some(asset_cache));
         let execution = execute_prepared_frame(&mut parts, gpu, &extracted, &uploads, &shadows);
         finish_frame_stats(
             &mut parts,

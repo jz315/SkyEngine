@@ -102,13 +102,12 @@ fn collect_world_views_uses_main_camera_for_implicit_view_selection() {
 }
 
 #[test]
-fn collect_world_views_reports_missing_projection_diagnostic() {
+fn collect_world_views_uses_fallback_for_missing_projection() {
     let mut renderer = RenderRuntime::from_asset(RenderPipelineAsset::builder().build());
     renderer.runtime.surface_size = [800, 600];
 
     let mut world = World::new();
-    world.insert_resource(Diagnostics::default());
-    let camera = world.spawn((Transform::default(), CameraMarker::new(), MainCamera));
+    world.spawn((Transform::default(), CameraMarker::new(), MainCamera));
 
     let resolved = renderer.runtime.view_collector.resolve_transforms(&world);
     let views = renderer.runtime.view_collector.collect_world_views(
@@ -118,26 +117,8 @@ fn collect_world_views_reports_missing_projection_diagnostic() {
     );
 
     assert_eq!(views.len(), 1);
-    let diagnostics = world
-        .get_resource::<Diagnostics>()
-        .expect("diagnostics should exist")
-        .entries();
-    assert_eq!(diagnostics.len(), 1);
-    assert_eq!(
-        diagnostics[0].id.as_str(),
-        EngineDiagnosticKind::CAMERA_MISSING_PROJECTION
-    );
-    assert_eq!(diagnostics[0].subsystem, DiagnosticSubsystem::render());
-    assert_eq!(diagnostics[0].severity, DiagnosticSeverity::Warning);
-    assert_eq!(diagnostics[0].entity, Some(camera));
-    assert_eq!(diagnostics[0].title, "Camera is missing a Projection");
-    assert_eq!(
-        diagnostics[0].help.as_deref(),
-        Some(
-            "Add Projection::orthographic(height) for stable world-unit sizing, or \
-             Projection::orthographic_fixed(width, height) for a fixed logical view."
-        )
-    );
+    assert_eq!(views[0].viewport, ViewportRect::new(0, 0, 800, 600));
+    assert_eq!(views[0].target_size, [800, 600]);
 }
 
 #[test]

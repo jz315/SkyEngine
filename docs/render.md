@@ -45,16 +45,19 @@ use sky_engine::render::expert::{
 应用通常这样安装渲染：
 
 ```rust,no_run
-use sky_engine::app::{App, AppConfig, FrameContext};
+use sky_engine::app::{App, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, WindowPlugin};
 use sky_engine::ecs::World;
-use sky_engine::render::RenderPipelineAsset;
 
 fn main() {
-    App::new(AppConfig::new("Render", 960, 640), World::new())
-        .with_render_pipeline(RenderPipelineAsset::forward_2d())
-        .run(|ctx: &mut FrameContext| {
-            ctx.render();
-        });
+    let mut world = World::new();
+    world.install(WindowPlugin::new("Render", 960, 640)).unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+    world.install(RenderPlugin::forward_2d()).unwrap();
+
+    App::new(world).run(|ctx: &mut FrameContext| {
+        ctx.render();
+    });
 }
 ```
 
@@ -69,7 +72,7 @@ fn main() {
 - 按 phase 排序和 draw。
 - 和 `GpuContext` frame lifecycle 协作。
 
-一般用户通过 `App::with_render_pipeline` 间接使用它；自定义 runner 可以直接持有 `RenderRuntime`。
+一般用户通过 `RenderPlugin` 间接使用它；自定义 runner 可以直接持有 `RenderRuntime`。
 
 ## Pipeline Asset / Builder
 

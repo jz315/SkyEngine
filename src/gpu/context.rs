@@ -565,6 +565,18 @@ pub struct GpuFrame<'a> {
     ctx: &'a mut GpuContext,
 }
 
+/// Borrowed parts of the active surface-backed frame.
+pub struct GpuSurfaceFrameParts<'a> {
+    pub device: &'a wgpu::Device,
+    pub queue: &'a wgpu::Queue,
+    pub encoder: &'a mut wgpu::CommandEncoder,
+    pub surface_view: &'a wgpu::TextureView,
+    pub surface_texture: &'a wgpu::Texture,
+    pub surface_copy_supported: bool,
+    pub surface_format: wgpu::TextureFormat,
+    pub surface_size: [u32; 2],
+}
+
 /// Wrapper around `wgpu::RenderPass` that keeps the API close to raw wgpu.
 pub struct GpuRenderPass<'a> {
     inner: wgpu::RenderPass<'a>,
@@ -971,6 +983,48 @@ impl GpuContext {
             .as_mut()
             .expect("encoder requires active frame")
             .encoder
+    }
+
+    /// Borrow the active surface-backed frame's raw wgpu parts in one shot.
+    ///
+    /// This is useful for adapter renderers that operate directly on wgpu
+    /// without knowing about `GpuContext`.
+    pub fn with_surface_frame_parts<R>(
+        &mut self,
+        f: impl FnOnce(GpuSurfaceFrameParts<'_>) -> R,
+    ) -> R {
+        let device = &self.device;
+        let queue = &self.queue;
+        let surface_format = self.surface_config.format;
+        let surface_size = [self.surface_config.width, self.surface_config.height];
+        let surface_copy_supported = self
+            .surface_config
+            .usage
+            .contains(wgpu::TextureUsages::COPY_SRC);
+        let frame = self
+            .frame
+            .as_mut()
+            .expect("with_surface_frame_parts requires active frame");
+        let surface_view = frame
+            .surface_view
+            .as_ref()
+            .expect("with_surface_frame_parts requires a surface-backed frame");
+        let surface_texture = &frame
+            .surface_texture
+            .as_ref()
+            .expect("with_surface_frame_parts requires a surface-backed frame")
+            .texture;
+
+        f(GpuSurfaceFrameParts {
+            device,
+            queue,
+            encoder: &mut frame.encoder,
+            surface_view,
+            surface_texture,
+            surface_copy_supported,
+            surface_format,
+            surface_size,
+        })
     }
 
     /// Copy the current presentation surface into a texture for later sampling.

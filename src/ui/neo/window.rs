@@ -1,12 +1,17 @@
 use super::config::NeoWindowConfig;
 use super::input_bridge::{pointer_from_input, scroll_from_input};
-use super::{KeyboardEvent, NeoRenderer, NeoRuntime, Screen, Ui};
+use super::renderer::NeoRenderer;
+use super::{KeyboardEvent, Runtime, Screen, Ui};
+use crate::asset::Assets;
+use crate::render::SharedRenderAssetCache;
 
 type NeoWindowCompose = Box<dyn FnMut(&mut Ui, Screen) + 'static>;
 
 pub(crate) struct NeoAuxWindowClient {
-    runtime: NeoRuntime,
+    runtime: Runtime,
     renderer: Option<NeoRenderer>,
+    asset_server: Option<Assets>,
+    render_assets: SharedRenderAssetCache,
     config: NeoWindowConfig,
     compose: NeoWindowCompose,
 }
@@ -14,11 +19,14 @@ pub(crate) struct NeoAuxWindowClient {
 impl NeoAuxWindowClient {
     pub(crate) fn new(
         config: NeoWindowConfig,
+        asset_server: Option<Assets>,
         compose: impl FnMut(&mut Ui, Screen) + 'static,
     ) -> Self {
         Self {
-            runtime: NeoRuntime::new(config.page_id.clone()),
+            runtime: Runtime::new(config.page_id.clone()),
             renderer: None,
+            asset_server,
+            render_assets: SharedRenderAssetCache::default(),
             config,
             compose: Box::new(compose),
         }
@@ -62,9 +70,13 @@ impl crate::app::windows::WindowClient for NeoAuxWindowClient {
             {
                 self.renderer = Some(NeoRenderer::new(gpu));
             }
-            let draw_list = self.runtime.draw_list();
             if let Some(renderer) = self.renderer.as_mut() {
-                renderer.render(gpu, &draw_list, screen);
+                renderer.render(
+                    gpu,
+                    &mut self.runtime,
+                    self.asset_server.as_ref(),
+                    Some(&self.render_assets),
+                );
             }
             self.runtime.mark_rendered();
         }

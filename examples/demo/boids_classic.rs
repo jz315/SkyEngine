@@ -18,7 +18,7 @@
 
 use std::f32::consts::TAU;
 
-use sky_engine::app::{App, AppConfig};
+use sky_engine::app::{App, AssetPlugin, InputPlugin, WindowPlugin};
 use sky_engine::ecs::{EntityId, PreparedQuery, System, World};
 use sky_engine::gpu::GpuContext;
 use sky_engine::input::KeyCode;
@@ -711,15 +711,18 @@ fn main() {
     let mut frame_count = 0u32;
     let mut last_size = [0u32; 2];
 
-    let mut config = AppConfig::new("SkyEngine — Boids Classic", 1280, 720);
-    config.vsync = false;
+    world
+        .install(WindowPlugin::new("SkyEngine — Boids Classic", 1280, 720).with_vsync(false))
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
 
     eprintln!(
         "[boids] {} boids | Mouse=predator  Click=attractor  Space=scatter",
         NUM_BOIDS
     );
 
-    App::new(config, world).run(move |ctx: &mut sky_engine::app::FrameContext| {
+    App::new(world).run(move |ctx: &mut sky_engine::app::FrameContext| {
         // Lazy-init render state on first frame
         if render_state.is_none() {
             render_state = Some(RenderState::new(ctx.gpu()));

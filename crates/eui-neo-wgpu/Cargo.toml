@@ -1,0 +1,16 @@
+[package]
+name = "eui-neo-wgpu"
+version = "0.1.0"
+edition = "2021"
+description = "wgpu renderer support for eui-neo"
+readme = "README.md"
+license = "MIT"
+keywords = ["ui", "game-ui", "wgpu", "eui-neo"]
+categories = ["gui", "game-development"]
+
+[dependencies]
+bytemuck = { version = "1", features = ["derive"] }
+eui-neo = { path = "../eui-neo" }
+glyphon = "0.11"
+rustc-hash = "2.1"
+wgpu = { version = "29", default-features = false, features = ["wgsl"] }

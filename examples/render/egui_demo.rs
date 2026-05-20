@@ -6,7 +6,7 @@
 //! cargo run --example egui_demo --features egui
 //! ```
 
-use sky_engine::app::{egui, App, AppConfig, AppState, FrameContext};
+use sky_engine::app::{egui, App, AppState, AssetPlugin, FrameContext, InputPlugin, WindowPlugin};
 use sky_engine::ecs::World;
 
 struct EguiDemo {
@@ -74,6 +74,12 @@ impl AppState for EguiDemo {
 }
 
 fn main() {
-    let config = AppConfig::new("SkyEngine — egui Demo", 960, 640);
-    App::new(config, World::new()).run(EguiDemo::new());
+    let mut world = World::new();
+    world
+        .install(WindowPlugin::new("SkyEngine — egui Demo", 960, 640))
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+
+    App::new(world).run(EguiDemo::new());
 }

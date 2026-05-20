@@ -33,7 +33,9 @@ cargo run --example tutorial_ui --features ui --release
 UI 仍然运行在普通 `AppState` 里。默认不需要手动安装 UI 资源；第一次调用 `ctx.update_ui()` 或 `ctx.render_ui()` 时会自动安装资源。每帧按固定顺序更新、读取事件、渲染场景、渲染 UI。
 
 ```rust
-use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, SetupContext, WindowPlugin,
+};
 use sky_engine::ecs::{EntityId, World};
 use sky_engine::render::{
     CameraMarker, Color, MainCamera, Projection, RenderPipelineAsset, RenderSettings,
@@ -106,15 +108,10 @@ impl AppState for TutorialUi {
 自定义 UI 配置时，在创建 App 前写：
 
 ```rust
-use sky_engine::plugin::Plugin;
-
 let mut world = World::new();
-sky_engine::ui::UiPlugin::new(sky_engine::ui::UiConfig {
+world.install(sky_engine::ui::UiPlugin::new(sky_engine::ui::UiConfig {
     load_system_fonts: false,
-})
-.install(&mut world);
-
-let config = AppConfig::new("SkyEngine - UI Tutorial", 960, 600);
+}))?;
 ```
 
 ## 3. 创建 UI 树
@@ -352,19 +349,26 @@ if ctx.ui_state().is_some_and(|state| state.wants_pointer()) {
 
 ```rust
 fn main() {
-    App::new(
-        AppConfig::new("SkyEngine - UI Tutorial", 960, 600)
-            .with_vsync(false)
-            .with_resizable(true),
-        World::new(),
-    )
-    .with_render_pipeline(
-        RenderPipelineAsset::builder()
-            .add_feature(SpriteFeature::unlit())
-            .add_phase(TransparentPhase::new())
-            .build(),
-    )
-    .run(TutorialUi::default());
+    let mut world = World::new();
+    world
+        .install(
+            WindowPlugin::new("SkyEngine - UI Tutorial", 960, 600)
+                .with_vsync(false)
+                .with_resizable(true),
+        )
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+    world
+        .install(RenderPlugin::pipeline(
+            RenderPipelineAsset::builder()
+                .add_feature(SpriteFeature::unlit())
+                .add_phase(TransparentPhase::new())
+                .build(),
+        ))
+        .unwrap();
+
+    App::new(world).run(TutorialUi::default());
 }
 ```
 

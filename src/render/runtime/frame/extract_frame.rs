@@ -1,4 +1,4 @@
-use crate::asset::AssetServer;
+use crate::asset::Assets;
 use crate::ecs::World;
 use crate::gpu::GpuContext;
 use crate::render::extract::ExtractContext;
@@ -15,7 +15,7 @@ pub(crate) fn extract_frame(
     world: &World,
     inputs: &FrameInputs,
     asset_cache: Option<&SharedRenderAssetCache>,
-    asset_server: Option<&AssetServer>,
+    asset_server: Option<&Assets>,
 ) -> ExtractedFrame {
     let mut views = parts.runtime.view_collector.collect_world_views(
         world,

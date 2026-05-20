@@ -7,7 +7,9 @@
 
 use std::path::PathBuf;
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, SetupContext, WindowPlugin,
+};
 use sky_engine::ecs::World;
 use sky_engine::render::{
     CameraMarker, Color, MainCamera, Projection, RenderPipelineAsset, RenderSettings,
@@ -44,18 +46,23 @@ impl AppState for TiledImportDemo {
 }
 
 fn main() {
-    App::new(
-        AppConfig::new("SkyEngine - Tiled Import Demo", 960, 720).with_vsync(false),
-        World::new(),
-    )
-    .with_render_pipeline(
-        RenderPipelineAsset::builder()
-            .add_feature(TilemapFeature::unlit())
-            .add_feature(SpriteFeature::unlit())
-            .add_phase(TransparentPhase::new())
-            .build(),
-    )
-    .run(TiledImportDemo);
+    let mut world = World::new();
+    world
+        .install(WindowPlugin::new("SkyEngine - Tiled Import Demo", 960, 720).with_vsync(false))
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+    world
+        .install(RenderPlugin::pipeline(
+            RenderPipelineAsset::builder()
+                .add_feature(TilemapFeature::unlit())
+                .add_feature(SpriteFeature::unlit())
+                .add_phase(TransparentPhase::new())
+                .build(),
+        ))
+        .unwrap();
+
+    App::new(world).run(TiledImportDemo);
 }
 
 fn map_path_from_args() -> Option<PathBuf> {

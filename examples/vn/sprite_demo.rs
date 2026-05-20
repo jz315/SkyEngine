@@ -7,9 +7,10 @@
 //! cargo run --example vn_sprite_demo --features "vn app"
 //! ```
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, WindowPlugin,
+};
 use sky_engine::ecs::World;
-use sky_engine::plugin::Plugin;
 use sky_engine::render::{
     CameraMarker, MainCamera, Projection, RenderPipelineAsset, SpriteFeature, Transform,
     TransparentPhase,
@@ -95,8 +96,8 @@ Alice: Done. #line:ending.alice.0001
         Projection::orthographic_fixed(1280.0, 720.0),
         MainCamera,
     ));
-    VnPlugin::default()
-        .install(&mut world)
+    world
+        .install(VnPlugin::default())
         .expect("VN plugin should install");
     world
         .get_resource_mut::<VnResource>()
@@ -104,12 +105,19 @@ Alice: Done. #line:ending.alice.0001
         .load_script(script, "Start")
         .expect("demo script should queue for loading");
 
-    App::new(AppConfig::new("SkyEngine VN Sprite Demo", 1280, 720), world)
-        .with_render_pipeline(
+    world
+        .install(WindowPlugin::new("SkyEngine VN Sprite Demo", 1280, 720))
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+    world
+        .install(RenderPlugin::pipeline(
             RenderPipelineAsset::builder()
                 .add_feature(SpriteFeature::unlit())
                 .add_phase(TransparentPhase::new())
                 .build(),
-        )
-        .run(VnSpriteDemo { timer: 0.0 });
+        ))
+        .unwrap();
+
+    App::new(world).run(VnSpriteDemo { timer: 0.0 });
 }

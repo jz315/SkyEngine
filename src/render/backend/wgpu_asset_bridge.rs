@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
 
-use crate::asset::{AssetId, AssetServer, Handle, TextureAsset};
+use crate::asset::{AssetId, Assets, Handle, TextureAsset};
 use crate::gpu::GpuContext;
 use crate::render::asset::{MeshAsset, StandardMaterialAsset};
 use crate::render::gpu::Texture;
@@ -40,7 +40,7 @@ impl WgpuRenderAssetCache {
         &mut self,
         gpu: &GpuContext,
         render_runtime: &mut RenderRuntime,
-        assets: &AssetServer,
+        assets: &Assets,
         handle: Handle<MeshAsset>,
     ) -> Option<MeshHandle> {
         let source = assets.try_get(&handle)?;
@@ -79,7 +79,7 @@ impl WgpuRenderAssetCache {
         &mut self,
         gpu: &GpuContext,
         render_runtime: &mut RenderRuntime,
-        assets: &AssetServer,
+        assets: &Assets,
         render_assets: &SharedRenderAssetCache,
         handle: Handle<StandardMaterialAsset>,
     ) -> Option<MaterialHandle> {
@@ -87,12 +87,15 @@ impl WgpuRenderAssetCache {
         render_runtime.register_material::<StandardMaterial>(gpu);
         let albedo_texture = source
             .albedo_texture
+            .as_ref()
             .and_then(|texture| sync_texture(gpu, assets, render_assets, texture));
         let normal_texture = source
             .normal_texture
+            .as_ref()
             .and_then(|texture| sync_texture(gpu, assets, render_assets, texture));
         let emissive_texture = source
             .emissive_texture
+            .as_ref()
             .and_then(|texture| sync_texture(gpu, assets, render_assets, texture));
         let texture_keys =
             StandardMaterialTextureKeys::new(&albedo_texture, &normal_texture, &emissive_texture);
@@ -152,9 +155,9 @@ fn texture_key(texture: &Option<Texture>) -> Option<usize> {
 
 fn sync_texture(
     gpu: &GpuContext,
-    assets: &AssetServer,
+    assets: &Assets,
     render_assets: &SharedRenderAssetCache,
-    handle: Handle<TextureAsset>,
+    handle: &Handle<TextureAsset>,
 ) -> Option<crate::render::Texture> {
     render_assets.borrow_mut().texture(gpu, assets, handle)
 }

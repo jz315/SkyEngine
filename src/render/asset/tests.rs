@@ -1,5 +1,5 @@
 use super::*;
-use crate::asset::TextureAsset;
+use crate::asset::{AssetConfig, Assets, TextureAsset};
 use crate::ecs::World;
 
 #[repr(C)]
@@ -32,11 +32,12 @@ fn mesh_asset_validates_vertex_payload_size() {
 #[test]
 fn render_assets_insert_and_resolve_runtime_assets() {
     let mut world = World::new();
+    world.insert_resource(Assets::with_empty_manifest(AssetConfig::default()));
     let mut assets = RenderAssets::new(&mut world);
 
     let texture = assets.insert_texture(TextureAsset::white_pixel());
-    let material =
-        assets.insert_standard_material(StandardMaterialAsset::new().albedo_texture(texture));
+    let material = assets
+        .insert_standard_material(StandardMaterialAsset::new().albedo_texture(texture.clone()));
     let mesh = assets.insert_mesh(MeshAsset::from_vertices(
         &[
             Vertex {

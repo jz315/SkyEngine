@@ -4,8 +4,11 @@
 //! cargo run --example neon_dungeon_game --features "app physics" --release
 //! ```
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
-use sky_engine::asset::{AssetServer, Handle, TextureAsset};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, RunnerPlugin,
+    SetupContext, WindowPlugin,
+};
+use sky_engine::asset::{Assets, Handle, TextureAsset};
 use sky_engine::ecs::{EntityId, World};
 use sky_engine::input::KeyCode;
 use sky_engine::math::Vec2;
@@ -535,23 +538,18 @@ struct GameAssets {
 impl GameAssets {
     fn load(&mut self, world: &World) {
         self.circle = world
-            .get_resource::<AssetServer>()
+            .get_resource::<Assets>()
             .map(|server| server.insert_runtime(TextureAsset::circle(96)));
     }
 
-    fn unload(&mut self, world: &World) {
-        let Some(circle) = self.circle.take() else {
-            return;
-        };
-        if let Some(asset_server) = world.get_resource::<AssetServer>().cloned() {
-            asset_server.unload(&circle);
-        }
+    fn unload(&mut self, _world: &World) {
+        self.circle.take();
     }
 
     fn sprite_circle(&self, size: f32, color: Color) -> SpriteRenderer {
         let mut sprite = SpriteRenderer::new(size, size).color(color);
-        if let Some(circle) = self.circle {
-            sprite = sprite.texture(circle);
+        if let Some(circle) = &self.circle {
+            sprite = sprite.texture(circle.clone());
         }
         sprite
     }
@@ -641,19 +639,25 @@ impl Default for RunStats {
 }
 
 fn main() {
-    App::new(
-        AppConfig::new("Neon Dungeon", 1280, 760)
-            .with_vsync(false)
-            .with_auto_tick(false),
-        World::new(),
-    )
-    .with_render_pipeline(
-        RenderPipelineAsset::builder()
-            .add_feature(SpriteFeature::unlit())
-            .add_phase(TransparentPhase::new())
-            .build(),
-    )
-    .run(NeonDungeonGame::new());
+    let mut world = World::new();
+    world
+        .install(WindowPlugin::new("Neon Dungeon", 1280, 760).with_vsync(false))
+        .unwrap();
+    world
+        .install(RunnerPlugin::game().with_auto_tick(false))
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+    world
+        .install(RenderPlugin::pipeline(
+            RenderPipelineAsset::builder()
+                .add_feature(SpriteFeature::unlit())
+                .add_phase(TransparentPhase::new())
+                .build(),
+        ))
+        .unwrap();
+
+    App::new(world).run(NeonDungeonGame::new());
 }
 
 fn spawn_camera(world: &mut World) {

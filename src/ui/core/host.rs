@@ -1,6 +1,7 @@
 use crate::ecs::World;
 use crate::gpu::GpuContext;
 use crate::input::Input;
+use crate::render::SharedRenderAssetCache;
 use winit::event::WindowEvent;
 use winit::window::Window;
 
@@ -93,9 +94,14 @@ impl UiHost {
         &mut self,
         world: &mut World,
         gpu: &mut GpuContext,
+        render_assets: Option<&SharedRenderAssetCache>,
     ) -> Result<(), UiError> {
         for backend in &mut self.backends {
-            backend.render_overlay(UiRenderContext { world, gpu })?;
+            backend.render_overlay(UiRenderContext {
+                world,
+                gpu,
+                render_assets,
+            })?;
         }
         self.refresh_capture();
         Ok(())
@@ -177,9 +183,16 @@ pub fn update_ui_backends(
     });
 }
 
-pub fn render_ui_overlays(world: &mut World, gpu: &mut GpuContext) -> Result<(), UiError> {
+pub fn render_ui_overlays(
+    world: &mut World,
+    gpu: &mut GpuContext,
+    render_assets: Option<&SharedRenderAssetCache>,
+) -> Result<(), UiError> {
     super::super::ensure_ui_resources(world);
-    try_with_ui_host_mut(world, |host, world| host.render_overlays(world, gpu)).unwrap_or(Ok(()))
+    try_with_ui_host_mut(world, |host, world| {
+        host.render_overlays(world, gpu, render_assets)
+    })
+    .unwrap_or(Ok(()))
 }
 
 pub fn ui_wants_pointer(world: &World) -> bool {

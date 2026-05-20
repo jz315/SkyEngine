@@ -1,6 +1,6 @@
-use sky_engine::render::Color;
 use sky_engine::ui::neo::widgets::theme as neo_theme;
 use sky_engine::ui::neo::widgets::theme::{PageVisualTokens, ThemeColorTokens};
+use sky_engine::ui::neo::Color;
 
 use crate::model::{Priority, RunState, ThemeMode};
 

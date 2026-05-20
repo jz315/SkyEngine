@@ -4,15 +4,17 @@
 //! cargo run --example weird_neo_lab --features ui-neo --release
 //! ```
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, SetupContext, WindowPlugin,
+};
 use sky_engine::ecs::World;
 use sky_engine::render::{
-    CameraMarker, Color, MainCamera, Projection, RenderPipelineAsset, RenderSettings,
-    SpriteFeature, Transform, TransparentPhase,
+    CameraMarker, MainCamera, Projection, RenderPipelineAsset, RenderSettings, SpriteFeature,
+    Transform, TransparentPhase,
 };
 use sky_engine::ui::neo::widgets;
 use sky_engine::ui::neo::{
-    AnimProperty, Binding, Ease, HorizontalAlign, NeoState, Transition, Ui, VerticalAlign,
+    AnimProperty, Binding, Color, Ease, HorizontalAlign, NeoState, Transition, Ui, VerticalAlign,
 };
 
 const WINDOW_W: u32 = 1180;
@@ -87,7 +89,7 @@ impl Default for LabState {
 impl AppState for WeirdNeoLab {
     fn setup(&mut self, ctx: &mut SetupContext<'_>) {
         ctx.world.insert_resource(RenderSettings {
-            clear_color: Color::rgb(0.018, 0.022, 0.03),
+            clear_color: Color::rgb(0.018, 0.022, 0.03).into(),
             ..Default::default()
         });
         ctx.world.spawn((
@@ -1250,17 +1252,24 @@ fn on_off(value: bool) -> &'static str {
 }
 
 fn main() {
-    App::new(
-        AppConfig::new("SkyEngine - Weird Neo Lab", WINDOW_W, WINDOW_H)
-            .with_vsync(false)
-            .with_resizable(true),
-        World::new(),
-    )
-    .with_render_pipeline(
-        RenderPipelineAsset::builder()
-            .add_feature(SpriteFeature::unlit())
-            .add_phase(TransparentPhase::new())
-            .build(),
-    )
-    .run(WeirdNeoLab::default());
+    let mut world = World::new();
+    world
+        .install(
+            WindowPlugin::new("SkyEngine - Weird Neo Lab", WINDOW_W, WINDOW_H)
+                .with_vsync(false)
+                .with_resizable(true),
+        )
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+    world
+        .install(RenderPlugin::pipeline(
+            RenderPipelineAsset::builder()
+                .add_feature(SpriteFeature::unlit())
+                .add_phase(TransparentPhase::new())
+                .build(),
+        ))
+        .unwrap();
+
+    App::new(world).run(WeirdNeoLab::default());
 }

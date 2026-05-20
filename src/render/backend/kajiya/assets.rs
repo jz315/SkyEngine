@@ -9,7 +9,7 @@ use std::{
 use rustc_hash::{FxHashMap, FxHashSet};
 use turbosloth::*;
 
-use crate::asset::{AssetId, AssetServer, Handle};
+use crate::asset::{AssetId, Assets, Handle};
 use crate::asset::{TextureAsset, TextureColorSpace};
 use crate::ecs::EntityId;
 use crate::render::asset::{
@@ -105,8 +105,8 @@ impl KajiyaMeshSources {
 }
 
 impl KajiyaMaterialSources {
-    fn from_asset_server(
-        assets: &AssetServer,
+    fn from_assets(
+        assets: &Assets,
         id: AssetId,
         material: Option<Arc<StandardMaterialAsset>>,
     ) -> Self {
@@ -207,13 +207,13 @@ impl KajiyaRenderAssetCache {
     pub(crate) fn sync_snapshot(
         &mut self,
         world_renderer: &mut ::kajiya::world_renderer::WorldRenderer,
-        assets: Option<&AssetServer>,
+        assets: Option<&Assets>,
         snapshot: &SceneSnapshot,
     ) -> KajiyaAssetSyncStats {
         let Some(assets) = assets else {
             if snapshot.stats().mesh_instances != 0 {
                 eprintln!(
-                    "[SkyEngine] Kajiya renderer cannot sync MeshAsset handles without an AssetServer resource"
+                    "[SkyEngine] Kajiya renderer cannot sync MeshAsset handles without an Assets resource"
                 );
             }
             return KajiyaAssetSyncStats {
@@ -299,7 +299,7 @@ impl KajiyaRenderAssetCache {
     fn sync_mesh(
         &mut self,
         world_renderer: &mut ::kajiya::world_renderer::WorldRenderer,
-        assets: &AssetServer,
+        assets: &Assets,
         key: &KajiyaMeshKey,
     ) -> Result<(::kajiya::world_renderer::MeshHandle, bool), KajiyaBackendError> {
         let sources = collect_mesh_sources(assets, key)?;
@@ -461,21 +461,19 @@ fn build_kajiya_triangle_mesh(
 }
 
 fn collect_mesh_sources(
-    assets: &AssetServer,
+    assets: &Assets,
     key: &KajiyaMeshKey,
 ) -> Result<KajiyaMeshSources, KajiyaBackendError> {
-    let mesh = assets
-        .try_get(&Handle::<MeshAsset>::new(key.mesh))
-        .ok_or_else(|| {
-            KajiyaBackendError::asset(format!("MeshAsset `{}` is not installed", key.mesh))
-        })?;
+    let mesh = assets.try_get_id::<MeshAsset>(key.mesh).ok_or_else(|| {
+        KajiyaBackendError::asset(format!("MeshAsset `{}` is not installed", key.mesh))
+    })?;
 
     let materials = key
         .materials
         .iter()
         .map(|id| {
-            let material = assets.try_get(&Handle::<StandardMaterialAsset>::new(*id));
-            KajiyaMaterialSources::from_asset_server(assets, *id, material)
+            let material = assets.try_get_id::<StandardMaterialAsset>(*id);
+            KajiyaMaterialSources::from_assets(assets, *id, material)
         })
         .collect();
 
@@ -807,7 +805,7 @@ mod tests {
 
     #[test]
     fn converts_sky_mesh_and_material_to_kajiya_triangle_mesh() {
-        let assets = AssetServer::with_empty_manifest(AssetConfig::default());
+        let assets = Assets::with_empty_manifest(AssetConfig::default());
         let texture = assets.insert_runtime(TextureAsset::white_pixel());
         let material = assets.insert_runtime(
             StandardMaterialAsset::new()
@@ -841,7 +839,7 @@ mod tests {
 
         let sources = KajiyaMeshSources {
             mesh: Arc::new(mesh.clone()),
-            materials: vec![KajiyaMaterialSources::from_asset_server(
+            materials: vec![KajiyaMaterialSources::from_assets(
                 &assets,
                 material.id(),
                 assets.try_get(&material),

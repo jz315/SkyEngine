@@ -4,7 +4,9 @@
 //! cargo run --example yakui_demo --features yakui-ui --release
 //! ```
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, SetupContext, WindowPlugin,
+};
 use sky_engine::ecs::World;
 use sky_engine::plugin::Plugin;
 use sky_engine::render::{
@@ -157,17 +159,24 @@ impl YakuiDemo {
 }
 
 fn main() {
-    App::new(
-        AppConfig::new("SkyEngine - yakui", WINDOW_W, WINDOW_H)
-            .with_vsync(false)
-            .with_resizable(true),
-        World::new(),
-    )
-    .with_render_pipeline(
-        RenderPipelineAsset::builder()
-            .add_feature(SpriteFeature::unlit())
-            .add_phase(TransparentPhase::new())
-            .build(),
-    )
-    .run(YakuiDemo::default());
+    let mut world = World::new();
+    world
+        .install(
+            WindowPlugin::new("SkyEngine - yakui", WINDOW_W, WINDOW_H)
+                .with_vsync(false)
+                .with_resizable(true),
+        )
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+    world
+        .install(RenderPlugin::pipeline(
+            RenderPipelineAsset::builder()
+                .add_feature(SpriteFeature::unlit())
+                .add_phase(TransparentPhase::new())
+                .build(),
+        ))
+        .unwrap();
+
+    App::new(world).run(YakuiDemo::default());
 }

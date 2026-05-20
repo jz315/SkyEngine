@@ -5,7 +5,7 @@ use sky_engine::tile::{PaletteId, TileDefId, TilePaletteStore};
 pub const GROUND_PALETTE: PaletteId = PaletteId(1);
 pub const STRUCTURE_PALETTE: PaletteId = PaletteId(100);
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct SpriteAsset {
     pub handle: Handle<TextureAsset>,
     pub width: f32,
@@ -13,7 +13,7 @@ pub struct SpriteAsset {
     pub uv: [f32; 4],
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct LoadedBlueprint {
     pub rotations: [SpriteAsset; 4],
 }

@@ -1,0 +1,13 @@
+[package]
+name = "sky_ecs"
+version = "0.1.0"
+edition = "2021"
+description = "Chunk-based ECS core for Sky"
+license = "MIT"
+
+[dependencies]
+lazy_static = "1.4.0"
+rayon = "1.10"
+rustc-hash = "2.1.2"
+sky_type = { path = "../sky_type" }
+smallvec = "1.13.2"

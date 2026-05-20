@@ -2,6 +2,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use super::font::{encode_font_cooked, FontAsset};
 use super::texture::{decode_texture_source_bytes, encode_texture_cooked, TextureColorSpace};
 use super::types::{
     normalize_source_key, AssetConfig, AssetError, AssetId, AssetManifestEntry, AssetMeta,
@@ -262,6 +263,7 @@ fn cook_meta(
 
         match asset_kind(&updated_meta)? {
             AssetKind::Texture => cook_texture(source, &updated_meta, &cooked_path)?,
+            AssetKind::Font => cook_font(source, &cooked_path)?,
             AssetKind::SoundClip | AssetKind::MusicTrack => cook_audio(source, &cooked_path)?,
             AssetKind::VideoClip => cook_video_clip(config, source, &cooked_path)?,
         }
@@ -293,6 +295,19 @@ fn cook_texture(source: &Path, meta: &AssetMeta, cooked_path: &Path) -> Result<(
     };
     let asset = decode_texture_source_bytes(source, &bytes, color_space)?;
     let bytes = encode_texture_cooked(&asset);
+    std::fs::write(cooked_path, bytes).map_err(|error| AssetError::Io {
+        path: cooked_path.to_path_buf(),
+        message: error.to_string(),
+    })
+}
+
+fn cook_font(source: &Path, cooked_path: &Path) -> Result<(), AssetError> {
+    let bytes = std::fs::read(source).map_err(|error| AssetError::Io {
+        path: source.to_path_buf(),
+        message: error.to_string(),
+    })?;
+    let asset = FontAsset::new(bytes);
+    let bytes = encode_font_cooked(&asset);
     std::fs::write(cooked_path, bytes).map_err(|error| AssetError::Io {
         path: cooked_path.to_path_buf(),
         message: error.to_string(),
@@ -732,6 +747,11 @@ fn normalize_meta_for_source(source_key: &str, meta: &mut AssetMeta) {
                 .unwrap_or(true);
             set_import_setting_bool(&mut meta.import_settings, "srgb", srgb);
         }
+        Some(AssetKind::Font) => {
+            meta.asset_type = "font".to_string();
+            meta.importer = "font.raw".to_string();
+            meta.cooker = "font.raw_bytes".to_string();
+        }
         Some(AssetKind::SoundClip) => {
             let stream = meta
                 .import_settings
@@ -791,6 +811,19 @@ fn default_meta_for_source(source_key: &str) -> AssetMeta {
             dependencies: Vec::new(),
             import_settings: serde_json::json!({ "srgb": true }),
         },
+        AssetKind::Font => AssetMeta {
+            asset_id: AssetId::new(),
+            asset_type: "font".to_string(),
+            importer: "font.raw".to_string(),
+            cooker: "font.raw_bytes".to_string(),
+            version: 1,
+            source_path: source_key.to_string(),
+            source_hash: None,
+            meta_hash: None,
+            cooked_hash: None,
+            dependencies: Vec::new(),
+            import_settings: serde_json::json!({}),
+        },
         AssetKind::SoundClip => {
             let stream = infer_default_audio_stream(source_key);
             AssetMeta {
@@ -832,6 +865,7 @@ fn source_asset_kind(path: &Path) -> Option<AssetKind> {
     let extension = path.extension()?.to_str()?.to_ascii_lowercase();
     match extension.as_str() {
         "png" | "jpg" | "jpeg" => Some(AssetKind::Texture),
+        "ttf" | "otf" => Some(AssetKind::Font),
         "wav" | "ogg" | "mp3" => Some(AssetKind::SoundClip),
         "skyvideo" => Some(AssetKind::VideoClip),
         _ => None,
@@ -841,6 +875,7 @@ fn source_asset_kind(path: &Path) -> Option<AssetKind> {
 fn asset_kind(meta: &AssetMeta) -> Result<AssetKind, AssetError> {
     match meta.asset_type.as_str() {
         "texture" => Ok(AssetKind::Texture),
+        "font" => Ok(AssetKind::Font),
         "sound_clip" => Ok(AssetKind::SoundClip),
         "music_track" => Ok(AssetKind::MusicTrack),
         "video_clip" => Ok(AssetKind::VideoClip),
@@ -980,6 +1015,7 @@ fn hash_bytes(bytes: &[u8]) -> String {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AssetKind {
     Texture,
+    Font,
     SoundClip,
     MusicTrack,
     VideoClip,
@@ -1130,6 +1166,24 @@ mod tests {
 
         assert_eq!(manifest.assets.len(), 1);
         assert_eq!(manifest.assets[0].asset_type, "texture");
+        assert!(config
+            .cooked_root()
+            .join(&manifest.assets[0].cooked_path)
+            .exists());
+        Ok(())
+    }
+
+    #[test]
+    fn cook_all_writes_font_output() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let source = dir.path().join("title.ttf");
+        std::fs::write(&source, b"fake-font")?;
+
+        let config = AssetConfig::new(dir.path(), "native");
+        let manifest = cook_all(&config)?;
+
+        assert_eq!(manifest.assets.len(), 1);
+        assert_eq!(manifest.assets[0].asset_type, "font");
         assert!(config
             .cooked_root()
             .join(&manifest.assets[0].cooked_path)

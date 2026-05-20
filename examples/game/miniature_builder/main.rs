@@ -26,7 +26,10 @@ use hud::HudState;
 use scene_view::{mount_ground_scene, spawn_backdrop};
 use screenshot::ScreenshotProbe;
 use selection::{BuildSelection, HoverState};
-use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, RunnerPlugin,
+    SetupContext, WindowPlugin,
+};
 use sky_engine::ecs::World;
 use sky_engine::render::{
     Color, RenderPipelineAsset, RenderSettings, SpriteFeature, TilemapFeature, TransparentPhase,
@@ -79,8 +82,7 @@ impl AppState for MiniatureBuilder {
         world.group("simulation").add(board::apply_board_intents);
         world
             .group("projection")
-            .add(projection::apply_board_deltas)
-            .add(projection::sync_structure_instance);
+            .add(projection::apply_board_deltas);
         world
             .group("presentation")
             .add(preview::update_preview)
@@ -99,19 +101,28 @@ impl AppState for MiniatureBuilder {
 }
 
 fn main() {
-    App::new(
-        AppConfig::new("SkyEngine - Miniature Builder", WINDOW_W, WINDOW_H)
-            .with_vsync(false)
-            .with_resizable(true)
-            .with_auto_tick(false),
-        World::new(),
-    )
-    .with_render_pipeline(
-        RenderPipelineAsset::builder()
-            .add_feature(SpriteFeature::unlit())
-            .add_feature(TilemapFeature::unlit())
-            .add_phase(TransparentPhase::new())
-            .build(),
-    )
-    .run(MiniatureBuilder::new());
+    let mut world = World::new();
+    world
+        .install(
+            WindowPlugin::new("SkyEngine - Miniature Builder", WINDOW_W, WINDOW_H)
+                .with_vsync(false)
+                .with_resizable(true),
+        )
+        .unwrap();
+    world
+        .install(RunnerPlugin::game().with_auto_tick(false))
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+    world
+        .install(RenderPlugin::pipeline(
+            RenderPipelineAsset::builder()
+                .add_feature(SpriteFeature::unlit())
+                .add_feature(TilemapFeature::unlit())
+                .add_phase(TransparentPhase::new())
+                .build(),
+        ))
+        .unwrap();
+
+    App::new(world).run(MiniatureBuilder::new());
 }

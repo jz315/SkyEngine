@@ -4,16 +4,15 @@ use std::sync::Arc;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::asset::{
-    Asset, AssetError, AssetEvent, AssetEventKind, AssetId, AssetServer, AssetState, Handle,
+    Asset, AssetError, AssetEvent, AssetEventKind, AssetId, AssetState, Assets, Handle,
     TextureAsset,
 };
-use crate::diagnostics::{DiagnosticEvent, DiagnosticSubsystem, Diagnostics};
 use crate::gpu::GpuContext;
 use crate::render::runtime::{elapsed_ms, timing_start};
 use crate::render::Texture;
 
-const RENDER_TEXTURE_ASSET_MISSING_DIAGNOSTIC: &str = "render.asset.texture.missing";
-const RENDER_TEXTURE_ASSET_FAILED_DIAGNOSTIC: &str = "render.asset.texture.failed";
+const RENDER_TEXTURE_ASSET_MISSING_LOG: &str = "render.asset.texture.missing";
+const RENDER_TEXTURE_ASSET_FAILED_LOG: &str = "render.asset.texture.failed";
 const TEXTURE_PREPARE_BATCH_SIZE: usize = 4;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -156,7 +155,7 @@ impl TexturePrepareQueue {
 }
 
 #[derive(Default)]
-struct RenderAssetFrameDiagnostics {
+struct RenderAssetFrameStats {
     uploaded: FxHashSet<AssetId>,
     uploaded_bytes: usize,
     upload_ms: f64,
@@ -166,7 +165,7 @@ struct RenderAssetFrameDiagnostics {
     failed: FxHashSet<AssetId>,
 }
 
-impl RenderAssetFrameDiagnostics {
+impl RenderAssetFrameStats {
     #[inline]
     fn clear(&mut self) {
         self.uploaded.clear();
@@ -226,47 +225,33 @@ impl RenderAssetFrameDiagnostics {
         }
     }
 
-    fn report(&self, diagnostics: &Diagnostics) {
+    fn log_missing_and_failed_once(
+        &self,
+        logged_missing: &mut FxHashSet<AssetId>,
+        logged_failed: &mut FxHashSet<AssetId>,
+    ) {
         for id in &self.missing {
-            diagnostics.report_once(
-                DiagnosticEvent::warning(
-                    RENDER_TEXTURE_ASSET_MISSING_DIAGNOSTIC,
-                    DiagnosticSubsystem::render(),
-                    format!(
-                        "A sprite referenced texture asset {id}, but it could not be resolved for \
-                         rendering. The sprite fallback material will be used."
-                    ),
-                )
-                .with_title("Texture asset is missing")
-                .with_help(
-                    "Check that the texture is registered in the asset manifest or inserted as a \
-                     runtime asset before rendering.",
-                )
-                .with_field("asset_id", id.to_string())
-                .with_field("asset_type", TextureAsset::TYPE)
-                .with_once_key(format!("{RENDER_TEXTURE_ASSET_MISSING_DIAGNOSTIC}:{id}")),
-            );
+            if logged_missing.insert(*id) {
+                log::warn!(
+                    target: "sky_engine::render::asset",
+                    "{}: texture asset {} ({}) is missing; fallback material will be used",
+                    RENDER_TEXTURE_ASSET_MISSING_LOG,
+                    id,
+                    TextureAsset::TYPE,
+                );
+            }
         }
 
         for id in &self.failed {
-            diagnostics.report_once(
-                DiagnosticEvent::error(
-                    RENDER_TEXTURE_ASSET_FAILED_DIAGNOSTIC,
-                    DiagnosticSubsystem::render(),
-                    format!(
-                        "Texture asset {id} failed to load or prepare for rendering. The sprite \
-                         fallback material will be used."
-                    ),
-                )
-                .with_title("Texture asset failed")
-                .with_help(
-                    "Check the asset server error for this asset and verify the source texture can \
-                     be decoded.",
-                )
-                .with_field("asset_id", id.to_string())
-                .with_field("asset_type", TextureAsset::TYPE)
-                .with_once_key(format!("{RENDER_TEXTURE_ASSET_FAILED_DIAGNOSTIC}:{id}")),
-            );
+            if logged_failed.insert(*id) {
+                log::error!(
+                    target: "sky_engine::render::asset",
+                    "{}: texture asset {} ({}) failed to load or prepare; fallback material will be used",
+                    RENDER_TEXTURE_ASSET_FAILED_LOG,
+                    id,
+                    TextureAsset::TYPE,
+                );
+            }
         }
     }
 }
@@ -274,8 +259,10 @@ impl RenderAssetFrameDiagnostics {
 #[derive(Default)]
 pub struct RenderAssetCache {
     textures: TextureGpuCache,
-    frame: RenderAssetFrameDiagnostics,
+    frame: RenderAssetFrameStats,
     stats: RenderAssetStats,
+    logged_missing_textures: FxHashSet<AssetId>,
+    logged_failed_textures: FxHashSet<AssetId>,
 }
 
 impl RenderAssetCache {
@@ -293,8 +280,8 @@ impl RenderAssetCache {
     pub fn texture(
         &mut self,
         gpu: &GpuContext,
-        assets: &AssetServer,
-        handle: Handle<TextureAsset>,
+        assets: &Assets,
+        handle: &Handle<TextureAsset>,
     ) -> Option<Texture> {
         let id = handle.id();
         match self.request_texture_gpu_with_priority(
@@ -330,8 +317,8 @@ impl RenderAssetCache {
 
     pub fn texture_readiness(
         &mut self,
-        assets: Option<&AssetServer>,
-        handle: Handle<TextureAsset>,
+        assets: Option<&Assets>,
+        handle: &Handle<TextureAsset>,
     ) -> TextureReadiness {
         let Some(assets) = assets else {
             self.invalidate_texture(handle.id());
@@ -360,8 +347,8 @@ impl RenderAssetCache {
     pub fn request_texture_gpu(
         &mut self,
         gpu: &GpuContext,
-        assets: &AssetServer,
-        handle: Handle<TextureAsset>,
+        assets: &Assets,
+        handle: &Handle<TextureAsset>,
     ) -> TextureReadiness {
         self.request_texture_gpu_with_priority(gpu, assets, handle, TexturePreparePriority::Preload)
     }
@@ -369,8 +356,8 @@ impl RenderAssetCache {
     pub fn request_texture_gpu_with_priority(
         &mut self,
         _gpu: &GpuContext,
-        assets: &AssetServer,
-        handle: Handle<TextureAsset>,
+        assets: &Assets,
+        handle: &Handle<TextureAsset>,
         priority: TexturePreparePriority,
     ) -> TextureReadiness {
         let id = handle.id();
@@ -394,8 +381,8 @@ impl RenderAssetCache {
     pub fn wait_texture_gpu(
         &mut self,
         gpu: &GpuContext,
-        assets: &AssetServer,
-        handle: Handle<TextureAsset>,
+        assets: &Assets,
+        handle: &Handle<TextureAsset>,
         timeout: std::time::Duration,
     ) -> TextureReadiness {
         let deadline = std::time::Instant::now().checked_add(timeout);
@@ -453,15 +440,16 @@ impl RenderAssetCache {
     }
 
     #[inline]
-    pub fn mark_texture_missing(&mut self, handle: Handle<TextureAsset>) {
+    pub fn mark_texture_missing(&mut self, handle: &Handle<TextureAsset>) {
         self.frame.record_missing(handle.id());
     }
 
     #[inline]
-    pub fn finish_frame(&mut self, diagnostics: Option<&Diagnostics>) -> RenderAssetStats {
-        if let Some(diagnostics) = diagnostics {
-            self.frame.report(diagnostics);
-        }
+    pub fn finish_frame(&mut self) -> RenderAssetStats {
+        self.frame.log_missing_and_failed_once(
+            &mut self.logged_missing_textures,
+            &mut self.logged_failed_textures,
+        );
         self.stats = self.frame.snapshot(
             self.textures.textures.len(),
             self.textures.queue.len(),
@@ -471,14 +459,13 @@ impl RenderAssetCache {
     }
 
     #[inline]
-    pub fn handle_asset_event(&mut self, event: AssetEvent, assets: Option<&AssetServer>) {
+    pub fn handle_asset_event(&mut self, event: AssetEvent, assets: Option<&Assets>) {
         match event.kind {
             AssetEventKind::Failed | AssetEventKind::Unloaded | AssetEventKind::ReloadQueued => {
                 self.invalidate_texture(event.id);
             }
             AssetEventKind::Installed => {
-                let source = assets
-                    .and_then(|assets| assets.try_get(&Handle::<TextureAsset>::new(event.id)));
+                let source = assets.and_then(|assets| assets.try_get_id::<TextureAsset>(event.id));
                 self.invalidate_stale_cpu_asset(event.id, source.as_ref());
             }
         }
@@ -490,7 +477,7 @@ impl RenderAssetCache {
     }
 
     #[inline]
-    pub fn contains_texture(&self, handle: Handle<TextureAsset>) -> bool {
+    pub fn contains_texture(&self, handle: &Handle<TextureAsset>) -> bool {
         self.textures.textures.contains_key(&handle.id())
     }
 
@@ -508,18 +495,20 @@ impl RenderAssetCache {
         self.textures.requested.clear();
         self.frame.clear();
         self.stats = RenderAssetStats::default();
+        self.logged_missing_textures.clear();
+        self.logged_failed_textures.clear();
     }
 
     fn cpu_readiness(
         &mut self,
-        assets: &AssetServer,
-        handle: Handle<TextureAsset>,
+        assets: &Assets,
+        handle: &Handle<TextureAsset>,
     ) -> TextureReadiness {
         let id = handle.id();
         match assets.state(&handle) {
             AssetState::Unloaded => {
                 if self.textures.requested.insert(id) {
-                    if let Err(error) = assets.load::<TextureAsset>(id) {
+                    if let Err(error) = assets.load_id::<TextureAsset>(id) {
                         self.textures.requested.remove(&id);
                         if matches!(
                             error,

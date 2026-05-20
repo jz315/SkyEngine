@@ -184,7 +184,7 @@ See [`examples/README.md`](examples/README.md) for the full example index and re
 Recommended high-level render workflow:
 
 - `clear_screen` and similar minimal samples stay on the no-pipeline `ctx.gpu()` path
-- install the default unified scene pipeline with `App::with_render_pipeline(RenderPipelineAsset::forward_2d())`
+- install the default unified scene pipeline with `world.install(RenderPlugin::forward_2d())`
 - call `ctx.render()` inside `update()`
 - customize the high-level flow by registering your own `phase / compute / pass / postfx / feature` steps
 - combine multiple renderer families by composing multiple features, extractors, and draw functions into one pipeline
@@ -210,7 +210,7 @@ Recommended order:
 1. `clear_screen` — understand the window, GPU context, and per-frame clear pass
 2. `sprite_demo` — add `Camera` and the default high-level scene pipeline path
 3. `textured_demo` — move from flat-color sprites to textures and mixed drawing on the same pipeline-driven path
-4. `lighting_demo` — introduce normals, lighting composition, bloom, and tonemapping through `App::with_render_pipeline(...)`
+4. `lighting_demo` — introduce normals, lighting composition, bloom, and tonemapping through `RenderPlugin`
 5. `render_graph_showcase` — study how the declarative `RenderGraph` organizes resources and passes
 6. `frame_pipeline_showcase` — inspect the expert-only `FramePipeline` setup/view/finalize backbone directly
 7. `perf_test` — inspect throughput and scaling after the main path is clear

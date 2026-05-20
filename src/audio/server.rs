@@ -2,11 +2,11 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::asset::{AssetServer, Handle};
+use crate::asset::{Assets, Handle};
 #[cfg(feature = "app")]
 use crate::ecs::EntityId;
 
-use super::assets::{register_audio_asset_factories, MusicTrack, SoundClip};
+use super::assets::{MusicTrack, SoundClip};
 use super::backend::{AudioBackend, BusDefinition};
 use super::commands::{AudioCommand, AudioCommands};
 #[cfg(feature = "app")]
@@ -28,9 +28,7 @@ impl std::fmt::Debug for AudioServer {
 }
 
 impl AudioServer {
-    pub fn new(config: AudioConfig, assets: AssetServer) -> Self {
-        register_audio_asset_factories(&assets);
-
+    pub fn new(config: AudioConfig, assets: Assets) -> Self {
         let next_instance = Arc::new(AtomicU64::new(1));
         let buses = build_bus_definitions(&config);
         let bus_names = build_bus_name_map(&buses);
@@ -366,7 +364,7 @@ impl AudioServer {
 }
 
 struct AudioServerInner {
-    assets: AssetServer,
+    assets: Assets,
     backend: AudioBackend,
     #[allow(dead_code)]
     config: AudioConfig,
@@ -464,7 +462,7 @@ mod tests {
 
     #[test]
     fn default_bus_topology_is_registered() {
-        let assets = AssetServer::with_empty_manifest(crate::asset::AssetConfig::default());
+        let assets = Assets::with_empty_manifest(crate::asset::AssetConfig::default());
         let audio = AudioServer::new(
             AudioConfig {
                 enabled: false,

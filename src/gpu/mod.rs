@@ -23,5 +23,6 @@ mod context;
 
 pub use context::{
     ColorTargetView, DynamicUniformBuffer, FrameUploadArena, GpuComputePass, GpuContext, GpuError,
-    GpuFrame, GpuInitError, GpuRenderPass, GpuScreenshot, GpuScreenshotError, UploadSlice,
+    GpuFrame, GpuInitError, GpuRenderPass, GpuScreenshot, GpuScreenshotError, GpuSurfaceFrameParts,
+    UploadSlice,
 };
