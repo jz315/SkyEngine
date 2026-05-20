@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use image::{ImageReader, RgbaImage};
-use sky_engine::asset::{AssetServer, TextureAsset, TextureColorSpace};
+use sky_engine::asset::{Assets, TextureAsset, TextureColorSpace};
 use sky_engine::ecs::World;
 use sky_engine::tile::{
     RectU, TileDef, TileDefId, TilePalette, TilePaletteStore, TileTextureSource,
@@ -14,8 +14,8 @@ use crate::model::{BLUEPRINTS, ORIENTATIONS};
 impl GameAssets {
     pub fn load(world: &World) -> Self {
         let server = world
-            .get_resource::<AssetServer>()
-            .expect("App should install AssetServer before setup")
+            .get_resource::<Assets>()
+            .expect("App should install Assets before setup")
             .clone();
         let root = kenney_asset_root().join("Isometric");
         let ground_palettes = load_ground_palette(
@@ -50,7 +50,7 @@ impl GameAssets {
     }
 }
 
-pub fn load_sprite_asset(server: &AssetServer, path: impl AsRef<Path>) -> SpriteAsset {
+pub fn load_sprite_asset(server: &Assets, path: impl AsRef<Path>) -> SpriteAsset {
     let path = path.as_ref();
     let image = open_rgba(path);
     let (width, height) = image.dimensions();
@@ -68,7 +68,7 @@ pub fn load_sprite_asset(server: &AssetServer, path: impl AsRef<Path>) -> Sprite
     }
 }
 
-fn load_ground_palette(server: &AssetServer, paths: [PathBuf; 4]) -> TilePaletteStore {
+fn load_ground_palette(server: &Assets, paths: [PathBuf; 4]) -> TilePaletteStore {
     let mut images = Vec::with_capacity(paths.len());
     let mut atlas_width = 0;
     let mut atlas_height = 0;
@@ -112,7 +112,7 @@ fn load_ground_palette(server: &AssetServer, paths: [PathBuf; 4]) -> TilePalette
     store
 }
 
-fn load_structure_palette(server: &AssetServer, root: &Path) -> TilePaletteStore {
+fn load_structure_palette(server: &Assets, root: &Path) -> TilePaletteStore {
     const MAX_ATLAS_WIDTH: u32 = 4096;
 
     let entries = BLUEPRINTS

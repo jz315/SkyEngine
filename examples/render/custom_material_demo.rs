@@ -8,7 +8,9 @@
 //! cargo run --example custom_material_demo --features app --release
 //! ```
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, WindowPlugin,
+};
 use sky_engine::ecs::World;
 use sky_engine::render::expert::{Mesh, MeshDescriptor, MeshIndexData};
 use sky_engine::render::{
@@ -205,7 +207,7 @@ impl AppState for CustomMaterialDemo {
                     ));
                     (mesh_handle, cyan, gold)
                 })
-                .expect("custom_material_demo requires App::with_render_pipeline(...)");
+                .expect("custom_material_demo requires RenderPlugin::pipeline(...)");
 
             spawn_hologram(
                 ctx.world,
@@ -303,12 +305,18 @@ fn main() {
         .add_phase(TransparentPhase::new())
         .build();
 
-    App::new(
-        AppConfig::new("SkyEngine — Custom Material Demo", 960, 640),
-        world,
-    )
-    .with_render_pipeline(pipeline)
-    .run(CustomMaterialDemo {
+    world
+        .install(WindowPlugin::new(
+            "SkyEngine — Custom Material Demo",
+            960,
+            640,
+        ))
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+    world.install(RenderPlugin::pipeline(pipeline)).unwrap();
+
+    App::new(world).run(CustomMaterialDemo {
         initialized: false,
         time: 0.0,
         fps_smooth: 0.0,

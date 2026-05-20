@@ -4,8 +4,10 @@
 //! cargo run --example physics_arcade_demo --features "app physics" --release
 //! ```
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
-use sky_engine::asset::{AssetServer, Handle, TextureAsset};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, SetupContext, WindowPlugin,
+};
+use sky_engine::asset::{Assets, Handle, TextureAsset};
 use sky_engine::ecs::{EntityId, World};
 use sky_engine::input::KeyCode;
 use sky_engine::math::Vec2;
@@ -127,17 +129,12 @@ struct ArcadeAssets {
 impl ArcadeAssets {
     fn load(&mut self, world: &World) {
         self.circle_texture = world
-            .get_resource::<AssetServer>()
+            .get_resource::<Assets>()
             .map(|server| server.insert_runtime(TextureAsset::circle(64)));
     }
 
-    fn unload(&mut self, world: &World) {
-        let Some(texture) = self.circle_texture.take() else {
-            return;
-        };
-        if let Some(asset_server) = world.get_resource::<AssetServer>().cloned() {
-            asset_server.unload(&texture);
-        }
+    fn unload(&mut self, _world: &World) {
+        self.circle_texture.take();
     }
 }
 
@@ -313,8 +310,8 @@ impl ToySpawner {
     ) -> EntityId {
         let mut sprite =
             SpriteRenderer::new(radius * 2.0, radius * 2.0).color(Color::hsl(hue, 0.86, 0.62));
-        if let Some(texture) = assets.circle_texture {
-            sprite = sprite.texture(texture);
+        if let Some(texture) = &assets.circle_texture {
+            sprite = sprite.texture(texture.clone());
         }
 
         world.spawn((
@@ -587,17 +584,22 @@ fn animate_mixers(world: &mut World, dt: f32) {
 }
 
 fn main() {
-    App::new(
-        AppConfig::new("SkyEngine - Physics Arcade", 1120, 760).with_vsync(false),
-        World::new(),
-    )
-    .with_render_pipeline(
-        RenderPipelineAsset::builder()
-            .add_feature(SpriteFeature::unlit())
-            .add_phase(TransparentPhase::new())
-            .build(),
-    )
-    .run(PhysicsArcadeDemo::new());
+    let mut world = World::new();
+    world
+        .install(WindowPlugin::new("SkyEngine - Physics Arcade", 1120, 760).with_vsync(false))
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+    world
+        .install(RenderPlugin::pipeline(
+            RenderPipelineAsset::builder()
+                .add_feature(SpriteFeature::unlit())
+                .add_phase(TransparentPhase::new())
+                .build(),
+        ))
+        .unwrap();
+
+    App::new(world).run(PhysicsArcadeDemo::new());
 }
 
 fn spawn_camera(world: &mut World) {

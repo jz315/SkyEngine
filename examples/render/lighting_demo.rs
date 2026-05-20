@@ -4,13 +4,15 @@
 //! cargo run --example lighting_demo --features app --release
 //! ```
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
-use sky_engine::asset::{AssetServer, TextureAsset};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, SetupContext, WindowPlugin,
+};
+use sky_engine::asset::{Assets, TextureAsset};
 use sky_engine::ecs::{With, World};
 use sky_engine::math::Vec2;
 use sky_engine::render::{
-    CameraMarker, Color, MainCamera, PointLight, Projection, RenderPipelineAsset, RenderSettings,
-    SpriteRenderer, Transform,
+    CameraMarker, Color, MainCamera, PointLight, Projection, RenderSettings, SpriteRenderer,
+    Transform,
 };
 
 const NUM_ORBS: usize = 240;
@@ -82,8 +84,8 @@ impl AppState for LightingDemo {
     fn setup(&mut self, ctx: &mut SetupContext<'_>) {
         let world = &mut *ctx.world;
         let asset_server = world
-            .get_resource::<AssetServer>()
-            .expect("App should install AssetServer before setup")
+            .get_resource::<Assets>()
+            .expect("App should install Assets before setup")
             .clone();
         let orb_tex = asset_server.insert_runtime(TextureAsset::circle(96));
         for orb in &self.orbs_data {
@@ -228,12 +230,18 @@ fn main() {
         MouseLight,
     ));
 
-    App::new(
-        AppConfig::new("SkyEngine — ECS Lighting Demo", 1280, 720),
-        world,
-    )
-    .with_render_pipeline(RenderPipelineAsset::forward_2d())
-    .run(LightingDemo::new(&mut rng));
+    world
+        .install(WindowPlugin::new(
+            "SkyEngine — ECS Lighting Demo",
+            1280,
+            720,
+        ))
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+    world.install(RenderPlugin::forward_2d()).unwrap();
+
+    App::new(world).run(LightingDemo::new(&mut rng));
 }
 
 struct SimpleRng {

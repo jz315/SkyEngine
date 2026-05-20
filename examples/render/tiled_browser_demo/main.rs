@@ -7,8 +7,10 @@
 
 use std::path::{Path, PathBuf};
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
-use sky_engine::asset::{AssetServer, Handle, TextureAsset};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, SetupContext, WindowPlugin,
+};
+use sky_engine::asset::{Assets, Handle, TextureAsset};
 use sky_engine::ecs::{EntityId, World};
 use sky_engine::input::KeyCode;
 use sky_engine::math::Vec2;
@@ -229,9 +231,9 @@ impl TiledBrowserDemo {
         }
 
         let asset_server = world
-            .get_resource::<AssetServer>()
+            .get_resource::<Assets>()
             .cloned()
-            .ok_or_else(|| "AssetServer resource is missing".to_string())?;
+            .ok_or_else(|| "Assets resource is missing".to_string())?;
         let path = sample.path.clone();
         let import = TiledImport::from_file(&path).map_err(|error| error.to_string())?;
         let textures = import
@@ -258,11 +260,7 @@ impl TiledBrowserDemo {
         let Some(cache) = sample.cache.take() else {
             return;
         };
-        if let Some(asset_server) = world.get_resource::<AssetServer>().cloned() {
-            for texture in &cache.textures {
-                asset_server.unload(texture);
-            }
-        }
+        drop(cache);
     }
 
     fn unload_all_caches(&mut self, world: &mut World) {
@@ -486,18 +484,23 @@ fn snap_camera_to_pixel_grid(world: &mut World, camera: EntityId, surface_size: 
 }
 
 fn main() {
-    App::new(
-        AppConfig::new("SkyEngine - Tiled Browser", 960, 720).with_vsync(false),
-        World::new(),
-    )
-    .with_render_pipeline(
-        RenderPipelineAsset::builder()
-            .add_feature(TilemapFeature::unlit())
-            .add_feature(SpriteFeature::unlit())
-            .add_phase(TransparentPhase::new())
-            .build(),
-    )
-    .run(TiledBrowserDemo::new());
+    let mut world = World::new();
+    world
+        .install(WindowPlugin::new("SkyEngine - Tiled Browser", 960, 720).with_vsync(false))
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+    world
+        .install(RenderPlugin::pipeline(
+            RenderPipelineAsset::builder()
+                .add_feature(TilemapFeature::unlit())
+                .add_feature(SpriteFeature::unlit())
+                .add_phase(TransparentPhase::new())
+                .build(),
+        ))
+        .unwrap();
+
+    App::new(world).run(TiledBrowserDemo::new());
 }
 
 fn map_path_from_args() -> Option<PathBuf> {

@@ -4,8 +4,10 @@
 //! cargo run --example tilemap_demo --features app --release
 //! ```
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
-use sky_engine::asset::{AssetServer, TextureAsset, TextureColorSpace};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, SetupContext, WindowPlugin,
+};
+use sky_engine::asset::{Assets, TextureAsset, TextureColorSpace};
 use sky_engine::ecs::World;
 use sky_engine::render::{
     CameraMarker, Color, MainCamera, Projection, RenderPipelineAsset, RenderSettings, SortingLayer,
@@ -46,8 +48,8 @@ impl AppState for TilemapDemo {
     fn setup(&mut self, ctx: &mut SetupContext<'_>) {
         let world = &mut *ctx.world;
         let asset_server = world
-            .get_resource::<AssetServer>()
-            .expect("App should install AssetServer before setup")
+            .get_resource::<Assets>()
+            .expect("App should install Assets before setup")
             .clone();
         let tileset = asset_server.insert_runtime(make_tileset_texture());
 
@@ -146,18 +148,23 @@ impl AppState for TilemapDemo {
 }
 
 fn main() {
-    App::new(
-        AppConfig::new("SkyEngine - Tilemap Demo", 1280, 720).with_vsync(false),
-        World::new(),
-    )
-    .with_render_pipeline(
-        RenderPipelineAsset::builder()
-            .add_feature(SpriteFeature::unlit())
-            .add_feature(TilemapFeature::unlit())
-            .add_phase(TransparentPhase::new())
-            .build(),
-    )
-    .run(TilemapDemo::new());
+    let mut world = World::new();
+    world
+        .install(WindowPlugin::new("SkyEngine - Tilemap Demo", 1280, 720).with_vsync(false))
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+    world
+        .install(RenderPlugin::pipeline(
+            RenderPipelineAsset::builder()
+                .add_feature(SpriteFeature::unlit())
+                .add_feature(TilemapFeature::unlit())
+                .add_phase(TransparentPhase::new())
+                .build(),
+        ))
+        .unwrap();
+
+    App::new(world).run(TilemapDemo::new());
 }
 
 fn centered_isometric_origin() -> [f32; 2] {

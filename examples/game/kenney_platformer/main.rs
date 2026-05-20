@@ -7,8 +7,10 @@
 use std::path::{Path, PathBuf};
 
 use image::ImageReader;
-use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
-use sky_engine::asset::{AssetServer, Handle, TextureAsset, TextureColorSpace};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, SetupContext, WindowPlugin,
+};
+use sky_engine::asset::{Assets, Handle, TextureAsset, TextureColorSpace};
 use sky_engine::ecs::{EntityId, World};
 use sky_engine::input::KeyCode;
 use sky_engine::math::Vec2;
@@ -298,8 +300,8 @@ struct TextureSet {
 impl PlatformerAssets {
     fn load(&mut self, world: &World) {
         let server = world
-            .get_resource::<AssetServer>()
-            .expect("App should install AssetServer before setup")
+            .get_resource::<Assets>()
+            .expect("App should install Assets before setup")
             .clone();
         let root = kenney_asset_root();
         let mut load = |relative: &str| {
@@ -356,12 +358,8 @@ impl PlatformerAssets {
     }
 
     fn unload(&mut self, world: &World) {
-        let Some(server) = world.get_resource::<AssetServer>().cloned() else {
-            return;
-        };
-        for handle in self.handles.drain(..) {
-            server.unload(&handle);
-        }
+        let _ = world;
+        self.handles.clear();
         self.textures = None;
     }
 }
@@ -1713,7 +1711,7 @@ fn set_clear_color(world: &mut World, color: Color) {
     }
 }
 
-fn load_png_texture(server: &AssetServer, path: impl AsRef<Path>) -> Handle<TextureAsset> {
+fn load_png_texture(server: &Assets, path: impl AsRef<Path>) -> Handle<TextureAsset> {
     let path = path.as_ref();
     let image = ImageReader::open(path)
         .unwrap_or_else(|error| panic!("failed to open {}: {error}", path.display()))
@@ -1737,17 +1735,24 @@ fn kenney_asset_root() -> PathBuf {
 }
 
 fn main() {
-    App::new(
-        AppConfig::new("SkyEngine - Sky Trails", WINDOW_W, WINDOW_H)
-            .with_vsync(false)
-            .with_resizable(true),
-        World::new(),
-    )
-    .with_render_pipeline(
-        RenderPipelineAsset::builder()
-            .add_feature(SpriteFeature::unlit())
-            .add_phase(TransparentPhase::new())
-            .build(),
-    )
-    .run(KenneyPlatformerGame::new());
+    let mut world = World::new();
+    world
+        .install(
+            WindowPlugin::new("SkyEngine - Sky Trails", WINDOW_W, WINDOW_H)
+                .with_vsync(false)
+                .with_resizable(true),
+        )
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+    world
+        .install(RenderPlugin::pipeline(
+            RenderPipelineAsset::builder()
+                .add_feature(SpriteFeature::unlit())
+                .add_phase(TransparentPhase::new())
+                .build(),
+        ))
+        .unwrap();
+
+    App::new(world).run(KenneyPlatformerGame::new());
 }

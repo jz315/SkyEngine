@@ -1,8 +1,8 @@
 use std::f32::consts::PI;
 use std::path::Path;
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext};
-use sky_engine::asset::{cook, AssetConfig, AssetServer};
+use sky_engine::app::{App, AppState, AssetPlugin, FrameContext, InputPlugin, WindowPlugin};
+use sky_engine::asset::{cook, AssetConfig, Assets};
 use sky_engine::audio::{
     AudioBusId, AudioConfig as EngineAudioConfig, AudioEmitter2D, AudioListener2D,
     AudioPlaybackSettings, AudioServer, MusicTrack, SoundClip,
@@ -44,12 +44,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = cook::import_path(&asset_root, &music_path)?;
     let _ = cook::cook_all(&asset_config)?;
 
-    let asset_server = AssetServer::new(asset_config)?;
+    let asset_server = Assets::new(asset_config)?;
     let audio_server = AudioServer::new(EngineAudioConfig::default(), asset_server.clone());
     let audio_commands = audio_server.commands();
 
-    let sfx = asset_server.load_by_path::<SoundClip>(&sfx_path)?;
-    let music = asset_server.load_by_path::<MusicTrack>(&music_path)?;
+    let sfx = asset_server.load::<SoundClip>(&sfx_path)?;
+    let music = asset_server.load::<MusicTrack>(&music_path)?;
     asset_server.update()?;
     let _ = asset_server.get(&sfx)?;
     let _ = asset_server.get(&music)?;
@@ -73,7 +73,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         AudioEmitter2D::sound(sfx).looped(true),
     ));
 
-    App::new(AppConfig::new("audio_demo", 960, 540), world).run(DemoState {
+    world.install(WindowPlugin::new("audio_demo", 960, 540))?;
+    world.install(InputPlugin)?;
+    world.install(AssetPlugin::default())?;
+
+    App::new(world).run(DemoState {
         elapsed: 0.0,
         emitter,
     });

@@ -8,7 +8,9 @@
 //! cargo run --example video_demo --features video --release
 //! ```
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, SetupContext, WindowPlugin,
+};
 use sky_engine::ecs::World;
 use sky_engine::render::expert::SpriteBatch;
 use sky_engine::render::{Camera, Color, Sprite};
@@ -81,7 +83,14 @@ impl AppState for VideoDemo {
 }
 
 fn main() {
-    App::new(AppConfig::new("video_demo", 960, 540), World::new()).run(VideoDemo::new());
+    let mut world = World::new();
+    world
+        .install(WindowPlugin::new("video_demo", 960, 540))
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+
+    App::new(world).run(VideoDemo::new());
 }
 
 fn write_synthetic_video_frame(pixels: &mut [u8], width: u32, height: u32, time: f32) {

@@ -8,7 +8,9 @@
 //! cargo run --example custom_feature_demo --features app --release
 //! ```
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, WindowPlugin,
+};
 use sky_engine::ecs::World;
 use sky_engine::render::expert::{
     CompiledPass, FullscreenPass, FullscreenPipeline, PhysicalResources, TargetSize, TextureHandle,
@@ -297,12 +299,18 @@ fn main() {
         .add_feature(WarmTintFeature)
         .build();
 
-    App::new(
-        AppConfig::new("SkyEngine — Custom Feature Demo", 960, 640),
-        world,
-    )
-    .with_render_pipeline(pipeline)
-    .run(CustomFeatureDemo {
+    world
+        .install(WindowPlugin::new(
+            "SkyEngine — Custom Feature Demo",
+            960,
+            640,
+        ))
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+    world.install(RenderPlugin::pipeline(pipeline)).unwrap();
+
+    App::new(world).run(CustomFeatureDemo {
         fps_smooth: 0.0,
         frame_count: 0,
     });

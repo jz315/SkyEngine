@@ -6,8 +6,10 @@
 //! cargo run --example lawn_defense_game --features ui --release
 //! ```
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
-use sky_engine::asset::{AssetServer, Handle, TextureAsset};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, SetupContext, WindowPlugin,
+};
+use sky_engine::asset::{Assets, Handle, TextureAsset};
 use sky_engine::ecs::{EntityId, World};
 use sky_engine::input::{Input, KeyCode};
 use sky_engine::math::Vec2;
@@ -623,23 +625,18 @@ struct GameAssets {
 impl GameAssets {
     fn load(&mut self, world: &World) {
         self.circle = world
-            .get_resource::<AssetServer>()
+            .get_resource::<Assets>()
             .map(|server| server.insert_runtime(TextureAsset::circle(96)));
     }
 
-    fn unload(&mut self, world: &World) {
-        let Some(circle) = self.circle.take() else {
-            return;
-        };
-        if let Some(server) = world.get_resource::<AssetServer>().cloned() {
-            server.unload(&circle);
-        }
+    fn unload(&mut self, _world: &World) {
+        self.circle.take();
     }
 
     fn circle_sprite(&self, size: f32, color: Color) -> SpriteRenderer {
         let mut sprite = SpriteRenderer::new(size, size).color(color);
-        if let Some(circle) = self.circle {
-            sprite = sprite.texture(circle);
+        if let Some(circle) = &self.circle {
+            sprite = sprite.texture(circle.clone());
         }
         sprite
     }
@@ -730,19 +727,26 @@ impl RunState {
 }
 
 fn main() {
-    App::new(
-        AppConfig::new("Lawn Defense", WINDOW_W, WINDOW_H)
-            .with_vsync(false)
-            .with_resizable(false),
-        World::new(),
-    )
-    .with_render_pipeline(
-        RenderPipelineAsset::builder()
-            .add_feature(SpriteFeature::unlit())
-            .add_phase(TransparentPhase::new())
-            .build(),
-    )
-    .run(LawnDefenseGame::new());
+    let mut world = World::new();
+    world
+        .install(
+            WindowPlugin::new("Lawn Defense", WINDOW_W, WINDOW_H)
+                .with_vsync(false)
+                .with_resizable(false),
+        )
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+    world
+        .install(RenderPlugin::pipeline(
+            RenderPipelineAsset::builder()
+                .add_feature(SpriteFeature::unlit())
+                .add_phase(TransparentPhase::new())
+                .build(),
+        ))
+        .unwrap();
+
+    App::new(world).run(LawnDefenseGame::new());
 }
 
 fn spawn_camera(world: &mut World) {

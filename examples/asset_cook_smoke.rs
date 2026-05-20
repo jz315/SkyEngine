@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use sky_engine::asset::{cook, AssetConfig, AssetServer, TextureAsset};
+use sky_engine::asset::{cook, AssetConfig, Assets, TextureAsset};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let temp = tempfile::tempdir()?;
@@ -13,7 +13,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = AssetConfig::new(&asset_root, "native");
     let meta = cook::import_path(&asset_root, &source)?;
     let manifest = cook::cook_all(&config)?;
-    let server = AssetServer::new(config)?;
+    let server = Assets::new(config)?;
     let texture = server.load_blocking::<TextureAsset>(meta.asset_id)?;
 
     println!("cooked assets: {}", manifest.assets.len());

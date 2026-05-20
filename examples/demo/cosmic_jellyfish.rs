@@ -9,7 +9,7 @@
 //! cargo run --example cosmic_jellyfish --features app --release
 //! ```
 
-use sky_engine::app::{App, AppConfig};
+use sky_engine::app::{App, AssetPlugin, InputPlugin, WindowPlugin};
 use sky_engine::ecs::World;
 use sky_engine::gpu::GpuContext;
 use sky_engine::render::expert::{
@@ -230,11 +230,17 @@ fn main() {
 
     eprintln!("[cosmic_jellyfish] Move mouse to steer the spotlight.");
 
-    App::new(
-        AppConfig::new("SkyEngine 🪼 Cosmic Jellyfish", 1280, 720),
-        world,
-    )
-    .run(move |ctx: &mut sky_engine::app::FrameContext| {
+    world
+        .install(WindowPlugin::new(
+            "SkyEngine 🪼 Cosmic Jellyfish",
+            1280,
+            720,
+        ))
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+
+    App::new(world).run(move |ctx: &mut sky_engine::app::FrameContext| {
         ctx.world.tick();
         let dt = ctx.dt.min(0.05);
         sim_time += dt;

@@ -7,7 +7,9 @@
 //! cargo run --example perf_test --features app --release
 //! ```
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, SetupContext, WindowPlugin,
+};
 use sky_engine::ecs::World;
 use sky_engine::render::expert::SpriteBatch;
 use sky_engine::render::{Camera, Color, Sprite, Texture};
@@ -127,11 +129,14 @@ impl AppState for PerfTest {
 }
 
 fn main() {
-    App::new(
-        AppConfig::new("SkyEngine — Perf Test", 1280, 720).with_vsync(false),
-        World::new(),
-    )
-    .run(PerfTest::new());
+    let mut world = World::new();
+    world
+        .install(WindowPlugin::new("SkyEngine — Perf Test", 1280, 720).with_vsync(false))
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+
+    App::new(world).run(PerfTest::new());
 }
 
 struct SimpleRng {

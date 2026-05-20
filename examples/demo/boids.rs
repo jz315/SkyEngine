@@ -16,7 +16,9 @@
 
 use std::f32::consts::TAU;
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, SetupContext, WindowPlugin,
+};
 use sky_engine::ecs::{EntityId, PreparedQuery, System, World};
 use sky_engine::gpu::GpuContext;
 use sky_engine::input::KeyCode;
@@ -1132,8 +1134,13 @@ fn main() {
         NUM_BOIDS
     );
 
-    App::new(AppConfig::new("SkyEngine — Spirit Wisps", 1280, 720), world)
-        .run(SpiritWispsApp::new(&mut rng));
+    world
+        .install(WindowPlugin::new("SkyEngine — Spirit Wisps", 1280, 720))
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+
+    App::new(world).run(SpiritWispsApp::new(&mut rng));
 }
 
 // ─── PRNG ───────────────────────────────────────────────────────────────────

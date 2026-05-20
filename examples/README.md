@@ -26,7 +26,7 @@ If you're new to the project, read and run examples in this order:
 The `examples/render/` directory now forms a complete path from first window to advanced rendering systems:
 
 1. **`clear_screen`** — learn the minimal app + GPU frame loop and surface pass.
-2. **`sprite_demo`** — drive the default unified scene pipeline from ECS through `App::with_render_pipeline(...)`.
+2. **`sprite_demo`** — drive the default unified scene pipeline from ECS through `RenderPlugin`.
 3. **`textured_demo`** — keep building on the ECS-first textured sprite path.
 4. **`lighting_demo`** — add high-level 2D lighting plus bloom, tone mapping, and vignette.
 5. **`render_graph_showcase`** — study the low-level `render::expert::RenderGraph` API and resource scheduling model.

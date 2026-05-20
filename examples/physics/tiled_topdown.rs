@@ -7,7 +7,9 @@
 
 use std::path::PathBuf;
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, SetupContext, WindowPlugin,
+};
 use sky_engine::ecs::{EntityId, World};
 use sky_engine::input::KeyCode;
 use sky_engine::math::Vec2;
@@ -197,18 +199,23 @@ impl AppState for TiledPhysicsDemo {
 }
 
 fn main() {
-    App::new(
-        AppConfig::new("SkyEngine - Tiled Physics", 960, 720).with_vsync(false),
-        World::new(),
-    )
-    .with_render_pipeline(
-        RenderPipelineAsset::builder()
-            .add_feature(TilemapFeature::unlit())
-            .add_feature(SpriteFeature::unlit())
-            .add_phase(TransparentPhase::new())
-            .build(),
-    )
-    .run(TiledPhysicsDemo::new());
+    let mut world = World::new();
+    world
+        .install(WindowPlugin::new("SkyEngine - Tiled Physics", 960, 720).with_vsync(false))
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+    world
+        .install(RenderPlugin::pipeline(
+            RenderPipelineAsset::builder()
+                .add_feature(TilemapFeature::unlit())
+                .add_feature(SpriteFeature::unlit())
+                .add_phase(TransparentPhase::new())
+                .build(),
+        ))
+        .unwrap();
+
+    App::new(world).run(TiledPhysicsDemo::new());
 }
 
 fn map_path_from_args() -> Option<PathBuf> {

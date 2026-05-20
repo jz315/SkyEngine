@@ -24,7 +24,9 @@ use std::path::PathBuf;
 use args::{parse_args, DemoOptions};
 use benchmark::{BenchmarkConfig, BenchmarkState};
 use model::ModelSlot;
-use sky_engine::app::{App, AppConfig, AppState, FrameContext};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, WindowPlugin,
+};
 use sky_engine::ecs::{EntityId, World};
 use sky_engine::input::KeyCode;
 use sky_engine::render::expert::live2d::Live2DLoadError;
@@ -383,9 +385,6 @@ fn main() {
         benchmark,
     } = parse_args();
 
-    let config = AppConfig::new("SkyEngine — Live2D", 1280, 720)
-        .with_vsync(false)
-        .with_resizable(true);
     let mut world = World::new();
     world.insert_resource(RenderSettings {
         clear_color: Color::new(0.12, 0.12, 0.18, 1.0),
@@ -424,9 +423,18 @@ fn main() {
         ));
     }
 
-    let pipeline = RenderPipelineAsset::live2d_2d();
+    world
+        .install(
+            WindowPlugin::new("SkyEngine — Live2D", 1280, 720)
+                .with_vsync(false)
+                .with_resizable(true),
+        )
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+    world
+        .install(RenderPlugin::pipeline(RenderPipelineAsset::live2d_2d()))
+        .unwrap();
 
-    App::new(config, world)
-        .with_render_pipeline(pipeline)
-        .run(Live2DDemoApp::new(model_paths, ui_visible, benchmark));
+    App::new(world).run(Live2DDemoApp::new(model_paths, ui_visible, benchmark));
 }

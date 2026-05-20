@@ -11,17 +11,19 @@
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Duration;
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, SetupContext, WindowPlugin,
+};
 use sky_engine::ecs::World;
 use sky_engine::render::{
-    CameraMarker, Color, MainCamera, Projection, RenderPipelineAsset, RenderSettings,
-    SpriteFeature, Transform, TransparentPhase,
+    CameraMarker, MainCamera, Projection, RenderPipelineAsset, RenderSettings, SpriteFeature,
+    Transform, TransparentPhase,
 };
 use sky_engine::ui::neo::widgets;
 use sky_engine::ui::neo::widgets::theme::{self, PageVisualTokens, ThemeColorTokens};
 use sky_engine::ui::neo::{
     bind, bind_array, bind_clamped, bind_clone, bind_eq, bind_max, open_window, Align,
-    AnimProperty, Binding, Ease, HorizontalAlign, NeoState, NeoWindowConfig, Transition, Ui,
+    AnimProperty, Binding, Color, Ease, HorizontalAlign, NeoState, NeoWindowConfig, Transition, Ui,
 };
 
 const WINDOW_W: u32 = 1600;
@@ -155,7 +157,7 @@ impl Default for GalleryState {
 impl AppState for EuiNeoGallery {
     fn setup(&mut self, ctx: &mut SetupContext<'_>) {
         ctx.world.insert_resource(RenderSettings {
-            clear_color: c(0.07, 0.08, 0.10, 1.0),
+            clear_color: c(0.07, 0.08, 0.10, 1.0).into(),
             ..Default::default()
         });
         ctx.world.spawn((
@@ -428,7 +430,7 @@ fn draw_sidebar(
                     ui.text("brand.icon")
                         .size(212.0, 34.0)
                         .text(icon(0xf5fd))
-                        .font_family("Icon")
+                        .icon_font()
                         .font_size(27.0)
                         .line_height(32.0)
                         .color(tokens.primary)
@@ -2885,17 +2887,24 @@ fn env_u32(key: &str) -> Option<u32> {
 }
 
 fn main() {
-    App::new(
-        AppConfig::new("EUI Gallery", WINDOW_W, WINDOW_H)
-            .with_vsync(true)
-            .with_resizable(true),
-        World::new(),
-    )
-    .with_render_pipeline(
-        RenderPipelineAsset::builder()
-            .add_feature(SpriteFeature::unlit())
-            .add_phase(TransparentPhase::new())
-            .build(),
-    )
-    .run(EuiNeoGallery::default());
+    let mut world = World::new();
+    world
+        .install(
+            WindowPlugin::new("EUI Gallery", WINDOW_W, WINDOW_H)
+                .with_vsync(true)
+                .with_resizable(true),
+        )
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+    world
+        .install(RenderPlugin::pipeline(
+            RenderPipelineAsset::builder()
+                .add_feature(SpriteFeature::unlit())
+                .add_phase(TransparentPhase::new())
+                .build(),
+        ))
+        .unwrap();
+
+    App::new(world).run(EuiNeoGallery::default());
 }

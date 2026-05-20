@@ -10,8 +10,10 @@
 //! cargo run --example textured_demo --features app --release
 //! ```
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
-use sky_engine::asset::{AssetServer, TextureAsset};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, SetupContext, WindowPlugin,
+};
+use sky_engine::asset::{Assets, TextureAsset};
 use sky_engine::ecs::{EntityId, World};
 use sky_engine::render::{
     CameraMarker, Color, MainCamera, Projection, RenderPipelineAsset, RenderSettings,
@@ -68,8 +70,8 @@ impl AppState for TexturedDemo {
         let world = &mut *ctx.world;
         let mut rng = SimpleRng::new(123);
         let asset_server = world
-            .get_resource::<AssetServer>()
-            .expect("App should install AssetServer before setup")
+            .get_resource::<Assets>()
+            .expect("App should install Assets before setup")
             .clone();
         let circle = asset_server.insert_runtime(TextureAsset::circle(64));
         let checker = asset_server.insert_runtime(TextureAsset::checkerboard(
@@ -225,19 +227,22 @@ impl AppState for TexturedDemo {
 }
 
 fn main() {
-    let world = World::new();
+    let mut world = World::new();
+    world
+        .install(WindowPlugin::new("SkyEngine — ECS Textured Demo", 960, 640))
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+    world
+        .install(RenderPlugin::pipeline(
+            RenderPipelineAsset::builder()
+                .add_feature(SpriteFeature::unlit())
+                .add_phase(TransparentPhase::new())
+                .build(),
+        ))
+        .unwrap();
 
-    App::new(
-        AppConfig::new("SkyEngine — ECS Textured Demo", 960, 640),
-        world,
-    )
-    .with_render_pipeline(
-        RenderPipelineAsset::builder()
-            .add_feature(SpriteFeature::unlit())
-            .add_phase(TransparentPhase::new())
-            .build(),
-    )
-    .run(TexturedDemo::new());
+    App::new(world).run(TexturedDemo::new());
 }
 
 struct SimpleRng {

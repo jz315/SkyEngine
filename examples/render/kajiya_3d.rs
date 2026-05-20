@@ -4,7 +4,9 @@
 //! cargo run --example kajiya_3d --features app,kajiya-renderer --release
 //! ```
 
-use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
+use sky_engine::app::{
+    App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, SetupContext, WindowPlugin,
+};
 use sky_engine::ecs::{EntityId, World};
 use sky_engine::input::{KeyCode, MouseButton};
 use sky_engine::math::{Quat, Vec3};
@@ -191,15 +193,20 @@ impl KajiyaDemo {
 }
 
 fn main() {
-    App::new(
-        AppConfig::new("SkyEngine Kajiya 3D", 1280, 720),
-        World::new(),
-    )
-    .with_render_pipeline(
-        RenderPipelineAsset::kajiya_3d()
-            .with_kajiya_settings(KajiyaRendererSettings::viewer_720p()),
-    )
-    .run(KajiyaDemo::default());
+    let mut world = World::new();
+    world
+        .install(WindowPlugin::new("SkyEngine Kajiya 3D", 1280, 720))
+        .unwrap();
+    world.install(InputPlugin).unwrap();
+    world.install(AssetPlugin::default()).unwrap();
+    world
+        .install(RenderPlugin::pipeline(
+            RenderPipelineAsset::kajiya_3d()
+                .with_kajiya_settings(KajiyaRendererSettings::viewer_720p()),
+        ))
+        .unwrap();
+
+    App::new(world).run(KajiyaDemo::default());
 }
 
 fn cube_mesh() -> MeshAsset {
