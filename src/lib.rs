@@ -46,8 +46,8 @@ extern crate self as sky_engine;
 static GLOBAL: MiMalloc = MiMalloc;
 
 pub mod action_queue;
-pub mod diagnostics;
 pub mod ecs;
+pub mod logging;
 pub mod math;
 pub mod plugin;
 pub mod reflect;
@@ -81,6 +81,11 @@ pub mod app;
 
 #[cfg(any(feature = "ui-core", feature = "ui-legacy", feature = "yakui-ui"))]
 pub mod ui;
+
+#[cfg(feature = "ui-neo")]
+pub use eui_neo::{
+    neo_bind, neo_bind_array, neo_bind_clamped, neo_bind_clone, neo_bind_eq, neo_bind_max,
+};
 
 #[cfg(feature = "audio")]
 pub mod audio;

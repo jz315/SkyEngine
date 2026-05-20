@@ -8,23 +8,23 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::window::{Window, WindowAttributes, WindowId};
 
-use crate::app::config::{AppConfig, RedrawMode, WindowSizeMode};
+use crate::app::config::{RedrawMode, RunnerOptions, WindowOptions, WindowSizeMode};
 use crate::app::frame::FrameContext;
+use crate::app::plugins::InputEnabled;
+#[cfg(feature = "video")]
+use crate::app::plugins::VideoEnabled;
 use crate::app::runner::{AppState, SetupContext};
 use crate::app::windows::{WindowRequest, WindowRuntime};
-use crate::diagnostics::DiagnosticCursor;
 use crate::ecs::World;
 use crate::input::raw::{Input, KeyCode};
+use crate::logging::{self, LogOptions, LogStore};
 use crate::render::backend::{create_scene_renderer, SceneRendererError};
-use crate::render::{
-    RenderBackendKind, RenderPipelineAsset, SceneRenderer, SharedRenderAssetCache,
-};
+use crate::render::{RenderBackendKind, RenderPipelineAsset, SceneRenderer};
 
 struct RuntimeState {
     window: Arc<Window>,
     renderer: Box<dyn SceneRenderer>,
     input: Input,
-    diagnostic_cursor: DiagnosticCursor,
     last_frame_time: Option<Instant>,
     occluded: bool,
     aux_windows: Vec<WindowRuntime>,
@@ -33,9 +33,17 @@ struct RuntimeState {
 }
 
 pub(in crate::app) struct RunnerHandler {
-    config: AppConfig,
+    window_options: Option<WindowOptions>,
+    runner_options: RunnerOptions,
     world: Option<World>,
     pipeline: Option<RenderPipelineAsset>,
+    asset_config: Option<crate::asset::AssetConfig>,
+    input_enabled: bool,
+    logs: Arc<LogStore>,
+    #[cfg(feature = "audio")]
+    audio_config: Option<crate::audio::AudioConfig>,
+    #[cfg(feature = "video")]
+    video_enabled: bool,
     app_state: Box<dyn AppState>,
     runtime: Option<RuntimeState>,
     pending_redraw: bool,
@@ -44,16 +52,37 @@ pub(in crate::app) struct RunnerHandler {
 }
 
 impl RunnerHandler {
-    pub(in crate::app) fn new(
-        config: AppConfig,
-        world: World,
-        pipeline: Option<RenderPipelineAsset>,
-        app_state: Box<dyn AppState>,
-    ) -> Self {
+    pub(in crate::app) fn new(mut world: World, app_state: Box<dyn AppState>) -> Self {
+        let window_options = world.get_resource::<WindowOptions>().cloned();
+        let runner_options = world
+            .get_resource::<RunnerOptions>()
+            .cloned()
+            .unwrap_or_default();
+        let asset_config = world.get_resource::<crate::asset::AssetConfig>().cloned();
+        let input_enabled = world.contains_resource::<InputEnabled>();
+        let log_options = world
+            .get_resource::<LogOptions>()
+            .copied()
+            .unwrap_or_default();
+        let logs = LogStore::shared(log_options.capacity);
+        let _log_status = logging::try_install_logger(log_options);
+        let pipeline = world.remove_resource::<RenderPipelineAsset>();
+        #[cfg(feature = "audio")]
+        let audio_config = world.get_resource::<crate::audio::AudioConfig>().cloned();
+        #[cfg(feature = "video")]
+        let video_enabled = world.contains_resource::<VideoEnabled>();
         Self {
-            config,
+            window_options,
+            runner_options,
             world: Some(world),
             pipeline,
+            asset_config,
+            input_enabled,
+            logs,
+            #[cfg(feature = "audio")]
+            audio_config,
+            #[cfg(feature = "video")]
+            video_enabled,
             app_state,
             runtime: None,
             pending_redraw: false,
@@ -130,27 +159,30 @@ impl RunnerHandler {
             .and_then(|rt| rt.last_frame_time)
             .map(|t| now.duration_since(t).as_secs_f32())
             .unwrap_or(1.0 / 60.0);
-        let dt = raw_dt.min(self.config.max_delta);
+        let dt = raw_dt.min(self.runner_options.max_delta);
 
         let input_snapshot = self.runtime.as_ref().expect("runtime must exist").input;
-        let auto_tick = self.config.auto_tick;
-        let exit_on_escape = self.config.exit_on_escape;
+        let auto_tick = self.runner_options.auto_tick;
+        let exit_on_escape = self.runner_options.exit_on_escape;
         let mut request_redraw = false;
         let mut should_exit = false;
         let mut aux_window_requests = Vec::new();
+        let logs = Arc::clone(&self.logs);
 
         {
             let (world_slot, runtime_slot, app_state, frame_rate_limit) = (
                 &mut self.world,
                 &mut self.runtime,
                 &mut self.app_state,
-                &mut self.config.frame_rate_limit,
+                &mut self.runner_options.frame_rate_limit,
             );
             let world = world_slot.as_mut().expect("world must exist");
             let rt = runtime_slot.as_mut().expect("runtime must exist");
             rt.last_frame_time = Some(now);
 
-            Self::sync_input_resource(world, input_snapshot);
+            if self.input_enabled {
+                Self::sync_input_resource(world, input_snapshot);
+            }
 
             // Update action-based input system (if registered).
             if let Some(actions) = world.get_resource_mut::<crate::input::InputActions>() {
@@ -167,6 +199,8 @@ impl RunnerHandler {
             } else {
                 dt
             };
+            logs.set_frame(Some(world.time.frame_count));
+            logging::set_logger_frame(Some(world.time.frame_count));
 
             crate::app::services::update_video(world, frame_dt);
 
@@ -190,6 +224,7 @@ impl RunnerHandler {
                                 exit_requested: &mut exit_requested,
                                 redraw_requested: &mut redraw_requested,
                                 frame_rate_limit,
+                                logs: logs.as_ref(),
                                 aux_window_requests: &mut aux_window_requests,
                                 screenshot_requests: &mut screenshot_requests,
                                 #[cfg(feature = "egui")]
@@ -225,14 +260,6 @@ impl RunnerHandler {
                         rt.window.pre_present_notify();
                         rt.renderer.end_frame();
                         rt.input.begin_frame();
-                        if let Err(error) = crate::app::diagnostic_console::write_new(
-                            world,
-                            &mut rt.diagnostic_cursor,
-                            self.config.diagnostic_console,
-                            &mut std::io::stderr(),
-                        ) {
-                            eprintln!("[SkyEngine] Diagnostic console write failed: {error}");
-                        }
 
                         request_redraw = redraw_requested;
                         should_exit = exit_requested;
@@ -259,6 +286,8 @@ impl RunnerHandler {
             }
         }
 
+        logging::drain_logger(logs.as_ref());
+
         if request_redraw {
             self.request_redraw();
         }
@@ -282,11 +311,16 @@ impl RunnerHandler {
         if requests.is_empty() {
             return;
         }
+        let vsync = self
+            .window_options
+            .as_ref()
+            .map(|options| options.vsync)
+            .unwrap_or(true);
         let Some(rt) = self.runtime.as_mut() else {
             return;
         };
         for request in requests {
-            if let Some(aux_window) = WindowRuntime::open(event_loop, self.config.vsync, request) {
+            if let Some(aux_window) = WindowRuntime::open(event_loop, vsync, request) {
                 aux_window.request_redraw();
                 rt.aux_windows.push(aux_window);
             }
@@ -319,7 +353,7 @@ impl RunnerHandler {
 
         let only_aux_window = rt.aux_windows.len() == 1;
         let aux_window = &mut rt.aux_windows[index];
-        aux_window.handle_event(event, self.config.max_delta);
+        aux_window.handle_event(event, self.runner_options.max_delta);
         let close_requested = aux_window.close_requested();
         if only_aux_window && close_requested && self.did_shutdown {
             event_loop.exit();
@@ -345,18 +379,25 @@ impl ApplicationHandler for RunnerHandler {
         }
 
         // First resume — create window, GPU backend, and optional render pipeline.
+        let Some(window_options) = self.window_options.clone() else {
+            eprintln!(
+                "[SkyEngine] Windowed App::run requires WindowPlugin. Install it with world.install(WindowPlugin::new(...))."
+            );
+            event_loop.exit();
+            return;
+        };
         let attrs = WindowAttributes::default()
-            .with_title(&self.config.title)
-            .with_inner_size(match self.config.size_mode {
+            .with_title(&window_options.title)
+            .with_inner_size(match window_options.size_mode {
                 WindowSizeMode::Logical => winit::dpi::Size::Logical(winit::dpi::LogicalSize::new(
-                    self.config.width as f64,
-                    self.config.height as f64,
+                    window_options.width as f64,
+                    window_options.height as f64,
                 )),
                 WindowSizeMode::Physical => winit::dpi::Size::Physical(
-                    winit::dpi::PhysicalSize::new(self.config.width, self.config.height),
+                    winit::dpi::PhysicalSize::new(window_options.width, window_options.height),
                 ),
             })
-            .with_resizable(self.config.resizable);
+            .with_resizable(window_options.resizable);
 
         let window = Arc::new(
             event_loop
@@ -365,19 +406,19 @@ impl ApplicationHandler for RunnerHandler {
         );
 
         let pipeline = self.pipeline.take();
-        let mut renderer = match create_scene_renderer(window.clone(), self.config.vsync, pipeline)
-        {
-            Ok(renderer) => renderer,
-            Err(err) => {
-                eprintln!("[SkyEngine] Renderer initialization failed: {err}");
-                event_loop.exit();
-                return;
-            }
-        };
+        let mut renderer =
+            match create_scene_renderer(window.clone(), window_options.vsync, pipeline) {
+                Ok(renderer) => renderer,
+                Err(err) => {
+                    eprintln!("[SkyEngine] Renderer initialization failed: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            };
 
         let title = format!(
             "{} | {} ({})",
-            self.config.title,
+            window_options.title,
             renderer.adapter_name(),
             renderer.backend_name()
         );
@@ -385,26 +426,32 @@ impl ApplicationHandler for RunnerHandler {
 
         let world = self.world.as_mut().expect("world must be present");
 
-        // Insert Input resource into the World (updated in-place each frame).
         let input = Input::new();
-        world.insert_resource(input);
-
-        if !world.contains_resource::<crate::diagnostics::Diagnostics>() {
-            world.insert_resource(crate::diagnostics::Diagnostics::default());
+        if self.input_enabled {
+            // Insert Input resource into the World (updated in-place each frame).
+            world.insert_resource(input);
         }
 
-        if !world.contains_resource::<SharedRenderAssetCache>() {
-            world.insert_resource(SharedRenderAssetCache::default());
+        if let Some(asset_config) = self.asset_config.clone() {
+            crate::app::services::install_assets(world, asset_config);
         }
-
-        crate::app::services::install_asset_server(world);
-        crate::app::services::install_audio(world);
-        crate::app::services::install_video(world);
+        #[cfg(feature = "audio")]
+        if let Some(audio_config) = self.audio_config.clone() {
+            crate::app::services::install_audio(world, audio_config);
+        }
+        #[cfg(feature = "video")]
+        if self.video_enabled {
+            crate::app::services::install_video(world);
+        }
 
         // Run one-time setup.
         {
-            let mut setup_ctx = SetupContext::new(world, renderer.as_mut(), &window);
+            self.logs.set_frame(None);
+            logging::set_logger_frame(None);
+            let mut setup_ctx =
+                SetupContext::new(world, renderer.as_mut(), &window, self.logs.as_ref());
             self.app_state.setup(&mut setup_ctx);
+            logging::drain_logger(self.logs.as_ref());
         }
 
         #[cfg(feature = "egui")]
@@ -420,7 +467,6 @@ impl ApplicationHandler for RunnerHandler {
             window,
             renderer,
             input,
-            diagnostic_cursor: DiagnosticCursor::new(),
             last_frame_time: None,
             occluded: false,
             aux_windows: Vec::new(),
@@ -445,7 +491,7 @@ impl ApplicationHandler for RunnerHandler {
             return;
         }
 
-        let should_request = match self.config.redraw_mode {
+        let should_request = match self.runner_options.redraw_mode {
             RedrawMode::Continuous => self.can_draw(),
             RedrawMode::Reactive => self.pending_redraw && self.can_draw(),
         };
@@ -454,7 +500,7 @@ impl ApplicationHandler for RunnerHandler {
             if let Some(rt) = self.runtime.as_ref() {
                 if let Some(next_frame) = crate::app::pacing::next_frame_deadline(
                     rt.last_frame_time,
-                    self.config.frame_rate_limit,
+                    self.runner_options.frame_rate_limit,
                     Instant::now(),
                 ) {
                     event_loop.set_control_flow(ControlFlow::WaitUntil(next_frame));
@@ -465,7 +511,7 @@ impl ApplicationHandler for RunnerHandler {
                 {
                     eprintln!(
                         "[SkyEngine][App] request_redraw frame={} mode={:?}",
-                        self.kajiya_debug_frames, self.config.redraw_mode
+                        self.kajiya_debug_frames, self.runner_options.redraw_mode
                     );
                 }
                 rt.window.request_redraw();

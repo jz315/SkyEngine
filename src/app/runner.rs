@@ -3,9 +3,8 @@
 //! # Usage
 //!
 //! ```rust,no_run
-//! use sky_engine::app::{App, AppConfig, FrameContext};
+//! use sky_engine::app::{App, FrameContext, InputPlugin, RenderPlugin, WindowPlugin};
 //! use sky_engine::ecs::World;
-//! use sky_engine::render::RenderPipelineAsset;
 //!
 //! struct Game;
 //!
@@ -15,21 +14,21 @@
 //!     }
 //! }
 //!
-//! App::new(AppConfig::new("Hello", 960, 640), World::new())
-//!     .with_render_pipeline(RenderPipelineAsset::forward_2d())
-//!     .run(Game);
+//! let mut world = World::new();
+//! world.install(WindowPlugin::new("Hello", 960, 640)).unwrap();
+//! world.install(InputPlugin).unwrap();
+//! world.install(RenderPlugin::forward_2d()).unwrap();
+//! App::new(world).run(Game);
 //! ```
 
 use winit::event_loop::EventLoop;
 use winit::window::Window;
 
-use crate::app::config::AppConfig;
 use crate::app::frame::FrameContext;
 use crate::ecs::World;
 use crate::gpu::GpuContext;
-use crate::render::{
-    RenderAssets, RenderBackendKind, RenderPipelineAsset, RenderRuntime, SceneRenderer,
-};
+use crate::logging::LogStore;
+use crate::render::{RenderAssets, RenderBackendKind, RenderRuntime, SceneRenderer};
 
 // ── AppState trait ──────────────────────────────────────────────────────────
 
@@ -42,9 +41,8 @@ use crate::render::{
 /// # Example
 ///
 /// ```rust,no_run
-/// use sky_engine::app::{App, AppConfig, AppState, FrameContext, SetupContext};
+/// use sky_engine::app::{App, AppState, FrameContext, InputPlugin, RenderPlugin, SetupContext, WindowPlugin};
 /// use sky_engine::ecs::World;
-/// use sky_engine::render::{RenderPipelineAsset, SpriteFeature, TransparentPhase};
 ///
 /// struct MyGame;
 ///
@@ -59,9 +57,11 @@ use crate::render::{
 ///     }
 /// }
 ///
-/// App::new(AppConfig::new("My Game", 1280, 720), World::new())
-///     .with_render_pipeline(RenderPipelineAsset::forward_2d())
-///     .run(MyGame);
+/// let mut world = World::new();
+/// world.install(WindowPlugin::new("My Game", 1280, 720)).unwrap();
+/// world.install(InputPlugin).unwrap();
+/// world.install(RenderPlugin::forward_2d()).unwrap();
+/// App::new(world).run(MyGame);
 /// ```
 pub trait AppState: 'static {
     /// Called once after the window and render backend are ready.
@@ -73,7 +73,8 @@ pub trait AppState: 'static {
 
     /// Called every frame.
     ///
-    /// When `AppConfig::auto_tick` is enabled (the default), the ECS
+    /// When the installed [`RunnerPlugin`](crate::app::RunnerPlugin) enables
+    /// automatic ticking (the default), the ECS
     /// schedule has already been advanced from the runner-sampled frame delta
     /// before this is called.
     fn update(&mut self, ctx: &mut FrameContext);
@@ -107,6 +108,7 @@ pub struct SetupContext<'a> {
 
     renderer: &'a mut dyn SceneRenderer,
     window: &'a Window,
+    logs: &'a LogStore,
 }
 
 impl<'a> SetupContext<'a> {
@@ -114,11 +116,13 @@ impl<'a> SetupContext<'a> {
         world: &'a mut World,
         renderer: &'a mut dyn SceneRenderer,
         window: &'a Window,
+        logs: &'a LogStore,
     ) -> Self {
         Self {
             world,
             renderer,
             window,
+            logs,
         }
     }
 
@@ -144,6 +148,13 @@ impl<'a> SetupContext<'a> {
     #[inline]
     pub fn scale_factor(&self) -> f32 {
         self.window.scale_factor() as f32
+    }
+
+    /// Recent logs captured by the app-owned logger.
+    #[inline]
+    pub fn logs(&self) -> &LogStore {
+        crate::logging::drain_logger(self.logs);
+        self.logs
     }
 
     /// Direct access to the wgpu backend when the active renderer is wgpu.
@@ -181,7 +192,7 @@ impl<'a> SetupContext<'a> {
 /// # Examples
 ///
 /// ```rust,no_run
-/// use sky_engine::app::{App, AppConfig, AppState, FrameContext};
+/// use sky_engine::app::{App, AppState, FrameContext, InputPlugin, RenderPlugin, WindowPlugin};
 /// use sky_engine::ecs::World;
 /// use sky_engine::render::{RenderPipelineAsset, SpriteFeature, TransparentPhase};
 ///
@@ -193,19 +204,19 @@ impl<'a> SetupContext<'a> {
 ///     }
 /// }
 ///
-/// App::new(AppConfig::new("Demo", 960, 640), World::new())
-///     .with_render_pipeline(
-///         RenderPipelineAsset::builder()
-///             .add_feature(SpriteFeature::unlit())
-///             .add_phase(TransparentPhase::new())
-///             .build(),
-///     )
-///     .run(MyApp);
+/// let mut world = World::new();
+/// world.install(WindowPlugin::new("Demo", 960, 640)).unwrap();
+/// world.install(InputPlugin).unwrap();
+/// world.install(RenderPlugin::pipeline(
+///     RenderPipelineAsset::builder()
+///         .add_feature(SpriteFeature::unlit())
+///         .add_phase(TransparentPhase::new())
+///         .build(),
+/// )).unwrap();
+/// App::new(world).run(MyApp);
 /// ```
 pub struct App {
-    config: AppConfig,
     world: World,
-    pipeline: Option<RenderPipelineAsset>,
 }
 
 impl App {
@@ -213,17 +224,8 @@ impl App {
     ///
     /// The [`World`] is the centre of your application — spawn entities,
     /// register systems, and insert resources before calling `.run()`.
-    pub fn new(config: AppConfig, world: World) -> Self {
-        Self {
-            config,
-            world,
-            pipeline: None,
-        }
-    }
-
-    pub fn with_render_pipeline(mut self, pipeline: RenderPipelineAsset) -> Self {
-        self.pipeline = Some(pipeline);
-        self
+    pub fn new(world: World) -> Self {
+        Self { world }
     }
 
     /// Enter the main loop.
@@ -233,12 +235,7 @@ impl App {
     /// This function does **not** return under normal operation.
     pub fn run<S: AppState>(self, state: S) {
         let event_loop = EventLoop::new().expect("Failed to create event loop");
-        let mut handler = crate::app::lifecycle::RunnerHandler::new(
-            self.config,
-            self.world,
-            self.pipeline,
-            Box::new(state),
-        );
+        let mut handler = crate::app::lifecycle::RunnerHandler::new(self.world, Box::new(state));
 
         event_loop.run_app(&mut handler).expect("Event loop error");
     }
@@ -247,29 +244,12 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::RenderPipelineAsset;
 
     #[test]
     fn app_defaults_to_no_installed_pipeline() {
-        let app = App::new(AppConfig::new("test", 64, 64), World::new());
-        assert!(app.pipeline.is_none());
-    }
-
-    #[test]
-    fn with_render_pipeline_installs_the_supplied_pipeline() {
-        let app = App::new(AppConfig::new("test", 64, 64), World::new()).with_render_pipeline(
-            RenderPipelineAsset::builder()
-                .add_feature(crate::render::SpriteFeature::unlit())
-                .add_phase(crate::render::TransparentPhase::new())
-                .build(),
-        );
-        assert!(app.pipeline.is_some());
-    }
-
-    #[test]
-    fn with_render_pipeline_accepts_the_default_forward_2d_pipeline() {
-        let app = App::new(AppConfig::new("test", 64, 64), World::new())
-            .with_render_pipeline(RenderPipelineAsset::forward_2d());
-        assert!(app.pipeline.is_some());
+        let app = App::new(World::new());
+        assert!(!app.world.contains_resource::<RenderPipelineAsset>());
     }
 
     #[test]

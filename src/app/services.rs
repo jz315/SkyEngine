@@ -2,53 +2,45 @@
 
 use crate::ecs::World;
 
-pub(crate) fn install_asset_server(world: &mut World) {
-    if world.contains_resource::<crate::asset::AssetServer>() {
+pub(crate) fn install_assets(world: &mut World, config: crate::asset::AssetConfig) {
+    if world.contains_resource::<crate::asset::Assets>() {
         return;
     }
 
-    let config = crate::asset::AssetConfig::default().with_background_loading(true);
-    let asset_server = match crate::asset::AssetServer::new(config.clone()) {
-        Ok(server) => server,
+    let assets = match crate::asset::Assets::new(config.clone()) {
+        Ok(assets) => assets,
         Err(error) => {
-            eprintln!("[SkyEngine] Asset server initialization failed: {error}");
-            crate::asset::AssetServer::with_empty_manifest(config)
+            eprintln!("[SkyEngine] Assets initialization failed: {error}");
+            crate::asset::Assets::with_empty_manifest(config)
         }
     };
-    world.insert_resource(asset_server);
+    world.insert_resource(assets);
 }
 
 pub(crate) fn update_assets(world: &World) {
-    if let Some(asset_server) = world.get_resource::<crate::asset::AssetServer>().cloned() {
-        if let Err(error) = asset_server.update() {
+    if let Some(assets) = world.get_resource::<crate::asset::Assets>().cloned() {
+        if let Err(error) = assets.update() {
             eprintln!("[SkyEngine] Asset update failed: {error}");
         }
     }
 }
 
-pub(crate) fn install_audio(world: &mut World) {
-    #[cfg(feature = "audio")]
-    {
-        let asset_server = ensure_asset_server(world);
+#[cfg(feature = "audio")]
+pub(crate) fn install_audio(world: &mut World, config: crate::audio::AudioConfig) {
+    let assets = ensure_assets(world);
+    crate::audio::register_audio_asset_factories(&assets);
 
-        if !world.contains_resource::<crate::audio::AudioServer>() {
-            let audio_server =
-                crate::audio::AudioServer::new(crate::audio::AudioConfig::default(), asset_server);
-            let audio_commands = audio_server.commands();
-            world.insert_resource(audio_server);
-            if !world.contains_resource::<crate::audio::AudioCommands>() {
-                world.insert_resource(audio_commands);
-            }
-        } else if !world.contains_resource::<crate::audio::AudioCommands>() {
-            if let Some(audio_server) = world.get_resource::<crate::audio::AudioServer>().cloned() {
-                world.insert_resource(audio_server.commands());
-            }
+    if !world.contains_resource::<crate::audio::AudioServer>() {
+        let audio_server = crate::audio::AudioServer::new(config, assets);
+        let audio_commands = audio_server.commands();
+        world.insert_resource(audio_server);
+        if !world.contains_resource::<crate::audio::AudioCommands>() {
+            world.insert_resource(audio_commands);
         }
-    }
-
-    #[cfg(not(feature = "audio"))]
-    {
-        let _ = world;
+    } else if !world.contains_resource::<crate::audio::AudioCommands>() {
+        if let Some(audio_server) = world.get_resource::<crate::audio::AudioServer>().cloned() {
+            world.insert_resource(audio_server.commands());
+        }
     }
 }
 
@@ -71,28 +63,22 @@ pub(crate) fn update_audio_after_frame(world: &mut World) {
     }
 }
 
+#[cfg(feature = "video")]
 pub(crate) fn install_video(world: &mut World) {
-    #[cfg(feature = "video")]
-    {
-        let asset_server = ensure_asset_server(world);
+    let assets = ensure_assets(world);
+    crate::video::register_video_asset_factories(&assets);
 
-        if !world.contains_resource::<crate::video::VideoServer>() {
-            let video_server = crate::video::VideoServer::new(asset_server);
-            let video_commands = video_server.commands();
-            world.insert_resource(video_server);
-            if !world.contains_resource::<crate::video::VideoCommands>() {
-                world.insert_resource(video_commands);
-            }
-        } else if !world.contains_resource::<crate::video::VideoCommands>() {
-            if let Some(video_server) = world.get_resource::<crate::video::VideoServer>().cloned() {
-                world.insert_resource(video_server.commands());
-            }
+    if !world.contains_resource::<crate::video::VideoServer>() {
+        let video_server = crate::video::VideoServer::new(assets);
+        let video_commands = video_server.commands();
+        world.insert_resource(video_server);
+        if !world.contains_resource::<crate::video::VideoCommands>() {
+            world.insert_resource(video_commands);
         }
-    }
-
-    #[cfg(not(feature = "video"))]
-    {
-        let _ = world;
+    } else if !world.contains_resource::<crate::video::VideoCommands>() {
+        if let Some(video_server) = world.get_resource::<crate::video::VideoServer>().cloned() {
+            world.insert_resource(video_server.commands());
+        }
     }
 }
 
@@ -115,19 +101,19 @@ pub(crate) fn update_video(world: &mut World, frame_delta: f32) {
 }
 
 #[cfg(any(feature = "audio", feature = "video"))]
-fn ensure_asset_server(world: &mut World) -> crate::asset::AssetServer {
-    if let Some(server) = world.get_resource::<crate::asset::AssetServer>().cloned() {
-        return server;
+fn ensure_assets(world: &mut World) -> crate::asset::Assets {
+    if let Some(assets) = world.get_resource::<crate::asset::Assets>().cloned() {
+        return assets;
     }
 
     let config = crate::asset::AssetConfig::default().with_background_loading(true);
-    let server = match crate::asset::AssetServer::new(config.clone()) {
-        Ok(server) => server,
+    let assets = match crate::asset::Assets::new(config.clone()) {
+        Ok(assets) => assets,
         Err(error) => {
-            eprintln!("[SkyEngine] Asset server initialization failed: {error}");
-            crate::asset::AssetServer::with_empty_manifest(config)
+            eprintln!("[SkyEngine] Assets initialization failed: {error}");
+            crate::asset::Assets::with_empty_manifest(config)
         }
     };
-    world.insert_resource(server.clone());
-    server
+    world.insert_resource(assets.clone());
+    assets
 }
