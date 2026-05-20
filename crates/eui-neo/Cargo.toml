@@ -1,0 +1,14 @@
+[package]
+name = "eui-neo"
+version = "0.1.0"
+edition = "2021"
+description = "Rust-native EUI-NEO port and extension with a headless declarative UI runtime"
+readme = "README.md"
+license = "MIT"
+keywords = ["ui", "game-ui", "declarative", "eui-neo"]
+categories = ["gui", "game-development"]
+
+[dependencies]
+bitflags = "2"
+cosmic-text = "0.18"
+rustc-hash = "2.1.2"

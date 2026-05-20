@@ -78,7 +78,7 @@ impl InsertValue {
     {
         let len = mem::size_of::<T>();
         let drop_fn: Option<unsafe fn(*mut u8)> = if mem::needs_drop::<T>() {
-            Some(crate::reflect::drop_in_place_erased::<T>)
+            Some(sky_type::drop_in_place_erased::<T>)
         } else {
             None
         };
@@ -351,7 +351,7 @@ impl PendingEntityBuffer {
 /// # Examples
 ///
 /// ```
-/// # use sky_engine::ecs::{World, Commands};
+/// # use sky_ecs::{World, Commands};
 /// # #[derive(Clone, Copy)] struct Health(f32);
 /// # let mut world = World::new();
 /// let entity = world.spawn((Health(100.0),));

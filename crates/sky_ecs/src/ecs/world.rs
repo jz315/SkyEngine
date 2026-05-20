@@ -5,6 +5,7 @@ use crate::ecs::entity::{EntityLocation, EntityRecord};
 use crate::ecs::system::{GroupBuilder, Schedule, TickPolicy};
 use crate::ecs::time::Time;
 use crate::ecs::{component_type, ComponentType};
+use crate::plugin::{Plugin, PluginError, PluginRegistry, PluginResult};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use std::cell::Cell;
@@ -38,7 +39,7 @@ struct TransitionPlan {
 /// # Examples
 ///
 /// ```
-/// use sky_engine::ecs::World;
+/// use sky_ecs::World;
 ///
 /// #[derive(Clone, Copy)]
 /// struct Position { x: f32, y: f32 }
@@ -56,6 +57,7 @@ pub struct World {
     entities: Vec<EntityRecord>,
     free_entities: Vec<u32>,
     resources: Resources,
+    plugins: PluginRegistry,
     schedule: Option<Schedule>,
 }
 
@@ -77,7 +79,56 @@ impl World {
             entities: Vec::new(),
             free_entities: Vec::new(),
             resources: Resources::default(),
+            plugins: PluginRegistry::default(),
             schedule: Some(Schedule::default()),
+        }
+    }
+
+    /// Install an engine module plugin into this world.
+    ///
+    /// Plugin constructors are the configuration surface; installing a plugin
+    /// records only the fact that the plugin type is present.  The app runner
+    /// discovers capabilities from the resources/plugins that were installed
+    /// rather than enforcing a fixed required set.
+    pub fn install<P>(&mut self, plugin: P) -> PluginResult
+    where
+        P: Plugin + 'static,
+    {
+        let name = plugin.name();
+        if let Some(existing) = self.plugins.get::<P>() {
+            return Err(PluginError::new(
+                name,
+                format!("{existing} is already installed"),
+            ));
+        }
+        plugin.install(self)?;
+        if let Err(existing) = self.plugins.insert::<P>(name) {
+            return Err(PluginError::new(
+                name,
+                format!("{existing} was installed during plugin setup"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Returns `true` if plugin type `P` was installed through [`World::install`].
+    #[inline]
+    pub fn has_plugin<P: 'static>(&self) -> bool {
+        self.plugins.contains::<P>()
+    }
+
+    /// Require plugin type `P` to have been installed.
+    ///
+    /// Plugins should use this for local hard dependencies.  The app runner
+    /// does not use it to impose a universal set of required capabilities.
+    pub fn require_plugin<P: 'static>(&self, plugin: &'static str) -> PluginResult {
+        if self.has_plugin::<P>() {
+            Ok(())
+        } else {
+            Err(PluginError::new(
+                plugin,
+                format!("requires {}", std::any::type_name::<P>()),
+            ))
         }
     }
 
@@ -279,7 +330,7 @@ impl World {
     /// type is typically a tuple of components:
     ///
     /// ```
-    /// # use sky_engine::ecs::World;
+    /// # use sky_ecs::World;
     /// # #[derive(Clone, Copy)] struct Pos { x: f32, y: f32 }
     /// # #[derive(Clone, Copy)] struct Vel { x: f32, y: f32 }
     /// # let mut world = World::new();
@@ -1028,7 +1079,7 @@ impl World {
     /// # Examples
     ///
     /// ```
-    /// # use sky_engine::ecs::World;
+    /// # use sky_ecs::World;
     /// # #[derive(Clone, Copy)] struct Pos { x: f32, y: f32 }
     /// # #[derive(Clone, Copy)] struct Vel { x: f32, y: f32 }
     /// # let mut world = World::new();
@@ -1054,7 +1105,7 @@ impl World {
     /// # Examples
     ///
     /// ```
-    /// # use sky_engine::ecs::{World, With};
+    /// # use sky_ecs::{World, With};
     /// # #[derive(Clone, Copy)] struct Pos { x: f32, y: f32 }
     /// # #[derive(Clone, Copy)] struct Enemy;
     /// # let mut world = World::new();

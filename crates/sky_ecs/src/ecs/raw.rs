@@ -3,8 +3,9 @@ use super::{world::World, EntityId};
 pub use super::archetype::{create_archetype, Archetype, ArchetypeBuilder};
 pub use super::chunk::Chunk;
 pub use super::query::{PreparedQuery, Query, QueryIter};
-pub use crate::reflect::{
-    component_type, register_component_type, ComponentType, TypeInfo as ComponentTypeInfo,
+pub use sky_type::{
+    register as register_component_type, type_of as component_type, Type as ComponentType,
+    TypeInfo as ComponentTypeInfo,
 };
 
 pub trait WorldRawExt {

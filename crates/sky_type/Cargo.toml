@@ -1,0 +1,10 @@
+[package]
+name = "sky_type"
+version = "0.1.0"
+edition = "2021"
+description = "Foundational runtime type identity and layout metadata for Sky"
+license = "MIT"
+
+[dependencies]
+lazy_static = "1.4.0"
+rustc-hash = "2.1.2"

@@ -15,7 +15,7 @@ fn main() {
     // Priority:
     //   1. CUBISM_CORE_LIB_DIR / CUBISM_CORE_INCLUDE_DIR  (direct paths)
     //   2. LIVE2D_CUBISM_SDK_NATIVE_DIR                    (SDK root)
-    //   3. ../CubismSdkForNative sibling directory         (local fallback)
+    //   3. ancestor CubismSdkForNative directory           (local fallback)
     //   4. panic with instructions
 
     let direct_lib_dir = std::env::var("CUBISM_CORE_LIB_DIR").ok();
@@ -43,17 +43,7 @@ fn main() {
     // ── Path 2/3: SDK root resolution ───────────────────────────────────
     let sdk_dir = std::env::var("LIVE2D_CUBISM_SDK_NATIVE_DIR")
         .ok()
-        .or_else(|| {
-            let fallback = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .unwrap()
-                .join("CubismSdkForNative");
-            if fallback.exists() {
-                Some(fallback.to_string_lossy().to_string())
-            } else {
-                None
-            }
-        });
+        .or_else(find_local_sdk_dir);
 
     let sdk_dir = sdk_dir.unwrap_or_else(|| {
         panic!(
@@ -77,6 +67,16 @@ fn main() {
     // Export include path for downstream crates
     let include_dir = sdk_path.join("Core").join("include");
     println!("cargo:include={}", include_dir.display());
+}
+
+fn find_local_sdk_dir() -> Option<String> {
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest_dir
+        .ancestors()
+        .skip(1)
+        .map(|ancestor| ancestor.join("CubismSdkForNative"))
+        .find(|candidate| candidate.exists())
+        .map(|candidate| candidate.to_string_lossy().to_string())
 }
 
 /// Resolve the effective SDK root.

@@ -84,7 +84,7 @@ impl<Q: QuerySpec, Flt: QueryFilter> PreparedQuery<Q, Flt> {
     /// apply any queued structural changes after the parallel phase.
     ///
     /// ```rust
-    /// use sky_engine::ecs::World;
+    /// use sky_ecs::World;
     ///
     /// #[derive(Clone, Copy)]
     /// struct Position {
@@ -115,7 +115,7 @@ impl<Q: QuerySpec, Flt: QueryFilter> PreparedQuery<Q, Flt> {
     ///
     /// ```compile_fail
     /// use std::cell::Cell;
-    /// use sky_engine::ecs::World;
+    /// use sky_ecs::World;
     ///
     /// let mut world = World::new();
     /// world.spawn((Cell::new(1u32),));
@@ -126,7 +126,7 @@ impl<Q: QuerySpec, Flt: QueryFilter> PreparedQuery<Q, Flt> {
     ///
     /// ```compile_fail
     /// use std::rc::Rc;
-    /// use sky_engine::ecs::World;
+    /// use sky_ecs::World;
     ///
     /// let mut world = World::new();
     /// world.spawn((Rc::new(1u32),));

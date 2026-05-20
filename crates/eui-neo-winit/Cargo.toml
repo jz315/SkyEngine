@@ -1,0 +1,13 @@
+[package]
+name = "eui-neo-winit"
+version = "0.1.0"
+edition = "2021"
+description = "winit input and platform adapters for eui-neo"
+readme = "README.md"
+license = "MIT"
+keywords = ["ui", "game-ui", "winit", "eui-neo"]
+categories = ["gui", "game-development"]
+
+[dependencies]
+eui-neo = { path = "../eui-neo" }
+winit = "0.30"

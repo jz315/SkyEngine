@@ -15,7 +15,11 @@ pub struct EntityId {
 }
 
 impl EntityId {
-    pub(crate) fn new(index: u32, generation: u32) -> Self {
+    /// Creates an entity id from its raw slot index and generation.
+    ///
+    /// This is mainly for low-level tests and renderer sort keys. IDs created
+    /// this way are not guaranteed to refer to a live entity in any [`World`].
+    pub const fn new(index: u32, generation: u32) -> Self {
         Self { index, generation }
     }
 

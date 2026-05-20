@@ -33,8 +33,8 @@ _refs/*
 examples/assets/tiled/tiled/
 
 # Subcrate build artifacts
-cubism-sys/target/
-cubism-sys/Cargo.lock
+crates/cubism-sys/target/
+crates/cubism-sys/Cargo.lock
 crates/vendor/**/target/
 crates/vendor/kajiya/**/Cargo.lock
 crates/vendor/gpu-profiler/Cargo.lock
