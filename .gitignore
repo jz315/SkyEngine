@@ -23,6 +23,7 @@ desktop.ini
 # Temp benchmark output
 bench_*.txt
 criterion/
+/output/
 
 # Vendor / third-party SDKs
 CubismSdkForNative/
