@@ -82,12 +82,12 @@ impl SkyNeoFontStore {
         key: &FontRef,
     ) -> Option<Handle<FontAsset>> {
         let source = key.as_source()?;
-        if let Some(handle) = self.handles.get(key).copied() {
+        if let Some(handle) = self.handles.get(key).cloned() {
             return Some(handle);
         }
         match load_font_handle(asset_server, source) {
             Ok(handle) => {
-                self.handles.insert(key.clone(), handle);
+                self.handles.insert(key.clone(), handle.clone());
                 Some(handle)
             }
             Err(error) => {
@@ -140,7 +140,7 @@ fn load_font_handle(asset_server: &Assets, source: &str) -> Result<Handle<FontAs
     if let Some(value) = source.strip_prefix("asset://") {
         if let Ok(id) = AssetId::parse_str(value) {
             return asset_server
-                .load::<FontAsset>(id)
+                .load_id::<FontAsset>(id)
                 .map_err(|error| error.to_string());
         }
         return asset_server

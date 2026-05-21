@@ -67,12 +67,12 @@ impl SkyNeoImageStore {
             let Some(handle) = self.resolve_handle(asset_server, key) else {
                 continue;
             };
-            match cache.texture(gpu, asset_server, handle) {
+            match cache.texture(gpu, asset_server, &handle) {
                 Some(texture) => {
-                    self.store_ready_texture(asset_server, key, handle, texture);
+                    self.store_ready_texture(asset_server, key, &handle, texture);
                 }
                 None => {
-                    let readiness = cache.texture_readiness(Some(asset_server), handle);
+                    let readiness = cache.texture_readiness(Some(asset_server), &handle);
                     if matches!(
                         readiness,
                         TextureReadiness::CpuLoading
@@ -88,9 +88,9 @@ impl SkyNeoImageStore {
 
         cache.prepare_queued_textures(gpu);
         for (key, handle) in pending_handles {
-            if let Some(texture) = cache.texture(gpu, asset_server, handle) {
+            if let Some(texture) = cache.texture(gpu, asset_server, &handle) {
                 self.pending_frame.remove(&key);
-                self.store_ready_texture(asset_server, &key, handle, texture);
+                self.store_ready_texture(asset_server, &key, &handle, texture);
             }
         }
 
@@ -140,7 +140,7 @@ impl SkyNeoImageStore {
         asset_server: &Assets,
         key: &ImageRef,
     ) -> Option<Handle<TextureAsset>> {
-        if let Some(handle) = self.handles.get(key).copied() {
+        if let Some(handle) = self.handles.get(key).cloned() {
             return Some(handle);
         }
         if self.recently_failed(key) {
@@ -154,7 +154,7 @@ impl SkyNeoImageStore {
 
         match load_texture_handle(asset_server, key.source()) {
             Ok(handle) => {
-                self.handles.insert(key.clone(), handle);
+                self.handles.insert(key.clone(), handle.clone());
                 Some(handle)
             }
             Err(error) => {
@@ -195,10 +195,10 @@ impl SkyNeoImageStore {
         &mut self,
         asset_server: &Assets,
         key: &ImageRef,
-        handle: Handle<TextureAsset>,
+        handle: &Handle<TextureAsset>,
         texture: Texture,
     ) {
-        let Some(asset) = asset_server.try_get(&handle) else {
+        let Some(asset) = asset_server.try_get(handle) else {
             self.pending_frame.insert(key.clone());
             return;
         };
@@ -279,7 +279,7 @@ fn load_texture_handle(
     if let Some(value) = source.strip_prefix("asset://") {
         if let Ok(id) = AssetId::parse_str(value) {
             return asset_server
-                .load::<TextureAsset>(id)
+                .load_id::<TextureAsset>(id)
                 .map_err(|error| error.to_string());
         }
         return asset_server
