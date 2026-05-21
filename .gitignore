@@ -33,6 +33,7 @@ tools/
 _achieved/
 _refs/
 examples/assets/tiled/tiled/
+examples/assets/vn/_source/
 
 # Subcrate build artifacts
 crates/*/target/
