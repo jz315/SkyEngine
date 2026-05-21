@@ -351,6 +351,11 @@ path = "examples/ui/neo_game_hud_demo.rs"
 required-features = ["ui-neo"]
 
 [[example]]
+name = "kenney_neo_ui_showcase"
+path = "examples/ui/kenney_neo_ui_showcase.rs"
+required-features = ["ui-neo"]
+
+[[example]]
 name = "neo_control_center"
 path = "examples/ui/neo_control_center/main.rs"
 required-features = ["ui-neo"]
