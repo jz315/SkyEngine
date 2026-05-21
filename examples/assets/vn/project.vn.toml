@@ -1,0 +1,18 @@
+title = "After School Promise"
+start_node = "Start"
+resolution = [1280, 720]
+default_language = "zh-CN"
+scripts = ["scripts/after_school_promise.yarn"]
+
+[characters.anqi]
+display_name = "陈安琪"
+color = "#d7ecff"
+default_expression = "neutral"
+
+[characters.player]
+display_name = "林宇"
+color = "#f3f5f7"
+
+[characters.narrator]
+display_name = "旁白"
+color = "#d9e2ec"

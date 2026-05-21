@@ -1,0 +1,85 @@
+title: Start
+---
+<<scene "vn/bg/school_playground_summer.png" transition="fade" duration=0.6>>
+<<show anqi "vn/characters/chen_anqi/sweaty_fan.png" at="right" layer=20 opacity=0.98>>
+旁白: 9月3日，下午两点半，气温34度。 #line:start.narrator.0001
+旁白: 升入高三后的第一次年级大会，把所有人都钉在操场上。 #line:start.narrator.0002
+林宇: 如果“多拿一分，干掉千人”是真的，那脚下这片塑胶跑道大概已经血流成河了。 #line:start.player.0001
+陈安琪: 林宇。主任还要讲多久？ #line:start.anqi.0001
+林宇: 还有个宣誓环节。你受得了吗？ #line:start.player.0002
+陈安琪: 死不了。我只是觉得有点浪费时间。 #line:start.anqi.0002
+-> 直接回教室
+    <<set $route = "quiet">>
+    林宇: 那等会儿我帮你占后排靠窗的位置。 #line:start.player.quiet
+    <<jump Evening>>
+-> 顺手帮她带水
+    <<set $route = "shared_secret">>
+    <<jump Notebook>>
+===
+
+title: Notebook
+---
+<<scene "vn/bg/classroom_day.png" transition="fade" duration=0.5>>
+<<show anqi "vn/characters/chen_anqi/dizzy_tired.png" at="right" layer=20>>
+旁白: 回到教室，吊扇把浑浊的热空气搅来搅去。试卷油墨味、汗味、桌斗里的韭菜包子味混在一起。 #line:notebook.narrator.0001
+林宇: 陈安琪。我要去小卖部，给你带瓶冰水？ #line:notebook.player.0001
+陈安琪: 不用冰水。如果可以的话，常温无糖乌龙茶。谢谢。 #line:notebook.anqi.0001
+<<cg "vn/cg/notebook_secret.png" layer=40>>
+旁白: 五分钟后，她的座位空了。一阵过堂风吹翻了她的错题本。 #line:notebook.narrator.0002
+旁白: 我伸手去压住快要掉下桌的纸页，然后看见一行很轻的字。 #line:notebook.narrator.0003
+旁白: “好累啊，有点撑不下去了。” #line:notebook.note.0001
+<<show anqi "vn/characters/chen_anqi/panic_defensive.png" at="center" layer=60>>
+陈安琪: 你在干什么？！ #line:notebook.anqi.0002
+林宇: 风吹开了你的本子，我只是想帮你压一下。你的茶。 #line:notebook.player.0002
+陈安琪: 你看到了？ #line:notebook.anqi.0003
+-> 轻松化解
+    <<set $promise = "physics">>
+    林宇: 多大点事。不过作为封口费，你得帮我补习物理。 #line:notebook.player.physics
+    陈安琪: 你这人真的很会趁火打劫。 #line:notebook.anqi.physics
+    <<hide_cg>>
+    <<jump Evening>>
+-> 成为共犯
+    <<set $promise = "cover">>
+    林宇: 如果你妈这周末要检查，我可以帮你弄本假的错题集掩护。 #line:notebook.player.cover
+    陈安琪: 你知道自己在说什么吗？ #line:notebook.anqi.cover
+    <<hide_cg>>
+    <<jump Evening>>
+===
+
+title: Evening
+---
+<<scene "vn/bg/classroom_evening.png" transition="fade" duration=0.6>>
+<<show anqi "vn/characters/chen_anqi/neutral.png" at="right" layer=20>>
+旁白: 傍晚5点40分，教室空了一大半。夕阳斜打进来，粉笔灰在光里慢慢飘。 #line:evening.narrator.0001
+陈安琪: 今天的晚霞很好看。它好宽敞。 #line:evening.anqi.0001
+林宇: 宽敞？ #line:evening.player.0001
+陈安琪: 我们每天低头看A4纸大小的卷子，抬头看一平米的黑板。只有看天的时候，才觉得外面还有那么大的地方。 #line:evening.anqi.0002
+<<cg "vn/cg/sunset_window_contrast.png" layer=40>>
+陈安琪: 我妈说学计算机，明年六月考完就给我买电脑。 #line:evening.anqi.0003
+林宇: 你没跟她提天文系？ #line:evening.player.0002
+陈安琪: 怎么提呢？几万光年外的星星，照不亮我们家那个永远漏水的卫生间。 #line:evening.anqi.0004
+-> 现实地安慰她
+    <<set $ending = "practical">>
+    林宇: 计算机也没那么糟，至少以后你不用像阿姨那么辛苦。 #line:evening.player.practical
+    陈安琪: 也许吧。只是我还需要一点时间，跟自己和解。 #line:evening.anqi.practical
+    <<jump Ending>>
+-> 笨拙地陪她重算
+    <<set $ending = "retry">>
+    林宇: 擦掉重算。人又不是只有一次选择的机会。 #line:evening.player.retry
+    陈安琪: 这句话很笨。不过我收下了。 #line:evening.anqi.retry
+    <<jump Ending>>
+===
+
+title: Ending
+---
+<<hide_cg>>
+<<if $ending == "retry">>
+<<cg "vn/cg/evening_milk_silence.png" layer=40>>
+旁白: 她把错题本翻到空白页，在页角画了一颗很小的星星。 #line:end.retry.narrator.0001
+<<else>>
+旁白: 晚霞一点点退下去，倒计时牌重新亮起来。我们都没有立刻说话。 #line:end.practical.narrator.0001
+<<endif>>
+<<unlock_cg "corridor_promise">>
+<<checkpoint "chapter_01_clear">>
+旁白: Chapter 01 Clear。 #line:end.system.0001
+===

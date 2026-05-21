@@ -118,9 +118,9 @@ while !matches!(runtime.status(), sky_engine::vn::VnStatus::Ended) {
 Supported script syntax currently includes node headers, dialogue lines,
 `->` choices, `<<jump>>`, `<<call>>`, `<<return>>`, `<<set>>`, conditionals,
 `<<wait>>`, and presentation commands such as `<<scene>>`, `<<show>>`,
-`<<hide>>`, `<<move>>`, `<<cg>>`, `<<play_bgm>>`, `<<play_se>>`,
-`<<voice>>`, `<<play_video>>`, `<<checkpoint>>`, `<<preload>>`, and
-extension commands routed through `VnCommandRegistry`.
+`<<hide>>`, `<<move>>`, `<<cg>>`, `<<hide_cg>>`, `<<play_bgm>>`,
+`<<play_se>>`, `<<voice>>`, `<<play_video>>`, `<<checkpoint>>`,
+`<<preload>>`, and extension commands routed through `VnCommandRegistry`.
 
 YarnSpinner diagnostics are mapped into `VnDiagnostic` before SkyEngine's own
 validator runs. The adapter also auto-declares condition-only variables as

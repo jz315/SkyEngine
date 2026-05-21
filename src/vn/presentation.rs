@@ -65,7 +65,7 @@ impl VnSpriteTextureMap {
     }
 
     pub fn get(&self, asset: &str) -> Option<Handle<TextureAsset>> {
-        self.textures.get(asset).copied()
+        self.textures.get(asset).cloned()
     }
 
     pub fn len(&self) -> usize {
@@ -143,7 +143,7 @@ impl VnSpriteTextureMap {
             .textures
             .iter()
             .filter(|(asset, _)| !self.sizes.contains_key(*asset))
-            .map(|(asset, handle)| (asset.clone(), *handle))
+            .map(|(asset, handle)| (asset.clone(), handle.clone()))
             .collect();
         for (asset, handle) in pending {
             if let Some(texture) = assets.try_get(&handle) {
@@ -167,7 +167,7 @@ impl VnSpriteTextureMap {
                 path: path.to_path_buf(),
                 source,
             })?;
-        self.insert_handle(asset, handle);
+        self.insert_handle(asset, handle.clone());
         Ok(handle)
     }
 
@@ -544,7 +544,7 @@ title: Start
 
         let handle = textures.get("vn/white").unwrap();
         assert_eq!(textures.size("vn/white"), None);
-        wait_for_texture(&asset_server, handle);
+        wait_for_texture(&asset_server, &handle);
         textures.refresh_metadata(&asset_server);
         assert_eq!(textures.size("vn/white"), Some([1, 1]));
         assert!(asset_server.is_installed(&handle));
@@ -565,7 +565,7 @@ title: Start
         let handle = textures
             .request_image_file(&asset_server, "vn/pose", temp.path().join("pose.png"))
             .unwrap();
-        wait_for_texture(&asset_server, handle);
+        wait_for_texture(&asset_server, &handle);
         textures.refresh_metadata(&asset_server);
 
         assert_eq!(textures.size("vn/pose"), Some([3, 2]));
@@ -586,10 +586,10 @@ title: Start
         }
     }
 
-    fn wait_for_texture(asset_server: &Assets, handle: Handle<TextureAsset>) {
+    fn wait_for_texture(asset_server: &Assets, handle: &Handle<TextureAsset>) {
         for _ in 0..64 {
             asset_server.update().unwrap();
-            if asset_server.is_installed(&handle) {
+            if asset_server.is_installed(handle) {
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(5));

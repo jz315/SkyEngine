@@ -39,6 +39,7 @@ impl VnSceneState {
                 self.cg = Some(layer.clone());
                 Some(VnSceneChange::Cg(layer))
             }
+            "hide_cg" | "clear_cg" => self.cg.take().map(VnSceneChange::CgHidden),
             "show" => {
                 let mut positional = command.positional_args();
                 let id = positional.next()?.raw.clone();
@@ -102,6 +103,7 @@ impl VnSceneState {
 pub enum VnSceneChange {
     Background(VnImageLayer),
     Cg(VnImageLayer),
+    CgHidden(VnImageLayer),
     ActorShown(VnActor),
     ActorHidden(VnActor),
     ActorMoved(VnActor),
@@ -264,5 +266,30 @@ title: Start
             Some("bg/classroom.png")
         );
         assert!(scene.actors.is_empty());
+    }
+
+    #[test]
+    fn scene_state_hides_cg_layer() {
+        let script = YarnScript::parse_str(
+            r#"
+title: Start
+---
+<<cg "cg/notebook.png" layer=40>>
+<<hide_cg>>
+===
+"#,
+        )
+        .unwrap();
+        let node = script.node("Start").unwrap();
+        let mut scene = VnSceneState::default();
+
+        for instruction in &node.body {
+            let YarnInstruction::Command(command) = instruction else {
+                continue;
+            };
+            scene.apply_command(command);
+        }
+
+        assert_eq!(scene.cg, None);
     }
 }

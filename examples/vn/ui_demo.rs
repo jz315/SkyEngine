@@ -20,12 +20,9 @@ use sky_engine::render::{
 use sky_engine::ui::neo::{widgets, Color, HorizontalAlign, Screen, Ui};
 use sky_engine::vn::{
     compose_vn_ui_with, VnAction, VnPlaybackState, VnPlugin, VnResource, VnSaveStore, VnStatus,
-    VnUiComposeContext, VnUiMode, YarnProject, YarnScript,
+    VnUiComposeContext, VnUiMode, YarnProject,
 };
 
-const CORRIDOR_CG: &str = "vn/bg/corridor_day.png";
-const ROOM_EDIT_CG: &str = "vn/cg/notebook_secret.png";
-const STANDING_POSE: &str = "vn/characters/chen_anqi/neutral.png";
 const QUICK_SLOT: &str = "quick";
 
 struct VnUiDemo {
@@ -821,6 +818,11 @@ fn env_u32(key: &str) -> Option<u32> {
 fn main() {
     let project = demo_project();
     let initial_window_size = project.manifest.resolution;
+    let window_title = if project.manifest.title.is_empty() {
+        "SkyEngine Galgame".to_owned()
+    } else {
+        format!("SkyEngine Galgame - {}", project.manifest.title)
+    };
 
     let mut world = World::new();
     world.insert_resource(RenderSettings {
@@ -852,7 +854,7 @@ fn main() {
 
     world
         .install(WindowPlugin::new(
-            "SkyEngine Galgame - After School Promise",
+            window_title,
             initial_window_size[0],
             initial_window_size[1],
         ))
@@ -875,77 +877,15 @@ fn main() {
 }
 
 fn demo_project() -> YarnProject {
-    let script = YarnScript::parse_str(&format!(
-        r#"
-title: Start
----
-<<scene "{CORRIDOR_CG}" transition="fade" duration=0.8>>
-<<play_bgm "audio/bgm/after_school.ogg" loop=true fade=1.2 volume=0.7>>
-<<show alice "{STANDING_POSE}" at="right" layer=20 opacity=0.98>>
-旁白: 四月最后一天的放学铃，像被雨洗过一样轻。 #line:start.narrator.0001
-Alice: 找到了。你果然会选这条没人经过的路。 #line:start.alice.0001
-我: 如果我说只是路过，你会相信吗？ #line:start.player.0001
-Alice: 不信。你心虚的时候，会把书包带绕在手指上。 #line:start.alice.0002
--> 说出退社的事
-    <<set $route = "honest">>
-    <<jump HonestRoute>>
--> 提议先去看美术稿
-    <<set $route = "art">>
-    <<jump ArtRoute>>
-===
+    YarnProject::load(demo_project_path()).expect("demo project should load")
+}
 
-title: HonestRoute
----
-我: 其实我今天是来交退社申请的。 #line:honest.player.0001
-<<move alice to="center">>
-Alice: 你不用一个人把企划、程序、剧本和大家的期待全背起来。 #line:honest.alice.0001
--> 把申请书递给她
-    <<set $ending = "leave">>
-    Alice: 如果这是你认真想过的决定，我会替你好好收下。 #line:honest.leave.alice.0001
-    <<jump Ending>>
--> 把申请书揉成一团
-    <<set $ending = "stay">>
-    Alice: 那就从最小的一幕开始。今晚只写两句台词，也算继续。 #line:honest.stay.alice.0001
-    <<jump Ending>>
-===
-
-title: ArtRoute
----
-我: 先去社办吧。我想看看新的美术稿。 #line:art.player.0001
-<<cg "{ROOM_EDIT_CG}" layer=40>>
-Alice: 这张可以当回忆 CG。角色站进去以后，故事就有了重量。 #line:art.alice.0001
--> 让她站到画面中央
-    <<set $ending = "cg">>
-    <<move alice to="center">>
-    Alice: 如果要拍宣传截图，现在这个构图就很好。 #line:art.cg.alice.0001
-    <<jump Ending>>
--> 关掉 CG 回到走廊
-    <<set $ending = "corridor">>
-    <<cg "{ROOM_EDIT_CG}" layer=0 opacity=0.0>>
-    Alice: 那就回到最开始的地方，再选一次不逃跑的选项。 #line:art.corridor.alice.0001
-    <<jump Ending>>
-===
-
-title: Ending
----
-<<if $ending == "leave">>
-旁白: 退社申请被她夹进文件夹。纸张合上的声音，比我想象中轻。 #line:end.leave.narrator.0001
-<<elseif $ending == "stay">>
-旁白: 被揉皱的纸团落进垃圾桶。故事没有突然变好，但它继续往下一行走。 #line:end.stay.narrator.0001
-<<elseif $ending == "cg">>
-旁白: 她站到画面中央。那一瞬间，我忽然明白所谓完成度，就是有人愿意相信它。 #line:end.cg.narrator.0001
-<<else>>
-旁白: 走廊的灯一盏盏亮起，我们把社办门锁好，像给今天的剧情打上句号。 #line:end.corridor.narrator.0001
-<<endif>>
-<<unlock_cg "corridor_promise">>
-<<checkpoint "chapter_01_clear">>
-旁白: Chapter 01 Clear。 #line:end.system.0001
-===
-"#
-    ))
-    .expect("demo script should parse");
-
-    YarnProject::new("Start", script).expect("demo project should build")
+fn demo_project_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("examples")
+        .join("assets")
+        .join("vn")
+        .join("project.vn.toml")
 }
 
 fn example_asset_root() -> impl AsRef<Path> {
@@ -957,6 +897,8 @@ fn example_asset_root() -> impl AsRef<Path> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sky_engine::asset::{AssetConfig, Assets};
+    use sky_engine::ecs::Plugin;
     use sky_engine::vn::VnRuntimeEvent;
 
     #[test]
@@ -967,6 +909,10 @@ mod tests {
             .without_systems()
             .install(&mut world)
             .expect("plugin should install");
+        world.insert_resource(Assets::with_empty_manifest(AssetConfig::new(
+            example_asset_root().as_ref(),
+            "native",
+        )));
         world
             .get_resource_mut::<VnResource>()
             .unwrap()
@@ -981,22 +927,10 @@ mod tests {
                 .unwrap()
                 .runtime_mut()
                 .unwrap();
-            assert!(matches!(
-                runtime.advance().unwrap(),
-                VnRuntimeEvent::Command(_)
-            ));
-            assert!(matches!(
-                runtime.advance().unwrap(),
-                VnRuntimeEvent::Command(_)
-            ));
-            assert!(matches!(
-                runtime.advance().unwrap(),
-                VnRuntimeEvent::Command(_)
-            ));
-            assert!(matches!(
-                runtime.advance().unwrap(),
-                VnRuntimeEvent::Line(_)
-            ));
+            assert_eq!(
+                advance_until_line(runtime, 16).as_deref(),
+                Some("start.narrator.0001")
+            );
         }
 
         save_quick_slot(&mut world).unwrap();
@@ -1008,10 +942,10 @@ mod tests {
                 .runtime_mut()
                 .unwrap();
             runtime.dialogue_mut().complete_line();
-            assert!(matches!(
-                runtime.advance().unwrap(),
-                VnRuntimeEvent::Line(_)
-            ));
+            assert_ne!(
+                advance_until_line(runtime, 16).as_deref(),
+                Some("start.narrator.0001")
+            );
         }
         assert_ne!(
             world
@@ -1040,5 +974,19 @@ mod tests {
                 .map(|line| line.line_id.as_deref()),
             Some(Some("start.narrator.0001"))
         );
+    }
+
+    fn advance_until_line(
+        runtime: &mut sky_engine::vn::VnRuntime,
+        max_steps: usize,
+    ) -> Option<String> {
+        for _ in 0..max_steps {
+            match runtime.advance().unwrap() {
+                VnRuntimeEvent::Line(line) => return line.line_id,
+                VnRuntimeEvent::Command(_) | VnRuntimeEvent::Wait(_) => {}
+                VnRuntimeEvent::Choices(_) | VnRuntimeEvent::End => return None,
+            }
+        }
+        None
     }
 }
