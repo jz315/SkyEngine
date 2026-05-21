@@ -61,23 +61,27 @@ pub(crate) fn extract_frame(
         let mut opaque_phase = OpaquePhase::new();
         let mut transparent_phase = TransparentPhase::new();
         for extractor in &mut parts.plan.extractors {
-            extractor
-                .extract(
-                    world,
-                    &inputs.resolved_transforms,
-                    view,
-                    &mut ExtractContext {
-                        gpu,
-                        asset_server,
-                        render_assets: asset_cache,
-                        material_registry: &mut parts.resources.material_registry,
-                        mesh_registry: &parts.resources.mesh_registry,
-                        opaque_phase: &mut opaque_phase,
-                        transparent_phase: &mut transparent_phase,
-                        quad_mesh_handle,
-                    },
-                )
-                .expect("registered extractor should succeed");
+            let extractor_name = extractor.name();
+            if let Err(error) = extractor.extract(
+                world,
+                &inputs.resolved_transforms,
+                view,
+                &mut ExtractContext {
+                    gpu,
+                    asset_server,
+                    render_assets: asset_cache,
+                    material_registry: &mut parts.resources.material_registry,
+                    mesh_registry: &parts.resources.mesh_registry,
+                    opaque_phase: &mut opaque_phase,
+                    transparent_phase: &mut transparent_phase,
+                    quad_mesh_handle,
+                },
+            ) {
+                eprintln!(
+                    "[SkyEngine] Render extractor `{extractor_name}` failed for view \
+                     {view_index}; skipping extractor output: {error}"
+                );
+            }
         }
         for feature in &parts.plan.runtime_features {
             feature.append_phase_items(view_index, &mut opaque_phase, &mut transparent_phase);

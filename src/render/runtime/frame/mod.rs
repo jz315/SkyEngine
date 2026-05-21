@@ -14,7 +14,9 @@ pub(crate) use assemble_frame::{assemble_prepared_frame, FrameAssemblyInputs};
 pub(crate) use collect_frame_inputs::begin_frame_inputs;
 pub(crate) use execute_frame::execute_prepared_frame;
 pub(crate) use extract_frame::extract_frame;
-pub(crate) use finish_frame::{finish_frame_stats, remember_previous_models};
+pub(crate) use finish_frame::{
+    finish_frame_stats, finish_skipped_frame_stats, remember_previous_models,
+};
 pub(crate) use gi::prepare_global_illumination;
 pub(crate) use lighting::collect_gpu_lights;
 pub(crate) use prepare_frame_resources::{

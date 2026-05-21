@@ -21,6 +21,7 @@ pub struct WgpuSceneRenderer {
     gpu: GpuContext,
     render_runtime: Option<RenderRuntime>,
     asset_cache: WgpuRenderAssetCache,
+    warned_missing_pipeline: bool,
 }
 
 impl WgpuSceneRenderer {
@@ -41,6 +42,7 @@ impl WgpuSceneRenderer {
             gpu,
             render_runtime,
             asset_cache: WgpuRenderAssetCache::default(),
+            warned_missing_pipeline: false,
         })
     }
 
@@ -105,10 +107,18 @@ impl SceneRenderer for WgpuSceneRenderer {
     }
 
     fn render_world(&mut self, world: &World) {
-        self.render_runtime
-            .as_mut()
-            .expect("FrameContext::render requires RenderPlugin::pipeline(...)")
-            .render_world(&mut self.gpu, world);
+        let Some(render_runtime) = self.render_runtime.as_mut() else {
+            if !self.warned_missing_pipeline {
+                eprintln!(
+                    "[SkyEngine] FrameContext::render skipped: rendering requires \
+                     RenderPlugin::pipeline(...) or one of the RenderPlugin presets"
+                );
+                self.warned_missing_pipeline = true;
+            }
+            return;
+        };
+
+        render_runtime.render_world(&mut self.gpu, world);
     }
 
     fn resize(&mut self, width: u32, height: u32) {

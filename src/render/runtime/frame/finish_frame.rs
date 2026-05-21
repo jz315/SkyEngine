@@ -51,6 +51,33 @@ pub(crate) fn finish_frame_stats(
     };
 }
 
+pub(crate) fn finish_skipped_frame_stats(
+    parts: &mut FrameRuntimeParts<'_>,
+    inputs: &FrameInputs,
+    extracted: &ExtractedFrame,
+    render_asset_stats: RenderAssetStats,
+) {
+    parts.runtime.last_stats = RenderStats {
+        step_count: parts.plan.steps.len(),
+        view_count: extracted.views.len(),
+        resident_render_assets: render_asset_stats.resident_assets,
+        uploaded_render_assets: render_asset_stats.uploaded_assets,
+        uploaded_render_asset_bytes: render_asset_stats.uploaded_bytes,
+        queued_render_assets: render_asset_stats.queued_assets,
+        visible_queued_render_assets: render_asset_stats.visible_queued_assets,
+        loading_render_assets: render_asset_stats.loading_assets,
+        fallback_render_assets: render_asset_stats.fallback_assets,
+        missing_render_assets: render_asset_stats.missing_assets,
+        failed_render_assets: render_asset_stats.failed_assets,
+        timings: RenderTimingStats {
+            frame_ms: elapsed_ms(inputs.frame_start),
+            upload_ms: render_asset_stats.upload_ms,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+}
+
 pub(crate) fn remember_previous_models(parts: &mut FrameRuntimeParts<'_>, inputs: &FrameInputs) {
     parts.runtime.previous_model_by_entity.clear();
     parts.runtime.previous_model_by_entity.extend(

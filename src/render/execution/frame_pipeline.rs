@@ -86,11 +86,15 @@ impl<'nodes, S: ?Sized> FramePipeline<'nodes, S> {
     ) -> FrameExecutionStats {
         self.prepare_frame_graph(frame);
 
-        let pass_count = self
-            .graph
-            .compile()
-            .expect("FramePipeline render graph compilation failed")
-            .len();
+        let pass_count = match self.graph.compile() {
+            Ok(compiled) => compiled.len(),
+            Err(error) => {
+                eprintln!(
+                    "[SkyEngine] Frame render graph compilation failed; skipping frame: {error}"
+                );
+                return FrameExecutionStats::default();
+            }
+        };
         let mut stats = FrameExecutionStats {
             passes: pass_count,
             draw_calls: 0,
@@ -106,64 +110,77 @@ impl<'nodes, S: ?Sized> FramePipeline<'nodes, S> {
         let pass_dispatch = &self.pass_dispatch;
         let mut counted_draw_dispatches = FxHashSet::default();
 
-        self.graph.execute(ctx, |compiled_pass, ctx, resources| {
-            let Some(dispatch) = pass_dispatch.get(&compiled_pass.handle).copied() else {
-                return Ok(());
-            };
-            let count_draw_calls = counted_draw_dispatches.insert(dispatch);
+        if let Err(error) = self
+            .graph
+            .try_execute(ctx, |compiled_pass, ctx, resources| {
+                let Some(dispatch) = pass_dispatch.get(&compiled_pass.handle).copied() else {
+                    return Ok(());
+                };
+                let count_draw_calls = counted_draw_dispatches.insert(dispatch);
 
-            match dispatch {
-                DispatchEntry::Setup { node_index } => {
-                    let execution = SetupExecutionContext { frame };
-                    if count_draw_calls {
-                        stats.draw_calls += setup_nodes[node_index].draw_calls(&execution);
+                match dispatch {
+                    DispatchEntry::Setup { node_index } => {
+                        let execution = SetupExecutionContext { frame };
+                        if count_draw_calls {
+                            stats.draw_calls += setup_nodes[node_index].draw_calls(&execution);
+                        }
+                        setup_nodes[node_index].execute(
+                            compiled_pass,
+                            ctx,
+                            resources,
+                            &execution,
+                        )?;
                     }
-                    setup_nodes[node_index].execute(compiled_pass, ctx, resources, &execution)?;
-                }
-                DispatchEntry::View {
-                    node_index,
-                    view_index,
-                } => {
-                    let view_state = completed_view_lookup
-                        .get(view_index)
-                        .and_then(|index| *index)
-                        .and_then(|index| completed_views.get(index))
-                        .expect("view dispatch should have completed setup state");
-                    let execution = ViewExecutionContext {
-                        frame,
-                        view: frame.view(view_index),
-                        view_state,
+                    DispatchEntry::View {
+                        node_index,
                         view_index,
-                    };
-                    if count_draw_calls {
-                        stats.draw_calls += view_nodes[node_index].draw_calls(&execution, services);
+                    } => {
+                        let view_state = completed_view_lookup
+                            .get(view_index)
+                            .and_then(|index| *index)
+                            .and_then(|index| completed_views.get(index))
+                            .expect("view dispatch should have completed setup state");
+                        let execution = ViewExecutionContext {
+                            frame,
+                            view: frame.view(view_index),
+                            view_state,
+                            view_index,
+                        };
+                        if count_draw_calls {
+                            stats.draw_calls +=
+                                view_nodes[node_index].draw_calls(&execution, services);
+                        }
+                        view_nodes[node_index].execute(
+                            compiled_pass,
+                            ctx,
+                            resources,
+                            &execution,
+                            services,
+                        )?;
                     }
-                    view_nodes[node_index].execute(
-                        compiled_pass,
-                        ctx,
-                        resources,
-                        &execution,
-                        services,
-                    )?;
-                }
-                DispatchEntry::Finalize { node_index } => {
-                    let execution = FinalizeExecutionContext {
-                        frame,
-                        completed_views,
-                    };
-                    if count_draw_calls {
-                        stats.draw_calls += finalize_nodes[node_index].draw_calls(&execution);
+                    DispatchEntry::Finalize { node_index } => {
+                        let execution = FinalizeExecutionContext {
+                            frame,
+                            completed_views,
+                        };
+                        if count_draw_calls {
+                            stats.draw_calls += finalize_nodes[node_index].draw_calls(&execution);
+                        }
+                        finalize_nodes[node_index].execute(
+                            compiled_pass,
+                            ctx,
+                            resources,
+                            &execution,
+                        )?;
                     }
-                    finalize_nodes[node_index].execute(
-                        compiled_pass,
-                        ctx,
-                        resources,
-                        &execution,
-                    )?;
                 }
-            }
-            Ok(())
-        });
+                Ok(())
+            })
+        {
+            eprintln!(
+                "[SkyEngine] Frame render graph execution failed; frame may be incomplete: {error}"
+            );
+        }
 
         stats
     }

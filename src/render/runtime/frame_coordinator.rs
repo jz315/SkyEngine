@@ -5,8 +5,9 @@ use crate::render::resources::texture_cache::SharedRenderAssetCache;
 
 use super::frame::{
     begin_frame_inputs, execute_prepared_frame, extract_frame, finish_frame_stats,
-    finish_render_assets, prepare_frame_assets, prepare_global_illumination, prepare_shadows,
-    remember_previous_models, upload_scene_data, FrameRuntimeParts,
+    finish_render_assets, finish_skipped_frame_stats, prepare_frame_assets,
+    prepare_global_illumination, prepare_shadows, remember_previous_models, upload_scene_data,
+    FrameRuntimeParts,
 };
 use super::runtime::RenderRuntime;
 
@@ -62,7 +63,12 @@ impl FrameCoordinator {
             Some(asset_cache),
             asset_server.as_ref(),
         );
-        prepare_frame_assets(&mut parts, gpu, Some(asset_cache));
+        if !prepare_frame_assets(&mut parts, gpu, Some(asset_cache)) {
+            let render_asset_stats = finish_render_assets(Some(asset_cache));
+            finish_skipped_frame_stats(&mut parts, &inputs, &extracted, render_asset_stats);
+            remember_previous_models(&mut parts, &inputs);
+            return;
+        }
         let uploads = upload_scene_data(&mut parts, gpu, world, &inputs, &mut extracted);
         prepare_global_illumination(&mut parts, gpu, &extracted, &uploads);
         let shadows = prepare_shadows(&mut parts, gpu, &extracted, &uploads);

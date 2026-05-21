@@ -23,15 +23,19 @@ pub(crate) fn prepare_frame_assets(
     parts: &mut FrameRuntimeParts<'_>,
     gpu: &mut GpuContext,
     asset_cache: Option<&SharedRenderAssetCache>,
-) {
+) -> bool {
     if let Some(asset_cache) = asset_cache {
         asset_cache.borrow_mut().prepare_queued_textures(gpu);
     }
-    parts
+    if let Err(error) = parts
         .resources
         .material_registry
         .prepare_dirty(gpu, parts.runtime.fallback_texture.as_ref())
-        .expect("material preparation should succeed before draw");
+    {
+        eprintln!("[SkyEngine] Render material preparation failed; skipping frame draw: {error}");
+        return false;
+    }
+    true
 }
 
 pub(crate) fn finish_render_assets(
