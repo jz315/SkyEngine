@@ -27,14 +27,18 @@ use model::ModelSlot;
 use sky_engine::app::{
     App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, WindowPlugin,
 };
-use sky_engine::ecs::{EntityId, World};
+use sky_engine::ecs::{EntityId, With, World};
 use sky_engine::input::KeyCode;
+use sky_engine::math::{LogicalPoint, LogicalSize, PhysicalSize, Vec3};
 use sky_engine::render::expert::live2d::Live2DLoadError;
 use sky_engine::render::{
-    CameraMarker, Color, Live2DAnimator, Live2DCommands, Live2DFeature, Live2DModelInstance,
-    MainCamera, Projection, RenderPipelineAsset, RenderSettings, SortingLayer, SpriteRenderer,
-    Transform,
+    CameraMarker, Color, Live2DAnimator, Live2DCommands, Live2DFeature, Live2DLookTarget,
+    Live2DModelInstance, Live2DModelPoint, MainCamera, Projection, RenderPipelineAsset,
+    RenderSettings, SortingLayer, SpriteRenderer, Transform,
 };
+
+const DEMO_CAMERA_HEIGHT: f32 = 720.0;
+const DEMO_MODEL_HEIGHT: f32 = 360.0;
 
 #[derive(Default)]
 struct FpsCounter {
@@ -71,6 +75,8 @@ struct Live2DDemoApp {
     last_titled_ui_visible: bool,
     benchmark: Option<BenchmarkState>,
     pointer_drag_active: bool,
+    debug_look: bool,
+    frame_index: u64,
     should_exit: bool,
 }
 
@@ -79,6 +85,7 @@ impl Live2DDemoApp {
         model_paths: Vec<PathBuf>,
         ui_visible: bool,
         benchmark: Option<BenchmarkConfig>,
+        debug_look: bool,
     ) -> Self {
         Self {
             model_paths,
@@ -92,6 +99,8 @@ impl Live2DDemoApp {
             last_titled_ui_visible: !ui_visible,
             benchmark: benchmark.map(BenchmarkState::new),
             pointer_drag_active: false,
+            debug_look,
+            frame_index: 0,
             should_exit: false,
         }
     }
@@ -113,7 +122,7 @@ impl Live2DDemoApp {
                 Transform::default(),
                 SortingLayer(1),
                 Live2DModelInstance::new(path.clone())
-                    .with_height(360.0)
+                    .with_height(DEMO_MODEL_HEIGHT)
                     .visible(false),
                 Live2DAnimator::default(),
             ));
@@ -218,23 +227,71 @@ impl Live2DDemoApp {
     }
 
     fn handle_pointer_interaction(&mut self, ctx: &mut FrameContext<'_>) {
-        let surface_size = ctx.surface_size();
-        let mouse_position = ctx.input.mouse_position();
-        let in_bounds = ctx.input.mouse_in_window()
-            && mouse_position[0] >= 0.0
-            && mouse_position[1] >= 0.0
-            && mouse_position[0] < surface_size[0] as f32
-            && mouse_position[1] < surface_size[1] as f32;
+        if self.ui_visible && ctx.egui_wants_pointer() {
+            if self.debug_look {
+                let mouse_position = ctx.input.mouse_logical_position();
+                let physical_surface_size = ctx.physical_surface_size();
+                let logical_view_size = ctx.logical_view_size();
+                eprintln!(
+                    "[Live2D][look][frame={}] pointer captured by egui; drag not sent. mouse_logical=({:.2}, {:.2}) logical_view=({:.2}, {:.2}) physical_surface=({}, {})",
+                    self.frame_index,
+                    mouse_position.x,
+                    mouse_position.y,
+                    logical_view_size.width,
+                    logical_view_size.height,
+                    physical_surface_size.width,
+                    physical_surface_size.height
+                );
+            }
+            if self.pointer_drag_active {
+                let active = self.active_entity();
+                Live2DCommands::resource(ctx.world).clear_look_target(active);
+                self.pointer_drag_active = false;
+            }
+            return;
+        }
+
+        let physical_surface_size = ctx.physical_surface_size();
+        let logical_view_size = ctx.logical_view_size();
+        let mouse_position = ctx.input.mouse_logical_position();
+        let in_bounds = ctx.input.mouse_in_window() && logical_view_size.contains(mouse_position);
 
         if in_bounds {
-            let drag_x = mouse_position[0] / surface_size[0].max(1) as f32 * 2.0 - 1.0;
-            let drag_y = 1.0 - mouse_position[1] / surface_size[1].max(1) as f32 * 2.0;
             let active = self.active_entity();
+            let model_transform = ctx
+                .world
+                .get::<Transform>(active)
+                .copied()
+                .unwrap_or_default();
+            let model_height = ctx
+                .world
+                .get::<Live2DModelInstance>(active)
+                .and_then(|instance| instance.height)
+                .unwrap_or(DEMO_MODEL_HEIGHT);
+            let (camera_transform, camera_projection) = first_main_camera(ctx.world)
+                .unwrap_or_else(|| {
+                    (
+                        Transform::default(),
+                        Projection::orthographic(logical_view_size.height.max(1.0)),
+                    )
+                });
+            let trace = pointer_to_live2d_model_view(
+                mouse_position,
+                logical_view_size,
+                physical_surface_size,
+                camera_transform,
+                camera_projection,
+                model_transform,
+                model_height,
+            );
+            if self.debug_look {
+                print_look_coordinate_trace(self.frame_index, &trace);
+            }
             let tapped = ctx.input.mouse_left_released();
             let commands = Live2DCommands::resource(ctx.world);
-            commands.set_drag(active, drag_x, drag_y);
+            commands.set_look_target(active, trace.look_target);
             if tapped {
-                commands.tap_screen(active, mouse_position, surface_size);
+                commands.tap_screen(active, mouse_position, logical_view_size);
             }
             self.pointer_drag_active = true;
             if tapped {
@@ -242,8 +299,19 @@ impl Live2DDemoApp {
             }
         } else if self.pointer_drag_active {
             let active = self.active_entity();
-            Live2DCommands::resource(ctx.world).clear_drag(active);
+            Live2DCommands::resource(ctx.world).clear_look_target(active);
             self.pointer_drag_active = false;
+        } else if self.debug_look {
+            eprintln!(
+                "[Live2D][look][frame={}] mouse out of window: mouse_logical=({:.2}, {:.2}) logical_view=({:.2}, {:.2}) physical_surface=({}, {})",
+                self.frame_index,
+                mouse_position.x,
+                mouse_position.y,
+                logical_view_size.width,
+                logical_view_size.height,
+                physical_surface_size.width,
+                physical_surface_size.height
+            );
         }
     }
 
@@ -290,6 +358,68 @@ impl Live2DDemoApp {
         ctx.render();
     }
 
+    fn debug_runtime_look(&mut self, ctx: &mut FrameContext<'_>) {
+        if !self.debug_look {
+            return;
+        }
+
+        let active = self.active_entity();
+        let frame_index = self.frame_index;
+        let _ = ctx.with_feature_mut::<Live2DFeature, _>(|feature, _gpu| {
+            let Some(user_model) = feature.user_model_for_entity(active) else {
+                eprintln!(
+                    "[Live2D][look][frame={frame_index}] runtime: active entity has no user model"
+                );
+                return;
+            };
+
+            if let Some(state) = user_model.look_debug_state() {
+                eprintln!(
+                    "[Live2D][look][frame={frame_index}] runtime target=({:.4}, {:.4}) current=({:.4}, {:.4}) velocity=({:.4}, {:.4}) time={:.4}/{:.4}",
+                    state.target[0],
+                    state.target[1],
+                    state.current[0],
+                    state.current[1],
+                    state.velocity[0],
+                    state.velocity[1],
+                    state.last_time_seconds,
+                    state.user_time_seconds
+                );
+            } else {
+                eprintln!("[Live2D][look][frame={frame_index}] runtime: model has no look controller");
+            }
+
+            let model = user_model.model();
+            for id in [
+                "ParamAngleX",
+                "ParamAngleY",
+                "ParamAngleZ",
+                "ParamBodyAngleX",
+                "ParamEyeBallX",
+                "ParamEyeBallY",
+            ] {
+                if let Some(index) = model.find_parameter(id) {
+                    if index < model.parameter_count() {
+                        eprintln!(
+                            "[Live2D][look][frame={frame_index}] param {id}: value={:.4} default={:.4} min={:.4} max={:.4}",
+                            model.parameter_value(index),
+                            model.parameter_defaults()[index],
+                            model.parameter_minimum(index),
+                            model.parameter_maximum(index)
+                        );
+                    } else {
+                        eprintln!(
+                            "[Live2D][look][frame={frame_index}] param {id}: virtual value={:.4}",
+                            model.parameter_value(index)
+                        );
+                    }
+                } else {
+                    eprintln!("[Live2D][look][frame={frame_index}] param {id}: missing");
+                }
+            }
+        });
+    }
+
     fn update_window_title(&mut self, ctx: &FrameContext<'_>) {
         if self.benchmark.is_some() {
             return;
@@ -316,6 +446,8 @@ impl Live2DDemoApp {
 
 impl AppState for Live2DDemoApp {
     fn update(&mut self, ctx: &mut FrameContext<'_>) {
+        self.frame_index = self.frame_index.wrapping_add(1);
+
         if self.should_exit {
             ctx.request_exit();
             return;
@@ -336,6 +468,14 @@ impl AppState for Live2DDemoApp {
         let actions = self.draw_ui(ctx);
         if previous_active != self.active {
             self.active_dirty = true;
+        }
+        if actions.hide_panel {
+            self.ui_visible = false;
+        }
+        if actions.clear_look_target {
+            let active = self.active_entity();
+            Live2DCommands::resource(ctx.world).clear_look_target(active);
+            self.pointer_drag_active = false;
         }
         if let Some((group_index, motion_index)) = actions.clicked_motion {
             let active_slot = self.active_slot();
@@ -360,6 +500,7 @@ impl AppState for Live2DDemoApp {
         }
         self.handle_pointer_interaction(ctx);
         self.render_active_model(ctx);
+        self.debug_runtime_look(ctx);
         self.drain_runtime_events(ctx);
         self.update_window_title(ctx);
         if let Some(result) = self
@@ -378,11 +519,120 @@ impl AppState for Live2DDemoApp {
     }
 }
 
+fn first_main_camera(world: &mut World) -> Option<(Transform, Projection)> {
+    let mut query = world.query_filtered::<(&Transform, &Projection), With<MainCamera>>();
+    let mut result = None;
+    query.for_each(world, |(transform, projection)| {
+        if result.is_none() {
+            result = Some((*transform, *projection));
+        }
+    });
+    result
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LookCoordinateTrace {
+    mouse_logical: LogicalPoint,
+    logical_view_size: LogicalSize,
+    physical_surface_size: PhysicalSize,
+    camera_transform: Transform,
+    camera_projection: Projection,
+    world: [f32; 2],
+    model_transform: Transform,
+    model_local: Live2DModelPoint,
+    model_height: f32,
+    half_model_height: f32,
+    look_target: Live2DLookTarget,
+}
+
+fn pointer_to_live2d_model_view(
+    pointer: LogicalPoint,
+    logical_view_size: LogicalSize,
+    physical_surface_size: PhysicalSize,
+    camera_transform: Transform,
+    camera_projection: Projection,
+    model_transform: Transform,
+    model_height: f32,
+) -> LookCoordinateTrace {
+    let logical_view_size = LogicalSize::new(
+        logical_view_size.width.max(1.0),
+        logical_view_size.height.max(1.0),
+    );
+    let world =
+        camera_projection.screen_to_world_logical(camera_transform, logical_view_size, pointer);
+    let model_local = model_transform
+        .to_matrix4()
+        .inverse()
+        .transform_point3(Vec3::new(world.x(), world.y(), 0.0));
+    let half_model_height = (model_height.abs() * 0.5).max(f32::EPSILON);
+    let model_local = Live2DModelPoint::new(model_local.x(), model_local.y());
+
+    LookCoordinateTrace {
+        mouse_logical: pointer,
+        logical_view_size,
+        physical_surface_size,
+        camera_transform,
+        camera_projection,
+        world: [world.x(), world.y()],
+        model_transform,
+        model_local,
+        model_height,
+        half_model_height,
+        look_target: Live2DLookTarget::from_model_point(model_local, model_height),
+    }
+}
+
+fn print_look_coordinate_trace(frame_index: u64, trace: &LookCoordinateTrace) {
+    eprintln!(
+        "[Live2D][look][frame={frame_index}] mouse_logical=({:.2}, {:.2}) logical_view=({:.2}, {:.2}) physical_surface=({}, {})",
+        trace.mouse_logical.x,
+        trace.mouse_logical.y,
+        trace.logical_view_size.width,
+        trace.logical_view_size.height,
+        trace.physical_surface_size.width,
+        trace.physical_surface_size.height
+    );
+    eprintln!(
+        "[Live2D][look][frame={frame_index}] camera pos=({:.2}, {:.2}, {:.2}) scale=({:.2}, {:.2}, {:.2}) projection={:?}",
+        trace.camera_transform.position[0],
+        trace.camera_transform.position[1],
+        trace.camera_transform.position[2],
+        trace.camera_transform.scale[0],
+        trace.camera_transform.scale[1],
+        trace.camera_transform.scale[2],
+        trace.camera_projection
+    );
+    eprintln!(
+        "[Live2D][look][frame={frame_index}] screen_to_world=({:.4}, {:.4})",
+        trace.world[0], trace.world[1]
+    );
+    eprintln!(
+        "[Live2D][look][frame={frame_index}] model pos=({:.2}, {:.2}, {:.2}) scale=({:.2}, {:.2}, {:.2}) height={:.4} half_height={:.4}",
+        trace.model_transform.position[0],
+        trace.model_transform.position[1],
+        trace.model_transform.position[2],
+        trace.model_transform.scale[0],
+        trace.model_transform.scale[1],
+        trace.model_transform.scale[2],
+        trace.model_height,
+        trace.half_model_height
+    );
+    eprintln!(
+        "[Live2D][look][frame={frame_index}] world_to_model_local=({:.4}, {:.4})",
+        trace.model_local.x, trace.model_local.y
+    );
+    eprintln!(
+        "[Live2D][look][frame={frame_index}] look_target=({:.4}, {:.4})  // x>0 means mouse is on model's local right",
+        trace.look_target.x, trace.look_target.y
+    );
+}
+
 fn main() {
     let DemoOptions {
         model_paths,
         ui_visible,
         benchmark,
+        debug_look,
     } = parse_args();
 
     let mut world = World::new();
@@ -405,7 +655,7 @@ fn main() {
     world.spawn((
         Transform::default(),
         CameraMarker::new(),
-        Projection::orthographic(720.0),
+        Projection::orthographic(DEMO_CAMERA_HEIGHT),
         MainCamera,
     ));
     if ui_visible && benchmark.is_none() {
@@ -436,5 +686,95 @@ fn main() {
         .install(RenderPlugin::pipeline(RenderPipelineAsset::live2d_2d()))
         .unwrap();
 
-    App::new(world).run(Live2DDemoApp::new(model_paths, ui_visible, benchmark));
+    App::new(world).run(Live2DDemoApp::new(
+        model_paths,
+        ui_visible,
+        benchmark,
+        debug_look,
+    ));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_close(actual: [f32; 2], expected: [f32; 2]) {
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert!((actual - expected).abs() < 0.0001);
+        }
+    }
+
+    #[test]
+    fn pointer_to_live2d_model_view_uses_camera_and_model_height() {
+        let camera_transform = Transform::default();
+        let camera_projection = Projection::orthographic(DEMO_CAMERA_HEIGHT);
+        let model_transform = Transform::default();
+
+        assert_close(
+            pointer_to_live2d_model_view(
+                LogicalPoint::new(640.0, 360.0),
+                LogicalSize::new(1280.0, 720.0),
+                PhysicalSize::new(1280, 720),
+                camera_transform,
+                camera_projection,
+                model_transform,
+                DEMO_MODEL_HEIGHT,
+            )
+            .look_target
+            .to_array(),
+            [0.0, 0.0],
+        );
+        assert_close(
+            pointer_to_live2d_model_view(
+                LogicalPoint::new(640.0, 180.0),
+                LogicalSize::new(1280.0, 720.0),
+                PhysicalSize::new(1280, 720),
+                camera_transform,
+                camera_projection,
+                model_transform,
+                DEMO_MODEL_HEIGHT,
+            )
+            .look_target
+            .to_array(),
+            [0.0, 1.0],
+        );
+    }
+
+    #[test]
+    fn pointer_to_live2d_model_view_uses_logical_input_space_on_hidpi_surfaces() {
+        let trace = pointer_to_live2d_model_view(
+            LogicalPoint::new(1024.0, 360.0),
+            LogicalSize::new(1280.0, 720.0),
+            PhysicalSize::new(3840, 2160),
+            Transform::default(),
+            Projection::orthographic(DEMO_CAMERA_HEIGHT),
+            Transform::default(),
+            DEMO_MODEL_HEIGHT,
+        );
+
+        assert_close(trace.world, [384.0, 0.0]);
+        assert_close(trace.look_target.to_array(), [384.0 / 180.0, 0.0]);
+    }
+
+    #[test]
+    fn pointer_to_live2d_model_view_tracks_transformed_model_origin() {
+        let camera_transform = Transform::default();
+        let camera_projection = Projection::orthographic(DEMO_CAMERA_HEIGHT);
+        let model_transform = Transform::from_xy(100.0, -50.0);
+
+        assert_close(
+            pointer_to_live2d_model_view(
+                LogicalPoint::new(740.0, 230.0),
+                LogicalSize::new(1280.0, 720.0),
+                PhysicalSize::new(1280, 720),
+                camera_transform,
+                camera_projection,
+                model_transform,
+                DEMO_MODEL_HEIGHT,
+            )
+            .look_target
+            .to_array(),
+            [0.0, 1.0],
+        );
+    }
 }

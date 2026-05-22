@@ -5,6 +5,132 @@ use std::path::PathBuf;
 
 #[cfg(feature = "live2d")]
 use crate::ecs::{EntityId, World};
+#[cfg(feature = "live2d")]
+use crate::math::{LogicalPoint, LogicalSize, Projection, Transform, Vec3};
+
+#[cfg(feature = "live2d")]
+/// A point in Cubism model coordinates, used for hit testing.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Live2DModelPoint {
+    pub x: f32,
+    pub y: f32,
+}
+
+#[cfg(feature = "live2d")]
+impl Live2DModelPoint {
+    #[inline]
+    pub const fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
+
+    #[inline]
+    pub const fn from_array(value: [f32; 2]) -> Self {
+        Self {
+            x: value[0],
+            y: value[1],
+        }
+    }
+
+    #[inline]
+    pub const fn to_array(self) -> [f32; 2] {
+        [self.x, self.y]
+    }
+}
+
+#[cfg(feature = "live2d")]
+impl From<[f32; 2]> for Live2DModelPoint {
+    #[inline]
+    fn from(value: [f32; 2]) -> Self {
+        Self::from_array(value)
+    }
+}
+
+#[cfg(feature = "live2d")]
+impl From<Live2DModelPoint> for [f32; 2] {
+    #[inline]
+    fn from(value: Live2DModelPoint) -> Self {
+        value.to_array()
+    }
+}
+
+#[cfg(feature = "live2d")]
+/// Normalized Cubism look target.
+///
+/// This is the value fed into Cubism's look/drag controller. Positive `x`
+/// means the target is on the model's local right; positive `y` means local up.
+/// It is derived from model-local coordinates divided by half the authored
+/// model height.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Live2DLookTarget {
+    pub x: f32,
+    pub y: f32,
+}
+
+#[cfg(feature = "live2d")]
+impl Live2DLookTarget {
+    #[inline]
+    pub const fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
+
+    #[inline]
+    pub const fn neutral() -> Self {
+        Self::new(0.0, 0.0)
+    }
+
+    #[inline]
+    pub const fn from_array(value: [f32; 2]) -> Self {
+        Self {
+            x: value[0],
+            y: value[1],
+        }
+    }
+
+    #[inline]
+    pub const fn to_array(self) -> [f32; 2] {
+        [self.x, self.y]
+    }
+
+    #[inline]
+    pub fn from_model_point(point: Live2DModelPoint, model_height: f32) -> Self {
+        let half_model_height = (model_height.abs() * 0.5).max(f32::EPSILON);
+        Self::new(point.x / half_model_height, point.y / half_model_height)
+    }
+
+    #[inline]
+    pub fn from_logical_screen(
+        pointer: LogicalPoint,
+        logical_view_size: LogicalSize,
+        camera_transform: Transform,
+        camera_projection: Projection,
+        model_transform: Transform,
+        model_height: f32,
+    ) -> Self {
+        let world =
+            camera_projection.screen_to_world_logical(camera_transform, logical_view_size, pointer);
+        let local = model_transform
+            .to_matrix4()
+            .inverse()
+            .transform_point3(Vec3::new(world.x(), world.y(), 0.0));
+        Self::from_model_point(Live2DModelPoint::new(local.x(), local.y()), model_height)
+    }
+}
+
+#[cfg(feature = "live2d")]
+impl From<[f32; 2]> for Live2DLookTarget {
+    #[inline]
+    fn from(value: [f32; 2]) -> Self {
+        Self::from_array(value)
+    }
+}
+
+#[cfg(feature = "live2d")]
+impl From<Live2DLookTarget> for [f32; 2] {
+    #[inline]
+    fn from(value: Live2DLookTarget) -> Self {
+        value.to_array()
+    }
+}
 
 #[cfg(feature = "live2d")]
 #[derive(Clone, Debug, PartialEq)]
@@ -102,22 +228,21 @@ pub enum Live2DCommand {
         entity: EntityId,
         name: String,
     },
-    SetDrag {
+    SetLookTarget {
         entity: EntityId,
-        x: f32,
-        y: f32,
+        target: Live2DLookTarget,
     },
-    ClearDrag {
+    ClearLookTarget {
         entity: EntityId,
     },
     TapScreen {
         entity: EntityId,
-        screen_position: [f32; 2],
-        view_size: [u32; 2],
+        screen_position: LogicalPoint,
+        view_size: LogicalSize,
     },
     TapModel {
         entity: EntityId,
-        point: [f32; 2],
+        point: Live2DModelPoint,
     },
 }
 
@@ -171,17 +296,22 @@ impl Live2DCommands {
     }
 
     #[inline]
-    pub fn set_drag(&self, entity: EntityId, x: f32, y: f32) {
-        self.push(Live2DCommand::SetDrag { entity, x, y });
+    pub fn set_look_target(&self, entity: EntityId, target: Live2DLookTarget) {
+        self.push(Live2DCommand::SetLookTarget { entity, target });
     }
 
     #[inline]
-    pub fn clear_drag(&self, entity: EntityId) {
-        self.push(Live2DCommand::ClearDrag { entity });
+    pub fn clear_look_target(&self, entity: EntityId) {
+        self.push(Live2DCommand::ClearLookTarget { entity });
     }
 
     #[inline]
-    pub fn tap_screen(&self, entity: EntityId, screen_position: [f32; 2], view_size: [u32; 2]) {
+    pub fn tap_screen(
+        &self,
+        entity: EntityId,
+        screen_position: LogicalPoint,
+        view_size: LogicalSize,
+    ) {
         self.push(Live2DCommand::TapScreen {
             entity,
             screen_position,
@@ -190,7 +320,7 @@ impl Live2DCommands {
     }
 
     #[inline]
-    pub fn tap_model(&self, entity: EntityId, point: [f32; 2]) {
+    pub fn tap_model(&self, entity: EntityId, point: Live2DModelPoint) {
         self.push(Live2DCommand::TapModel { entity, point });
     }
 
@@ -241,5 +371,11 @@ mod tests {
     fn model_instance_height_is_world_space_authoring_size() {
         let instance = Live2DModelInstance::new("model.model3.json").with_height(360.0);
         assert_eq!(instance.height, Some(360.0));
+    }
+
+    #[test]
+    fn look_target_is_derived_from_model_height() {
+        let target = Live2DLookTarget::from_model_point(Live2DModelPoint::new(90.0, -45.0), 180.0);
+        assert_eq!(target, Live2DLookTarget::new(1.0, -0.5));
     }
 }

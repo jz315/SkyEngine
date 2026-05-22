@@ -85,7 +85,7 @@ impl SkyNeoFontStore {
         if let Some(handle) = self.handles.get(key).cloned() {
             return Some(handle);
         }
-        match load_font_handle(asset_server, source) {
+        match load_font_handle(asset_server, key) {
             Ok(handle) => {
                 self.handles.insert(key.clone(), handle.clone());
                 Some(handle)
@@ -126,7 +126,7 @@ fn font_keys(draw_list: &UiDrawList) -> Vec<FontRef> {
         let UiDrawCommand::Text(draw) = command else {
             continue;
         };
-        if !matches!(draw.font, FontRef::Source(_)) {
+        if !draw.font.is_resource_ref() {
             continue;
         }
         if seen.insert(draw.font.clone()) {
@@ -136,7 +136,18 @@ fn font_keys(draw_list: &UiDrawList) -> Vec<FontRef> {
     keys
 }
 
-fn load_font_handle(asset_server: &Assets, source: &str) -> Result<Handle<FontAsset>, String> {
+fn load_font_handle(asset_server: &Assets, key: &FontRef) -> Result<Handle<FontAsset>, String> {
+    let source = key.as_source().unwrap_or_default();
+    if matches!(key, FontRef::Asset(_)) {
+        if let Ok(id) = AssetId::parse_str(source) {
+            return asset_server
+                .load_id::<FontAsset>(id)
+                .map_err(|error| error.to_string());
+        }
+        return asset_server
+            .load_font(PathBuf::from(source))
+            .map_err(|error| error.to_string());
+    }
     if let Some(value) = source.strip_prefix("asset://") {
         if let Ok(id) = AssetId::parse_str(value) {
             return asset_server

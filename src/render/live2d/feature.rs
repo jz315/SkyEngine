@@ -505,14 +505,14 @@ impl Live2DFeature {
                     let _ = model.set_expression(&name);
                 }
             }
-            Live2DCommand::SetDrag { entity, x, y } => {
+            Live2DCommand::SetLookTarget { entity, target } => {
                 if let Some(model) = self.user_model_mut_for_entity(entity) {
-                    let _ = model.set_drag(x, y);
+                    let _ = model.set_look_target(target);
                 }
             }
-            Live2DCommand::ClearDrag { entity } => {
+            Live2DCommand::ClearLookTarget { entity } => {
                 if let Some(model) = self.user_model_mut_for_entity(entity) {
-                    let _ = model.clear_drag();
+                    let _ = model.clear_look_target();
                 }
             }
             Live2DCommand::TapScreen {

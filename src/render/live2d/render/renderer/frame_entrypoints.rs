@@ -11,13 +11,15 @@ impl Live2DRenderer {
         textures: &[Texture],
         clipping: &mut Option<ClippingManager>,
     ) -> PreparedLive2DFrame {
-        let mvp = model
-            .render_matrix_for_view(target_size[0].max(1) as f32, target_size[1].max(1) as f32);
+        let mvp = ModelToClip::from_cols_array(
+            model
+                .render_matrix_for_view(target_size[0].max(1) as f32, target_size[1].max(1) as f32),
+        );
         self.prepare_frame(
             ctx,
             target_format,
             target_size,
-            &mvp,
+            mvp,
             model,
             textures,
             clipping,
@@ -39,7 +41,7 @@ impl Live2DRenderer {
             ctx,
             target_format,
             target_size,
-            projection,
+            ModelToClip::from_cols_array(*projection),
             model,
             textures,
             clipping,

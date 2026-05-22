@@ -9,7 +9,7 @@ impl Live2DRenderer {
         ctx: &mut GpuContext,
         format: wgpu::TextureFormat,
         target_size: [u32; 2],
-        projection: &[f32; 16],
+        projection: ModelToClip,
         model: &Live2DModel,
         textures: &[Texture],
         clipping: &mut Option<ClippingManager>,
@@ -83,7 +83,7 @@ impl Live2DRenderer {
         ctx: &mut GpuContext,
         format: wgpu::TextureFormat,
         _target_size: [u32; 2],
-        projection: &[f32; 16],
+        projection: ModelToClip,
         model: &Live2DModel,
         textures: &[Texture],
         clipping: &mut Option<ClippingManager>,
@@ -92,7 +92,7 @@ impl Live2DRenderer {
 
         let mut offscreen_clipping = self.cached_offscreen_clipping.take();
         if let Some(offscreen_clipping) = offscreen_clipping.as_mut() {
-            offscreen_clipping.update_matrices(model);
+            offscreen_clipping.update_matrices_for_offscreens(model, projection);
         }
 
         let drawable_clipping = clipping.as_ref();
@@ -378,8 +378,8 @@ impl Live2DRenderer {
                     )
                 };
                 let uniforms = Live2DUniforms {
-                    projection_matrix: ctx_entry.mask_matrix,
-                    clip_matrix: ctx_entry.mask_matrix,
+                    projection_matrix: ctx_entry.mask_matrix.to_cols_array(),
+                    clip_matrix: ctx_entry.mask_matrix.to_cols_array(),
                     base_color: [
                         2.0 * lb[0] - 1.0,
                         2.0 * lb[1] - 1.0,
@@ -443,7 +443,7 @@ impl Live2DRenderer {
         textures: &[Texture],
         draw_idx: usize,
         clipping: Option<&ClippingManager>,
-        projection: &[f32; 16],
+        projection: ModelToClip,
         apply_model_color: bool,
     ) -> (Option<PreparedModelDraw>, Option<MaskRequest>) {
         if !model.drawable_is_visible(draw_idx) {
@@ -464,7 +464,7 @@ impl Live2DRenderer {
             self.get_drawable_clip_info(draw_idx, clipping);
         let raw_blend = model.drawable_blend_mode_raw(draw_idx);
         let uniforms = Live2DUniforms {
-            projection_matrix: *projection,
+            projection_matrix: projection.to_cols_array(),
             clip_matrix,
             base_color: {
                 let opacity = model.drawable_opacity(draw_idx);

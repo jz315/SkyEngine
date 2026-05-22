@@ -28,6 +28,7 @@ use crate::app::frame::FrameContext;
 use crate::ecs::World;
 use crate::gpu::GpuContext;
 use crate::logging::LogStore;
+use crate::math::{LogicalSize, PhysicalSize};
 use crate::render::{RenderAssets, RenderBackendKind, RenderRuntime, SceneRenderer};
 
 // ── AppState trait ──────────────────────────────────────────────────────────
@@ -138,16 +139,22 @@ impl<'a> SetupContext<'a> {
         RenderAssets::new(self.world)
     }
 
-    /// Current surface size in physical pixels `[width, height]`.
+    /// Current GPU surface size in physical pixels.
     #[inline]
-    pub fn surface_size(&self) -> [u32; 2] {
-        self.renderer.surface_size()
+    pub fn physical_surface_size(&self) -> PhysicalSize {
+        PhysicalSize::from_array(self.renderer.surface_size())
     }
 
     /// Window scale factor used to convert physical pixels to logical pixels.
     #[inline]
     pub fn scale_factor(&self) -> f32 {
         self.window.scale_factor() as f32
+    }
+
+    /// Current window view size in logical pixels.
+    #[inline]
+    pub fn logical_view_size(&self) -> LogicalSize {
+        self.physical_surface_size().to_logical(self.scale_factor())
     }
 
     /// Recent logs captured by the app-owned logger.

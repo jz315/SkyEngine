@@ -1,7 +1,7 @@
 //! Neo UI-backed galgame vertical slice using local example assets.
 //!
 //! ```bash
-//! cargo run --example vn_ui_demo --features vn-ui
+//! cargo run --example vn_after_school_promise --features vn-ui
 //! ```
 
 use std::cell::RefCell;
@@ -671,7 +671,7 @@ fn save_status_text(world: &World) -> String {
 fn demo_save_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("target")
-        .join("vn_ui_demo")
+        .join("vn_after_school_promise")
         .join("saves.toml")
 }
 
@@ -885,6 +885,7 @@ fn demo_project_path() -> PathBuf {
         .join("examples")
         .join("assets")
         .join("vn")
+        .join("after_school_promise")
         .join("project.vn.toml")
 }
 

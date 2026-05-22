@@ -31,6 +31,30 @@ fn portrait_fit_switches_default_model_to_width_fit() {
 }
 
 #[test]
+fn column_major_matrix_multiply_projects_translation() {
+    let projection = [
+        0.5, 0.0, 0.0, 0.0, //
+        0.0, 0.25, 0.0, 0.0, //
+        0.0, 0.0, 1.0, 0.0, //
+        0.0, 0.0, 0.0, 1.0,
+    ];
+    let transform = RenderTransform {
+        scale_x: 2.0,
+        scale_y: 4.0,
+        translate_x: 8.0,
+        translate_y: 12.0,
+    }
+    .to_matrix();
+
+    let result = multiply_matrices(projection, transform);
+
+    assert!((result[0] - 1.0).abs() < 0.0001);
+    assert!((result[5] - 1.0).abs() < 0.0001);
+    assert!((result[12] - 4.0).abs() < 0.0001);
+    assert!((result[13] - 3.0).abs() < 0.0001);
+}
+
+#[test]
 fn model_opacity_is_tracked_separately_from_drawables() {
     let mut model = sample_model();
     assert!(model.drawable_count() > 0);

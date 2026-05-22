@@ -383,7 +383,7 @@ impl System for AttractorDecaySystem {
         let dead = &mut self.dead;
         let cached = &mut self.cached_items;
         self.query
-            .for_each_with_entity(world, |entity, (pos, att)| {
+            .for_each_with_entity(&mut *world, |entity, (pos, att)| {
                 att.life -= dt;
                 if att.life <= 0.0 {
                     dead.push(entity);
@@ -424,7 +424,7 @@ impl System for SnapshotSystem {
         let next = std::mem::take(&mut snap.next);
         positions.clear();
         velocities.clear();
-        self.query.for_each_chunk(world, |(cp, cv, _)| {
+        self.query.for_each_chunk(&mut *world, |(cp, cv, _)| {
             positions.extend_from_slice(cp);
             velocities.extend_from_slice(cv);
         });
@@ -590,7 +590,7 @@ impl System for BoidStepSystem {
             MAX_SPEED
         };
         let mut index = 0usize;
-        self.query.for_each(world, |(pos, vel, _)| {
+        self.query.for_each(&mut *world, |(pos, vel, _)| {
             vel.x += steering[index].x * dt;
             vel.y += steering[index].y * dt;
             vel.x *= drag;
@@ -816,7 +816,8 @@ impl AppState for SpiritWispsApp {
     }
 
     fn update(&mut self, ctx: &mut FrameContext) {
-        let [win_w, win_h] = ctx.surface_size();
+        let physical_size = ctx.physical_surface_size();
+        let [win_w, win_h] = physical_size.to_array();
 
         // Handle resize for render state
         let size = [win_w, win_h];
@@ -827,10 +828,11 @@ impl AppState for SpiritWispsApp {
         }
         self.last_size = size;
 
-        let mouse = ctx.input.mouse_position();
-        let mouse_sim_x = (mouse[0] / win_w as f32) * W;
-        let mouse_sim_y = (mouse[1] / win_h as f32) * H;
-        let mouse_valid = mouse[0] >= 0.0 && mouse[0] < win_w as f32;
+        let logical_size = ctx.logical_view_size();
+        let mouse = ctx.input.mouse_logical_position();
+        let mouse_sim_x = (mouse.x / logical_size.width.max(1.0)) * W;
+        let mouse_sim_y = (mouse.y / logical_size.height.max(1.0)) * H;
+        let mouse_valid = logical_size.contains(mouse);
         let mouse_render_y = H - mouse_sim_y;
 
         // ── Update ECS input resource ───────────────────────────────

@@ -247,7 +247,7 @@ pub fn compose_vn_ui_with<R>(
     ctx: &mut FrameContext<'_>,
     extra: impl FnOnce(&mut Ui, Screen, &VnUiComposeContext) -> R,
 ) -> Option<R> {
-    let logical_surface_size = ctx.logical_surface_size();
+    let logical_surface_size = ctx.logical_view_size().to_array();
     let snapshot = snapshot_from_world(ctx.world, logical_surface_size);
     let action_sink = ensure_vn_ui_action_sink(ctx.world);
     let compose_context = VnUiComposeContext {

@@ -85,7 +85,8 @@ fn handle_input_system(world: &mut World) {
         }
 
         clamp_camera(game);
-        game.hovered_cell = screen_to_cell(game, surface, input.mouse_position());
+        game.hovered_cell =
+            screen_to_cell(game, surface, input.mouse_logical_position().to_array());
     }
 
     let inspect_mode = world.get_resource::<GameState>().unwrap().tool == ToolMode::Inspect;
@@ -93,7 +94,7 @@ fn handle_input_system(world: &mut World) {
         world
             .get_resource_mut::<GameState>()
             .unwrap()
-            .drag_select_start = Some(input.mouse_position());
+            .drag_select_start = Some(input.mouse_logical_position().to_array());
     }
     if inspect_mode && input.mouse_left_released() {
         let hovered = world.get_resource::<GameState>().unwrap().hovered_cell;
@@ -103,7 +104,7 @@ fn handle_input_system(world: &mut World) {
             .drag_select_start
             .take();
         if let Some(start) = drag_start {
-            let end = input.mouse_position();
+            let end = input.mouse_logical_position().to_array();
             if (end[0] - start[0]).abs() > 8.0 || (end[1] - start[1]).abs() > 8.0 {
                 select_in_rect(world, start, end, surface);
             } else if let Some(cell) = hovered {
@@ -794,7 +795,7 @@ fn sync_camera(world: &mut World) {
     }
     if let Some(projection) = world.get_mut::<Projection>(camera_entity) {
         if let Projection::Orthographic { height, zoom } = projection {
-            *height = surface_size[1].max(1) as f32;
+            *height = surface_size[1].max(1.0);
             *zoom = zoom_value;
         }
     }
@@ -1210,7 +1211,7 @@ fn select_at_cell(world: &mut World, cell: [i32; 2]) {
     game.selected_cell = Some(cell);
 }
 
-fn select_in_rect(world: &mut World, start: [f32; 2], end: [f32; 2], surface: [u32; 2]) {
+fn select_in_rect(world: &mut World, start: [f32; 2], end: [f32; 2], surface: [f32; 2]) {
     let (min_x, max_x) = if start[0] <= end[0] {
         (start[0], end[0])
     } else {
@@ -1421,9 +1422,9 @@ fn formation_target(center: [i32; 2], offset_index: usize) -> [i32; 2] {
     [center[0] + offset[0], center[1] + offset[1]]
 }
 
-fn world_to_screen(game: &GameState, surface: [u32; 2], world_pos: [f32; 2]) -> [f32; 2] {
-    let width = surface[0].max(1) as f32;
-    let height = surface[1].max(1) as f32;
+fn world_to_screen(game: &GameState, surface: [f32; 2], world_pos: [f32; 2]) -> [f32; 2] {
+    let width = surface[0].max(1.0);
+    let height = surface[1].max(1.0);
     [
         (world_pos[0] - game.camera_center.x()) * game.zoom + width * 0.5,
         (game.camera_center.y() - world_pos[1]) * game.zoom + height * 0.5,
@@ -1479,9 +1480,9 @@ fn clamp_camera(game: &mut GameState) {
     game.camera_center[1] = game.camera_center[1].clamp(-padding, world_h + padding);
 }
 
-fn screen_to_cell(game: &GameState, surface_size: [u32; 2], mouse: [f32; 2]) -> Option<[i32; 2]> {
-    let width = surface_size[0].max(1) as f32;
-    let height = surface_size[1].max(1) as f32;
+fn screen_to_cell(game: &GameState, surface_size: [f32; 2], mouse: [f32; 2]) -> Option<[i32; 2]> {
+    let width = surface_size[0].max(1.0);
+    let height = surface_size[1].max(1.0);
     let world = Vec2::new(
         game.camera_center.x() + (mouse[0] / width - 0.5) * width / game.zoom,
         game.camera_center.y() + (0.5 - mouse[1] / height) * height / game.zoom,

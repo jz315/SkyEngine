@@ -3,12 +3,15 @@ mod control;
 mod interaction;
 mod update_api;
 
+use crate::math::{LogicalPoint, LogicalSize};
+use crate::render::component::{Live2DLookTarget, Live2DModelPoint};
 use crate::render::live2d::asset::{Live2DHitArea, Live2DLoadError, Live2DModelResource};
 use crate::render::live2d::model::Live2DModel;
 use crate::render::live2d::runtime::{
     Live2DBreath, Live2DExpressionPlayer, Live2DEyeBlink, Live2DLipSync, Live2DLook,
-    Live2DMotionPlayer, Live2DPhysics, Live2DPhysicsOptions, Live2DPose, Live2DUpdateScheduler,
-    MotionFinishedEvent, MotionFiredEvent, MotionHandle, MotionPriority, MotionStartedEvent,
+    Live2DLookDebugState, Live2DMotionPlayer, Live2DPhysics, Live2DPhysicsOptions, Live2DPose,
+    Live2DUpdateScheduler, MotionFinishedEvent, MotionFiredEvent, MotionHandle, MotionPriority,
+    MotionStartedEvent,
 };
 
 /// Official-framework-style runtime owner for one mutable Live2D model instance.
@@ -80,5 +83,9 @@ impl Live2DUserModel {
 
     pub fn expression_player_mut(&mut self) -> Option<&mut Live2DExpressionPlayer> {
         self.expression_player.as_mut()
+    }
+
+    pub fn look_debug_state(&self) -> Option<Live2DLookDebugState> {
+        self.look.as_ref().map(Live2DLook::debug_state)
     }
 }

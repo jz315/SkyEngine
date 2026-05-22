@@ -306,7 +306,7 @@ impl ResourceLedger {
 }
 
 pub struct SurfaceInfo {
-    pub size: [u32; 2],
+    pub size: [f32; 2],
 }
 
 pub struct WorldVisuals {

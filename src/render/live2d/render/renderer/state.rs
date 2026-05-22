@@ -115,9 +115,10 @@ impl SegmentBuilder {
 /// ```no_run
 /// # use sky_engine::gpu::GpuContext;
 /// # use sky_engine::render::Texture;
+/// # use sky_engine::render::expert::RenderTarget;
 /// # use sky_engine::render::expert::live2d::{Live2DModel, Live2DRenderer};
 /// # use sky_engine::render::expert::live2d::render::clipping::ClippingManager;
-/// # fn frame(ctx: &mut GpuContext, target: &crate::render::expert::RenderTarget, model: &Live2DModel, textures: &[Texture], clipping_mgr: &mut Option<ClippingManager>) {
+/// # fn frame(ctx: &mut GpuContext, target: &RenderTarget, model: &Live2DModel, textures: &[Texture], clipping_mgr: &mut Option<ClippingManager>) {
 /// let mut renderer = Live2DRenderer::new(ctx);
 /// let prepared = renderer.prepare_frame_for_target(ctx, target, model, textures, clipping_mgr);
 /// renderer.execute_prepared_to_target(ctx, target, &prepared);

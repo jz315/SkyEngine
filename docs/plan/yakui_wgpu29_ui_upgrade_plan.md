@@ -647,7 +647,7 @@ Migration candidates:
 - `examples/ui/hud_menu.rs`;
 - `examples/game/lawn_defense/main.rs`;
 - `examples/game/kenney_platformer/main.rs`;
-- `examples/vn/ui_demo.rs`;
+- `examples/vn/after_school_promise.rs`;
 - `examples/game/last_light_guild`.
 
 Rules:

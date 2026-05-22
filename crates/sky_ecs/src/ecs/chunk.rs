@@ -8,6 +8,7 @@ use std::ptr::{self, NonNull};
 
 pub(crate) const CHUNK_SIZE: usize = 512 * 1024;
 const BACKING_POOL_BUDGET_BYTES: usize = 4 * 1024 * 1024;
+const ZST_CHUNK_ENTITY_CAPACITY: usize = CHUNK_SIZE;
 
 thread_local! {
     static CHUNK_BLOCK_POOL: RefCell<ChunkBlockPool> =
@@ -111,9 +112,11 @@ impl ChunkLayout {
             .sum();
 
         if component_bytes == 0 {
+            let column_offsets = Self::compute_column_offsets(archetype, ZST_CHUNK_ENTITY_CAPACITY)
+                .expect("zero-sized archetypes should always fit in a chunk");
             return Self {
-                max_entity_count: 0,
-                column_offsets: SmallVec::new(),
+                max_entity_count: ZST_CHUNK_ENTITY_CAPACITY,
+                column_offsets,
             };
         }
 
@@ -252,7 +255,14 @@ impl Chunk {
         self.entity_count == 0
     }
 
-    pub fn add_entity(&mut self, entity: EntityId) -> Option<usize> {
+    /// Adds a logical entity slot without initializing component columns.
+    ///
+    /// # Safety
+    ///
+    /// The caller must initialize every component column for the returned
+    /// entity index before the chunk can be queried, migrated, removed, or
+    /// dropped. Otherwise component destructors may run on uninitialized data.
+    pub unsafe fn add_entity(&mut self, entity: EntityId) -> Option<usize> {
         if self.entity_count == self.max_entity_count {
             return None;
         }
@@ -508,9 +518,15 @@ impl Data {
     }
 
     #[inline(always)]
-    pub fn add_entity(&mut self, entity: EntityId) -> ChunkEntityLocation {
+    /// Adds a logical entity slot without initializing component columns.
+    ///
+    /// # Safety
+    ///
+    /// The caller must initialize every component column at the returned
+    /// location before the entity is observed or any destructor can run.
+    pub(crate) unsafe fn add_entity(&mut self, entity: EntityId) -> ChunkEntityLocation {
         if let Some(chunk) = self.chunks.last_mut() {
-            if let Some(entity_index) = chunk.add_entity(entity) {
+            if let Some(entity_index) = unsafe { chunk.add_entity(entity) } {
                 return ChunkEntityLocation {
                     chunk_index: self.chunks.len() - 1,
                     entity_index,
@@ -520,7 +536,7 @@ impl Data {
 
         self.add_chunk();
         let chunk = self.chunks.last_mut().unwrap();
-        let entity_index = chunk.add_entity(entity).unwrap();
+        let entity_index = unsafe { chunk.add_entity(entity) }.unwrap();
         ChunkEntityLocation {
             chunk_index: self.chunks.len() - 1,
             entity_index,
@@ -540,8 +556,7 @@ impl Data {
             let chunk_index = self.chunks.len() - 1;
             let chunk = &mut self.chunks[chunk_index];
             while next_entity < entities.len() && !chunk.is_full() {
-                let entity_index = chunk
-                    .add_entity(entities[next_entity])
+                let entity_index = unsafe { chunk.add_entity(entities[next_entity]) }
                     .expect("chunk was checked for capacity");
                 locations.push(ChunkEntityLocation {
                     chunk_index,
@@ -789,8 +804,8 @@ mod tests {
         let entity_a = crate::ecs::EntityId::new(0, 0);
         let entity_b = crate::ecs::EntityId::new(1, 0);
 
-        assert!(chunk.add_entity(entity_a).is_some());
-        assert!(chunk.add_entity(entity_b).is_some());
+        assert!(unsafe { chunk.add_entity(entity_a) }.is_some());
+        assert!(unsafe { chunk.add_entity(entity_b) }.is_some());
 
         assert!(chunk.max_entity_count > 0);
         assert_eq!(

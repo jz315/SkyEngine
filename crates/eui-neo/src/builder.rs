@@ -2,9 +2,10 @@ use super::Color;
 
 use super::DragEvent;
 use super::{
-    Align, AnimProperty, Border, CursorShape, EdgeInsets, Element, Gradient, GradientDirection,
-    FontRef, HorizontalAlign, ImageFit, ImageRef, IntoPolygonPoints, KeyboardEvent, LayoutRect,
-    PointerEvent, ScrollEvent, Shadow, Size, Transform, Transition, Ui, VerticalAlign,
+    Align, AnimProperty, Border, CenterMode, CursorShape, EdgeInsets, EdgeMode, Element, FontRef,
+    Gradient, GradientDirection, HorizontalAlign, ImageFit, ImageRef, Insets, IntoPolygonPoints,
+    KeyboardEvent, LayoutRect, PointerEvent, ScrollEvent, Shadow, Size, Slice, Transform,
+    Transition, Ui, VerticalAlign,
 };
 
 /// Immediate response returned by neo component/element builders.
@@ -211,7 +212,7 @@ impl<'ui> ElementBuilder<'ui> {
             super::ElementKind::Text => {
                 self.element.text_color = value;
             }
-            super::ElementKind::Image => {
+            super::ElementKind::Image | super::ElementKind::NineSlice => {
                 self.element.color = value;
                 self.element.tint = value;
             }
@@ -476,6 +477,35 @@ impl<'ui> ElementBuilder<'ui> {
 
     pub fn tint(self, value: impl Into<Color>) -> Self {
         self.color(value)
+    }
+
+    pub fn slice(mut self, value: Slice) -> Self {
+        self.element.slice = value;
+        self
+    }
+
+    pub fn slice_px4(self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
+        self.slice(Slice::px4(left, top, right, bottom))
+    }
+
+    pub fn content_inset(mut self, value: Insets) -> Self {
+        self.element.content_inset = value;
+        self.element.padding = value;
+        self
+    }
+
+    pub fn content_inset_px4(self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
+        self.content_inset(Insets::px4(left, top, right, bottom))
+    }
+
+    pub fn center(mut self, value: CenterMode) -> Self {
+        self.element.center_mode = value;
+        self
+    }
+
+    pub fn edges(mut self, value: EdgeMode) -> Self {
+        self.element.edge_mode = value;
+        self
     }
 
     pub fn flip_vertically(mut self, value: bool) -> Self {

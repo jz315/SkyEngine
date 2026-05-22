@@ -85,8 +85,8 @@ impl AppState for PerfTest {
         let circle = self.circle_tex.as_ref().unwrap();
 
         // Resize camera
-        let [w, h] = ctx.surface_size();
-        self.camera.set_viewport(w as f32, h as f32);
+        let view_size = ctx.logical_view_size();
+        self.camera.set_viewport(view_size.width, view_size.height);
 
         // FPS reporting (every second)
         if self.fps_timer >= 1.0 {

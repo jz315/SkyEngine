@@ -132,7 +132,7 @@ fn spawn_enemy(world: &mut World) {
 fn turret_ai(world: &mut World) {
     let Some(target_lane) = find_target_lane(world) else {
         let mut turrets = world.query::<&mut Turret>();
-        turrets.for_each(world, |turret| {
+        turrets.for_each(&mut *world, |turret| {
             turret.cooldown = turret.cooldown.saturating_sub(1);
         });
         return;
@@ -140,7 +140,7 @@ fn turret_ai(world: &mut World) {
 
     let mut commands = Commands::new();
     let mut turrets = world.query::<(&mut Position, &mut Turret)>();
-    turrets.for_each(world, |(pos, turret)| {
+    turrets.for_each(&mut *world, |(pos, turret)| {
         turret.cooldown = turret.cooldown.saturating_sub(1);
 
         if pos.y < target_lane {
@@ -178,9 +178,9 @@ fn find_target_lane(world: &World) -> Option<i32> {
     best.map(|(_, lane)| lane)
 }
 
-fn move_entities(world: &World) {
+fn move_entities(world: &mut World) {
     let mut moving = world.query::<(&mut Position, &Velocity)>();
-    moving.for_each_chunk(world, |(positions, velocities)| {
+    moving.for_each_chunk(&mut *world, |(positions, velocities)| {
         for i in 0..positions.len() {
             positions[i].x += velocities[i].x;
             positions[i].y += velocities[i].y;
@@ -191,13 +191,13 @@ fn move_entities(world: &World) {
 fn resolve_hits(world: &mut World) {
     let mut bullets = Vec::new();
     let mut bullet_query = world.query::<(&Position, &Bullet)>();
-    bullet_query.for_each_with_entity(world, |entity, (pos, bullet)| {
+    bullet_query.for_each_with_entity(&*world, |entity, (pos, bullet)| {
         bullets.push((entity, *pos, bullet.damage));
     });
 
     let mut enemies = Vec::new();
     let mut enemy_query = world.query_filtered::<(&Position, &Health), With<Enemy>>();
-    enemy_query.for_each_with_entity(world, |entity, (pos, health)| {
+    enemy_query.for_each_with_entity(&*world, |entity, (pos, health)| {
         enemies.push((entity, *pos, health.hp));
     });
 
@@ -259,14 +259,14 @@ fn cleanup(world: &mut World) {
     let mut commands = Commands::new();
 
     let mut bullets = world.query::<(&Position, &Bullet)>();
-    bullets.for_each_with_entity(world, |entity, (pos, _)| {
+    bullets.for_each_with_entity(&*world, |entity, (pos, _)| {
         if pos.x >= WIDTH - 1 {
             commands.despawn(entity);
         }
     });
 
     let mut enemies = world.query_filtered::<&Position, With<Enemy>>();
-    enemies.for_each_with_entity(world, |entity, pos| {
+    enemies.for_each_with_entity(&*world, |entity, pos| {
         if pos.x <= 0 {
             leaked += 1;
             commands.despawn(entity);

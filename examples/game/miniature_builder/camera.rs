@@ -74,14 +74,14 @@ pub fn camera_frame(world: &World) -> Option<CameraFrame> {
 }
 
 pub fn mouse_world(input: &Input, frame: FrameState, camera: CameraFrame) -> Vec2 {
-    let [mx, my] = input.mouse_position();
+    let mouse = input.mouse_logical_position();
     let [width, height] = frame.logical_surface_size;
     let width = width.max(1.0);
     let height = height.max(1.0);
     let world_h = camera.zoom;
     let world_w = camera.zoom * width / height;
     Vec2::new(
-        camera.position.x() + (mx / width - 0.5) * world_w,
-        camera.position.y() + (0.5 - my / height) * world_h,
+        camera.position.x() + (mouse.x / width - 0.5) * world_w,
+        camera.position.y() + (0.5 - mouse.y / height) * world_h,
     )
 }

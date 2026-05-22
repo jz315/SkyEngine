@@ -10,8 +10,6 @@ use smallvec::SmallVec;
 
 use crate::ecs::{component_type, ComponentType};
 
-use super::Query;
-
 pub const MAX_COMPONENTS: usize = 32;
 
 lazy_static::lazy_static! {
@@ -50,6 +48,14 @@ impl InternalArchetype {
 
     fn build(mut self) -> Self {
         self.components.sort_by_key(|a| a.id());
+        for window in self.components.windows(2) {
+            if window[0].id() == window[1].id() {
+                panic!(
+                    "duplicate component type `{}` is not supported in archetypes",
+                    window[0].name
+                );
+            }
+        }
         self.drop_component_indices.clear();
         for (index, component) in self.components.iter().enumerate() {
             if component.needs_drop() {
@@ -91,11 +97,6 @@ impl InternalArchetype {
             cache.set(Some((archetype_id, component_id, index as u8)));
         });
         Some(index)
-    }
-
-    #[inline(always)]
-    pub fn matches_query(&self, query: &Query) -> bool {
-        query.types.iter().all(|ty| self.has_component(ty))
     }
 }
 
@@ -181,12 +182,67 @@ impl ArchetypeBuilder {
             return archetype;
         }
 
-        let archetype = Archetype::new(Box::leak(Box::new(built)));
         let mut cache = ARCHETYPE_CACHE.write().unwrap();
-        *cache.entry(key).or_insert(archetype)
+        if let Some(archetype) = cache.get(&key).copied() {
+            return archetype;
+        }
+
+        let archetype = Archetype::new(Box::leak(Box::new(built)));
+        cache.insert(key, archetype);
+        archetype
     }
 }
 
 pub fn create_archetype() -> ArchetypeBuilder {
     ArchetypeBuilder::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::create_archetype;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    #[derive(Clone, Copy)]
+    #[allow(dead_code)]
+    struct Position(f32);
+
+    #[derive(Clone, Copy)]
+    #[allow(dead_code)]
+    struct Velocity(f32);
+
+    #[test]
+    #[should_panic(expected = "duplicate component type")]
+    fn archetype_builder_rejects_duplicate_component_types() {
+        let _ = create_archetype()
+            .add_rust_component::<Position>()
+            .add_rust_component::<Position>()
+            .build();
+    }
+
+    #[test]
+    fn concurrent_archetype_builds_reuse_cached_instance() {
+        let thread_count = 16usize;
+        let barrier = Arc::new(Barrier::new(thread_count));
+        let mut handles = Vec::with_capacity(thread_count);
+
+        for _ in 0..thread_count {
+            let barrier = barrier.clone();
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                create_archetype()
+                    .add_rust_component::<Position>()
+                    .add_rust_component::<Velocity>()
+                    .build()
+                    .id()
+            }));
+        }
+
+        let ids = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("archetype build thread panicked"))
+            .collect::<Vec<_>>();
+
+        assert!(ids.windows(2).all(|window| window[0] == window[1]));
+    }
 }

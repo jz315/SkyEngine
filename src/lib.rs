@@ -26,7 +26,7 @@
 //! world.spawn((Position { x: 0.0, y: 0.0 }, Velocity { x: 1.0, y: 2.0 }));
 //!
 //! let mut query = world.query::<(&mut Position, &Velocity)>();
-//! query.for_each(&world, |(pos, vel)| {
+//! query.for_each(&mut world, |(pos, vel)| {
 //!     pos.x += vel.x;
 //!     pos.y += vel.y;
 //! });

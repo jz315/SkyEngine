@@ -48,7 +48,7 @@ fn main() {
     let dt = 1.0 / 60.0;
     for _ in 0..10 {
         let mut q = world.query::<(&mut Position, &Velocity)>();
-        q.for_each(&world, |(pos, vel)| {
+        q.for_each(&mut world, |(pos, vel)| {
             pos.x += vel.x * dt;
             pos.y += vel.y * dt;
         });

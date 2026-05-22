@@ -3,7 +3,7 @@
 //! Run with:
 //!
 //! ```bash
-//! cargo run --example vn_minimal --features vn
+//! cargo run --example vn_runtime_minimal --features vn
 //! ```
 
 use sky_engine::vn::{

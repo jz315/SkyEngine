@@ -27,6 +27,24 @@ fn bench_iteration(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_iteration_repeated(c: &mut Criterion) {
+    let mut group = c.benchmark_group("fair_iteration_repeated");
+    sky::bench_iteration_repeated(&mut group);
+    hecs::bench_iteration_repeated(&mut group);
+    bevy::bench_iteration_repeated(&mut group);
+    flecs::bench_iteration_repeated(&mut group);
+    group.finish();
+}
+
+fn bench_iteration_large(c: &mut Criterion) {
+    let mut group = c.benchmark_group("fair_iteration_large");
+    sky::bench_iteration_large(&mut group);
+    hecs::bench_iteration_large(&mut group);
+    bevy::bench_iteration_large(&mut group);
+    flecs::bench_iteration_large(&mut group);
+    group.finish();
+}
+
 fn bench_fragmented_iteration(c: &mut Criterion) {
     let mut group = c.benchmark_group("fair_fragmented_iteration");
     sky::bench_fragmented_iteration(&mut group);
@@ -85,6 +103,8 @@ criterion_group!(
     fair_benches,
     bench_insert,
     bench_iteration,
+    bench_iteration_repeated,
+    bench_iteration_large,
     bench_fragmented_iteration,
     bench_heavy_compute,
     bench_random_access,

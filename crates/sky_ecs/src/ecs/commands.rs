@@ -2,9 +2,11 @@ use super::{Bundle, EntityId, World};
 use crate::ecs::{component_type, ComponentType};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
+use std::alloc::{alloc, dealloc, handle_alloc_error, Layout};
 use std::any::Any;
 use std::mem::{self, MaybeUninit};
 use std::ptr;
+use std::ptr::NonNull;
 
 // ---------------------------------------------------------------------------
 // Deferred command trait – closures applied to &mut World
@@ -57,14 +59,19 @@ where
 
 const INLINE_INSERT_BYTES: usize = 16;
 
+#[repr(align(16))]
+pub(crate) struct InlineInsertBytes([MaybeUninit<u8>; INLINE_INSERT_BYTES]);
+
 pub(crate) enum InsertValue {
     Inline {
         len: usize,
-        bytes: [MaybeUninit<u8>; INLINE_INSERT_BYTES],
+        bytes: InlineInsertBytes,
         drop_fn: Option<unsafe fn(*mut u8)>,
     },
     Heap {
-        data: Box<[u8]>,
+        data: NonNull<u8>,
+        len: usize,
+        layout: Layout,
         drop_fn: Option<unsafe fn(*mut u8)>,
     },
     /// Sentinel: the value has been consumed (written to a chunk).
@@ -72,11 +79,12 @@ pub(crate) enum InsertValue {
 }
 
 impl InsertValue {
-    fn from_value<T>(value: T) -> Self
+    pub(crate) fn from_value<T>(value: T) -> Self
     where
         T: 'static,
     {
         let len = mem::size_of::<T>();
+        let align = mem::align_of::<T>();
         let drop_fn: Option<unsafe fn(*mut u8)> = if mem::needs_drop::<T>() {
             Some(sky_type::drop_in_place_erased::<T>)
         } else {
@@ -87,12 +95,12 @@ impl InsertValue {
         // we memcpy its bytes into our buffer.
         let value = mem::ManuallyDrop::new(value);
 
-        if len <= INLINE_INSERT_BYTES {
-            let mut bytes = [MaybeUninit::<u8>::uninit(); INLINE_INSERT_BYTES];
+        if len <= INLINE_INSERT_BYTES && align <= mem::align_of::<InlineInsertBytes>() {
+            let mut bytes = InlineInsertBytes([MaybeUninit::<u8>::uninit(); INLINE_INSERT_BYTES]);
             unsafe {
                 ptr::copy_nonoverlapping(
                     (&*value as *const T).cast::<u8>(),
-                    bytes.as_mut_ptr().cast::<u8>(),
+                    bytes.0.as_mut_ptr().cast::<u8>(),
                     len,
                 );
             }
@@ -102,15 +110,20 @@ impl InsertValue {
                 drop_fn,
             }
         } else {
-            let mut data = vec![0u8; len].into_boxed_slice();
+            let layout = Layout::from_size_align(len.max(1), align).unwrap();
+            let data = unsafe {
+                let raw = alloc(layout);
+                NonNull::new(raw).unwrap_or_else(|| handle_alloc_error(layout))
+            };
             unsafe {
-                ptr::copy_nonoverlapping(
-                    (&*value as *const T).cast::<u8>(),
-                    data.as_mut_ptr(),
-                    len,
-                );
+                ptr::copy_nonoverlapping((&*value as *const T).cast::<u8>(), data.as_ptr(), len);
             }
-            Self::Heap { data, drop_fn }
+            Self::Heap {
+                data,
+                len,
+                layout,
+                drop_fn,
+            }
         }
     }
 
@@ -131,14 +144,16 @@ impl InsertValue {
                     bytes,
                     drop_fn,
                 } => {
-                    ptr::copy_nonoverlapping(bytes.as_ptr().cast::<u8>(), dst, *len);
+                    ptr::copy_nonoverlapping(bytes.0.as_ptr().cast::<u8>(), dst, *len);
                     // Clear drop_fn BEFORE we replace self, so the implicit
                     // Drop triggered by `*self = Consumed` does NOT call
                     // the destructor on bytes that were already moved out.
                     *drop_fn = None;
                 }
-                Self::Heap { data, drop_fn } => {
-                    ptr::copy_nonoverlapping(data.as_ptr(), dst, data.len());
+                Self::Heap {
+                    data, len, drop_fn, ..
+                } => {
+                    ptr::copy_nonoverlapping(data.as_ptr(), dst, *len);
                     *drop_fn = None;
                 }
                 Self::Consumed => {
@@ -165,14 +180,20 @@ impl Drop for InsertValue {
                 // Safety: the value was never consumed and the bytes
                 // represent a valid, initialised value of the original type.
                 unsafe {
-                    drop_fn(bytes.as_mut_ptr().cast::<u8>());
+                    drop_fn(bytes.0.as_mut_ptr().cast::<u8>());
                 }
             }
             Self::Heap {
                 data,
+                layout,
                 drop_fn: Some(drop_fn),
+                ..
             } => unsafe {
-                drop_fn(data.as_mut_ptr());
+                drop_fn(data.as_ptr());
+                dealloc(data.as_ptr(), *layout);
+            },
+            Self::Heap { data, layout, .. } => unsafe {
+                dealloc(data.as_ptr(), *layout);
             },
             _ => {}
         }

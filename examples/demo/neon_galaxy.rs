@@ -315,7 +315,7 @@ fn main() {
         }
 
         // Handle resize
-        let size = ctx.surface_size();
+        let size = ctx.physical_surface_size().to_array();
         if size != last_size && last_size != [0, 0] {
             graph.destroy_physical_resources();
             if let Some(rs) = render_state.as_mut() {
@@ -324,12 +324,13 @@ fn main() {
         }
         last_size = size;
 
-        let [w, h] = size;
-        let mouse = ctx.input.mouse_position();
+        let logical_size = ctx.logical_view_size();
+        let mouse = ctx.input.mouse_logical_position();
         let mouse_world = {
             let rs = render_state.as_mut().unwrap();
-            rs.camera.set_viewport(w as f32, h as f32);
-            rs.camera.screen_to_world(mouse[0], mouse[1])
+            rs.camera
+                .set_viewport(logical_size.width, logical_size.height);
+            rs.camera.screen_to_world_logical(mouse)
         };
 
         // ── Build lights ────────────────────────────────────────────

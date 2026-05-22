@@ -119,9 +119,9 @@ impl KajiyaDemo {
             self.camera_pitch -= LOOK_SPEED_KEYS * dt;
         }
         if ctx.input.mouse_button_held(MouseButton::Right) && ctx.input.mouse_in_window() {
-            let [dx, dy] = ctx.input.mouse_delta();
-            self.camera_yaw -= dx * LOOK_SPEED_MOUSE;
-            self.camera_pitch -= dy * LOOK_SPEED_MOUSE;
+            let delta = ctx.input.mouse_logical_delta();
+            self.camera_yaw -= delta.dx * LOOK_SPEED_MOUSE;
+            self.camera_pitch -= delta.dy * LOOK_SPEED_MOUSE;
         }
         self.camera_pitch = self.camera_pitch.clamp(-PITCH_LIMIT, PITCH_LIMIT);
 

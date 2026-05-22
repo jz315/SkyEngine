@@ -309,10 +309,16 @@ impl World {
         record.location = Some(location);
     }
 
-    pub(crate) fn add_entity(&mut self, archetype: Archetype) -> EntityId {
+    /// Adds an entity in `archetype` without initializing component columns.
+    ///
+    /// # Safety
+    ///
+    /// The caller must initialize every component column before the entity can
+    /// be observed, migrated, removed, or dropped.
+    pub(crate) unsafe fn add_entity(&mut self, archetype: Archetype) -> EntityId {
         let entity = self.allocate_entity();
         let data_index = self.ensure_data_index(archetype);
-        let location = self.data[data_index].add_entity(entity);
+        let location = unsafe { self.data[data_index].add_entity(entity) };
         self.set_entity_location(
             entity,
             EntityLocation {
@@ -340,7 +346,7 @@ impl World {
         let (archetype, columns) = B::cached_meta();
         let entity = self.allocate_entity();
         let data_index = self.ensure_data_index(archetype);
-        let location = self.data[data_index].add_entity(entity);
+        let location = unsafe { self.data[data_index].add_entity(entity) };
         self.set_entity_location(
             entity,
             EntityLocation {
@@ -375,7 +381,7 @@ impl World {
 
         for bundle in iter {
             let entity = self.allocate_entity();
-            let location = self.data[data_index].add_entity(entity);
+            let location = unsafe { self.data[data_index].add_entity(entity) };
             self.set_entity_location(
                 entity,
                 EntityLocation {
@@ -390,6 +396,47 @@ impl World {
                 bundle.write_fast(chunk, location.entity_index, columns);
             }
         }
+    }
+
+    pub(crate) fn spawn_dynamic_values(
+        &mut self,
+        values: &mut [crate::ecs::dynamic::ErasedComponentValue],
+    ) -> Result<EntityId, crate::ecs::dynamic::DynamicSpawnError> {
+        for (index, value) in values.iter().enumerate() {
+            for other in &values[(index + 1)..] {
+                if value.component.id() == other.component.id() {
+                    return Err(crate::ecs::dynamic::DynamicSpawnError::DuplicateComponent {
+                        component: value.component,
+                    });
+                }
+            }
+        }
+
+        let mut builder = create_archetype();
+        for value in values.iter() {
+            builder = builder.add_component(value.component);
+        }
+        let archetype = builder.build();
+
+        let entity = unsafe { self.add_entity(archetype) };
+        let location = self
+            .entity_location(entity)
+            .expect("fresh dynamic entity must have a location");
+        let chunk = &mut self.data[location.data_index].chunks[location.chunk_index];
+
+        for value in values {
+            let component_index = archetype
+                .query_component_index(&value.component)
+                .expect("dynamic component must exist in target archetype");
+            let ptr = unsafe {
+                chunk
+                    .column_ptr(component_index)
+                    .add(location.entity_index * value.component.size)
+            };
+            value.value.write(ptr);
+        }
+
+        Ok(entity)
     }
 
     /// Returns `true` if `entity` is alive in this world.
@@ -528,17 +575,10 @@ impl World {
         }
 
         let mut builder = create_archetype();
-        let mut remaining = 0usize;
-
         for existing in &base.components {
             if existing.id() != component.id() {
                 builder = builder.add_component(*existing);
-                remaining += 1;
             }
-        }
-
-        if remaining == 0 {
-            return None;
         }
 
         Some(builder.build())
@@ -697,7 +737,7 @@ impl World {
             .target_data_index
             .get()
             .expect("transition plans must cache the target data index");
-        let target_location = self.data[target_data_index].add_entity(entity);
+        let target_location = unsafe { self.data[target_data_index].add_entity(entity) };
 
         {
             let (source_chunk, target_chunk) = if source_location.data_index < target_data_index {
@@ -786,7 +826,7 @@ impl World {
             .target_data_index
             .get()
             .expect("transition plans must cache the target data index");
-        let target_location = self.data[target_data_index].add_entity(entity);
+        let target_location = unsafe { self.data[target_data_index].add_entity(entity) };
 
         {
             let (source_chunk, target_chunk) = if source_location.data_index < target_data_index {
@@ -896,7 +936,7 @@ impl World {
             .target_data_index
             .get()
             .expect("transition plans must cache the target data index");
-        let target_location = self.data[target_data_index].add_entity(entity);
+        let target_location = unsafe { self.data[target_data_index].add_entity(entity) };
 
         {
             let (source_chunk, target_chunk) = if source_location.data_index < target_data_index {
@@ -974,7 +1014,7 @@ impl World {
             .target_data_index
             .get()
             .expect("transition plans must cache the target data index");
-        let target_location = self.data[target_data_index].add_entity(entity);
+        let target_location = unsafe { self.data[target_data_index].add_entity(entity) };
 
         {
             let (source_chunk, target_chunk) = if source_location.data_index < target_data_index {
@@ -1064,8 +1104,14 @@ impl World {
         self.data.clear();
         self.archetype_to_data_index.clear();
         self.transitions.clear();
-        self.entities.clear();
         self.free_entities.clear();
+        for (index, record) in self.entities.iter_mut().enumerate() {
+            if record.location.is_some() {
+                record.generation = record.generation.wrapping_add(1);
+                record.location = None;
+            }
+            self.free_entities.push(index as u32);
+        }
         self.archetype_epoch += 1;
     }
 
@@ -1085,7 +1131,7 @@ impl World {
     /// # let mut world = World::new();
     /// # world.spawn((Pos { x: 0.0, y: 0.0 }, Vel { x: 1.0, y: 0.0 }));
     /// let mut query = world.query::<(&mut Pos, &Vel)>();
-    /// query.for_each(&world, |(pos, vel)| {
+    /// query.for_each(&mut world, |(pos, vel)| {
     ///     pos.x += vel.x;
     /// });
     /// ```
@@ -1149,6 +1195,9 @@ mod tests {
     #[derive(Clone, Copy, Debug, PartialEq)]
     struct Damage(f32);
 
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    struct Marker;
+
     #[test]
     fn spawn_initializes_components_and_get_reads_them() {
         let mut world = World::new();
@@ -1162,6 +1211,16 @@ mod tests {
             world.get::<Velocity>(entity),
             Some(&Velocity { x: 3.0, y: 4.0 })
         );
+    }
+
+    #[test]
+    fn spawn_zero_sized_marker_component() {
+        let mut world = World::new();
+        let entity = world.spawn((Marker,));
+
+        assert!(world.contains(entity));
+        assert_eq!(world.entity_count(), 1);
+        assert_eq!(world.get::<Marker>(entity), Some(&Marker));
     }
 
     #[test]
@@ -1186,7 +1245,7 @@ mod tests {
 
         let mut actual = Vec::new();
         let mut query = world.query::<(&Position, &Velocity)>();
-        query.for_each(&world, |(position, velocity)| {
+        query.for_each(&mut world, |(position, velocity)| {
             actual.push((*position, *velocity));
         });
         actual.sort_by(|(left, _), (right, _)| left.x.total_cmp(&right.x));
@@ -1252,6 +1311,29 @@ mod tests {
     }
 
     #[test]
+    fn remove_can_leave_entity_with_only_zero_sized_component() {
+        let mut world = World::new();
+        let entity = world.spawn((Position { x: 1.0, y: 2.0 }, Marker));
+
+        assert!(world.remove::<Position>(entity));
+        assert!(world.contains(entity));
+        assert!(!world.has::<Position>(entity));
+        assert!(world.has::<Marker>(entity));
+        assert_eq!(world.get::<Marker>(entity), Some(&Marker));
+    }
+
+    #[test]
+    fn remove_last_component_leaves_empty_entity_alive() {
+        let mut world = World::new();
+        let entity = world.spawn((Position { x: 1.0, y: 2.0 },));
+
+        assert!(world.remove::<Position>(entity));
+        assert!(world.contains(entity));
+        assert!(!world.has::<Position>(entity));
+        assert_eq!(world.entity_count(), 1);
+    }
+
+    #[test]
     fn resources_can_be_inserted_read_mutated_and_removed() {
         let mut world = World::new();
 
@@ -1279,7 +1361,7 @@ mod tests {
 
         let mut count = 0usize;
         let mut query = world.query::<(&Position, &Velocity)>();
-        query.for_each(&world, |(position, velocity)| {
+        query.for_each(&mut world, |(position, velocity)| {
             count += 1;
             assert_eq!(position, &Position { x: 7.0, y: 8.0 });
             assert_eq!(velocity, &Velocity { x: 1.0, y: 2.0 });
@@ -1541,6 +1623,25 @@ mod tests {
         assert!(!world.contains(entity));
         assert_eq!(world.get_resource::<Tick>(), Some(&Tick(42)));
     }
+
+    #[test]
+    fn clear_invalidates_entity_ids_before_reuse() {
+        let mut world = World::new();
+        let stale = world.spawn((Position { x: 1.0, y: 2.0 },));
+
+        world.clear();
+        let current = world.spawn((Position { x: 3.0, y: 4.0 },));
+
+        assert_eq!(stale.index(), current.index());
+        assert_ne!(stale.generation(), current.generation());
+        assert!(!world.contains(stale));
+        assert_eq!(world.get::<Position>(stale), None);
+        assert_eq!(
+            world.get::<Position>(current),
+            Some(&Position { x: 3.0, y: 4.0 })
+        );
+    }
+
     #[test]
     fn commands_flush_in_first_seen_entity_order() {
         // Entity A is seen first; even though a later command targets A again,
@@ -1749,6 +1850,41 @@ mod tests {
             // Drop cmds without applying — the InsertValue should drop its payload.
         }
         assert_eq!(counter.load(Ordering::Relaxed), 1);
+    }
+
+    #[repr(align(128))]
+    struct HighAlignDroppable {
+        drop_count: Arc<AtomicUsize>,
+        misaligned_count: Arc<AtomicUsize>,
+    }
+
+    impl Drop for HighAlignDroppable {
+        fn drop(&mut self) {
+            let address = self as *const Self as usize;
+            if address % std::mem::align_of::<Self>() != 0 {
+                self.misaligned_count.fetch_add(1, Ordering::Relaxed);
+            }
+            self.drop_count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn commands_insert_value_drop_preserves_component_alignment() {
+        let drop_count = Arc::new(AtomicUsize::new(0));
+        let misaligned_count = Arc::new(AtomicUsize::new(0));
+        {
+            let mut cmds = Commands::new();
+            cmds.insert(
+                super::EntityId::new(9999, 0),
+                HighAlignDroppable {
+                    drop_count: drop_count.clone(),
+                    misaligned_count: misaligned_count.clone(),
+                },
+            );
+        }
+
+        assert_eq!(drop_count.load(Ordering::Relaxed), 1);
+        assert_eq!(misaligned_count.load(Ordering::Relaxed), 0);
     }
 
     #[test]

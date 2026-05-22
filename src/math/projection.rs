@@ -1,5 +1,6 @@
 use super::{
     matrix::Mat4,
+    screen::{LogicalPoint, LogicalSize},
     transform::Transform,
     vector::{Vec2, Vec3},
 };
@@ -148,7 +149,12 @@ impl Projection {
         -self.world_to_view(transform, world).z()
     }
 
-    pub fn screen_to_world(self, transform: Transform, viewport_size: Vec2, screen: Vec2) -> Vec2 {
+    pub fn screen_to_world_in_viewport(
+        self,
+        transform: Transform,
+        viewport_size: Vec2,
+        screen: Vec2,
+    ) -> Vec2 {
         let (origin, direction) = self.screen_ray(transform, viewport_size, screen);
         if direction.z().abs() <= f32::EPSILON {
             return Vec2::new(origin.x(), origin.y());
@@ -158,6 +164,16 @@ impl Projection {
             origin.x() + direction.x() * distance,
             origin.y() + direction.y() * distance,
         )
+    }
+
+    #[inline]
+    pub fn screen_to_world_logical(
+        self,
+        transform: Transform,
+        viewport_size: LogicalSize,
+        screen: LogicalPoint,
+    ) -> Vec2 {
+        self.screen_to_world_in_viewport(transform, viewport_size.to_vec2(), screen.to_vec2())
     }
 
     fn screen_ray(self, transform: Transform, viewport_size: Vec2, screen: Vec2) -> (Vec3, Vec3) {
@@ -213,7 +229,7 @@ impl Default for Projection {
 #[cfg(test)]
 mod tests {
     use super::Projection;
-    use crate::math::{Transform, Vec3};
+    use crate::math::{LogicalPoint, LogicalSize, Transform, Vec3};
 
     #[test]
     fn view_matrix_uses_full_transform_including_scale() {
@@ -268,7 +284,7 @@ mod tests {
     #[test]
     fn orthographic_screen_to_world_uses_resolved_aspect_size() {
         let projection = Projection::orthographic(720.0);
-        let world = projection.screen_to_world(
+        let world = projection.screen_to_world_in_viewport(
             Transform::default(),
             crate::math::Vec2::new(1680.0, 720.0),
             crate::math::Vec2::new(1680.0, 0.0),
@@ -276,5 +292,18 @@ mod tests {
 
         assert!((world.x() - 840.0).abs() <= 1e-5);
         assert!((world.y() - 360.0).abs() <= 1e-5);
+    }
+
+    #[test]
+    fn logical_screen_to_world_keeps_input_and_viewport_in_the_same_unit() {
+        let projection = Projection::orthographic(720.0);
+        let world = projection.screen_to_world_logical(
+            Transform::default(),
+            LogicalSize::new(1280.0, 720.0),
+            LogicalPoint::new(1024.0, 360.0),
+        );
+
+        assert!((world.x() - 384.0).abs() <= 1e-5);
+        assert!(world.y().abs() <= 1e-5);
     }
 }

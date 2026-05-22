@@ -10,8 +10,8 @@ use rustc_hash::FxHashMap;
 use super::Color;
 
 use super::{
-    Border, Element, ElementKind, FontRef, Gradient, HorizontalAlign, ImageFit, ImageRef, LayoutRect,
-    Runtime, Shadow, Transform, VerticalAlign,
+    Border, CenterMode, EdgeMode, Element, ElementKind, FontRef, Gradient, HorizontalAlign,
+    ImageFit, ImageRef, LayoutRect, Runtime, Shadow, Slice, Transform, VerticalAlign,
 };
 
 /// Backend-neutral command stream emitted by the neo runtime.
@@ -41,6 +41,7 @@ pub enum UiDrawCommand {
     Rect(UiRectDraw),
     Text(UiTextDraw),
     Image(UiImageDraw),
+    NineSlice(UiNineSliceDraw),
     Polygon(UiPolygonDraw),
     PushClip(LayoutRect),
     PopClip,
@@ -86,6 +87,19 @@ pub struct UiImageDraw {
     pub fit: ImageFit,
     pub tint: Color,
     pub radius: f32,
+    pub opacity: f32,
+    pub transform: Transform,
+}
+
+#[derive(Debug, Clone)]
+pub struct UiNineSliceDraw {
+    pub id: String,
+    pub frame: LayoutRect,
+    pub image: ImageRef,
+    pub slice: Slice,
+    pub center_mode: CenterMode,
+    pub edge_mode: EdgeMode,
+    pub tint: Color,
     pub opacity: f32,
     pub transform: Transform,
 }
@@ -202,7 +216,7 @@ fn draw_element(
             id: element.id.clone(),
             frame,
             text: element.text.clone(),
-            font: element.font.clone(),
+            font: runtime.resolve_font_ref(&element.font),
             font_size: element.font_size,
             font_weight: element.font_weight,
             color: runtime.animated_text_color(element),
@@ -217,10 +231,21 @@ fn draw_element(
         ElementKind::Image => commands.push(UiDrawCommand::Image(UiImageDraw {
             id: element.id.clone(),
             frame,
-            image: element.image.clone(),
+            image: runtime.resolve_image_ref(&element.image),
             fit: element.image_fit,
             tint: runtime.animated_color(element),
             radius: runtime.animated_radius(element),
+            opacity: opacity * render_transform.opacity,
+            transform: compose_visual_transform(transform, frame, render_transform),
+        })),
+        ElementKind::NineSlice => commands.push(UiDrawCommand::NineSlice(UiNineSliceDraw {
+            id: element.id.clone(),
+            frame,
+            image: runtime.resolve_image_ref(&element.image),
+            slice: element.slice,
+            center_mode: element.center_mode,
+            edge_mode: element.edge_mode,
+            tint: runtime.animated_color(element),
             opacity: opacity * render_transform.opacity,
             transform: compose_visual_transform(transform, frame, render_transform),
         })),

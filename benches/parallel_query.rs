@@ -262,8 +262,8 @@ fn bench_chunk_update(c: &mut Criterion) {
     configure_group(&mut group);
 
     for entity_count in LIGHT_ENTITY_COUNTS {
-        let world_seq = world_with_parallel_entities(entity_count);
-        let world_par = world_with_parallel_entities(entity_count);
+        let mut world_seq = world_with_parallel_entities(entity_count);
+        let mut world_par = world_with_parallel_entities(entity_count);
         let mut seq_query = PreparedQuery::<(&mut Position2D, &Velocity2D)>::new();
         let mut par_query = PreparedQuery::<(&mut Position2D, &Velocity2D)>::new();
 
@@ -272,7 +272,7 @@ fn bench_chunk_update(c: &mut Criterion) {
             &entity_count,
             |b, &_count| {
                 b.iter(|| {
-                    seq_query.for_each_chunk(&world_seq, |(positions, velocities)| {
+                    seq_query.for_each_chunk(&mut world_seq, |(positions, velocities)| {
                         for index in 0..positions.len() {
                             positions[index].x += velocities[index].x;
                             positions[index].y += velocities[index].y;
@@ -288,7 +288,7 @@ fn bench_chunk_update(c: &mut Criterion) {
             &entity_count,
             |b, &_count| {
                 b.iter(|| {
-                    par_query.par_for_each_chunk(&world_par, |(positions, velocities)| {
+                    par_query.par_for_each_chunk(&mut world_par, |(positions, velocities)| {
                         for index in 0..positions.len() {
                             positions[index].x += velocities[index].x;
                             positions[index].y += velocities[index].y;
@@ -308,8 +308,8 @@ fn bench_chunk_update_with_entities(c: &mut Criterion) {
     configure_group(&mut group);
 
     for entity_count in LIGHT_ENTITY_COUNTS {
-        let world_seq = world_with_parallel_entities(entity_count);
-        let world_par = world_with_parallel_entities(entity_count);
+        let mut world_seq = world_with_parallel_entities(entity_count);
+        let mut world_par = world_with_parallel_entities(entity_count);
         let mut seq_query = PreparedQuery::<(&mut Position2D, &Velocity2D)>::new();
         let mut par_query = PreparedQuery::<(&mut Position2D, &Velocity2D)>::new();
 
@@ -319,7 +319,7 @@ fn bench_chunk_update_with_entities(c: &mut Criterion) {
             |b, &_count| {
                 b.iter(|| {
                     seq_query.for_each_chunk_with_entities(
-                        &world_seq,
+                        &mut world_seq,
                         |entities: &[EntityId], (positions, velocities)| {
                             black_box(entities.first().map(|entity| entity.index()));
                             for index in 0..positions.len() {
@@ -339,7 +339,7 @@ fn bench_chunk_update_with_entities(c: &mut Criterion) {
             |b, &_count| {
                 b.iter(|| {
                     par_query.par_for_each_chunk_with_entities(
-                        &world_par,
+                        &mut world_par,
                         |entities: &[EntityId], (positions, velocities)| {
                             black_box(entities.first().map(|entity| entity.index()));
                             for index in 0..positions.len() {
@@ -362,8 +362,8 @@ fn bench_chunk_update_heavy(c: &mut Criterion) {
     configure_group(&mut group);
 
     for entity_count in HEAVY_ENTITY_COUNTS {
-        let world_seq = world_with_parallel_entities(entity_count);
-        let world_par = world_with_parallel_entities(entity_count);
+        let mut world_seq = world_with_parallel_entities(entity_count);
+        let mut world_par = world_with_parallel_entities(entity_count);
         let mut seq_query = PreparedQuery::<(&mut Position2D, &Velocity2D, &AuxA, &AuxB)>::new();
         let mut par_query = PreparedQuery::<(&mut Position2D, &Velocity2D, &AuxA, &AuxB)>::new();
 
@@ -373,7 +373,7 @@ fn bench_chunk_update_heavy(c: &mut Criterion) {
             |b, &_count| {
                 b.iter(|| {
                     seq_query.for_each_chunk(
-                        &world_seq,
+                        &mut world_seq,
                         |(positions, velocities, aux_a, aux_b)| {
                             for index in 0..positions.len() {
                                 heavy_kernel(
@@ -396,7 +396,7 @@ fn bench_chunk_update_heavy(c: &mut Criterion) {
             |b, &_count| {
                 b.iter(|| {
                     par_query.par_for_each_chunk(
-                        &world_par,
+                        &mut world_par,
                         |(positions, velocities, aux_a, aux_b)| {
                             for index in 0..positions.len() {
                                 heavy_kernel(
@@ -422,8 +422,8 @@ fn bench_real_scene(c: &mut Criterion) {
     configure_group(&mut group);
 
     for entity_count in REAL_SCENE_ENTITY_COUNTS {
-        let (world_seq, gusts_seq) = world_with_real_scene_entities(entity_count);
-        let (world_par, gusts_par) = world_with_real_scene_entities(entity_count);
+        let (mut world_seq, gusts_seq) = world_with_real_scene_entities(entity_count);
+        let (mut world_par, gusts_par) = world_with_real_scene_entities(entity_count);
         let mut seq_query = PreparedQuery::<(
             &mut Position2D,
             &mut Velocity2D,
@@ -447,7 +447,7 @@ fn bench_real_scene(c: &mut Criterion) {
             |b, &_count| {
                 b.iter(|| {
                     seq_query.for_each_chunk_with_entities(
-                        &world_seq,
+                        &mut world_seq,
                         |entities, (positions, velocities, aux_a, aux_b, statuses)| {
                             for index in 0..positions.len() {
                                 let status = statuses.map(|slice| &slice[index]);
@@ -476,7 +476,7 @@ fn bench_real_scene(c: &mut Criterion) {
             |b, &_count| {
                 b.iter(|| {
                     par_query.par_for_each_chunk_with_entities(
-                        &world_par,
+                        &mut world_par,
                         |entities, (positions, velocities, aux_a, aux_b, statuses)| {
                             for index in 0..positions.len() {
                                 let status = statuses.map(|slice| &slice[index]);

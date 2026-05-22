@@ -69,7 +69,8 @@ fn measure_node(
             )
         })
         .collect();
-    let content_width = measure_content_width(element, &children, child_available_width, text_system);
+    let content_width =
+        measure_content_width(element, &children, child_available_width, text_system);
     let content_height = measure_content_height(
         element,
         &children,
@@ -293,7 +294,11 @@ fn layout_element(
         ElementKind::Row => layout_row(element, &layout_measured, text_system),
         ElementKind::Column => layout_column(element, &layout_measured, text_system),
         ElementKind::Stack => layout_stack(element, &layout_measured, text_system),
-        ElementKind::Rect | ElementKind::Polygon | ElementKind::Text | ElementKind::Image => {}
+        ElementKind::Rect
+        | ElementKind::Polygon
+        | ElementKind::Text
+        | ElementKind::Image
+        | ElementKind::NineSlice => {}
     }
 }
 

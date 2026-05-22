@@ -10,7 +10,10 @@ pub enum FontRef {
     DefaultText,
     DefaultIcon,
     Family(String),
-    Source(String),
+    Key(String),
+    Path(String),
+    Url(String),
+    Asset(String),
 }
 
 impl Default for FontRef {
@@ -40,7 +43,43 @@ impl FontRef {
     }
 
     pub fn source(value: impl Into<String>) -> Self {
-        Self::Source(value.into())
+        Self::path(value)
+    }
+
+    pub fn key(value: impl Into<String>) -> Self {
+        let value = value.into();
+        if value.is_empty() {
+            Self::DefaultText
+        } else {
+            Self::Key(value)
+        }
+    }
+
+    pub fn path(value: impl Into<String>) -> Self {
+        let value = value.into();
+        if value.is_empty() {
+            Self::DefaultText
+        } else {
+            Self::Path(value)
+        }
+    }
+
+    pub fn url(value: impl Into<String>) -> Self {
+        let value = value.into();
+        if value.is_empty() {
+            Self::DefaultText
+        } else {
+            Self::Url(value)
+        }
+    }
+
+    pub fn asset(value: impl Into<String>) -> Self {
+        let value = value.into();
+        if value.is_empty() {
+            Self::DefaultText
+        } else {
+            Self::Asset(value)
+        }
     }
 
     pub fn as_family(&self) -> Option<&str> {
@@ -52,9 +91,20 @@ impl FontRef {
 
     pub fn as_source(&self) -> Option<&str> {
         match self {
-            Self::Source(value) => Some(value.as_str()),
+            Self::Path(value) | Self::Url(value) | Self::Asset(value) => Some(value.as_str()),
             _ => None,
         }
+    }
+
+    pub fn as_key(&self) -> Option<&str> {
+        match self {
+            Self::Key(value) => Some(value.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn is_resource_ref(&self) -> bool {
+        matches!(self, Self::Path(_) | Self::Url(_) | Self::Asset(_))
     }
 
     pub fn is_icon(&self) -> bool {
@@ -89,7 +139,10 @@ impl RegisteredFont {
     }
 }
 
-pub(crate) fn load_font_bytes(font_system: &mut FontSystem, bytes: &[u8]) -> Option<RegisteredFont> {
+pub(crate) fn load_font_bytes(
+    font_system: &mut FontSystem,
+    bytes: &[u8],
+) -> Option<RegisteredFont> {
     if bytes.is_empty() {
         return None;
     }
@@ -124,9 +177,11 @@ pub(crate) fn resolve_family<'a>(
                 Family::Name(value)
             }
         }
-        FontRef::Source(_) => registered(font)
-            .map(|font| Family::Name(font.family.as_str()))
-            .unwrap_or(Family::SansSerif),
+        FontRef::Key(_) | FontRef::Path(_) | FontRef::Url(_) | FontRef::Asset(_) => {
+            registered(font)
+                .map(|font| Family::Name(font.family.as_str()))
+                .unwrap_or(Family::SansSerif)
+        }
     }
 }
 

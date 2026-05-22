@@ -23,7 +23,7 @@ pub mod eui {
     pub use eui_neo::*;
 }
 
-pub use api::{compose, open_window};
+pub use api::{compose, open_window, register_skin};
 pub use backend::NeoUiBackend;
 pub use config::{NeoUiConfig, NeoWindowConfig};
 pub use eui_neo::expert;

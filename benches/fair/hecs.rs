@@ -177,6 +177,36 @@ pub fn bench_iteration(group: &mut BenchmarkGroup<'_, WallTime>) {
     });
 }
 
+pub fn bench_iteration_repeated(group: &mut BenchmarkGroup<'_, WallTime>) {
+    let world = world_with_entities(SIMPLE_ENTITY_COUNT);
+    let mut query = PreparedQuery::<(&mut PositionComponent, &VelocityComponent)>::default();
+
+    group.bench_function("simple_x32/hecs", |b| {
+        b.iter(|| {
+            for _ in 0..REPEATED_ITERATION_COUNT {
+                for (_, (pos, vel)) in query.query(&world).iter() {
+                    pos.0 += vel.0;
+                }
+            }
+            black_box(&world);
+        });
+    });
+}
+
+pub fn bench_iteration_large(group: &mut BenchmarkGroup<'_, WallTime>) {
+    let world = world_with_entities(LARGE_ITERATION_ENTITY_COUNT);
+    let mut query = PreparedQuery::<(&mut PositionComponent, &VelocityComponent)>::default();
+
+    group.bench_function("simple_100k/hecs", |b| {
+        b.iter(|| {
+            for (_, (pos, vel)) in query.query(&world).iter() {
+                pos.0 += vel.0;
+            }
+            black_box(&world);
+        });
+    });
+}
+
 pub fn bench_fragmented_iteration(group: &mut BenchmarkGroup<'_, WallTime>) {
     debug_assert_eq!(FRAGMENTED_VARIANT_COUNT, 26);
 

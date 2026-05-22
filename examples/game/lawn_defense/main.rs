@@ -1499,12 +1499,15 @@ fn entity_position(world: &World, entity: EntityId) -> Option<Vec2> {
 }
 
 fn mouse_world(ctx: &FrameContext<'_>) -> Vec2 {
-    let [mx, my] = ctx.input.mouse_position();
+    let mouse = ctx.input.mouse_logical_position();
     let width = WINDOW_W as f32;
     let height = WINDOW_H as f32;
     let world_h = ORTHO_HEIGHT;
     let world_w = ORTHO_HEIGHT * width / height;
-    Vec2::new((mx / width - 0.5) * world_w, (0.5 - my / height) * world_h)
+    Vec2::new(
+        (mouse.x / width - 0.5) * world_w,
+        (0.5 - mouse.y / height) * world_h,
+    )
 }
 
 fn card_at(position: Vec2) -> Option<PlantKind> {

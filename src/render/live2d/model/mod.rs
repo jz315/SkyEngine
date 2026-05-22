@@ -17,6 +17,8 @@ use std::ptr;
 use cubism_sys::*;
 use rustc_hash::FxHashMap;
 
+use crate::math::{Mat4, Vec3};
+
 /// Blend mode for a drawable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlendMode {
@@ -73,24 +75,9 @@ struct RenderTransform {
 
 impl RenderTransform {
     fn to_matrix(self) -> [f32; 16] {
-        [
-            self.scale_x,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            self.scale_y,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            1.0,
-            0.0,
-            self.translate_x,
-            self.translate_y,
-            0.0,
-            1.0,
-        ]
+        (Mat4::from_translation(Vec3::new(self.translate_x, self.translate_y, 0.0))
+            * Mat4::from_scale(Vec3::new(self.scale_x, self.scale_y, 1.0)))
+        .to_cols_array()
     }
 }
 
@@ -178,6 +165,11 @@ impl Live2DModel {
                 return Err("failed to allocate moc buffer".into());
             }
             ptr::copy_nonoverlapping(moc_bytes.as_ptr(), moc_buf, moc_bytes.len());
+
+            if csmHasMocConsistency(moc_buf as *mut c_void, moc_bytes.len() as u32) == 0 {
+                alloc::dealloc(moc_buf, moc_layout);
+                return Err("csmHasMocConsistency failed — invalid .moc3 data".into());
+            }
 
             // Revive moc
             let moc = csmReviveMocInPlace(moc_buf as *mut c_void, moc_bytes.len() as u32);
@@ -478,21 +470,11 @@ fn make_aspect_projection(screen_w: f32, screen_h: f32, canvas_width_units: f32)
         (1.0, screen_w / screen_h.max(f32::EPSILON))
     };
 
-    [
-        aspect.0, 0.0, 0.0, 0.0, 0.0, aspect.1, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-    ]
+    Mat4::from_scale(Vec3::new(aspect.0, aspect.1, 1.0)).to_cols_array()
 }
 
 fn multiply_matrices(lhs: [f32; 16], rhs: [f32; 16]) -> [f32; 16] {
-    let mut out = [0.0; 16];
-    for row in 0..4 {
-        for col in 0..4 {
-            for k in 0..4 {
-                out[col + row * 4] += lhs[k + row * 4] * rhs[col + k * 4];
-            }
-        }
-    }
-    out
+    (Mat4::from_cols_array(lhs) * Mat4::from_cols_array(rhs)).to_cols_array()
 }
 
 impl Drop for Live2DModel {

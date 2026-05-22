@@ -7,6 +7,8 @@ use super::model::ModelSlot;
 pub struct PendingUiActions {
     pub clicked_motion: Option<(usize, usize)>,
     pub clicked_expression: Option<usize>,
+    pub clear_look_target: bool,
+    pub hide_panel: bool,
 }
 
 pub fn draw_live2d_panel(
@@ -18,15 +20,19 @@ pub fn draw_live2d_panel(
 ) -> PendingUiActions {
     let mut actions = PendingUiActions::default();
 
-    egui::SidePanel::left("live2d_panel")
-        .default_width(200.0)
+    egui::Panel::left("live2d_panel")
+        .default_size(240.0)
         .resizable(true)
         .show(egui_ctx, |ui| {
-            ui.heading("🎭 Live2D");
+            ui.heading("Live2D");
             ui.separator();
 
-            ui.label(format!("FPS: {fps_display:.0}"));
-            ui.label("U: toggle UI / pure render");
+            ui.horizontal(|ui| {
+                ui.label(format!("{fps_display:.0} FPS"));
+                if ui.button("Hide").clicked() {
+                    actions.hide_panel = true;
+                }
+            });
             if let Some(benchmark) = benchmark {
                 ui.label(format!(
                     "Benchmark: warmup {} / sample {}",
@@ -35,10 +41,8 @@ pub fn draw_live2d_panel(
             }
             ui.separator();
 
-            ui.label(format!("Loaded: {}", slots.len()));
+            ui.label(format!("Models: {}", slots.len()));
             if slots.len() > 1 {
-                ui.small("Only the selected model is rendered.");
-                ui.add_space(4.0);
                 ui.label("Focus");
                 for (index, slot) in slots.iter().enumerate() {
                     ui.radio_value(active, index, &slot.name);
@@ -49,7 +53,16 @@ pub fn draw_live2d_panel(
             let active_slot = &slots[*active];
 
             ui.strong(&active_slot.name);
+            ui.label(format!(
+                "{} motion group(s), {} expression(s)",
+                active_slot.motion_groups.len(),
+                active_slot.expression_names.len()
+            ));
             ui.add_space(4.0);
+            if ui.button("Center gaze").clicked() {
+                actions.clear_look_target = true;
+            }
+            ui.separator();
 
             if !active_slot.motion_groups.is_empty() {
                 ui.label("Motions");

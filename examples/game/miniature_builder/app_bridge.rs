@@ -30,7 +30,7 @@ pub fn install_app_bridge(world: &mut World) {
 
 pub fn sync_frame_state(ctx: &mut FrameContext<'_>) {
     ctx.world.insert_resource(FrameState {
-        logical_surface_size: ctx.logical_surface_size(),
+        logical_surface_size: ctx.logical_view_size().to_array(),
     });
 }
 

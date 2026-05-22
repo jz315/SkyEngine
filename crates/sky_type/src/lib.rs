@@ -7,10 +7,11 @@
 
 use rustc_hash::FxHashMap;
 use std::any::{type_name, TypeId};
+use std::alloc::Layout;
 use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
-use std::sync::RwLock;
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 /// # Safety
 ///
@@ -121,6 +122,18 @@ struct CoreTypeRegistry {
     rust_type_to_type: FxHashMap<TypeId, Type>,
 }
 
+fn registry_read() -> RwLockReadGuard<'static, CoreTypeRegistry> {
+    TYPE_REGISTRY
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn registry_write() -> RwLockWriteGuard<'static, CoreTypeRegistry> {
+    TYPE_REGISTRY
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 impl CoreTypeRegistry {
     fn new() -> Self {
         Self {
@@ -129,8 +142,36 @@ impl CoreTypeRegistry {
         }
     }
 
+    fn validate_layout(name: &str, size: usize, align: usize) {
+        assert!(!name.is_empty(), "type name must not be empty");
+        assert!(
+            align != 0 && align.is_power_of_two(),
+            "type `{name}` has invalid alignment {align}; alignment must be a non-zero power of two"
+        );
+        assert!(
+            Layout::from_size_align(size.max(1), align).is_ok(),
+            "type `{name}` has invalid layout: size {size}, align {align}"
+        );
+    }
+
     fn register_layout(&mut self, name: &str, size: usize, align: usize) -> Type {
+        Self::validate_layout(name, size, align);
+
         if let Some(ty) = self.name_to_type.get(name) {
+            assert_eq!(
+                ty.size, size,
+                "type `{name}` was already registered with size {}, not {size}",
+                ty.size
+            );
+            assert_eq!(
+                ty.align, align,
+                "type `{name}` was already registered with alignment {}, not {align}",
+                ty.align
+            );
+            assert!(
+                ty.rust_type_id.is_none() && ty.drop_fn.is_none(),
+                "type `{name}` is already registered as a Rust type and cannot be re-registered as an opaque dynamic type"
+            );
             return *ty;
         }
 
@@ -148,10 +189,14 @@ impl CoreTypeRegistry {
 
         let name = type_name::<T>();
         if let Some(ty) = self.name_to_type.get(name).copied() {
-            debug_assert_eq!(ty.size, core::mem::size_of::<T>());
-            debug_assert_eq!(ty.align, core::mem::align_of::<T>());
-            self.rust_type_to_type.insert(rust_type_id, ty);
-            return ty;
+            if ty.rust_type_id == Some(rust_type_id) {
+                self.rust_type_to_type.insert(rust_type_id, ty);
+                return ty;
+            }
+
+            panic!(
+                "type name `{name}` is already registered for a different or opaque layout; Rust type registration would lose layout/drop guarantees"
+            );
         }
 
         let drop_fn = if std::mem::needs_drop::<T>() {
@@ -183,7 +228,7 @@ impl CoreTypeRegistry {
 
 /// Registers a dynamic opaque type by name and layout.
 pub fn register(name: &str, size: usize, align: usize) -> Type {
-    let mut registry = TYPE_REGISTRY.write().unwrap();
+    let mut registry = registry_write();
     registry.register_layout(name, size, align)
 }
 
@@ -196,7 +241,7 @@ pub fn type_of<T: 'static>() -> Type {
     }
 
     {
-        let registry = TYPE_REGISTRY.read().unwrap();
+        let registry = registry_read();
         if let Some(ty) = registry.query_by_rust_type::<T>() {
             LOCAL_RUST_TYPES.with(|cache| {
                 cache.borrow_mut().insert(rust_type_id, ty);
@@ -205,7 +250,7 @@ pub fn type_of<T: 'static>() -> Type {
         }
     }
 
-    let mut registry = TYPE_REGISTRY.write().unwrap();
+    let mut registry = registry_write();
     let ty = registry.register_rust::<T>();
     LOCAL_RUST_TYPES.with(|cache| {
         cache.borrow_mut().insert(rust_type_id, ty);
@@ -215,7 +260,7 @@ pub fn type_of<T: 'static>() -> Type {
 
 /// Queries a foundational type by registered name.
 pub fn query_by_name(name: &str) -> Option<Type> {
-    let registry = TYPE_REGISTRY.read().unwrap();
+    let registry = registry_read();
     registry.query_by_name(name)
 }
 
@@ -226,7 +271,7 @@ pub fn query_by_rust_type<T: 'static>() -> Option<Type> {
         return Some(ty);
     }
 
-    let registry = TYPE_REGISTRY.read().unwrap();
+    let registry = registry_read();
     let ty = registry.query_by_rust_type::<T>()?;
     LOCAL_RUST_TYPES.with(|cache| {
         cache.borrow_mut().insert(rust_type_id, ty);
@@ -236,6 +281,60 @@ pub fn query_by_rust_type<T: 'static>() -> Option<Type> {
 
 /// Returns all currently registered foundational types.
 pub fn registered_types() -> Vec<Type> {
-    let registry = TYPE_REGISTRY.read().unwrap();
+    let registry = registry_read();
     registry.name_to_type.values().copied().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{register, type_of};
+
+    #[test]
+    fn repeated_dynamic_registration_requires_identical_layout() {
+        let first = register("sky_type::tests::repeat_dynamic_layout", 16, 8);
+        let second = register("sky_type::tests::repeat_dynamic_layout", 16, 8);
+
+        assert_eq!(first.id(), second.id());
+    }
+
+    #[test]
+    #[should_panic(expected = "already registered with size")]
+    fn dynamic_registration_rejects_name_reuse_with_different_size() {
+        register("sky_type::tests::different_dynamic_size", 4, 4);
+        register("sky_type::tests::different_dynamic_size", 8, 4);
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid alignment")]
+    fn dynamic_registration_rejects_non_power_of_two_alignment() {
+        register("sky_type::tests::invalid_alignment", 4, 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "opaque layout")]
+    fn rust_registration_rejects_prior_dynamic_name_collision() {
+        #[allow(dead_code)]
+        struct Collision(std::rc::Rc<()>);
+
+        register(
+            std::any::type_name::<Collision>(),
+            std::mem::size_of::<Collision>(),
+            std::mem::align_of::<Collision>(),
+        );
+        let _ = type_of::<Collision>();
+    }
+
+    #[test]
+    #[should_panic(expected = "already registered as a Rust type")]
+    fn dynamic_registration_rejects_existing_rust_type_name() {
+        #[allow(dead_code)]
+        struct RegisteredRust(u32);
+
+        let _ = type_of::<RegisteredRust>();
+        register(
+            std::any::type_name::<RegisteredRust>(),
+            std::mem::size_of::<RegisteredRust>(),
+            std::mem::align_of::<RegisteredRust>(),
+        );
+    }
 }

@@ -174,7 +174,7 @@ mod tests {
         {
             assert!(user_model.set_expression(&expression_name));
         }
-        let _ = user_model.set_drag(0.35, -0.2);
+        let _ = user_model.set_look_target(Live2DLookTarget::new(0.35, -0.2));
         let _ = user_model.set_lip_sync(0.4);
     }
 

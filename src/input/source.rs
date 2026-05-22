@@ -46,8 +46,8 @@ pub(crate) fn read_source(input: &super::raw::Input, source: InputSource) -> f32
             }
         }
         InputSource::MouseAxis(axis) => match axis {
-            MouseAxisKind::DeltaX => input.mouse_delta()[0],
-            MouseAxisKind::DeltaY => input.mouse_delta()[1],
+            MouseAxisKind::DeltaX => input.mouse_logical_delta().dx,
+            MouseAxisKind::DeltaY => input.mouse_logical_delta().dy,
             MouseAxisKind::ScrollX => input.scroll_delta()[0],
             MouseAxisKind::ScrollY => input.scroll_delta()[1],
         },

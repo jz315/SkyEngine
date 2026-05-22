@@ -51,7 +51,7 @@ impl AppState for VideoDemo {
 
     fn update(&mut self, ctx: &mut FrameContext) {
         self.elapsed += ctx.dt();
-        let [w, h] = ctx.logical_surface_size();
+        let [w, h] = ctx.logical_view_size().to_array();
         self.camera = Camera::new(w, h);
         write_synthetic_video_frame(&mut self.pixels, VIDEO_W, VIDEO_H, self.elapsed);
 

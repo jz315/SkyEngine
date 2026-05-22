@@ -4,7 +4,7 @@
 
 ## 核心模块
 
-- [ECS](ecs.md)：`World`、`EntityId`、`Bundle`、`PreparedQuery`、`Commands`、系统调度、raw API。
+- [ECS](ecs.md)：`World`、`EntityId`、`Bundle`、`PreparedQuery`、`Commands`、系统调度、dynamic/expert API。
 - [Reflect](reflect.md)：底层 `Type` layout 反射、ECS component type 语义别名、`#[derive(Reflect)]` Inspector 反射。
 - [Math](math.md)：`Vec2/Vec3/Vec4`、`Quat`、`Mat4`、`Transform`、`Projection`。
 
@@ -39,7 +39,7 @@ cargo test --features reflect-serde
 cargo test --features ui ui
 cargo test --features vn vn
 cargo check --features "app scene physics"
-cargo run --example vn_minimal --features vn
+cargo run --example vn_runtime_minimal --features vn
 cargo check --example hud_menu --features ui
 cargo check --examples --features app
 ```

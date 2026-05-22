@@ -6,7 +6,7 @@ mod pose;
 mod update;
 pub mod user_model;
 
-pub use effects::{Live2DBreath, Live2DEyeBlink, Live2DLipSync, Live2DLook};
+pub use effects::{Live2DBreath, Live2DEyeBlink, Live2DLipSync, Live2DLook, Live2DLookDebugState};
 pub use expression::Live2DExpressionPlayer;
 pub use motion::{
     Live2DMotionPlayer, MotionFinishedEvent, MotionFiredEvent, MotionHandle, MotionPriority,

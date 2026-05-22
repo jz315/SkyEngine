@@ -260,7 +260,7 @@ impl System for AttractorDecaySystem {
         let dead = &mut self.dead;
         let cached_items = &mut self.cached_items;
         self.query
-            .for_each_with_entity(world, |entity, (pos, attractor)| {
+            .for_each_with_entity(&mut *world, |entity, (pos, attractor)| {
                 attractor.life -= dt;
                 if attractor.life <= 0.0 {
                     dead.push(entity);
@@ -308,7 +308,7 @@ impl System for SnapshotSystem {
         velocities.clear();
 
         self.query
-            .for_each_chunk(world, |(chunk_positions, chunk_velocities, _)| {
+            .for_each_chunk(&mut *world, |(chunk_positions, chunk_velocities, _)| {
                 positions.extend_from_slice(chunk_positions);
                 velocities.extend_from_slice(chunk_velocities);
             });
@@ -522,7 +522,7 @@ impl System for BoidStepSystem {
         };
 
         let mut index = 0usize;
-        self.query.for_each(world, |(pos, vel, _)| {
+        self.query.for_each(&mut *world, |(pos, vel, _)| {
             vel.x += steering[index].x * dt;
             vel.y += steering[index].y * dt;
             vel.x *= drag;
@@ -729,7 +729,7 @@ fn main() {
         }
 
         // Handle resize
-        let size = ctx.surface_size();
+        let size = ctx.physical_surface_size().to_array();
         if size != last_size && last_size != [0, 0] {
             graph.destroy_physical_resources();
             if let Some(rs) = render_state.as_mut() {
@@ -738,13 +738,13 @@ fn main() {
         }
         last_size = size;
 
-        let [win_w, win_h] = size;
-        let mouse = ctx.input.mouse_position();
+        let logical_size = ctx.logical_view_size();
+        let mouse = ctx.input.mouse_logical_position();
 
         // Map mouse screen coords → simulation coords (0..W, 0..H top-left origin).
-        let mouse_sim_x = (mouse[0] / win_w as f32) * W;
-        let mouse_sim_y = (mouse[1] / win_h as f32) * H;
-        let mouse_valid = mouse[0] >= 0.0 && mouse[0] < win_w as f32;
+        let mouse_sim_x = (mouse.x / logical_size.width.max(1.0)) * W;
+        let mouse_sim_y = (mouse.y / logical_size.height.max(1.0)) * H;
+        let mouse_valid = logical_size.contains(mouse);
 
         // For rendering we flip Y because the Camera uses +Y up.
         let mouse_render_y = H - mouse_sim_y;

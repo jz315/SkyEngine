@@ -4,6 +4,7 @@ use super::dsl::UiCallbacks;
 use super::event::InteractionState;
 use super::fonts::FontRef;
 use super::layout::layout_roots_with_text_system;
+use super::skin::{NeoSkin, SkinRegistry};
 use super::text_measure::{DefaultTextSystem, TextSystem};
 use super::Color;
 use super::{
@@ -108,6 +109,7 @@ pub struct Runtime {
     timers: FxHashMap<String, TimerState>,
     animations: FxHashMap<String, ElementAnimation>,
     frame_targets: FxHashMap<String, FrameTargetState>,
+    skins: SkinRegistry,
     needs_render: bool,
     needs_compose: bool,
     full_redraw: bool,
@@ -222,6 +224,7 @@ impl Runtime {
             timers: FxHashMap::default(),
             animations: FxHashMap::default(),
             frame_targets: FxHashMap::default(),
+            skins: SkinRegistry::default(),
             needs_render: true,
             needs_compose: false,
             full_redraw: true,
@@ -237,6 +240,30 @@ impl Runtime {
         self.text_system.register_font(font, bytes);
         self.needs_render = true;
         self.needs_compose = true;
+    }
+
+    pub fn register_skin(&mut self, skin: NeoSkin) {
+        self.skins.register(skin);
+        self.needs_render = true;
+        self.needs_compose = true;
+    }
+
+    pub fn skins(&self) -> &SkinRegistry {
+        &self.skins
+    }
+
+    pub fn skins_mut(&mut self) -> &mut SkinRegistry {
+        self.needs_render = true;
+        self.needs_compose = true;
+        &mut self.skins
+    }
+
+    pub(crate) fn resolve_image_ref(&self, image: &super::ImageRef) -> super::ImageRef {
+        self.skins.resolve_image(image)
+    }
+
+    pub(crate) fn resolve_font_ref(&self, font: &FontRef) -> FontRef {
+        self.skins.resolve_font(font)
     }
 
     pub fn page_id(&self) -> &str {
@@ -303,6 +330,7 @@ impl Runtime {
         self.needs_compose = false;
         let screen = Screen { width, height };
         let mut ui = Ui::new(self.page_id.clone());
+        ui.set_skins(self.skins.clone());
         ui.set_focused_id(self.focused_id.clone());
         for (id, response) in &self.responses {
             ui.set_response(id.clone(), *response);
@@ -447,7 +475,10 @@ impl Runtime {
     pub(crate) fn hover_blend_for_source(&self, id: &str) -> Option<f32> {
         let id = self.resolve_id(id);
         let element = self.find(&id)?;
-        if !matches!(element.kind, ElementKind::Rect | ElementKind::Polygon) {
+        if !matches!(
+            element.kind,
+            ElementKind::Rect | ElementKind::Polygon | ElementKind::Image | ElementKind::NineSlice
+        ) {
             return None;
         }
         self.animations
@@ -458,7 +489,10 @@ impl Runtime {
     pub(crate) fn press_blend_for_source(&self, id: &str) -> Option<(f32, LayoutRect)> {
         let id = self.resolve_id(id);
         let element = self.find(&id)?;
-        if !matches!(element.kind, ElementKind::Rect | ElementKind::Polygon) {
+        if !matches!(
+            element.kind,
+            ElementKind::Rect | ElementKind::Polygon | ElementKind::Image | ElementKind::NineSlice
+        ) {
             return None;
         }
         let animation = self.animations.get(&id)?;
@@ -935,7 +969,16 @@ impl Runtime {
                     delta_seconds,
                 );
             }
-            ElementKind::Image => {
+            ElementKind::Image | ElementKind::NineSlice => {
+                changed |= update_state_blends(animation, element, interaction, delta_seconds);
+                let target_color = state_color_target(
+                    element,
+                    interaction,
+                    Some((
+                        animation.hover_blend.current(),
+                        animation.press_blend.current(),
+                    )),
+                );
                 changed |= sync_animated(
                     &mut animation.frame,
                     element.frame,
@@ -945,7 +988,7 @@ impl Runtime {
                 );
                 changed |= sync_animated(
                     &mut animation.color,
-                    element.color,
+                    target_color,
                     transition,
                     animate_color,
                     delta_seconds,
@@ -1300,6 +1343,16 @@ fn element_signature(element: &Element) -> u64 {
     hash_f32(element.line_height, &mut hasher);
     element.image.hash(&mut hasher);
     element.image_fit.hash(&mut hasher);
+    hash_f32(element.slice.left, &mut hasher);
+    hash_f32(element.slice.top, &mut hasher);
+    hash_f32(element.slice.right, &mut hasher);
+    hash_f32(element.slice.bottom, &mut hasher);
+    hash_f32(element.content_inset.left, &mut hasher);
+    hash_f32(element.content_inset.top, &mut hasher);
+    hash_f32(element.content_inset.right, &mut hasher);
+    hash_f32(element.content_inset.bottom, &mut hasher);
+    element.center_mode.hash(&mut hasher);
+    element.edge_mode.hash(&mut hasher);
     element.interactive.hash(&mut hasher);
     element.focusable.hash(&mut hasher);
     element.disabled.hash(&mut hasher);
@@ -1347,9 +1400,9 @@ mod tests {
     use crate::expert::{UiDrawCommand, UiRectDraw};
     use crate::widgets::{button, panel, text};
     use crate::{
-        Align, AnimProperty, Ease, FontRef, FrameInput, HorizontalAlign, KeyboardEvent,
-        LayoutRect, PointerEvent, Screen, ScrollEvent, Size, TextMeasure, TextMeasureRequest,
-        TextSystem, Transition,
+        Align, AnimProperty, Ease, FontRef, FrameInput, HorizontalAlign, KeyboardEvent, LayoutRect,
+        PointerEvent, Screen, ScrollEvent, Size, TextMeasure, TextMeasureRequest, TextSystem,
+        Transition,
     };
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;

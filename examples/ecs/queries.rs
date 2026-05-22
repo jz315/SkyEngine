@@ -90,7 +90,7 @@ fn main() {
     println!("\n=== Chunk iteration (move all with velocity) ===");
     let dt = 1.0;
     let mut q = world.query::<(&mut Position, &Velocity)>();
-    q.for_each_chunk(&world, |(positions, velocities)| {
+    q.for_each_chunk(&mut world, |(positions, velocities)| {
         println!("  Processing chunk of {} entities", positions.len());
         for i in 0..positions.len() {
             positions[i].x += velocities[i].x * dt;

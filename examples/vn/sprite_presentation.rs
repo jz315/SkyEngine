@@ -4,7 +4,7 @@
 //! it does not require external image assets.
 //!
 //! ```bash
-//! cargo run --example vn_sprite_demo --features "vn app"
+//! cargo run --example vn_sprite_presentation --features "vn app"
 //! ```
 
 use sky_engine::app::{

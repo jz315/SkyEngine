@@ -13,6 +13,8 @@ pub trait QueryParam {
     unsafe fn item_from_raw<'w>(ptr: *mut u8, index: usize) -> Self::Item<'w>;
 }
 
+pub trait ReadOnlyQueryParam: QueryParam {}
+
 impl<T: 'static> QueryParam for &T {
     type Slice<'w> = &'w [T];
     type Item<'w> = &'w T;
@@ -32,6 +34,8 @@ impl<T: 'static> QueryParam for &T {
         &*((ptr as *const T).add(index))
     }
 }
+
+impl<T: 'static> ReadOnlyQueryParam for &T {}
 
 impl<T: 'static> QueryParam for &mut T {
     type Slice<'w> = &'w mut [T];
@@ -81,6 +85,8 @@ impl<T: 'static> QueryParam for Option<&T> {
     }
 }
 
+impl<T: 'static> ReadOnlyQueryParam for Option<&T> {}
+
 impl<T: 'static> QueryParam for Option<&mut T> {
     type Slice<'w> = Option<&'w mut [T]>;
     type Item<'w> = Option<&'w mut T>;
@@ -124,6 +130,8 @@ pub trait QuerySpec {
         Func: FnMut(Self::Item<'w>);
 }
 
+pub trait ReadOnlyQuerySpec: QuerySpec {}
+
 impl<P: QueryParam> QuerySpec for P {
     type Chunk<'w> = P::Slice<'w>;
     type Item<'w> = P::Item<'w>;
@@ -154,6 +162,8 @@ impl<P: QueryParam> QuerySpec for P {
         }
     }
 }
+
+impl<P: ReadOnlyQueryParam> ReadOnlyQuerySpec for P {}
 
 macro_rules! impl_query_spec_tuple {
     ($(($Param:ident, $base:ident, $index:tt)),+ $(,)?) => {
@@ -203,6 +213,8 @@ macro_rules! impl_query_spec_tuple {
                 }
             }
         }
+
+        impl<$($Param: ReadOnlyQueryParam),+> ReadOnlyQuerySpec for ($($Param,)+) {}
     };
 }
 

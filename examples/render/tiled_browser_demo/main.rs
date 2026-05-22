@@ -367,7 +367,7 @@ impl TiledBrowserDemo {
             self.title_dirty = true;
         }
 
-        snap_camera_to_pixel_grid(ctx.world, camera, ctx.surface_size());
+        snap_camera_to_pixel_grid(ctx.world, camera, ctx.physical_surface_size().to_array());
         self.sync_loaded_parallax(ctx.world);
     }
 

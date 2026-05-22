@@ -1,8 +1,8 @@
 use rustc_hash::FxHashMap;
 
 use super::{
-    DragEvent, Element, ElementBuilder, ElementKind, KeyboardEvent, LayoutRect, PointerEvent,
-    Response, ScrollEvent,
+    ButtonSkin, CheckboxSkin, DragEvent, Element, ElementBuilder, ElementKind, KeyboardEvent,
+    LayoutRect, PanelSkin, PointerEvent, Response, ScrollEvent, SkinRegistry, SliderSkin,
 };
 
 /// Logical screen size supplied to neo composition.
@@ -26,6 +26,7 @@ pub struct Ui {
     path: Vec<usize>,
     responses: FxHashMap<String, Response>,
     callbacks: UiCallbacks,
+    skins: SkinRegistry,
     generated_id: usize,
     focused_id: Option<String>,
 }
@@ -65,6 +66,7 @@ impl Ui {
             path: Vec::new(),
             responses: FxHashMap::default(),
             callbacks: UiCallbacks::default(),
+            skins: SkinRegistry::default(),
             generated_id: 0,
             focused_id: None,
         }
@@ -88,6 +90,30 @@ impl Ui {
 
     pub fn into_roots(self) -> Vec<Element> {
         self.into_parts().0
+    }
+
+    pub(crate) fn set_skins(&mut self, skins: SkinRegistry) {
+        self.skins = skins;
+    }
+
+    pub fn skins(&self) -> &SkinRegistry {
+        &self.skins
+    }
+
+    pub fn button_skin(&self, key: &str) -> Option<&ButtonSkin> {
+        self.skins.button(key)
+    }
+
+    pub fn panel_skin(&self, key: &str) -> Option<&PanelSkin> {
+        self.skins.panel(key)
+    }
+
+    pub fn checkbox_skin(&self, key: &str) -> Option<&CheckboxSkin> {
+        self.skins.checkbox(key)
+    }
+
+    pub fn slider_skin(&self, key: &str) -> Option<&SliderSkin> {
+        self.skins.slider(key)
     }
 
     pub fn set_response(&mut self, id: impl Into<String>, response: Response) {
@@ -141,6 +167,10 @@ impl Ui {
         self.element(ElementKind::Image, id)
     }
 
+    pub fn nine_slice(&mut self, id: impl Into<String>) -> ElementBuilder<'_> {
+        self.element(ElementKind::NineSlice, id)
+    }
+
     pub fn polygon(&mut self, id: impl Into<String>) -> ElementBuilder<'_> {
         self.element(ElementKind::Polygon, id)
     }
@@ -191,6 +221,7 @@ impl Ui {
             ElementKind::Polygon => "__polygon",
             ElementKind::Text => "__text",
             ElementKind::Image => "__image",
+            ElementKind::NineSlice => "__nine_slice",
         };
         let id = format!("{prefix}.{}", self.generated_id);
         self.generated_id += 1;

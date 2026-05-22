@@ -109,18 +109,18 @@ path = "examples/ecs/tiny_defense.rs"
 # ── Visual novel tutorials (--features vn) ──────────────────────────────────
 
 [[example]]
-name = "vn_minimal"
-path = "examples/vn/minimal.rs"
+name = "vn_runtime_minimal"
+path = "examples/vn/runtime_minimal.rs"
 required-features = ["vn"]
 
 [[example]]
-name = "vn_sprite_demo"
-path = "examples/vn/sprite_demo.rs"
+name = "vn_sprite_presentation"
+path = "examples/vn/sprite_presentation.rs"
 required-features = ["vn", "app"]
 
 [[example]]
-name = "vn_ui_demo"
-path = "examples/vn/ui_demo.rs"
+name = "vn_after_school_promise"
+path = "examples/vn/after_school_promise.rs"
 required-features = ["vn-ui"]
 
 # ── Scene/prefab tutorials (--features scene) ────────────────────────────────

@@ -14,9 +14,7 @@ use sky_engine::ecs::{
 底层工具 API 位于：
 
 ```rust
-use sky_engine::ecs::raw::{
-    create_archetype, Archetype, ArchetypeBuilder, Chunk, Query, QueryIter, WorldRawExt,
-};
+use sky_engine::ecs::{dynamic, expert};
 ```
 
 ## 快速上手
@@ -44,7 +42,7 @@ let entity = world.spawn((
 ));
 
 let mut query = world.query::<(&mut Position, &Velocity)>();
-query.for_each(&world, |(position, velocity)| {
+query.for_each(&mut world, |(position, velocity)| {
     position.x += velocity.x;
     position.y += velocity.y;
 });
@@ -160,24 +158,26 @@ tuple query 当前支持 1 到 8 个组件位。重复组件类型会 panic，�
 遍历接口：
 
 ```rust
-query.for_each(&world, |item| { ... });
-query.for_each_chunk(&world, |chunk| { ... });
-query.par_for_each_chunk(&world, |chunk| { ... });
-query.for_each_with_entity(&world, |entity, item| { ... });
-query.for_each_chunk_with_entities(&world, |entities, chunk| { ... });
-query.par_for_each_chunk_with_entities(&world, |entities, chunk| { ... });
+query.for_each(&mut world, |item| { ... });
+query.for_each_chunk(&mut world, |chunk| { ... });
+query.par_for_each_chunk(&mut world, |chunk| { ... });
+query.for_each_with_entity(&mut world, |entity, item| { ... });
+query.for_each_chunk_with_entities(&mut world, |entities, chunk| { ... });
+query.par_for_each_chunk_with_entities(&mut world, |entities, chunk| { ... });
 
 query.count(&world) -> usize
 query.is_empty(&world) -> bool
 query.cached_archetype_count() -> usize
 ```
 
+只读 query 也可以传 `&world`；包含 `&mut T` 或 `Option<&mut T>` 的 query 必须传 `&mut world`。
+
 按实体遍历：
 
 ```rust
 let mut query = world.query::<(&mut Position, &Velocity)>();
 
-query.for_each(&world, |(position, velocity)| {
+query.for_each(&mut world, |(position, velocity)| {
     position.x += velocity.x;
     position.y += velocity.y;
 });
@@ -186,7 +186,7 @@ query.for_each(&world, |(position, velocity)| {
 按 chunk 遍历：
 
 ```rust
-query.for_each_chunk(&world, |(positions, velocities)| {
+query.for_each_chunk(&mut world, |(positions, velocities)| {
     for index in 0..positions.len() {
         positions[index].x += velocities[index].x;
         positions[index].y += velocities[index].y;
@@ -199,7 +199,7 @@ query.for_each_chunk(&world, |(positions, velocities)| {
 ```rust
 let dt = 0.016;
 
-query.par_for_each_chunk(&world, |(positions, velocities)| {
+query.par_for_each_chunk(&mut world, |(positions, velocities)| {
     for index in 0..positions.len() {
         positions[index].x += velocities[index].x * dt;
         positions[index].y += velocities[index].y * dt;
@@ -304,7 +304,7 @@ pub trait System: 'static {
 ```rust
 world.group("sim").add(|world: &mut World| {
     let mut query = world.query::<(&mut Position, &Velocity)>();
-    query.for_each(&world, |(position, velocity)| {
+    query.for_each(&mut *world, |(position, velocity)| {
         position.x += velocity.x;
     });
 });
@@ -358,14 +358,58 @@ let ty: ComponentType = component_type::<Position>();
 
 这层只包含类型名、size、align、drop 函数和 Rust `TypeId`。它不是 Inspector 字段反射，不会要求用户组件 `#[derive(Reflect)]`。
 
-## raw API
+## dynamic API
 
-`ecs::raw` 适合动态脚本、工具链、benchmark 和底层测试。一般游戏逻辑不应该优先用 raw API。
+`ecs::dynamic` 适合动态脚本、工具链和编辑器接入。它不是第二套 ECS，只是在同一套 storage kernel 上提供运行期类型检查。
+
+动态创建实体：
+
+```rust
+use sky_engine::ecs::{
+    dynamic::{DynamicBundle, WorldDynamicExt},
+    World,
+};
+
+let mut world = World::new();
+let entity = world.spawn_dynamic(
+    DynamicBundle::new()
+        .with(Position { x: 0.0, y: 0.0 })
+        .with(Velocity { x: 1.0, y: 0.0 }),
+)?;
+```
+
+动态查询：
+
+```rust
+use sky_engine::ecs::dynamic::DynamicQuery;
+
+let mut query = DynamicQuery::builder()
+    .write::<Position>()
+    .optional_read::<Velocity>()
+    .build()?;
+
+query.for_each_chunk_mut(&mut world, |mut chunk| {
+    let (positions, velocities) = chunk.write_optional_read::<Position, Velocity>(0, 1)?;
+    if let Some(velocities) = velocities {
+        for (position, velocity) in positions.iter_mut().zip(velocities) {
+            position.x += velocity.x;
+            position.y += velocity.y;
+        }
+    }
+    Ok(())
+})?;
+```
+
+只读动态 query 可以传 `&World`。包含 write slot 的动态 query 必须传 `&mut World`。
+
+## expert API
+
+`ecs::expert` 是 unsafe 底层入口，适合 benchmark、引擎内部工具和明确需要维护初始化/aliasing 契约的代码。一般游戏逻辑不应该使用它。
 
 手工构建 archetype：
 
 ```rust
-use sky_engine::ecs::raw::create_archetype;
+use sky_engine::ecs::expert::create_archetype;
 
 let archetype = create_archetype()
     .add_rust_component::<Position>()
@@ -373,41 +417,25 @@ let archetype = create_archetype()
     .build();
 ```
 
+低层实体创建：
+
+```rust
+use sky_engine::ecs::expert::WorldExpertExt;
+
+let entity = unsafe { world.spawn_uninit(archetype) };
+```
+
+`spawn_uninit` 只创建槽位，不自动初始化组件数据。调用者必须在实体被查询、迁移、删除或 drop 前初始化每个组件列。
+
 也可以按 `ComponentType` 添加：
 
 ```rust
-use sky_engine::ecs::{component_type, raw::create_archetype};
+use sky_engine::ecs::{component_type, expert::create_archetype};
 
 let archetype = create_archetype()
     .add_component(component_type::<Position>())
     .add_component(component_type::<Velocity>())
     .build();
-```
-
-低层实体创建：
-
-```rust
-use sky_engine::ecs::raw::WorldRawExt;
-
-let entity = world.add_entity(archetype);
-```
-
-`add_entity` 只创建槽位，不自动初始化组件数据。
-
-动态查询：
-
-```rust
-use sky_engine::ecs::{component_type, raw::{Query, QueryIter}};
-
-let query = Query::new(vec![
-    component_type::<Position>(),
-    component_type::<Velocity>(),
-]);
-
-let mut iter = QueryIter::new(&world, &query);
-iter.for_each2(|position, velocity| {
-    // raw pointers
-});
 ```
 
 ## 推荐和边界
@@ -418,11 +446,12 @@ iter.for_each2(|position, velocity| {
 - 需要结构变化时用 `Commands`。
 - 批量创建优先 `spawn_batch` 或连续 `commands.spawn`。
 - 热系统把 `PreparedQuery` 缓存在 system struct 中。
+- 工具/脚本桥用 `ecs::dynamic`，benchmark/底层实验才用 `ecs::expert`。
 
 不推荐：
 
 - active query 中直接结构修改。
-- 把 raw dynamic query 当主运行时 API。
+- 把 dynamic/expert query 当主运行时 API。
 - 让工具层 Inspector 反射进入 ECS 热路径。
 
 ## 测试

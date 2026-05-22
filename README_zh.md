@@ -83,13 +83,13 @@ fn main() {
 
     // 类型化查询 — 自动缓存匹配 Archetype
     let mut query = world.query::<(&mut Position, &Velocity)>();
-    query.for_each(&world, |(pos, vel)| {
+    query.for_each(&mut world, |(pos, vel)| {
         pos.x += vel.x * 0.016;
         pos.y += vel.y * 0.016;
     });
 
     // Chunk 级迭代 — 返回连续切片，适合 SIMD
-    query.for_each_chunk(&world, |(positions, velocities)| {
+    query.for_each_chunk(&mut world, |(positions, velocities)| {
         for (p, v) in positions.iter_mut().zip(velocities.iter()) {
             p.x += v.x * 0.016;
         }

@@ -9,12 +9,15 @@ pub struct DemoOptions {
     pub model_paths: Vec<PathBuf>,
     pub ui_visible: bool,
     pub benchmark: Option<BenchmarkConfig>,
+    pub debug_look: bool,
 }
 
 pub fn parse_args() -> DemoOptions {
     let mut inputs = Vec::new();
     let mut ui_visible = true;
     let mut benchmark = None;
+    let mut debug_look = std::env::var("SKY_LIVE2D_DEBUG_LOOK")
+        .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"));
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -22,6 +25,7 @@ pub fn parse_args() -> DemoOptions {
         match args[i].as_str() {
             "--no-ui" => ui_visible = false,
             "--ui" => ui_visible = true,
+            "--debug-look" => debug_look = true,
             "--bench-frames" => {
                 let sample_frames = args
                     .get(i + 1)
@@ -84,6 +88,7 @@ pub fn parse_args() -> DemoOptions {
         model_paths,
         ui_visible,
         benchmark,
+        debug_look,
     }
 }
 
@@ -91,6 +96,7 @@ fn print_usage() {
     eprintln!("Usage: live2d_demo [--no-ui] [model-or-folder] [more models/folders ...]");
     eprintln!("  --no-ui   start in pure render mode for FPS A/B");
     eprintln!("  --ui      force the control panel on at startup");
+    eprintln!("  --debug-look   print every coordinate step used by mouse-driven look");
     eprintln!("  --bench-frames <N>   run N measured frames, print average FPS, then exit");
     eprintln!("  --bench-warmup <N>   warm up N frames before benchmark sampling");
     eprintln!("  U         toggle the control panel while running");

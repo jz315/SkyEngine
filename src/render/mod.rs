@@ -120,7 +120,10 @@ pub use view::{
 };
 
 #[cfg(feature = "live2d")]
-pub use component::{Live2DAnimator, Live2DCommand, Live2DCommands, Live2DModelInstance};
+pub use component::{
+    Live2DAnimator, Live2DCommand, Live2DCommands, Live2DLookTarget, Live2DModelInstance,
+    Live2DModelPoint,
+};
 #[cfg(feature = "live2d")]
 pub use pipeline::Live2DFeature;
 

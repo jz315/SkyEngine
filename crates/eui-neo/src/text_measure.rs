@@ -71,7 +71,6 @@ impl DefaultTextSystem {
             cache: FxHashMap::default(),
         }
     }
-
 }
 
 impl TextSystem for DefaultTextSystem {
@@ -92,7 +91,11 @@ impl TextSystem for DefaultTextSystem {
             FontRef::DefaultIcon => {
                 self.default_icon_family = Some(loaded.family.clone());
             }
-            FontRef::Family(_) | FontRef::Source(_) => {}
+            FontRef::Family(_)
+            | FontRef::Key(_)
+            | FontRef::Path(_)
+            | FontRef::Url(_)
+            | FontRef::Asset(_) => {}
         }
         self.registered.insert(font.clone(), loaded);
         self.cache.clear();
@@ -140,12 +143,7 @@ thread_local! {
 
 /// Measure text width using the default text system and a font family name.
 pub fn measure_text_width(value: &str, font_family: &str, font_size: f32, font_weight: i32) -> f32 {
-    measure_text_width_with_font(
-        value,
-        &FontRef::family(font_family),
-        font_size,
-        font_weight,
-    )
+    measure_text_width_with_font(value, &FontRef::family(font_family), font_size, font_weight)
 }
 
 /// Measure text width using the default text system and an explicit font ref.
@@ -220,11 +218,7 @@ fn measure_shaped_text<'a>(
         font_system,
         Metrics::new(shaped_font_size, resolved_line_height),
     );
-    buffer.set_size(
-        font_system,
-        Some(width_limit.max(1.0)),
-        Some(height_limit),
-    );
+    buffer.set_size(font_system, Some(width_limit.max(1.0)), Some(height_limit));
     buffer.set_wrap(
         font_system,
         if request.wrap && request.max_width > 0.0 {

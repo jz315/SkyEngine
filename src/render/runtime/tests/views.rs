@@ -139,12 +139,16 @@ fn perspective_screen_to_world_intersects_the_world_z_plane() {
     let projection = Projection::perspective(60.0f32.to_radians(), 0.1, 1000.0);
     let transform = Transform::from_xyz(10.0, 20.0, 10.0);
 
-    let center =
-        projection.screen_to_world(transform, [800.0, 600.0].into(), [400.0, 300.0].into());
+    let center = projection.screen_to_world_in_viewport(
+        transform,
+        [800.0, 600.0].into(),
+        [400.0, 300.0].into(),
+    );
     assert!((center[0] - 10.0).abs() <= 0.001);
     assert!((center[1] - 20.0).abs() <= 0.001);
 
-    let top_left = projection.screen_to_world(transform, [800.0, 600.0].into(), [0.0, 0.0].into());
+    let top_left =
+        projection.screen_to_world_in_viewport(transform, [800.0, 600.0].into(), [0.0, 0.0].into());
     assert!(top_left[0] < transform.x());
     assert!(top_left[1] > transform.y());
     assert!(top_left.to_array().iter().all(|value| value.is_finite()));
@@ -155,12 +159,19 @@ fn orthographic_screen_to_world_respects_camera_rotation() {
     let projection = Projection::orthographic_fixed(100.0, 50.0);
     let transform = Transform::from_xy(10.0, 20.0).with_rotation(std::f32::consts::FRAC_PI_2);
 
-    let center = projection.screen_to_world(transform, [200.0, 100.0].into(), [100.0, 50.0].into());
+    let center = projection.screen_to_world_in_viewport(
+        transform,
+        [200.0, 100.0].into(),
+        [100.0, 50.0].into(),
+    );
     assert!((center[0] - 10.0).abs() <= 0.001);
     assert!((center[1] - 20.0).abs() <= 0.001);
 
-    let right_edge =
-        projection.screen_to_world(transform, [200.0, 100.0].into(), [200.0, 50.0].into());
+    let right_edge = projection.screen_to_world_in_viewport(
+        transform,
+        [200.0, 100.0].into(),
+        [200.0, 50.0].into(),
+    );
     assert!((right_edge[0] - 10.0).abs() <= 0.001);
     assert!((right_edge[1] - 70.0).abs() <= 0.001);
 }

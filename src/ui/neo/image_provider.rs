@@ -6,7 +6,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use eui_neo::expert::{UiDrawCommand, UiDrawList};
-use eui_neo::ImageRef;
+use eui_neo::{ImageRef, ImageRefKind};
 use eui_neo_wgpu::{GpuImage, ImageState, Resources};
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -146,13 +146,16 @@ impl SkyNeoImageStore {
         if self.recently_failed(key) {
             return None;
         }
-        if is_remote_image_source(key.source()) || key.source().starts_with("bing://daily") {
+        if matches!(key.kind(), ImageRefKind::Url | ImageRefKind::BingDaily)
+            || is_remote_image_source(key.source())
+            || key.source().starts_with("bing://daily")
+        {
             self.start_remote_load(key);
             self.pending_frame.insert(key.clone());
             return None;
         }
 
-        match load_texture_handle(asset_server, key.source()) {
+        match load_texture_handle(asset_server, key) {
             Ok(handle) => {
                 self.handles.insert(key.clone(), handle.clone());
                 Some(handle)
@@ -162,8 +165,9 @@ impl SkyNeoImageStore {
                     "[SkyEngine] neo image asset lookup failed for {}: {error}",
                     key.source()
                 );
-                self.failed.insert(key.clone(), Instant::now());
-                None
+                let handle = asset_server.insert_runtime(missing_texture_asset());
+                self.handles.insert(key.clone(), handle.clone());
+                Some(handle)
             }
         }
     }
@@ -258,13 +262,15 @@ fn image_keys(draw_list: &UiDrawList) -> Vec<ImageRef> {
     let mut seen = FxHashSet::default();
     let mut keys = Vec::new();
     for command in draw_list.commands() {
-        let UiDrawCommand::Image(draw) = command else {
-            continue;
+        let image = match command {
+            UiDrawCommand::Image(draw) => &draw.image,
+            UiDrawCommand::NineSlice(draw) => &draw.image,
+            _ => continue,
         };
-        if draw.image.is_empty() {
+        if image.is_empty() {
             continue;
         }
-        let key = draw.image.clone();
+        let key = image.clone();
         if seen.insert(key.clone()) {
             keys.push(key);
         }
@@ -274,9 +280,22 @@ fn image_keys(draw_list: &UiDrawList) -> Vec<ImageRef> {
 
 fn load_texture_handle(
     asset_server: &Assets,
-    source: &str,
+    key: &ImageRef,
 ) -> Result<Handle<TextureAsset>, String> {
-    if let Some(value) = source.strip_prefix("asset://") {
+    match key.kind() {
+        ImageRefKind::Asset => {
+            if let Ok(id) = AssetId::parse_str(key.source()) {
+                return asset_server
+                    .load_id::<TextureAsset>(id)
+                    .map_err(|error| error.to_string());
+            }
+            return asset_server
+                .load_texture(PathBuf::from(key.source()))
+                .map_err(|error| error.to_string());
+        }
+        _ => {}
+    }
+    if let Some(value) = key.source().strip_prefix("asset://") {
         if let Ok(id) = AssetId::parse_str(value) {
             return asset_server
                 .load_id::<TextureAsset>(id)
@@ -287,8 +306,22 @@ fn load_texture_handle(
             .map_err(|error| error.to_string());
     }
     asset_server
-        .load_texture(PathBuf::from(source))
+        .load_texture(PathBuf::from(key.source()))
         .map_err(|error| error.to_string())
+}
+
+fn missing_texture_asset() -> TextureAsset {
+    const W: u32 = 32;
+    const H: u32 = 32;
+    let mut rgba = Vec::with_capacity((W * H * 4) as usize);
+    for y in 0..H {
+        for x in 0..W {
+            let on = ((x / 8) + (y / 8)) % 2 == 0;
+            let [r, g, b] = if on { [255, 0, 255] } else { [20, 20, 20] };
+            rgba.extend_from_slice(&[r, g, b, 255]);
+        }
+    }
+    TextureAsset::new(W, H, TextureColorSpace::Srgb, rgba)
 }
 
 fn visible_uv_rect(asset: &TextureAsset, flip_vertically: bool) -> [f32; 4] {

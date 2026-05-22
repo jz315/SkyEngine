@@ -9,7 +9,6 @@ use sky_engine::app::{
 };
 use sky_engine::asset::{Assets, TextureAsset};
 use sky_engine::ecs::{With, World};
-use sky_engine::math::Vec2;
 use sky_engine::render::{
     CameraMarker, Color, MainCamera, PointLight, Projection, RenderSettings, SpriteRenderer,
     Transform,
@@ -115,27 +114,25 @@ impl AppState for LightingDemo {
 
     fn update(&mut self, ctx: &mut FrameContext) {
         let dt = ctx.dt;
-        let [w, h] = ctx.surface_size();
+        let logical_view_size = ctx.logical_view_size();
 
         let mut camera_query = ctx
             .world
             .query_filtered::<(&Transform, &Projection), With<MainCamera>>();
         let mut camera_transform = None;
         let mut projection = None;
-        camera_query.for_each(ctx.world, |(transform, camera_projection)| {
+        camera_query.for_each(&mut *ctx.world, |(transform, camera_projection)| {
             if camera_transform.is_none() {
                 camera_transform = Some(*transform);
                 projection = Some(*camera_projection);
             }
         });
-        let mouse = ctx.input.mouse_position();
-        let projection = projection.unwrap_or_else(|| Projection::orthographic(h as f32));
+        let mouse = ctx.input.mouse_logical_position();
+        let projection =
+            projection.unwrap_or_else(|| Projection::orthographic(logical_view_size.height));
         let camera_transform = camera_transform.unwrap_or_default();
-        let mouse_world = projection.screen_to_world(
-            camera_transform,
-            Vec2::new(w as f32, h as f32),
-            Vec2::new(mouse[0], mouse[1]),
-        );
+        let mouse_world =
+            projection.screen_to_world_logical(camera_transform, logical_view_size, mouse);
 
         let mut orbs = ctx.world.query::<(
             &mut Transform,
@@ -146,14 +143,14 @@ impl AppState for LightingDemo {
             &mut Pulse,
         )>();
         orbs.for_each(
-            ctx.world,
+            &mut *ctx.world,
             |(transform, sprite, light, velocity, hue, pulse)| {
                 transform.position[0] += velocity.x * dt;
                 transform.position[1] += velocity.y * dt;
                 pulse.0 += dt * 0.8;
 
-                let half_w = w as f32 * 0.5 + sprite.width;
-                let half_h = h as f32 * 0.5 + sprite.height;
+                let half_w = logical_view_size.width * 0.5 + sprite.width;
+                let half_h = logical_view_size.height * 0.5 + sprite.height;
                 if transform.position[0] > half_w {
                     transform.position[0] = -half_w;
                 }
@@ -182,7 +179,7 @@ impl AppState for LightingDemo {
         let mut mouse_light = ctx
             .world
             .query::<(&mut Transform, &mut PointLight, &MouseLight)>();
-        mouse_light.for_each(ctx.world, |(transform, light, _)| {
+        mouse_light.for_each(&mut *ctx.world, |(transform, light, _)| {
             transform.position[0] = mouse_world[0];
             transform.position[1] = mouse_world[1];
             light.intensity = 1.8 + 0.25 * (dt * 60.0).sin().abs();

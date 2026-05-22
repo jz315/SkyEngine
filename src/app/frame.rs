@@ -10,6 +10,7 @@ use crate::ecs::{Time, World};
 use crate::gpu::GpuContext;
 use crate::input::raw::Input;
 use crate::logging::LogStore;
+use crate::math::{LogicalSize, PhysicalSize};
 use crate::render::{
     RenderAssets, RenderRuntime, RenderStats, SceneRenderer, SharedRenderAssetCache,
     TextureReadiness,
@@ -193,10 +194,10 @@ impl<'a> FrameContext<'a> {
         }
     }
 
-    /// Current surface size in physical pixels `[width, height]`.
+    /// Current GPU surface size in physical pixels.
     #[inline]
-    pub fn surface_size(&self) -> [u32; 2] {
-        self.renderer.surface_size()
+    pub fn physical_surface_size(&self) -> PhysicalSize {
+        PhysicalSize::from_array(self.renderer.surface_size())
     }
 
     /// Window scale factor used to convert physical pixels to logical pixels.
@@ -205,12 +206,10 @@ impl<'a> FrameContext<'a> {
         self.window.scale_factor() as f32
     }
 
-    /// Current surface size in logical pixels `[width, height]`.
+    /// Current window view size in logical pixels.
     #[inline]
-    pub fn logical_surface_size(&self) -> [f32; 2] {
-        let scale = self.scale_factor().max(0.0001);
-        let [width, height] = self.renderer.surface_size();
-        [width as f32 / scale, height as f32 / scale]
+    pub fn logical_view_size(&self) -> LogicalSize {
+        self.physical_surface_size().to_logical(self.scale_factor())
     }
 
     /// Built-in ECS timing state for the current world.
@@ -318,7 +317,7 @@ impl<'a> FrameContext<'a> {
     /// Requires `--features ui`.
     #[cfg(feature = "ui-legacy")]
     pub fn update_ui(&mut self) {
-        crate::ui::update_ui(self.world, self.input, self.logical_surface_size());
+        crate::ui::update_ui(self.world, self.input, self.logical_view_size().to_array());
     }
 
     /// Update all installed game UI backends.
@@ -326,13 +325,13 @@ impl<'a> FrameContext<'a> {
     /// Requires `--features ui`.
     #[cfg(feature = "ui-core")]
     pub fn update_ui_backends(&mut self) {
-        let [width, height] = self.surface_size();
+        let physical_size = self.physical_surface_size();
         crate::ui::update_ui_backends(
             self.world,
             Some(self.window),
             self.input,
-            self.logical_surface_size(),
-            [width as f32, height as f32],
+            self.logical_view_size().to_array(),
+            [physical_size.width as f32, physical_size.height as f32],
         );
     }
 
@@ -457,6 +456,14 @@ impl<'a> FrameContext<'a> {
             .as_mut()
             .expect("FrameContext::egui is only available for the wgpu render backend")
             .run(self.window, ui_fn);
+    }
+
+    /// Returns true when the egui overlay wants pointer input this frame.
+    ///
+    /// Requires `--features egui`.
+    #[cfg(feature = "egui")]
+    pub fn egui_wants_pointer(&self) -> bool {
+        self.egui.as_ref().is_some_and(|egui| egui.wants_pointer())
     }
 
     fn render_asset_cache_parts(&mut self) -> (&mut GpuContext, &SharedRenderAssetCache) {

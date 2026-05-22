@@ -154,10 +154,11 @@ impl AppState for TexturedDemo {
         let dt = ctx.dt;
         self.time += dt;
 
-        let [w, h] = ctx.surface_size();
+        let view_size = ctx.logical_view_size();
+        let h = view_size.height;
         if let Some(camera) = self.camera {
             if let Some(projection) = ctx.world.get_mut::<Projection>(camera) {
-                *projection = Projection::orthographic(h as f32);
+                *projection = Projection::orthographic(h);
             }
         }
 
@@ -191,8 +192,8 @@ impl AppState for TexturedDemo {
             particle.hue = (particle.hue + 40.0 * dt) % 360.0;
             particle.life = (particle.life + dt * 0.3) % 1.0;
 
-            let hw = w as f32 * 0.5 + 24.0;
-            let hh = h as f32 * 0.5 + 24.0;
+            let hw = view_size.width * 0.5 + 24.0;
+            let hh = view_size.height * 0.5 + 24.0;
             if transform.position[0] > hw {
                 transform.position[0] = -hw;
             }

@@ -1,0 +1,194 @@
+title: Start
+---
+<<scene "vn/after_school_promise/bg/school_playground_summer.png" transition="fade" duration=0.6>>
+<<show anqi "vn/after_school_promise/characters/chen_anqi/sweaty_fan.png" at="right" layer=20 opacity=0.98>>
+旁白: 9月3日，下午两点半，气温34度。 #line:start.narrator.0001
+旁白: 升入高三后的第一次年级大会，把所有人都钉在操场上。 #line:start.narrator.0002
+林宇: 如果“多拿一分，干掉千人”是真的，那脚下这片塑胶跑道大概已经血流成河了。 #line:start.player.0001
+陈安琪: 林宇。主任还要讲多久？ #line:start.anqi.0001
+林宇: 还有个宣誓环节。你受得了吗？ #line:start.player.0002
+陈安琪: 死不了。我只是觉得有点浪费时间。 #line:start.anqi.0002
+-> 直接回教室
+    <<set $route = "quiet">>
+    林宇: 那等会儿我帮你占后排靠窗的位置。 #line:start.player.quiet
+    <<jump Evening>>
+-> 顺手帮她带水
+    <<set $route = "shared_secret">>
+    <<jump Notebook>>
+===
+
+title: Notebook
+---
+<<scene "vn/after_school_promise/bg/classroom_day.png" transition="fade" duration=0.5>>
+<<show anqi "vn/after_school_promise/characters/chen_anqi/dizzy_tired.png" at="right" layer=20>>
+旁白: 回到教室，吊扇把浑浊的热空气搅来搅去。试卷油墨味、汗味、桌斗里的韭菜包子味混在一起。 #line:notebook.narrator.0001
+林宇: 陈安琪。我要去小卖部，给你带瓶冰水？ #line:notebook.player.0001
+陈安琪: 不用冰水。如果可以的话，常温无糖乌龙茶。谢谢。 #line:notebook.anqi.0001
+<<cg "vn/after_school_promise/cg/notebook_secret.png" layer=40>>
+旁白: 五分钟后，她的座位空了。一阵过堂风吹翻了她的错题本。 #line:notebook.narrator.0002
+旁白: 我伸手去压住快要掉下桌的纸页，然后看见一行很轻的字。 #line:notebook.narrator.0003
+旁白: “好累啊，有点撑不下去了。” #line:notebook.note.0001
+<<show anqi "vn/after_school_promise/characters/chen_anqi/panic_defensive.png" at="center" layer=60>>
+陈安琪: 你在干什么？！ #line:notebook.anqi.0002
+林宇: 风吹开了你的本子，我只是想帮你压一下。你的茶。 #line:notebook.player.0002
+陈安琪: 你看到了？ #line:notebook.anqi.0003
+-> 轻松化解
+    <<set $promise = "physics">>
+    林宇: 多大点事。不过作为封口费，你得帮我补习物理。 #line:notebook.player.physics
+    陈安琪: 你这人真的很会趁火打劫。 #line:notebook.anqi.physics
+    <<hide_cg>>
+    <<jump Evening>>
+-> 成为共犯
+    <<set $promise = "cover">>
+    林宇: 如果你妈这周末要检查，我可以帮你弄本假的错题集掩护。 #line:notebook.player.cover
+    陈安琪: 你知道自己在说什么吗？ #line:notebook.anqi.cover
+    <<hide_cg>>
+    <<jump Evening>>
+===
+
+title: Evening
+---
+<<scene "vn/after_school_promise/bg/classroom_evening.png" transition="fade" duration=0.6>>
+<<show anqi "vn/after_school_promise/characters/chen_anqi/neutral.png" at="right" layer=20>>
+旁白: 傍晚5点40分，教室空了一大半。夕阳斜打进来，粉笔灰在光里慢慢飘。 #line:evening.narrator.0001
+陈安琪: 今天的晚霞很好看。它好宽敞。 #line:evening.anqi.0001
+林宇: 宽敞？ #line:evening.player.0001
+陈安琪: 我们每天低头看A4纸大小的卷子，抬头看一平米的黑板。只有看天的时候，才觉得外面还有那么大的地方。 #line:evening.anqi.0002
+<<cg "vn/after_school_promise/cg/sunset_window_contrast.png" layer=40>>
+陈安琪: 我妈说学计算机，明年六月考完就给我买电脑。 #line:evening.anqi.0003
+林宇: 你没跟她提天文系？ #line:evening.player.0002
+陈安琪: 怎么提呢？几万光年外的星星，照不亮我们家那个永远漏水的卫生间。 #line:evening.anqi.0004
+-> 现实地安慰她
+    <<set $ending = "practical">>
+    林宇: 计算机也没那么糟，至少以后你不用像阿姨那么辛苦。 #line:evening.player.practical
+    陈安琪: 也许吧。只是我还需要一点时间，跟自己和解。 #line:evening.anqi.practical
+    <<jump Ending>>
+-> 笨拙地陪她重算
+    <<set $ending = "retry">>
+    林宇: 擦掉重算。人又不是只有一次选择的机会。 #line:evening.player.retry
+    陈安琪: 这句话很笨。不过我收下了。 #line:evening.anqi.retry
+    <<jump Ending>>
+===
+
+title: Ending
+---
+<<hide_cg>>
+<<if $ending == "retry">>
+<<cg "vn/after_school_promise/cg/evening_milk_silence.png" layer=40>>
+旁白: 她把错题本翻到空白页，在页角画了一颗很小的星星。 #line:end.retry.narrator.0001
+<<else>>
+旁白: 晚霞一点点退下去，倒计时牌重新亮起来。我们都没有立刻说话。 #line:end.practical.narrator.0001
+<<endif>>
+<<unlock_cg "corridor_promise">>
+<<checkpoint "chapter_01_clear">>
+旁白: Chapter 01 Clear。 #line:end.system.0001
+<<jump Chapter02Start>>
+===
+
+title: Chapter02Start
+---
+<<scene "vn/after_school_promise/bg/corridor_day.png" transition="fade" duration=0.5>>
+<<show anqi "vn/after_school_promise/characters/chen_anqi/neutral.png" at="right" layer=20 opacity=0.98>>
+旁白: 第二天早读前，走廊还没有完全醒过来。拖把水的味道贴着地砖，玻璃窗上凝着一层薄薄的雾。 #line:chapter02.start.narrator.0001
+旁白: 高三理科三班门口新贴了一张通知：本周五晚自习后，召开高三家长动员会。 #line:chapter02.start.narrator.0002
+林宇: 这行字看着比数学压轴题还要命。 #line:chapter02.start.player.0001
+陈安琪: 对我来说差不多。 #line:chapter02.start.anqi.0001
+林宇: 你妈会来？ #line:chapter02.start.player.0002
+陈安琪: 她请了两个小时假。说无论如何都要听老师讲志愿规划。 #line:chapter02.start.anqi.0002
+<<if $promise == "cover">>
+陈安琪: 你昨天说的那本“假的错题集”，我想了一晚上。 #line:chapter02.start.anqi.cover
+<<else>>
+陈安琪: 你昨天说让我帮你补物理，我也想了一晚上。 #line:chapter02.start.anqi.physics
+<<endif>>
+陈安琪: 然后我发现，不管是哪件事，本质上都一样。 #line:chapter02.start.anqi.0003
+林宇: 哪一样？ #line:chapter02.start.player.0003
+陈安琪: 都是在假装我还能把生活控制得很好。 #line:chapter02.start.anqi.0004
+旁白: 她把通知角落抚平，指腹停在“志愿”两个字上，像停在一道不会做的题目前。 #line:chapter02.start.narrator.0003
+-> 先把眼前的检查应付过去
+    <<set $chapter02_route = "cover_plan">>
+    <<jump CorridorCoverPlan>>
+-> 让她把真正想说的话写下来
+    <<set $chapter02_route = "honest_note">>
+    <<jump CorridorHonestNote>>
+===
+
+title: CorridorCoverPlan
+---
+<<scene "vn/after_school_promise/bg/classroom_day.png" transition="fade" duration=0.45>>
+<<show anqi "vn/after_school_promise/characters/chen_anqi/dizzy_tired.png" at="right" layer=20>>
+旁白: 第一节课前的十分钟，教室像一台过热的机器。有人背单词，有人趴着补觉，有人在抽屉里偷偷拆辣条。 #line:chapter02.cover.narrator.0001
+林宇: 如果只是周五检查错题集，我们可以做个“母亲可见版本”。 #line:chapter02.cover.player.0001
+陈安琪: 你把这种事说得像打印考试答题卡。 #line:chapter02.cover.anqi.0001
+林宇: 技术上差不多。封面旧一点，内页写满一点，错题分类看起来像那么回事。 #line:chapter02.cover.player.0002
+陈安琪: 然后呢？她满意了，我继续把真正想看的东西藏起来？ #line:chapter02.cover.anqi.0002
+林宇: 至少能多争取一周。 #line:chapter02.cover.player.0003
+陈安琪: 一周以后呢？再下一周呢？ #line:chapter02.cover.anqi.0003
+旁白: 她没有责怪我。正因为没有责怪，那句话才显得更重。 #line:chapter02.cover.narrator.0002
+陈安琪: 林宇，我不是不想活得聪明一点。只是每次撒谎，都会让我觉得自己离她更远一点。 #line:chapter02.cover.anqi.0004
+林宇: 那我们换一种方案。不是骗她，只是先别把所有话都摊开。 #line:chapter02.cover.player.0004
+陈安琪: 比如？ #line:chapter02.cover.anqi.0005
+林宇: 你写一张只给她看的纸。不是志愿表，也不是检讨。就写“我为什么还想看星星”。 #line:chapter02.cover.player.0005
+<<jump ClassroomSharedPlan>>
+===
+
+title: CorridorHonestNote
+---
+<<scene "vn/after_school_promise/bg/classroom_day.png" transition="fade" duration=0.45>>
+<<show anqi "vn/after_school_promise/characters/chen_anqi/pleading_tired.png" at="right" layer=20>>
+旁白: 我们回到教室时，英语老师还没来。黑板左上角的值日生名单旁边，昨晚没擦干净的粉笔字还残着半截。 #line:chapter02.note.narrator.0001
+林宇: 你不是不会说。你只是每次一开口，就先替你妈把自己判输了。 #line:chapter02.note.player.0001
+陈安琪: 因为她也没有错。 #line:chapter02.note.anqi.0001
+林宇: 我知道。所以不是吵架。写下来吧。人当面说话很容易输给哭、沉默和“我是为你好”。纸不会。 #line:chapter02.note.player.0002
+陈安琪: 写给她？ #line:chapter02.note.anqi.0002
+林宇: 也写给你自己。 #line:chapter02.note.player.0003
+旁白: 她从书包侧袋里拿出那本被翻得卷边的错题集，停顿了很久，才翻到最后一页。 #line:chapter02.note.narrator.0002
+陈安琪: 如果我写得很幼稚怎么办？ #line:chapter02.note.anqi.0003
+林宇: 高三生最大的特权，就是可以幼稚得有理有据。 #line:chapter02.note.player.0004
+陈安琪: 你这句话听起来像作文素材。 #line:chapter02.note.anqi.0004
+林宇: 那你别写这句，容易被扣分。 #line:chapter02.note.player.0005
+<<jump ClassroomSharedPlan>>
+===
+
+title: ClassroomSharedPlan
+---
+<<cg "vn/after_school_promise/cg/notebook_secret_blank.png" layer=40>>
+旁白: 她在纸页最上方写下标题，又立刻划掉。墨水把纸纤维洇出一小团蓝黑色的云。 #line:chapter02.shared.narrator.0001
+陈安琪: “妈妈，我想学天文。”这句太像通知。 #line:chapter02.shared.anqi.0001
+林宇: “妈妈，我想先跟你商量一件不会马上赚钱的事。” #line:chapter02.shared.player.0001
+陈安琪: 更糟了。她会以为我要买相机。 #line:chapter02.shared.anqi.0002
+林宇: 那就别开门见山。先写她听得懂的东西。比如卫生间漏水，比如她手上的裂口，比如你知道她很辛苦。 #line:chapter02.shared.player.0002
+陈安琪: 然后再写那些星星？ #line:chapter02.shared.anqi.0003
+林宇: 嗯。让它们落到地上。 #line:chapter02.shared.player.0003
+旁白: 她的笔尖终于动了起来。字很小，横平竖直，像是在狭窄的格子里给自己挤出一条路。 #line:chapter02.shared.narrator.0002
+<<if $chapter02_route == "cover_plan">>
+陈安琪: 我还是害怕。害怕她看完以后，觉得我不懂事。 #line:chapter02.shared.anqi.cover
+林宇: 怕也可以写。别把害怕删掉。 #line:chapter02.shared.player.cover
+<<else>>
+陈安琪: 如果她真的哭了，我可能会立刻投降。 #line:chapter02.shared.anqi.note
+林宇: 那就在投降前，把这张纸递出去。投降也要有证据。 #line:chapter02.shared.player.note
+<<endif>>
+陈安琪: 林宇。你为什么愿意管这些？ #line:chapter02.shared.anqi.0004
+林宇: 因为昨天我看到那句话以后，觉得如果装作没看见，会比看见本身更糟。 #line:chapter02.shared.player.0004
+陈安琪: ……谢谢。 #line:chapter02.shared.anqi.0005
+<<hide_cg>>
+<<jump EveningOneSquareMeter>>
+===
+
+title: EveningOneSquareMeter
+---
+<<scene "vn/after_school_promise/bg/classroom_evening.png" transition="fade" duration=0.6>>
+<<show anqi "vn/after_school_promise/characters/chen_anqi/neutral.png" at="right" layer=20>>
+旁白: 傍晚的晚自习预备铃响起时，陈安琪把那张纸夹进了错题集。不是藏起来，而是端端正正地夹在第一页。 #line:chapter02.evening.narrator.0001
+林宇: 你决定了？ #line:chapter02.evening.player.0001
+陈安琪: 没有。只是先把它放在一个我不会假装找不到的地方。 #line:chapter02.evening.anqi.0001
+旁白: 窗外的天又暗了一点。城市的楼群把晚霞切成很窄的一条，刚好嵌在教室窗框里。 #line:chapter02.evening.narrator.0002
+陈安琪: 你昨天说，人不是只有一次选择的机会。 #line:chapter02.evening.anqi.0002
+林宇: 我居然说过这么有水平的话？ #line:chapter02.evening.player.0002
+陈安琪: 当时听起来很笨。今天也是。 #line:chapter02.evening.anqi.0003
+陈安琪: 但我想试试。哪怕只是先争取一平方米的天空。 #line:chapter02.evening.anqi.0004
+林宇: 一平方米有点少。 #line:chapter02.evening.player.0003
+陈安琪: 对高三生来说，已经很奢侈了。 #line:chapter02.evening.anqi.0005
+<<unlock_cg "one_square_meter_sky">>
+<<checkpoint "chapter_02_clear">>
+旁白: Chapter 02 Clear。 #line:chapter02.end.system.0001
+===

@@ -133,16 +133,16 @@ crate 根部的 feature-gated 模块关系如下：
 低层渲染与调试工具可以使用：
 
 - `sky_engine::render::expert`
-- `sky_engine::ecs::raw`
+- `sky_engine::ecs::expert`
 
-这两个 expert / raw namespace 不是普通 gameplay 的默认入口。它们用于底层集成、benchmark、工具链、graph 调试或非常明确的性能实验。
+这些 expert namespace 不是普通 gameplay 的默认入口。它们用于底层集成、benchmark、工具链、graph 调试或非常明确的性能实验；运行期类型安全的 ECS 工具入口用 `sky_engine::ecs::dynamic`。
 
 ### 何时使用哪一层
 
 | 目标 | 推荐入口 | 不建议 |
 |------|----------|--------|
 | 写 gameplay 状态 | ECS component / resource / system | 把玩法状态放进 renderer cache |
-| 批量遍历实体 | `PreparedQuery` / `for_each_chunk` | 动态 raw query 作为主路径 |
+| 批量遍历实体 | `PreparedQuery` / `for_each_chunk` | dynamic/expert query 作为主路径 |
 | 查询中安排结构变化 | `Commands` | active query 内直接 `insert/remove/despawn` |
 | 创建窗口应用 | `World::install(...)` + `App` + `AppState` | 手动绕过 runner 复制事件循环 |
 | 普通渲染 | `RenderPipelineAsset` + `RenderRuntime` | 直接把所有东西塞进 `GpuContext` |
@@ -447,7 +447,8 @@ ECS 是当前项目的运行时数据核心。它提供实体、组件、资源�
 - `src/ecs/resource.rs`
 - `src/ecs/system.rs`
 - `src/ecs/time.rs`
-- `src/ecs/raw.rs`
+- `src/ecs/dynamic.rs`
+- `src/ecs/expert.rs`
 
 公共入口：
 
@@ -460,7 +461,7 @@ use sky_engine::ecs::{
 底层工具 / benchmark 入口：
 
 ```rust
-use sky_engine::ecs::raw;
+use sky_engine::ecs::{dynamic, expert};
 ```
 
 ### ECS 架构图
@@ -725,16 +726,21 @@ SkyEngine 当前没有公开独立的 `Schedule` 类型；调度器内置在 `Wo
 
 fixed group 中的 `Time::delta` 应反映 fixed step，而不是外部 wall-clock frame dt。
 
-### 5.11 raw / dynamic API
+### 5.11 dynamic / expert API
 
-`ecs::raw` 提供低层能力：
+`ecs::dynamic` 提供运行期类型安全能力：
+
+- 工具链或脚本式 runtime 接入。
+- 动态 bundle spawn。
+- 带 read/write/optional 声明的动态 query。
+
+`ecs::expert` 提供 unsafe 底层能力：
 
 - 手动创建 archetype。
-- 动态 query。
-- benchmark / tooling helper。
-- 工具链或脚本式 runtime 接入。
+- 未初始化实体槽位。
+- benchmark / engine-level helper。
 
-它不是普通 gameplay hot path。不要为了“更直接”绕过 typed query，除非目标就是底层测试、工具或 benchmark。
+它们都不是普通 gameplay hot path。不要为了“更直接”绕过 typed query，除非目标就是工具、脚本桥、底层测试或 benchmark。
 
 ---
 
@@ -1537,7 +1543,7 @@ Math 不应承担 gameplay 状态管理，也不应持有 GPU 资源。
 - 提供运行时类型信息。
 - 保存 layout metadata。
 - 支撑 type-erased drop。
-- 支撑 raw ECS / dynamic query / asset registry 等需要类型反射的路径。
+- 支撑 ECS dynamic/expert API、asset registry 等需要类型反射的路径。
 
 ECS archetype 与 dynamic query 会依赖 reflect type identity。不要随意改变 type registration 语义，否则可能影响 entity storage、drop 和 query matching。
 
@@ -1932,7 +1938,7 @@ docs-only 修改通常不需要 `cargo test`。但如果文档修改伴随 API�
 ### 14.3 常见误区
 
 - 依赖 `src/main.rs` 判断 API 方向；它是 scratch / playground，不是 canonical surface。
-- 把 `ecs::raw` 当普通 gameplay query 主路径。
+- 把 `ecs::dynamic` / `ecs::expert` 当普通 gameplay query 主路径。
 - 在 active query 内直接结构修改，而不是用 `Commands`。
 - 假设 bundle 插入顺序就是 archetype component column 顺序。
 - 忘记非 `Copy` component drop 语义，只测 `Copy` 类型。

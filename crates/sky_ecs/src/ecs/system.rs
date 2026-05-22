@@ -245,7 +245,7 @@ mod tests {
         world.group("count").add(|world: &mut World| {
             let mut count = 0usize;
             let mut query = world.query::<&Position>();
-            query.for_each(world, |_position| {
+            query.for_each(&mut *world, |_position| {
                 count += 1;
             });
             world.get_resource_mut::<SeenCount>().unwrap().value = count;

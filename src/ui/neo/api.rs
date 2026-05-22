@@ -2,8 +2,9 @@ use super::backend::NeoUiBackend;
 use super::config::{NeoUiConfig, NeoWindowConfig};
 use super::plugin::install_neo_ui_backend;
 use super::window::NeoAuxWindowClient;
-use super::{Screen, Ui};
+use super::{NeoSkin, Screen, Ui};
 use crate::asset::Assets;
+use crate::ecs::World;
 
 /// Queue a native child window driven by the neo UI runtime.
 pub fn open_window(
@@ -21,6 +22,16 @@ pub fn open_window(
     );
 }
 
+/// Register a named neo skin on the installed backend.
+pub fn register_skin(world: &mut World, skin: NeoSkin) {
+    if crate::ui::with_ui_backend_mut::<NeoUiBackend, _>(world, |_| ()).is_none() {
+        install_neo_ui_backend(world, NeoUiConfig::default());
+    }
+    let _ = crate::ui::with_ui_backend_mut::<NeoUiBackend, _>(world, |backend| {
+        backend.runtime_mut().register_skin(skin);
+    });
+}
+
 /// Compose an EUI-NEO-style declarative UI for the current app frame.
 pub fn compose<R>(
     ctx: &mut crate::app::FrameContext<'_>,
@@ -30,7 +41,7 @@ pub fn compose<R>(
         install_neo_ui_backend(ctx.world, NeoUiConfig::default());
     }
     let input = *ctx.input;
-    let logical_surface_size = ctx.logical_surface_size();
+    let logical_surface_size = ctx.logical_view_size().to_array();
     let dt = ctx.dt;
     let mut ui = ctx.ui();
     ui.with_backend_mut::<NeoUiBackend, _>(|backend| {

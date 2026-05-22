@@ -10,6 +10,8 @@ use cgmath::{Matrix4, Rad, Vector3};
 // ---------------------------------------------------------------------------
 
 pub const SIMPLE_ENTITY_COUNT: usize = 10_000;
+pub const REPEATED_ITERATION_COUNT: usize = 32;
+pub const LARGE_ITERATION_ENTITY_COUNT: usize = 100_000;
 pub const FRAGMENTED_VARIANT_COUNT: usize = 26;
 pub const FRAGMENTED_ENTITIES_PER_VARIANT: usize = 400;
 pub const HEAVY_ENTITY_COUNT: usize = 1_000;

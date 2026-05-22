@@ -19,7 +19,10 @@ pub use light::{
     MAX_DIRECTIONAL_SHADOW_CASCADES,
 };
 #[cfg(feature = "live2d")]
-pub use live2d::{Live2DAnimator, Live2DCommand, Live2DCommands, Live2DModelInstance};
+pub use live2d::{
+    Live2DAnimator, Live2DCommand, Live2DCommands, Live2DLookTarget, Live2DModelInstance,
+    Live2DModelPoint,
+};
 pub use mesh::{MeshRenderer, WgpuMeshRenderer, ALL_SHADOW_CASCADE_MASK};
 pub use settings::{
     BloomSettings, ContactShadowsSettings, GlobalIllumination, RenderDebugView, RenderLayerMask,

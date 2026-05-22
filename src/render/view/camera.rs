@@ -1,6 +1,6 @@
 //! View and camera helpers.
 
-use crate::math::{Projection, Transform, Vec2};
+use crate::math::{LogicalPoint, LogicalSize, Projection, Transform, Vec2};
 
 /// GPU-ready view uniform shared by 2D and 3D render paths.
 #[repr(C)]
@@ -71,12 +71,12 @@ impl Camera {
         self.viewport_size = [width.max(1.0) as u32, height.max(1.0) as u32];
     }
 
-    /// Convert screen coordinates to world coordinates.
+    /// Convert a logical-pixel screen point to world coordinates.
     #[inline]
-    pub fn screen_to_world(&self, screen_x: f32, screen_y: f32) -> Vec2 {
-        let viewport = Vec2::new(self.viewport_size[0] as f32, self.viewport_size[1] as f32);
+    pub fn screen_to_world_logical(&self, point: LogicalPoint) -> Vec2 {
+        let viewport = LogicalSize::new(self.viewport_size[0] as f32, self.viewport_size[1] as f32);
         self.projection
-            .screen_to_world(self.transform, viewport, Vec2::new(screen_x, screen_y))
+            .screen_to_world_logical(self.transform, viewport, point)
     }
 
     /// Return the packed uniform consumed by render shaders.

@@ -62,7 +62,7 @@ impl Live2DRenderer {
         model: &Live2DModel,
         textures: &[Texture],
         clipping: Option<&ClippingManager>,
-        projection: &[f32; 16],
+        projection: ModelToClip,
         apply_model_color: bool,
     ) -> Vec<PreparedModelDraw> {
         let mut draws = Vec::new();
@@ -210,7 +210,7 @@ impl Live2DRenderer {
                 let ctx_entry = &clip_mgr.contexts[ctx_idx];
                 return (
                     1.0,
-                    ctx_entry.draw_matrix,
+                    ctx_entry.draw_matrix.to_cols_array(),
                     clip_mgr.channel_flags[ctx_entry.channel_index],
                     Some(MaskRequest {
                         kind: ClippingObjectKind::Drawable,
@@ -244,7 +244,10 @@ impl Live2DRenderer {
                 let ctx_entry = &clip_mgr.contexts[ctx_idx];
                 return (
                     1.0,
-                    ctx_entry.draw_matrix,
+                    ctx_entry
+                        .offscreen_draw_matrix
+                        .expect("offscreen clipping matrices must be updated before rendering")
+                        .to_cols_array(),
                     clip_mgr.channel_flags[ctx_entry.channel_index],
                     Some(MaskRequest {
                         kind: ClippingObjectKind::Offscreen,
@@ -345,6 +348,7 @@ impl Live2DRenderer {
         if targets_changed {
             self.cached_composite_bind_groups.clear();
             self.cached_blit_bind_groups.clear();
+            self.cached_texture_bind_groups.clear();
         }
     }
 
@@ -815,7 +819,7 @@ mod tests {
             &[],
             drawable_index,
             None,
-            &projection,
+            ModelToClip::from_cols_array(projection),
             false,
         );
 
@@ -851,7 +855,7 @@ mod tests {
             &[],
             drawable_index,
             None,
-            &projection,
+            ModelToClip::from_cols_array(projection),
             false,
         );
 

@@ -18,6 +18,7 @@ mod event;
 mod fonts;
 mod layout;
 mod runtime;
+mod skin;
 mod text_measure;
 pub mod widgets;
 
@@ -34,32 +35,35 @@ pub use builder::{ElementBuilder, Response};
 pub use color::Color;
 pub use dsl::{Screen, Ui};
 pub use element::{
-    Align, Border, CursorShape, EdgeInsets, Element, ElementKind, Gradient, GradientDirection,
-    HorizontalAlign, ImageFit, ImageRef, IntoPolygonPoints, LayoutRect, Rect, Shadow, Size,
-    Transform, Vec2, VerticalAlign,
+    Align, Border, CenterMode, CursorShape, EdgeInsets, EdgeMode, Element, ElementKind, Gradient,
+    GradientDirection, HorizontalAlign, ImageFit, ImageRef, ImageRefKind, Insets,
+    IntoPolygonPoints, LayoutRect, Rect, Shadow, Size, Slice, Transform, Vec2, VerticalAlign,
 };
 pub use event::{DragEvent, KeyboardEvent, PointerEvent, ScrollEvent};
 pub use fonts::FontRef;
 pub use runtime::{Frame, FrameInput, FrameResult, Runtime};
+pub use skin::{ButtonSkin, CheckboxSkin, NeoSkin, PanelSkin, SkinRegistry, SliderSkin};
 pub use text_measure::{DefaultTextSystem, TextMeasure, TextMeasureRequest, TextSystem};
 
 /// Common imports for application code using `eui-neo`.
 pub mod prelude {
     pub use crate::{
         bind, bind_array, bind_clamped, bind_clone, bind_eq, bind_max, widgets, Align,
-        AnimProperty, Binding, Border, Color, CursorShape, DragEvent, Ease, EdgeInsets, Frame,
-        DefaultTextSystem, FontRef, FrameInput, FrameResult, Gradient, GradientDirection,
-        HorizontalAlign, ImageFit, ImageRef, IntoPolygonPoints, KeyboardEvent, LayoutRect, Lerp,
-        NeoState, PointerEvent, Rect, Response, Runtime, Screen, ScrollEvent, Shadow, Size,
-        SmoothedValue, TextMeasure, TextMeasureRequest, TextSystem, Transform, Transition, Ui,
-        Vec2, VerticalAlign,
+        AnimProperty, Binding, Border, ButtonSkin, CenterMode, CheckboxSkin, Color, CursorShape,
+        DefaultTextSystem, DragEvent, Ease, EdgeInsets, EdgeMode, FontRef, Frame, FrameInput,
+        FrameResult, Gradient, GradientDirection, HorizontalAlign, ImageFit, ImageRef,
+        ImageRefKind, Insets, IntoPolygonPoints, KeyboardEvent, LayoutRect, Lerp, NeoSkin,
+        NeoState, PanelSkin, PointerEvent, Rect, Response, Runtime, Screen, ScrollEvent, Shadow,
+        Size, SkinRegistry, Slice, SliderSkin, SmoothedValue, TextMeasure, TextMeasureRequest,
+        TextSystem, Transform, Transition, Ui, Vec2, VerticalAlign,
     };
 }
 
 /// Lower-level surface for renderers, tooling, and diagnostics.
 pub mod expert {
     pub use crate::draw::{
-        UiDrawCommand, UiDrawList, UiImageDraw, UiPolygonDraw, UiRectDraw, UiTextDraw,
+        UiDrawCommand, UiDrawList, UiImageDraw, UiNineSliceDraw, UiPolygonDraw, UiRectDraw,
+        UiTextDraw,
     };
     pub use crate::event::InteractionState;
     pub use crate::layout::{layout_roots, measure_element};

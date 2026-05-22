@@ -1,4 +1,3 @@
-mod dynamic;
 mod filter;
 mod parallel;
 mod param;
@@ -9,9 +8,8 @@ use crate::ecs::ComponentType;
 use core::ptr;
 use smallvec::SmallVec;
 
-pub use dynamic::{Query, QueryIter};
 pub use filter::{QueryFilter, With, Without};
-pub use param::QuerySpec;
+pub use param::{QuerySpec, ReadOnlyQuerySpec};
 pub use prepared::PreparedQuery;
 
 const INLINE_QUERY_COMPONENTS: usize = 8;
@@ -67,14 +65,6 @@ impl QueryDescriptor {
         Self { components }
     }
 
-    pub(crate) fn from_dynamic_types(types: &[ComponentType]) -> Self {
-        let mut components = SmallVec::with_capacity(types.len());
-        for ty in types {
-            components.push(QueryComponent::new(*ty, false));
-        }
-        Self::new(components)
-    }
-
     pub(crate) fn len(&self) -> usize {
         self.components.len()
     }
@@ -90,6 +80,34 @@ pub(crate) struct CachedArchetype {
 pub(crate) struct PreparedCache {
     cached_epoch: Option<usize>,
     pub archetypes: Vec<CachedArchetype>,
+}
+
+#[doc(hidden)]
+pub trait QueryWorld<Q: QuerySpec>: sealed::QueryWorldSealed {
+    fn as_world(&self) -> &World;
+}
+
+mod sealed {
+    use super::World;
+
+    pub trait QueryWorldSealed {}
+
+    impl QueryWorldSealed for &World {}
+    impl QueryWorldSealed for &mut World {}
+}
+
+impl<Q: QuerySpec> QueryWorld<Q> for &mut World {
+    #[inline(always)]
+    fn as_world(&self) -> &World {
+        &**self
+    }
+}
+
+impl<Q: ReadOnlyQuerySpec> QueryWorld<Q> for &World {
+    #[inline(always)]
+    fn as_world(&self) -> &World {
+        *self
+    }
 }
 
 impl PreparedCache {

@@ -37,17 +37,17 @@ struct CustomFeatureDemo {
 impl AppState for CustomFeatureDemo {
     fn update(&mut self, ctx: &mut FrameContext) {
         let dt = ctx.dt;
-        let [w, h] = ctx.surface_size();
+        let view_size = ctx.logical_view_size();
         let mut query = ctx
             .world
             .query::<(&mut Transform, &SpriteRenderer, &Velocity)>();
-        query.for_each(ctx.world, |(transform, sprite, velocity)| {
+        query.for_each(&mut *ctx.world, |(transform, sprite, velocity)| {
             transform.position[0] += velocity.x * dt;
             transform.position[1] += velocity.y * dt;
             transform.rotate_z(0.35 * dt);
 
-            let hw = w as f32 * 0.5 + sprite.width;
-            let hh = h as f32 * 0.5 + sprite.height;
+            let hw = view_size.width * 0.5 + sprite.width;
+            let hh = view_size.height * 0.5 + sprite.height;
             if transform.position[0] > hw {
                 transform.position[0] = -hw;
             }

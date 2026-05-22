@@ -1,7 +1,7 @@
 use super::filter::QueryFilter;
 use super::parallel::{self, ParallelQuerySpec};
 use super::param::QuerySpec;
-use super::{EntityId, PreparedCache, QueryDescriptor, World};
+use super::{EntityId, PreparedCache, QueryDescriptor, QueryWorld, World};
 use core::marker::PhantomData;
 
 /// A typed, cached query over component data.
@@ -14,6 +14,9 @@ use core::marker::PhantomData;
 /// (e.g. `&Position`, `(&mut Position, &Velocity)`, `Option<&Health>`).
 /// The optional `Flt` restricts matching to archetypes that satisfy
 /// the filter (e.g. `With<Enemy>`, `Without<Dead>`).
+///
+/// Iteration methods accept `&World` for read-only queries and require
+/// `&mut World` for queries that yield mutable component references.
 pub struct PreparedQuery<Q, Flt = ()> {
     descriptor: QueryDescriptor,
     prepared: PreparedCache,
@@ -56,10 +59,12 @@ impl<Q: QuerySpec, Flt: QueryFilter> PreparedQuery<Q, Flt> {
     /// This is the fastest iteration path — ideal for SIMD-style batch
     /// processing.
     #[inline(always)]
-    pub fn for_each_chunk<F>(&mut self, world: &World, mut f: F)
+    pub fn for_each_chunk<W, F>(&mut self, world: W, mut f: F)
     where
+        W: QueryWorld<Q>,
         F: for<'w> FnMut(Q::Chunk<'w>),
     {
+        let world = world.as_world();
         self.prepare(world);
         for cached in &self.prepared.archetypes {
             let data = &world.data[cached.data_index];
@@ -105,7 +110,7 @@ impl<Q: QuerySpec, Flt: QueryFilter> PreparedQuery<Q, Flt> {
     /// ));
     ///
     /// let mut query = world.query::<(&mut Position, &Velocity)>();
-    /// query.par_for_each_chunk(&world, |(positions, velocities)| {
+    /// query.par_for_each_chunk(&mut world, |(positions, velocities)| {
     ///     for index in 0..positions.len() {
     ///         positions[index].x += velocities[index].x;
     ///         positions[index].y += velocities[index].y;
@@ -121,7 +126,7 @@ impl<Q: QuerySpec, Flt: QueryFilter> PreparedQuery<Q, Flt> {
     /// world.spawn((Cell::new(1u32),));
     ///
     /// let mut query = world.query::<&Cell<u32>>();
-    /// query.par_for_each_chunk(&world, |_cells| {});
+    /// query.par_for_each_chunk(&mut world, |_cells| {});
     /// ```
     ///
     /// ```compile_fail
@@ -132,13 +137,15 @@ impl<Q: QuerySpec, Flt: QueryFilter> PreparedQuery<Q, Flt> {
     /// world.spawn((Rc::new(1u32),));
     ///
     /// let mut query = world.query::<&mut Rc<u32>>();
-    /// query.par_for_each_chunk(&world, |_values| {});
+    /// query.par_for_each_chunk(&mut world, |_values| {});
     /// ```
-    pub fn par_for_each_chunk<F>(&mut self, world: &World, f: F)
+    pub fn par_for_each_chunk<W, F>(&mut self, world: W, f: F)
     where
+        W: QueryWorld<Q>,
         Q: ParallelQuerySpec,
         F: for<'w> Fn(<Q as ParallelQuerySpec>::Chunk<'w>) + Send + Sync,
     {
+        let world = world.as_world();
         self.prepare(world);
         parallel::par_for_each_chunk::<Q, _>(&mut self.parallel_jobs, &self.prepared, world, f);
     }
@@ -146,10 +153,12 @@ impl<Q: QuerySpec, Flt: QueryFilter> PreparedQuery<Q, Flt> {
     /// Iterates *entity-by-entity*, providing individual component
     /// references.
     #[inline(always)]
-    pub fn for_each<F>(&mut self, world: &World, mut f: F)
+    pub fn for_each<W, F>(&mut self, world: W, mut f: F)
     where
+        W: QueryWorld<Q>,
         F: for<'w> FnMut(Q::Item<'w>),
     {
+        let world = world.as_world();
         self.prepare(world);
         for cached in &self.prepared.archetypes {
             let data = &world.data[cached.data_index];
@@ -165,10 +174,12 @@ impl<Q: QuerySpec, Flt: QueryFilter> PreparedQuery<Q, Flt> {
 
     /// Like [`for_each`](Self::for_each), but also provides the
     /// [`EntityId`] for each matched entity.
-    pub fn for_each_with_entity<F>(&mut self, world: &World, mut f: F)
+    pub fn for_each_with_entity<W, F>(&mut self, world: W, mut f: F)
     where
+        W: QueryWorld<Q>,
         F: for<'w> FnMut(EntityId, Q::Item<'w>),
     {
+        let world = world.as_world();
         self.prepare(world);
         for cached in &self.prepared.archetypes {
             let data = &world.data[cached.data_index];
@@ -188,10 +199,12 @@ impl<Q: QuerySpec, Flt: QueryFilter> PreparedQuery<Q, Flt> {
 
     /// Like [`for_each_chunk`](Self::for_each_chunk), but also provides
     /// the entity ID slice for each chunk.
-    pub fn for_each_chunk_with_entities<F>(&mut self, world: &World, mut f: F)
+    pub fn for_each_chunk_with_entities<W, F>(&mut self, world: W, mut f: F)
     where
+        W: QueryWorld<Q>,
         F: for<'w> FnMut(&[EntityId], Q::Chunk<'w>),
     {
+        let world = world.as_world();
         self.prepare(world);
         for cached in &self.prepared.archetypes {
             let data = &world.data[cached.data_index];
@@ -213,11 +226,13 @@ impl<Q: QuerySpec, Flt: QueryFilter> PreparedQuery<Q, Flt> {
     ///
     /// Entity slices line up with the component slices for that chunk, but
     /// chunk visitation order remains unspecified.
-    pub fn par_for_each_chunk_with_entities<F>(&mut self, world: &World, f: F)
+    pub fn par_for_each_chunk_with_entities<W, F>(&mut self, world: W, f: F)
     where
+        W: QueryWorld<Q>,
         Q: ParallelQuerySpec,
         F: for<'w> Fn(&'w [EntityId], <Q as ParallelQuerySpec>::Chunk<'w>) + Send + Sync,
     {
+        let world = world.as_world();
         self.prepare(world);
         parallel::par_for_each_chunk_with_entities::<Q, _>(
             &mut self.parallel_jobs,
@@ -285,7 +300,9 @@ mod tests {
 
     fn spawn(world: &mut World, archetype: super::super::super::Archetype, count: usize) {
         for _ in 0..count {
-            world.add_entity(archetype);
+            unsafe {
+                world.add_entity(archetype);
+            }
         }
     }
 
@@ -297,14 +314,14 @@ mod tests {
 
         let mut init = world.query::<&mut Velocity>();
         let mut expected = 1.0;
-        init.for_each(&world, |velocity| {
+        init.for_each(&mut world, |velocity| {
             velocity.x = expected;
             expected += 1.0;
         });
 
         let mut sum = 0.0;
         let mut read = world.query::<&Velocity>();
-        read.for_each(&world, |velocity| {
+        read.for_each(&mut world, |velocity| {
             sum += velocity.x;
         });
 
@@ -321,13 +338,13 @@ mod tests {
         spawn(&mut world, archetype, 8);
 
         let mut init = world.query::<&mut Velocity>();
-        init.for_each(&world, |velocity| {
+        init.for_each(&mut world, |velocity| {
             velocity.x = 1.0;
             velocity.y = 2.0;
         });
 
         let mut query = world.query::<(&mut Position, &Velocity)>();
-        query.for_each_chunk(&world, |(positions, velocities)| {
+        query.for_each_chunk(&mut world, |(positions, velocities)| {
             for index in 0..positions.len() {
                 positions[index].x += velocities[index].x * 0.5;
                 positions[index].y += velocities[index].y * 0.5;
@@ -335,7 +352,7 @@ mod tests {
         });
 
         let mut check = world.query::<&Position>();
-        check.for_each(&world, |position| {
+        check.for_each(&mut world, |position| {
             assert_eq!(position.x, 0.5);
             assert_eq!(position.y, 1.0);
         });
@@ -353,7 +370,7 @@ mod tests {
         spawn(&mut world, archetype, 6);
 
         let mut init = world.query::<(&mut Velocity, &mut Extra, &mut Mass)>();
-        init.for_each(&world, |(velocity, extra, mass)| {
+        init.for_each(&mut world, |(velocity, extra, mass)| {
             velocity.x = 2.0;
             velocity.y = 4.0;
             extra.value = 1.0;
@@ -361,7 +378,7 @@ mod tests {
         });
 
         let mut query = world.query::<(&mut Position, &Velocity, &mut Extra, &Mass)>();
-        query.for_each_chunk(&world, |(positions, velocities, extras, masses)| {
+        query.for_each_chunk(&mut world, |(positions, velocities, extras, masses)| {
             for index in 0..positions.len() {
                 positions[index].x += velocities[index].x * masses[index].value;
                 positions[index].y += velocities[index].y * masses[index].value;
@@ -370,13 +387,13 @@ mod tests {
         });
 
         let mut position_check = world.query::<&Position>();
-        position_check.for_each(&world, |position| {
+        position_check.for_each(&mut world, |position| {
             assert_eq!(position.x, 6.0);
             assert_eq!(position.y, 12.0);
         });
 
         let mut extra_check = world.query::<&Extra>();
-        extra_check.for_each(&world, |extra| {
+        extra_check.for_each(&mut world, |extra| {
             assert_eq!(extra.value, 4.0);
         });
     }
@@ -394,19 +411,19 @@ mod tests {
         spawn(&mut world, position_only, 3);
 
         let mut init = world.query::<&mut Velocity>();
-        init.for_each(&world, |velocity| {
+        init.for_each(&mut world, |velocity| {
             velocity.x = 1.0;
         });
 
         let mut query = world.query::<(&mut Position, &Velocity)>();
-        query.for_each(&world, |(position, velocity)| {
+        query.for_each(&mut world, |(position, velocity)| {
             position.x += velocity.x;
         });
 
         let mut changed = 0;
         let mut unchanged = 0;
         let mut positions = world.query::<&Position>();
-        positions.for_each(&world, |position| {
+        positions.for_each(&mut world, |position| {
             if position.x == 1.0 {
                 changed += 1;
             } else {
@@ -431,34 +448,38 @@ mod tests {
             .build();
 
         let mut world = World::new();
-        world.add_entity(base);
+        unsafe {
+            world.add_entity(base);
+        }
 
         let mut init = world.query::<&mut Velocity>();
-        init.for_each(&world, |velocity| {
+        init.for_each(&mut world, |velocity| {
             velocity.x = 1.0;
         });
 
         let mut prepared = PreparedQuery::<(&mut Position, &Velocity)>::new();
-        prepared.for_each(&world, |(position, velocity)| {
+        prepared.for_each(&mut world, |(position, velocity)| {
             position.x += velocity.x;
         });
         assert_eq!(prepared.cached_archetype_count(), 1);
 
-        world.add_entity(extended);
+        unsafe {
+            world.add_entity(extended);
+        }
         let mut init_new = world.query::<(&mut Velocity, &mut Extra)>();
-        init_new.for_each(&world, |(velocity, extra)| {
+        init_new.for_each(&mut world, |(velocity, extra)| {
             velocity.x = 1.0;
             extra.value = 2.0;
         });
 
-        prepared.for_each(&world, |(position, velocity)| {
+        prepared.for_each(&mut world, |(position, velocity)| {
             position.x += velocity.x;
         });
         assert_eq!(prepared.cached_archetype_count(), 2);
 
         let mut sum = 0.0;
         let mut positions = world.query::<&Position>();
-        positions.for_each(&world, |position| {
+        positions.for_each(&mut world, |position| {
             sum += position.x;
         });
 
@@ -470,10 +491,12 @@ mod tests {
     fn typed_query_rejects_duplicate_types() {
         let archetype = create_archetype().add_rust_component::<Position>().build();
         let mut world = World::new();
-        world.add_entity(archetype);
+        unsafe {
+            world.add_entity(archetype);
+        }
 
         let mut query = PreparedQuery::<(&mut Position, &mut Position)>::new();
-        query.for_each(&world, |_| {});
+        query.for_each(&mut world, |_| {});
     }
 
     #[test]
@@ -508,7 +531,7 @@ mod tests {
 
         let mut seen = std::collections::HashMap::new();
         let mut query = world.query::<&Position>();
-        query.for_each_with_entity(&world, |entity, position| {
+        query.for_each_with_entity(&mut world, |entity, position| {
             seen.insert(entity, position.x);
         });
 
@@ -525,7 +548,7 @@ mod tests {
 
         let mut entity_ids = Vec::new();
         let mut query = world.query::<(&Position, &Velocity)>();
-        query.for_each_chunk_with_entities(&world, |entities, (positions, _velocities)| {
+        query.for_each_chunk_with_entities(&mut world, |entities, (positions, _velocities)| {
             assert_eq!(entities.len(), positions.len());
             entity_ids.extend_from_slice(entities);
         });
@@ -543,7 +566,7 @@ mod tests {
         let mut with_vel = 0;
         let mut without_vel = 0;
         let mut query = world.query::<(&Position, Option<&Velocity>)>();
-        query.for_each(&world, |(pos, vel)| {
+        query.for_each(&mut world, |(pos, vel)| {
             if let Some(v) = vel {
                 assert_eq!(pos.x, 1.0);
                 assert_eq!(v.x, 10.0);
@@ -567,7 +590,7 @@ mod tests {
         let mut chunks_with_vel = 0;
         let mut chunks_without_vel = 0;
         let mut query = world.query::<(&Position, Option<&Velocity>)>();
-        query.for_each_chunk(&world, |(positions, opt_velocities)| {
+        query.for_each_chunk(&mut world, |(positions, opt_velocities)| {
             assert!(!positions.is_empty());
             if opt_velocities.is_some() {
                 chunks_with_vel += 1;
@@ -587,7 +610,7 @@ mod tests {
         world.spawn((Position { x: 0.0, y: 0.0 },));
 
         let mut query = world.query::<(&mut Position, Option<&Velocity>)>();
-        query.for_each(&world, |(pos, vel)| {
+        query.for_each(&mut world, |(pos, vel)| {
             if let Some(v) = vel {
                 pos.x += v.x;
                 pos.y += v.y;
@@ -599,7 +622,7 @@ mod tests {
         let mut moved = 0;
         let mut stayed = 0;
         let mut check = world.query::<&Position>();
-        check.for_each(&world, |pos| {
+        check.for_each(&mut world, |pos| {
             if pos.x == 1.0 && pos.y == 2.0 {
                 moved += 1;
             } else if pos.x == -1.0 {
@@ -619,7 +642,7 @@ mod tests {
 
         let mut query = world.query_filtered::<&Position, With<Velocity>>();
         let mut count = 0;
-        query.for_each(&world, |pos| {
+        query.for_each(&mut world, |pos| {
             assert_eq!(pos.x, 1.0);
             count += 1;
         });
@@ -635,7 +658,7 @@ mod tests {
 
         let mut query = world.query_filtered::<&Position, Without<Velocity>>();
         let mut count = 0;
-        query.for_each(&world, |pos| {
+        query.for_each(&mut world, |pos| {
             assert_eq!(pos.x, 2.0);
             count += 1;
         });
@@ -657,7 +680,7 @@ mod tests {
         // Want: has Velocity but NOT Extra
         let mut query = world.query_filtered::<&Position, (With<Velocity>, Without<Extra>)>();
         let mut count = 0;
-        query.for_each(&world, |pos| {
+        query.for_each(&mut world, |pos| {
             assert_eq!(pos.x, 2.0);
             count += 1;
         });

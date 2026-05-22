@@ -70,13 +70,13 @@ impl EguiIntegration {
     /// Whether egui currently wants exclusive keyboard input (e.g. text box focused).
     #[allow(dead_code)]
     pub fn wants_keyboard(&self) -> bool {
-        self.winit_state.egui_ctx().wants_keyboard_input()
+        self.winit_state.egui_ctx().egui_wants_keyboard_input()
     }
 
     /// Whether egui currently wants exclusive pointer/mouse input.
     #[allow(dead_code)]
     pub fn wants_pointer(&self) -> bool {
-        self.winit_state.egui_ctx().wants_pointer_input()
+        self.winit_state.egui_ctx().egui_wants_pointer_input()
     }
 
     /// Tessellate and render egui's output onto the given surface view.

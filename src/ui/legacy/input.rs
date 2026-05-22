@@ -19,7 +19,9 @@ pub fn update_ui(world: &mut World, input: &Input, surface_size: [f32; 2]) {
         rects = rect_map(&resolved);
     }
 
-    let pointer = input.mouse_in_window().then(|| input.mouse_position());
+    let pointer = input
+        .mouse_in_window()
+        .then(|| input.mouse_logical_position().to_array());
     let input_hovered_node = pointer.and_then(|position| hit_test_input(&resolved, position));
     let scroll_hovered = input_hovered_node.as_ref().map(|node| node.entity);
     let mut scrolled = None;

@@ -24,6 +24,12 @@ cargo bench --bench fair -- flecs
 # Run a specific benchmark precisely
 cargo bench --bench fair -- fair_random_access/get/sky --exact
 
+# Run the repeated traversal stability benchmark
+cargo bench --bench fair -- fair_iteration_repeated/simple_x32/sky --exact
+
+# Run the larger 100k-entity traversal benchmark
+cargo bench --bench fair -- fair_iteration_large
+
 # Chunk size tuning: modify CHUNK_SIZE in src/ecs/chunk.rs and rerun
 ```
 

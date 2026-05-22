@@ -163,6 +163,36 @@ pub fn bench_iteration(group: &mut BenchmarkGroup<'_, WallTime>) {
     });
 }
 
+pub fn bench_iteration_repeated(group: &mut BenchmarkGroup<'_, WallTime>) {
+    let world = world_with_entities(SIMPLE_ENTITY_COUNT);
+    let query = world.new_query::<(&mut PositionComponent, &VelocityComponent)>();
+
+    group.bench_function("simple_x32/flecs", |b| {
+        b.iter(|| {
+            for _ in 0..REPEATED_ITERATION_COUNT {
+                query.each(|(pos, vel)| {
+                    pos.0 += vel.0;
+                });
+            }
+            black_box(&world);
+        });
+    });
+}
+
+pub fn bench_iteration_large(group: &mut BenchmarkGroup<'_, WallTime>) {
+    let world = world_with_entities(LARGE_ITERATION_ENTITY_COUNT);
+    let query = world.new_query::<(&mut PositionComponent, &VelocityComponent)>();
+
+    group.bench_function("simple_100k/flecs", |b| {
+        b.iter(|| {
+            query.each(|(pos, vel)| {
+                pos.0 += vel.0;
+            });
+            black_box(&world);
+        });
+    });
+}
+
 pub fn bench_fragmented_iteration(group: &mut BenchmarkGroup<'_, WallTime>) {
     debug_assert_eq!(FRAGMENTED_VARIANT_COUNT, 26);
 

@@ -15,7 +15,8 @@ use sky_engine::render::{
 use sky_engine::ui::neo::widgets;
 use sky_engine::ui::neo::NeoUiPlugin;
 use sky_engine::ui::neo::{
-    AnimProperty, Color, Ease, HorizontalAlign, NeoState, Ui, VerticalAlign,
+    ButtonSkin, CheckboxSkin, Color, EdgeInsets, FontRef, HorizontalAlign, ImageRef, NeoSkin,
+    NeoState, PanelSkin, Slice, SliderSkin, Ui, VerticalAlign,
 };
 
 const WINDOW_W: u32 = 1280;
@@ -51,6 +52,8 @@ const DIVIDER: &str = "examples/assets/kenney_ui_pack/PNG/Extra/Default/divider.
 const INPUT: &str = "examples/assets/kenney_ui_pack/PNG/Extra/Default/input_rectangle.png";
 const INPUT_OUTLINE: &str =
     "examples/assets/kenney_ui_pack/PNG/Extra/Default/input_outline_rectangle.png";
+const SLIDER_HORIZONTAL: &str =
+    "examples/assets/kenney_ui_pack/PNG/Blue/Default/slide_horizontal_color.png";
 const ICON_PLAY: &str = "examples/assets/kenney_ui_pack/PNG/Extra/Default/icon_play_light.png";
 const ICON_REPEAT: &str = "examples/assets/kenney_ui_pack/PNG/Extra/Default/icon_repeat_light.png";
 const ICON_UP: &str = "examples/assets/kenney_ui_pack/PNG/Extra/Default/icon_arrow_up_light.png";
@@ -112,7 +115,7 @@ impl Default for KenneyNeoUiShowcase {
 impl Default for DemoState {
     fn default() -> Self {
         Self {
-            page: DemoPage::Title,
+            page: initial_page_from_env(),
             selected_slot: 0,
             health: 0.86,
             stamina: 0.58,
@@ -123,6 +126,18 @@ impl Default for DemoState {
             difficulty: 0.45,
             last_action: "Ready in orbit",
         }
+    }
+}
+
+fn initial_page_from_env() -> DemoPage {
+    let Ok(value) = std::env::var("SKY_NEO_SHOWCASE_PAGE") else {
+        return DemoPage::Title;
+    };
+    match value.trim().to_ascii_lowercase().as_str() {
+        "hud" => DemoPage::Hud,
+        "loadout" => DemoPage::Loadout,
+        "settings" => DemoPage::Settings,
+        _ => DemoPage::Title,
     }
 }
 
@@ -140,6 +155,138 @@ impl From<&DemoState> for DemoSnapshot {
             difficulty: value.difficulty,
             last_action: value.last_action,
         }
+    }
+}
+
+fn kenney_skin() -> NeoSkin {
+    NeoSkin::new("kenney")
+        .font("future", FontRef::path(asset(FONT)))
+        .image("button.blue.normal", ImageRef::path(asset(BLUE_BUTTON)))
+        .image("button.green.normal", ImageRef::path(asset(GREEN_BUTTON)))
+        .image("button.red.normal", ImageRef::path(asset(RED_BUTTON)))
+        .image("button.yellow.normal", ImageRef::path(asset(YELLOW_BUTTON)))
+        .image("button.grey.normal", ImageRef::path(asset(GREY_BUTTON)))
+        .image(
+            "button.square.blue.normal",
+            ImageRef::path(asset(BLUE_SQUARE)),
+        )
+        .image(
+            "button.square.green.normal",
+            ImageRef::path(asset(GREEN_SQUARE)),
+        )
+        .image(
+            "button.square.red.normal",
+            ImageRef::path(asset(RED_SQUARE)),
+        )
+        .image(
+            "button.square.yellow.normal",
+            ImageRef::path(asset(YELLOW_SQUARE)),
+        )
+        .image("icon.star", ImageRef::path(asset(STAR)))
+        .image("icon.star_outline", ImageRef::path(asset(STAR_OUTLINE)))
+        .image("icon.play", ImageRef::path(asset(ICON_PLAY)))
+        .image("icon.repeat", ImageRef::path(asset(ICON_REPEAT)))
+        .image("icon.up", ImageRef::path(asset(ICON_UP)))
+        .image("icon.down", ImageRef::path(asset(ICON_DOWN)))
+        .image("check.on", ImageRef::path(asset(CHECK_ON)))
+        .image("check.off", ImageRef::path(asset(CHECK_OFF)))
+        .image("divider", ImageRef::path(asset(DIVIDER)))
+        .image(
+            "slider.horizontal",
+            ImageRef::path(asset(SLIDER_HORIZONTAL)),
+        )
+        .image("panel.input", ImageRef::path(asset(INPUT)))
+        .image("panel.input_outline", ImageRef::path(asset(INPUT_OUTLINE)))
+        .button(
+            "button.blue",
+            kenney_button_skin("kenney.button.blue.normal"),
+        )
+        .button(
+            "button.green",
+            kenney_button_skin("kenney.button.green.normal"),
+        )
+        .button("button.red", kenney_button_skin("kenney.button.red.normal"))
+        .button(
+            "button.yellow",
+            kenney_button_skin("kenney.button.yellow.normal"),
+        )
+        .button(
+            "button.grey",
+            kenney_button_skin("kenney.button.grey.normal"),
+        )
+        .button(
+            "button.square.blue",
+            kenney_square_button_skin("kenney.button.square.blue.normal"),
+        )
+        .button(
+            "button.square.green",
+            kenney_square_button_skin("kenney.button.square.green.normal"),
+        )
+        .button(
+            "button.square.red",
+            kenney_square_button_skin("kenney.button.square.red.normal"),
+        )
+        .button(
+            "button.square.yellow",
+            kenney_square_button_skin("kenney.button.square.yellow.normal"),
+        )
+        .panel(
+            "panel.input",
+            PanelSkin {
+                image: ImageRef::key("kenney.panel.input"),
+                tint: Color::rgba(1.0, 1.0, 1.0, 0.82),
+                slice: Slice::px4(10.0, 10.0, 10.0, 10.0),
+                content_inset: EdgeInsets::xy(12.0, 0.0),
+            },
+        )
+        .checkbox(
+            "checkbox.default",
+            CheckboxSkin {
+                checked: ImageRef::key("kenney.check.on"),
+                unchecked: ImageRef::key("kenney.check.off"),
+                font: FontRef::key("kenney.future"),
+                text_color: c(238, 247, 250, 255),
+                ..CheckboxSkin::default()
+            },
+        )
+        .slider(
+            "slider.blue",
+            SliderSkin {
+                track: ImageRef::key("kenney.slider.horizontal"),
+                track_tint: Color::WHITE,
+                track_height: 11.0,
+                track_opacity: 0.65,
+                fill: c(83, 170, 244, 255),
+                knob: c(248, 253, 255, 255),
+                rail: c(36, 53, 63, 255),
+            },
+        )
+}
+
+fn kenney_button_skin(image_key: &'static str) -> ButtonSkin {
+    ButtonSkin {
+        normal: ImageRef::key(image_key),
+        hover: None,
+        pressed: None,
+        disabled: None,
+        font: FontRef::key("kenney.future"),
+        text_color: Color::WHITE,
+        disabled_text_color: c(180, 190, 198, 255),
+        tint: Color::WHITE,
+        hover_tint: Color::rgba(1.0, 1.0, 0.90, 1.0),
+        pressed_tint: Color::rgba(0.74, 0.86, 0.92, 1.0),
+        disabled_tint: Color::rgba(0.70, 0.74, 0.78, 0.88),
+        slice: Slice::px4(14.0, 12.0, 14.0, 18.0),
+        content_inset: EdgeInsets::px4(24.0, 6.0, 24.0, 12.0),
+        press_scale: 0.96,
+    }
+}
+
+fn kenney_square_button_skin(image_key: &'static str) -> ButtonSkin {
+    ButtonSkin {
+        slice: Slice::px4(12.0, 12.0, 12.0, 18.0),
+        content_inset: EdgeInsets::all(8.0),
+        ..kenney_button_skin(image_key)
     }
 }
 
@@ -285,20 +432,17 @@ fn draw_title(
     let x = (screen_w - panel_w) * 0.5;
     let y = (screen_h - panel_h) * 0.5 - 18.0;
 
-    panel(
-        ui,
-        "title.panel",
-        x,
-        y,
-        panel_w,
-        panel_h,
-        c(17, 25, 32, 228),
-    );
+    widgets::skin_panel(ui, "title.panel")
+        .skin("kenney.panel.input")
+        .tint(c(17, 25, 32, 228))
+        .position(x, y)
+        .size(panel_w, panel_h)
+        .content(|_| {});
     ui.text("title.kicker")
         .position(x + 44.0, y + 34.0)
         .size(panel_w - 88.0, 28.0)
         .text("KENNEY UI PACK / UI-NEO")
-        .font_source(asset(FONT))
+        .font(FontRef::key("kenney.future"))
         .font_size(15.0)
         .color(c(166, 220, 236, 255))
         .horizontal_align(HorizontalAlign::Center)
@@ -307,7 +451,7 @@ fn draw_title(
         .position(x + 34.0, y + 70.0)
         .size(panel_w - 68.0, 62.0)
         .text("FIELD HUD")
-        .font_source(asset(FONT))
+        .font(FontRef::key("kenney.future"))
         .font_size(42.0)
         .line_height(48.0)
         .color(c(248, 253, 255, 255))
@@ -317,7 +461,7 @@ fn draw_title(
     ui.image("title.divider")
         .position(x + 110.0, y + 142.0)
         .size(panel_w - 220.0, 8.0)
-        .source(asset(DIVIDER))
+        .source(ImageRef::key("kenney.divider"))
         .stretch()
         .build();
     ui.text("title.body")
@@ -332,58 +476,46 @@ fn draw_title(
         .build();
 
     let start = state.clone();
-    image_button(
-        ui,
-        "title.start",
-        GREEN_BUTTON,
-        "START SORTIE",
-        x + 116.0,
-        y + 258.0,
-        288.0,
-        54.0,
-        20.0,
-        move || {
+    widgets::skin_button(ui, "title.start")
+        .skin("kenney.button.green")
+        .text("START SORTIE")
+        .position(x + 116.0, y + 258.0)
+        .size(288.0, 54.0)
+        .font_size(20.0)
+        .on_click(move || {
             start.update(|state| {
                 state.page = DemoPage::Hud;
                 state.last_action = "Sortie started";
             });
-        },
-    );
+        })
+        .build();
     let loadout = state.clone();
-    image_button(
-        ui,
-        "title.loadout",
-        BLUE_BUTTON,
-        "LOADOUT",
-        x + 116.0,
-        y + 322.0,
-        136.0,
-        50.0,
-        17.0,
-        move || loadout.update(|state| state.page = DemoPage::Loadout),
-    );
+    widgets::skin_button(ui, "title.loadout")
+        .skin("kenney.button.blue")
+        .text("LOADOUT")
+        .position(x + 116.0, y + 322.0)
+        .size(136.0, 50.0)
+        .font_size(17.0)
+        .on_click(move || loadout.update(|state| state.page = DemoPage::Loadout))
+        .build();
     let settings = state.clone();
-    image_button(
-        ui,
-        "title.settings",
-        YELLOW_BUTTON,
-        "OPTIONS",
-        x + 268.0,
-        y + 322.0,
-        136.0,
-        50.0,
-        17.0,
-        move || settings.update(|state| state.page = DemoPage::Settings),
-    );
+    widgets::skin_button(ui, "title.settings")
+        .skin("kenney.button.yellow")
+        .text("OPTIONS")
+        .position(x + 268.0, y + 322.0)
+        .size(136.0, 50.0)
+        .font_size(17.0)
+        .on_click(move || settings.update(|state| state.page = DemoPage::Settings))
+        .build();
 
-    status_ribbon(
-        ui,
-        "title.ribbon",
-        x + 62.0,
-        y + 392.0,
-        panel_w - 124.0,
-        &format!("Last action: {}", snapshot.last_action),
-    );
+    widgets::skin_status_ribbon(ui, "title.ribbon")
+        .skin("kenney.panel.input")
+        .position(x + 62.0, y + 392.0)
+        .size(panel_w - 124.0, 34.0)
+        .text(format!("Last action: {}", snapshot.last_action))
+        .font(FontRef::key("kenney.future"))
+        .color(c(62, 76, 84, 255))
+        .build();
 }
 
 fn draw_hud(
@@ -402,20 +534,17 @@ fn draw_hud(
 }
 
 fn draw_top_hud(ui: &mut Ui, screen_w: f32, state: &NeoState<DemoState>, snapshot: DemoSnapshot) {
-    panel(
-        ui,
-        "hud.top.left",
-        24.0,
-        22.0,
-        370.0,
-        82.0,
-        c(13, 22, 31, 220),
-    );
+    widgets::skin_panel(ui, "hud.top.left")
+        .skin("kenney.panel.input")
+        .tint(c(13, 22, 31, 220))
+        .position(24.0, 22.0)
+        .size(370.0, 82.0)
+        .content(|_| {});
     ui.text("hud.title")
         .position(46.0, 35.0)
         .size(220.0, 28.0)
         .text("SKY PATROL")
-        .font_source(asset(FONT))
+        .font(FontRef::key("kenney.future"))
         .font_size(24.0)
         .color(c(244, 251, 255, 255))
         .build();
@@ -432,23 +561,19 @@ fn draw_top_hud(ui: &mut Ui, screen_w: f32, state: &NeoState<DemoState>, snapsho
     ui.image("hud.coin.icon")
         .position(324.0, 40.0)
         .size(38.0, 38.0)
-        .source(asset(STAR))
+        .source(ImageRef::key("kenney.icon.star"))
         .contain()
         .build();
 
     let title = state.clone();
-    image_button(
-        ui,
-        "hud.pause",
-        GREY_BUTTON,
-        "MENU",
-        screen_w - 140.0,
-        24.0,
-        112.0,
-        44.0,
-        15.0,
-        move || title.update(|state| state.page = DemoPage::Title),
-    );
+    widgets::skin_button(ui, "hud.pause")
+        .skin("kenney.button.grey")
+        .text("MENU")
+        .position(screen_w - 140.0, 24.0)
+        .size(112.0, 44.0)
+        .font_size(15.0)
+        .on_click(move || title.update(|state| state.page = DemoPage::Title))
+        .build();
 }
 
 fn draw_status_bars(
@@ -458,98 +583,78 @@ fn draw_status_bars(
     snapshot: DemoSnapshot,
 ) {
     let x = screen_w - 390.0;
-    panel(
-        ui,
-        "hud.status.panel",
-        x,
-        86.0,
-        362.0,
-        170.0,
-        c(10, 17, 25, 218),
-    );
-    status_bar(
-        ui,
-        "hud.hp",
-        x + 26.0,
-        112.0,
-        "HULL",
-        snapshot.health,
-        c(64, 218, 128, 255),
-    );
-    status_bar(
-        ui,
-        "hud.stamina",
-        x + 26.0,
-        162.0,
-        "BOOST",
-        snapshot.stamina,
-        c(71, 167, 244, 255),
-    );
-    status_bar(
-        ui,
-        "hud.shield",
-        x + 26.0,
-        212.0,
-        "SHIELD",
-        snapshot.shield,
-        c(252, 203, 73, 255),
-    );
+    widgets::skin_panel(ui, "hud.status.panel")
+        .skin("kenney.panel.input")
+        .tint(c(10, 17, 25, 218))
+        .position(x, 86.0)
+        .size(362.0, 170.0)
+        .content(|_| {});
+    widgets::skin_status_bar(ui, "hud.hp")
+        .position(x + 26.0, 112.0)
+        .label("HULL")
+        .value(snapshot.health)
+        .fill(c(64, 218, 128, 255))
+        .font(FontRef::key("kenney.future"))
+        .build();
+    widgets::skin_status_bar(ui, "hud.stamina")
+        .position(x + 26.0, 162.0)
+        .label("BOOST")
+        .value(snapshot.stamina)
+        .fill(c(71, 167, 244, 255))
+        .font(FontRef::key("kenney.future"))
+        .build();
+    widgets::skin_status_bar(ui, "hud.shield")
+        .position(x + 26.0, 212.0)
+        .label("SHIELD")
+        .value(snapshot.shield)
+        .fill(c(252, 203, 73, 255))
+        .font(FontRef::key("kenney.future"))
+        .build();
 
     let hit = state.clone();
-    image_button(
-        ui,
-        "hud.hit",
-        RED_BUTTON,
-        "HIT",
-        x + 26.0,
-        268.0,
-        98.0,
-        42.0,
-        15.0,
-        move || {
+    widgets::skin_button(ui, "hud.hit")
+        .skin("kenney.button.red")
+        .text("HIT")
+        .position(x + 26.0, 268.0)
+        .size(98.0, 42.0)
+        .font_size(15.0)
+        .on_click(move || {
             hit.update(|state| {
                 state.health = (state.health - 0.12).max(0.0);
                 state.shield = (state.shield - 0.08).max(0.0);
                 state.last_action = "Incoming damage";
             });
-        },
-    );
+        })
+        .build();
     let repair = state.clone();
-    image_button(
-        ui,
-        "hud.repair",
-        GREEN_BUTTON,
-        "REPAIR",
-        x + 140.0,
-        268.0,
-        116.0,
-        42.0,
-        15.0,
-        move || {
+    widgets::skin_button(ui, "hud.repair")
+        .skin("kenney.button.green")
+        .text("REPAIR")
+        .position(x + 140.0, 268.0)
+        .size(116.0, 42.0)
+        .font_size(15.0)
+        .on_click(move || {
             repair.update(|state| {
                 state.health = (state.health + 0.16).min(1.0);
                 state.shield = (state.shield + 0.12).min(1.0);
                 state.credits = state.credits.saturating_sub(40);
                 state.last_action = "Field repairs applied";
             });
-        },
-    );
+        })
+        .build();
     let wave = state.clone();
-    icon_button(
-        ui,
-        "hud.wave.next",
-        x + 274.0,
-        264.0,
-        YELLOW_SQUARE,
-        ICON_UP,
-        move || {
+    widgets::skin_icon_button(ui, "hud.wave.next")
+        .skin("kenney.button.square.yellow")
+        .icon(ImageRef::key("kenney.icon.up"))
+        .position(x + 274.0, 264.0)
+        .on_click(move || {
             wave.update(|state| {
                 state.wave += 1;
                 state.credits += 125;
                 state.last_action = "Advanced wave";
             });
-        },
-    );
+        })
+        .build();
 }
 
 fn draw_mission_card(
@@ -559,27 +664,24 @@ fn draw_mission_card(
     snapshot: DemoSnapshot,
 ) {
     let y = (screen_h - 270.0) * 0.5;
-    panel(
-        ui,
-        "mission.panel",
-        28.0,
-        y,
-        312.0,
-        270.0,
-        c(13, 21, 29, 224),
-    );
+    widgets::skin_panel(ui, "mission.panel")
+        .skin("kenney.panel.input")
+        .tint(c(13, 21, 29, 224))
+        .position(28.0, y)
+        .size(312.0, 270.0)
+        .content(|_| {});
     ui.text("mission.title")
         .position(54.0, y + 26.0)
         .size(220.0, 30.0)
         .text("ACTIVE QUEST")
-        .font_source(asset(FONT))
+        .font(FontRef::key("kenney.future"))
         .font_size(21.0)
         .color(c(248, 253, 255, 255))
         .build();
     ui.image("mission.divider")
         .position(54.0, y + 62.0)
         .size(226.0, 8.0)
-        .source(asset(DIVIDER))
+        .source(ImageRef::key("kenney.divider"))
         .stretch()
         .build();
     ui.text("mission.copy")
@@ -591,64 +693,62 @@ fn draw_mission_card(
         .wrap(true)
         .color(c(204, 221, 224, 255))
         .build();
-    status_ribbon(
-        ui,
-        "mission.log",
-        54.0,
-        y + 176.0,
-        230.0,
-        snapshot.last_action,
-    );
+    widgets::skin_status_ribbon(ui, "mission.log")
+        .skin("kenney.panel.input")
+        .position(54.0, y + 176.0)
+        .size(230.0, 34.0)
+        .text(snapshot.last_action)
+        .font(FontRef::key("kenney.future"))
+        .color(c(62, 76, 84, 255))
+        .build();
     let loadout = state.clone();
-    image_button(
-        ui,
-        "mission.loadout",
-        BLUE_BUTTON,
-        "LOADOUT",
-        54.0,
-        y + 224.0,
-        110.0,
-        38.0,
-        13.0,
-        move || loadout.update(|state| state.page = DemoPage::Loadout),
-    );
+    widgets::skin_button(ui, "mission.loadout")
+        .skin("kenney.button.blue")
+        .text("LOADOUT")
+        .position(54.0, y + 224.0)
+        .size(110.0, 38.0)
+        .font_size(13.0)
+        .on_click(move || loadout.update(|state| state.page = DemoPage::Loadout))
+        .build();
     let settings = state.clone();
-    image_button(
-        ui,
-        "mission.settings",
-        YELLOW_BUTTON,
-        "TUNE",
-        174.0,
-        y + 224.0,
-        110.0,
-        38.0,
-        13.0,
-        move || settings.update(|state| state.page = DemoPage::Settings),
-    );
+    widgets::skin_button(ui, "mission.settings")
+        .skin("kenney.button.yellow")
+        .text("TUNE")
+        .position(174.0, y + 224.0)
+        .size(110.0, 38.0)
+        .font_size(13.0)
+        .on_click(move || settings.update(|state| state.page = DemoPage::Settings))
+        .build();
 }
 
 fn draw_action_bar(ui: &mut Ui, screen_w: f32, screen_h: f32, state: &NeoState<DemoState>) {
     let bar_w = 560.0;
     let x = (screen_w - bar_w) * 0.5;
     let y = screen_h - 106.0;
-    panel(ui, "action.panel", x, y, bar_w, 82.0, c(11, 18, 26, 218));
+    widgets::skin_panel(ui, "action.panel")
+        .skin("kenney.panel.input")
+        .tint(c(11, 18, 26, 218))
+        .position(x, y)
+        .size(bar_w, 82.0)
+        .content(|_| {});
     let actions = [
-        ("action.0", BLUE_SQUARE, ICON_PLAY),
-        ("action.1", GREEN_SQUARE, CHECK_ON),
-        ("action.2", YELLOW_SQUARE, STAR),
-        ("action.3", RED_SQUARE, ICON_REPEAT),
-        ("action.4", BLUE_SQUARE, ICON_UP),
+        ("action.0", "kenney.button.square.blue", "kenney.icon.play"),
+        ("action.1", "kenney.button.square.green", "kenney.check.on"),
+        (
+            "action.2",
+            "kenney.button.square.yellow",
+            "kenney.icon.star",
+        ),
+        ("action.3", "kenney.button.square.red", "kenney.icon.repeat"),
+        ("action.4", "kenney.button.square.blue", "kenney.icon.up"),
     ];
     for (index, (id, bg, icon)) in actions.into_iter().enumerate() {
         let select = state.clone();
-        icon_button(
-            ui,
-            id,
-            x + 34.0 + index as f32 * 100.0,
-            y + 16.0,
-            bg,
-            icon,
-            move || {
+        widgets::skin_icon_button(ui, id)
+            .skin(bg)
+            .icon(ImageRef::key(icon))
+            .position(x + 34.0 + index as f32 * 100.0, y + 16.0)
+            .on_click(move || {
                 select.update(|state| {
                     state.selected_slot = index;
                     state.last_action = match index {
@@ -659,13 +759,13 @@ fn draw_action_bar(ui: &mut Ui, screen_w: f32, screen_h: f32, state: &NeoState<D
                         _ => "Signal ping",
                     };
                 });
-            },
-        );
+            })
+            .build();
         if index == state.read(|state| state.selected_slot) {
             ui.image(format!("{id}.selected"))
                 .position(x + 28.0 + index as f32 * 100.0, y + 10.0)
                 .size(64.0, 64.0)
-                .source(asset(STAR_OUTLINE))
+                .source(ImageRef::key("kenney.icon.star_outline"))
                 .contain()
                 .opacity(0.65)
                 .build();
@@ -676,7 +776,12 @@ fn draw_action_bar(ui: &mut Ui, screen_w: f32, screen_h: f32, state: &NeoState<D
 fn draw_minimap(ui: &mut Ui, screen_w: f32) {
     let x = screen_w - 224.0;
     let y = 332.0;
-    panel(ui, "map.panel", x, y, 196.0, 196.0, c(10, 18, 24, 218));
+    widgets::skin_panel(ui, "map.panel")
+        .skin("kenney.panel.input")
+        .tint(c(10, 18, 24, 218))
+        .position(x, y)
+        .size(196.0, 196.0)
+        .content(|_| {});
     ui.rect("map.inner")
         .position(x + 18.0, y + 18.0)
         .size(160.0, 160.0)
@@ -711,12 +816,17 @@ fn draw_loadout(
     let h = 478.0;
     let x = (screen_w - w) * 0.5;
     let y = (screen_h - h) * 0.5;
-    panel(ui, "loadout.panel", x, y, w, h, c(15, 23, 31, 242));
+    widgets::skin_panel(ui, "loadout.panel")
+        .skin("kenney.panel.input")
+        .tint(c(15, 23, 31, 242))
+        .position(x, y)
+        .size(w, h)
+        .content(|_| {});
     ui.text("loadout.title")
         .position(x + 34.0, y + 28.0)
         .size(360.0, 34.0)
         .text("LOADOUT GRID")
-        .font_source(asset(FONT))
+        .font(FontRef::key("kenney.future"))
         .font_size(27.0)
         .color(c(246, 253, 255, 255))
         .build();
@@ -735,25 +845,22 @@ fn draw_loadout(
             let sy = y + 120.0 + row as f32 * 92.0;
             let slot_state = state.clone();
             let bg = match index % 4 {
-                0 => BLUE_SQUARE,
-                1 => GREEN_SQUARE,
-                2 => YELLOW_SQUARE,
-                _ => RED_SQUARE,
+                0 => "kenney.button.square.blue",
+                1 => "kenney.button.square.green",
+                2 => "kenney.button.square.yellow",
+                _ => "kenney.button.square.red",
             };
-            icon_button(
-                ui,
-                format!("loadout.slot.{index}"),
-                sx,
-                sy,
-                bg,
-                STAR,
-                move || {
+            widgets::skin_icon_button(ui, format!("loadout.slot.{index}"))
+                .skin(bg)
+                .icon(ImageRef::key("kenney.icon.star"))
+                .position(sx, sy)
+                .on_click(move || {
                     slot_state.update(|state| {
                         state.selected_slot = index;
                         state.last_action = "Loadout slot selected";
                     });
-                },
-            );
+                })
+                .build();
             ui.text(format!("loadout.slot.{index}.label"))
                 .position(sx - 8.0, sy + 62.0)
                 .size(72.0, 20.0)
@@ -766,7 +873,7 @@ fn draw_loadout(
                 ui.image(format!("loadout.slot.{index}.ring"))
                     .position(sx - 7.0, sy - 7.0)
                     .size(66.0, 66.0)
-                    .source(asset(STAR_OUTLINE))
+                    .source(ImageRef::key("kenney.icon.star_outline"))
                     .contain()
                     .opacity(0.72)
                     .build();
@@ -774,26 +881,23 @@ fn draw_loadout(
         }
     }
 
-    panel(
-        ui,
-        "loadout.detail",
-        x + 536.0,
-        y + 116.0,
-        162.0,
-        258.0,
-        c(22, 33, 41, 230),
-    );
+    widgets::skin_panel(ui, "loadout.detail")
+        .skin("kenney.panel.input")
+        .tint(c(22, 33, 41, 230))
+        .position(x + 536.0, y + 116.0)
+        .size(162.0, 258.0)
+        .content(|_| {});
     ui.image("loadout.detail.icon")
         .position(x + 584.0, y + 150.0)
         .size(64.0, 64.0)
-        .source(asset(STAR))
+        .source(ImageRef::key("kenney.icon.star"))
         .contain()
         .build();
     ui.text("loadout.detail.name")
         .position(x + 556.0, y + 236.0)
         .size(122.0, 28.0)
         .text(format!("TILE {:02}", snapshot.selected_slot + 1))
-        .font_source(asset(FONT))
+        .font(FontRef::key("kenney.future"))
         .font_size(18.0)
         .color(c(248, 253, 255, 255))
         .horizontal_align(HorizontalAlign::Center)
@@ -810,18 +914,14 @@ fn draw_loadout(
         .build();
 
     let back = state.clone();
-    image_button(
-        ui,
-        "loadout.back",
-        GREEN_BUTTON,
-        "BACK TO HUD",
-        x + w - 190.0,
-        y + h - 72.0,
-        150.0,
-        44.0,
-        14.0,
-        move || back.update(|state| state.page = DemoPage::Hud),
-    );
+    widgets::skin_button(ui, "loadout.back")
+        .skin("kenney.button.green")
+        .text("BACK TO HUD")
+        .position(x + w - 190.0, y + h - 72.0)
+        .size(150.0, 44.0)
+        .font_size(14.0)
+        .on_click(move || back.update(|state| state.page = DemoPage::Hud))
+        .build();
 }
 
 fn draw_settings(
@@ -837,54 +937,54 @@ fn draw_settings(
     let h = 390.0;
     let x = (screen_w - w) * 0.5;
     let y = (screen_h - h) * 0.5;
-    panel(ui, "settings.panel", x, y, w, h, c(15, 23, 31, 242));
+    widgets::skin_panel(ui, "settings.panel")
+        .skin("kenney.panel.input")
+        .tint(c(15, 23, 31, 242))
+        .position(x, y)
+        .size(w, h)
+        .content(|_| {});
     ui.text("settings.title")
         .position(x + 34.0, y + 28.0)
         .size(w - 68.0, 36.0)
         .text("OPTIONS")
-        .font_source(asset(FONT))
+        .font(FontRef::key("kenney.future"))
         .font_size(28.0)
         .color(c(246, 253, 255, 255))
         .horizontal_align(HorizontalAlign::Center)
         .build();
 
     let music = state.clone();
-    check_row(
-        ui,
-        "settings.music",
-        x + 60.0,
-        y + 96.0,
-        "Music",
-        snapshot.music,
-        move || {
+    widgets::skin_checkbox(ui, "settings.music")
+        .skin("kenney.checkbox.default")
+        .position(x + 60.0, y + 96.0)
+        .checked(snapshot.music)
+        .text("Music")
+        .on_change(move |next| {
             music.update(|state| {
-                state.music = !state.music;
+                state.music = next;
                 state.last_action = if state.music {
                     "Music on"
                 } else {
                     "Music muted"
                 };
             });
-        },
-    );
+        })
+        .build();
 
     ui.text("settings.diff.label")
         .position(x + 60.0, y + 166.0)
         .size(150.0, 28.0)
         .text("Difficulty")
-        .font_source(asset(FONT))
+        .font(FontRef::key("kenney.future"))
         .font_size(17.0)
         .color(c(238, 247, 250, 255))
         .build();
     let difficulty = state.clone();
-    widgets::slider(ui, "settings.diff.slider")
-        .size(330.0, 30.0)
+    widgets::skin_slider(ui, "settings.diff")
+        .skin("kenney.slider.blue")
+        .position(x + 58.0, y + 196.0)
+        .size(332.0, 30.0)
         .value(snapshot.difficulty)
-        .style(widgets::SliderStyle {
-            track: c(36, 53, 63, 255),
-            fill: c(83, 170, 244, 255),
-            knob: c(248, 253, 255, 255),
-        })
         .on_change(move |value| {
             difficulty.update(|state| {
                 state.difficulty = value;
@@ -892,269 +992,62 @@ fn draw_settings(
             });
         })
         .build();
-    ui.image("settings.slider.skin")
-        .position(x + 58.0, y + 205.0)
-        .size(332.0, 11.0)
-        .source(asset(
-            "examples/assets/kenney_ui_pack/PNG/Blue/Default/slide_horizontal_color.png",
-        ))
-        .stretch()
-        .opacity(0.65)
-        .build();
 
     let easier = state.clone();
-    icon_button(
-        ui,
-        "settings.down",
-        x + 408.0,
-        y + 157.0,
-        BLUE_SQUARE,
-        ICON_DOWN,
-        move || {
+    widgets::skin_icon_button(ui, "settings.down")
+        .skin("kenney.button.square.blue")
+        .icon(ImageRef::key("kenney.icon.down"))
+        .position(x + 408.0, y + 157.0)
+        .on_click(move || {
             easier.update(|state| {
                 state.difficulty = (state.difficulty - 0.08).max(0.0);
                 state.last_action = "Difficulty down";
             });
-        },
-    );
+        })
+        .build();
     let harder = state.clone();
-    icon_button(
-        ui,
-        "settings.up",
-        x + 458.0,
-        y + 157.0,
-        YELLOW_SQUARE,
-        ICON_UP,
-        move || {
+    widgets::skin_icon_button(ui, "settings.up")
+        .skin("kenney.button.square.yellow")
+        .icon(ImageRef::key("kenney.icon.up"))
+        .position(x + 458.0, y + 157.0)
+        .on_click(move || {
             harder.update(|state| {
                 state.difficulty = (state.difficulty + 0.08).min(1.0);
                 state.last_action = "Difficulty up";
             });
-        },
-    );
+        })
+        .build();
 
-    status_ribbon(
-        ui,
-        "settings.summary",
-        x + 58.0,
-        y + 254.0,
-        w - 116.0,
-        &format!(
+    widgets::skin_status_ribbon(ui, "settings.summary")
+        .skin("kenney.panel.input")
+        .position(x + 58.0, y + 254.0)
+        .size(w - 116.0, 34.0)
+        .text(format!(
             "Difficulty {:>3}% / {}",
             (snapshot.difficulty * 100.0).round() as i32,
             snapshot.last_action
-        ),
-    );
+        ))
+        .font(FontRef::key("kenney.future"))
+        .color(c(62, 76, 84, 255))
+        .build();
     let back = state.clone();
-    image_button(
-        ui,
-        "settings.back",
-        GREEN_BUTTON,
-        "APPLY",
-        x + 140.0,
-        y + 316.0,
-        116.0,
-        44.0,
-        14.0,
-        move || back.update(|state| state.page = DemoPage::Hud),
-    );
-    let title = state.clone();
-    image_button(
-        ui,
-        "settings.menu",
-        GREY_BUTTON,
-        "TITLE",
-        x + 272.0,
-        y + 316.0,
-        108.0,
-        44.0,
-        14.0,
-        move || title.update(|state| state.page = DemoPage::Title),
-    );
-}
-
-fn status_bar(ui: &mut Ui, id: &str, x: f32, y: f32, label: &str, value: f32, fill: Color) {
-    ui.text(format!("{id}.label"))
-        .position(x, y - 22.0)
-        .size(116.0, 20.0)
-        .text(label)
-        .font_source(asset(FONT))
+    widgets::skin_button(ui, "settings.back")
+        .skin("kenney.button.green")
+        .text("APPLY")
+        .position(x + 140.0, y + 316.0)
+        .size(116.0, 44.0)
         .font_size(14.0)
-        .color(c(228, 239, 242, 255))
+        .on_click(move || back.update(|state| state.page = DemoPage::Hud))
         .build();
-    widgets::progress(ui, id)
-        .size(278.0, 18.0)
-        .value(value)
-        .style(widgets::ProgressStyle {
-            track: c(28, 42, 52, 235),
-            fill,
-        })
-        .transition_seconds(0.20, Ease::OutCubic)
+    let title = state.clone();
+    widgets::skin_button(ui, "settings.menu")
+        .skin("kenney.button.grey")
+        .text("TITLE")
+        .position(x + 272.0, y + 316.0)
+        .size(108.0, 44.0)
+        .font_size(14.0)
+        .on_click(move || title.update(|state| state.page = DemoPage::Title))
         .build();
-    ui.text(format!("{id}.value"))
-        .position(x + 286.0, y - 5.0)
-        .size(48.0, 24.0)
-        .text(format!("{:>3}%", (value * 100.0).round() as i32))
-        .font_size(13.0)
-        .color(c(202, 220, 225, 255))
-        .build();
-}
-
-fn image_button<F>(
-    ui: &mut Ui,
-    id: &str,
-    image: &'static str,
-    label: impl Into<String>,
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-    font_size: f32,
-    on_click: F,
-) where
-    F: FnMut() + 'static,
-{
-    let label = label.into();
-    ui.stack(id)
-        .position(x, y)
-        .size(w, h)
-        .visual_state_from(format!("{id}.bg"), 0.96)
-        .content(|ui| {
-            ui.image(format!("{id}.bg"))
-                .fill()
-                .source(asset(image))
-                .stretch()
-                .states(
-                    Color::WHITE,
-                    Color::rgba(1.0, 1.0, 0.90, 1.0),
-                    Color::rgba(0.74, 0.86, 0.92, 1.0),
-                )
-                .transition_seconds(0.09, Ease::OutCubic)
-                .animate(AnimProperty::COLOR | AnimProperty::TRANSFORM)
-                .on_click(on_click)
-                .build();
-            ui.text(format!("{id}.label"))
-                .fill()
-                .text(label)
-                .font_source(asset(FONT))
-                .font_size(font_size)
-                .line_height(font_size + 4.0)
-                .color(c(255, 255, 255, 255))
-                .horizontal_align(HorizontalAlign::Center)
-                .vertical_align(VerticalAlign::Center)
-                .build();
-        });
-}
-
-fn icon_button<F>(
-    ui: &mut Ui,
-    id: impl Into<String>,
-    x: f32,
-    y: f32,
-    bg: &'static str,
-    icon: &'static str,
-    on_click: F,
-) where
-    F: FnMut() + 'static,
-{
-    let id = id.into();
-    ui.stack(id.as_str())
-        .position(x, y)
-        .size(52.0, 52.0)
-        .visual_state_from(format!("{id}.bg"), 0.92)
-        .content(|ui| {
-            ui.image(format!("{id}.bg"))
-                .fill()
-                .source(asset(bg))
-                .stretch()
-                .states(
-                    Color::WHITE,
-                    Color::rgba(1.0, 1.0, 0.90, 1.0),
-                    Color::rgba(0.76, 0.86, 0.96, 1.0),
-                )
-                .transition_seconds(0.08, Ease::OutCubic)
-                .on_click(on_click)
-                .build();
-            ui.image(format!("{id}.icon"))
-                .position(13.0, 13.0)
-                .size(26.0, 26.0)
-                .source(asset(icon))
-                .contain()
-                .build();
-        });
-}
-
-fn check_row<F>(ui: &mut Ui, id: &str, x: f32, y: f32, label: &str, checked: bool, on_click: F)
-where
-    F: FnMut() + 'static,
-{
-    ui.stack(id).position(x, y).size(360.0, 46.0).content(|ui| {
-        ui.image(format!("{id}.box"))
-            .position(0.0, 1.0)
-            .size(42.0, 42.0)
-            .source(asset(if checked { CHECK_ON } else { CHECK_OFF }))
-            .contain()
-            .states(
-                Color::WHITE,
-                Color::rgba(1.0, 1.0, 0.90, 1.0),
-                Color::rgba(0.82, 0.92, 1.0, 1.0),
-            )
-            .on_click(on_click)
-            .build();
-        ui.text(format!("{id}.label"))
-            .position(58.0, 0.0)
-            .size(250.0, 46.0)
-            .text(label)
-            .font_source(asset(FONT))
-            .font_size(18.0)
-            .color(c(238, 247, 250, 255))
-            .vertical_align(VerticalAlign::Center)
-            .build();
-    });
-}
-
-fn panel(ui: &mut Ui, id: &str, x: f32, y: f32, w: f32, h: f32, color: Color) {
-    ui.stack(id).position(x, y).size(w, h).content(|ui| {
-        ui.rect(format!("{id}.shadow"))
-            .position(7.0, 9.0)
-            .size(w, h)
-            .radius(7.0)
-            .color(Color::rgba(0.0, 0.0, 0.0, 0.22))
-            .build();
-        ui.rect(format!("{id}.bg"))
-            .size(w, h)
-            .radius(7.0)
-            .color(color)
-            .border(1.0, c(110, 166, 174, 120))
-            .build();
-        ui.image(format!("{id}.shine"))
-            .position(12.0, 12.0)
-            .size(w - 24.0, 22.0)
-            .source(asset(INPUT_OUTLINE))
-            .stretch()
-            .opacity(0.20)
-            .build();
-    });
-}
-
-fn status_ribbon(ui: &mut Ui, id: &str, x: f32, y: f32, w: f32, label: &str) {
-    ui.stack(id).position(x, y).size(w, 34.0).content(|ui| {
-        ui.image(format!("{id}.bg"))
-            .fill()
-            .source(asset(INPUT))
-            .stretch()
-            .opacity(0.82)
-            .build();
-        ui.text(format!("{id}.text"))
-            .position(12.0, 0.0)
-            .size(w - 24.0, 34.0)
-            .text(label)
-            .font_size(13.0)
-            .color(c(62, 76, 84, 255))
-            .vertical_align(VerticalAlign::Center)
-            .horizontal_align(HorizontalAlign::Center)
-            .build();
-    });
 }
 
 fn modal_scrim(ui: &mut Ui, screen_w: f32, screen_h: f32) {
@@ -1233,6 +1126,7 @@ fn main() {
     world.install(InputPlugin).unwrap();
     world.install(AssetPlugin::default()).unwrap();
     world.install(NeoUiPlugin::default()).unwrap();
+    sky_engine::ui::neo::register_skin(&mut world, kenney_skin());
     world
         .install(RenderPlugin::pipeline(
             RenderPipelineAsset::builder()

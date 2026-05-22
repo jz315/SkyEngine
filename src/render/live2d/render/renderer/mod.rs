@@ -6,6 +6,7 @@ mod prepare;
 mod state;
 
 pub(super) use super::clipping::{ClippingManager, ClippingObjectKind, MASK_RESOLUTION};
+pub(super) use super::coords::ModelToClip;
 pub(super) use super::prepared::{
     PreparedCompositeDraw, PreparedLive2DFrame, PreparedMaskDraw, PreparedMaskPipelineKind,
     PreparedModelDraw, PreparedModelPipelineKind, PreparedPassTarget, PreparedTargetItem,

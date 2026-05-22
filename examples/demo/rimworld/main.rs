@@ -75,7 +75,7 @@ impl AppState for RimworldApp {
     }
 
     fn update(&mut self, ctx: &mut FrameContext<'_>) {
-        let size = ctx.surface_size();
+        let size = ctx.logical_view_size().to_array();
         if let Some(surface) = ctx.world.get_resource_mut::<SurfaceInfo>() {
             surface.size = size;
         }
@@ -132,7 +132,9 @@ fn create_rimworld_assets() -> Assets {
 fn build_world() -> World {
     let mut world = World::new();
     world.insert_resource(MapState::new());
-    world.insert_resource(SurfaceInfo { size: [1280, 720] });
+    world.insert_resource(SurfaceInfo {
+        size: [1280.0, 720.0],
+    });
 
     let mut game = GameState::default();
 

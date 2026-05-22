@@ -1,5 +1,5 @@
-use super::Color;
 use super::fonts::FontRef;
+use super::Color;
 
 use super::Transition;
 
@@ -43,6 +43,7 @@ pub enum ElementKind {
     Polygon,
     Text,
     Image,
+    NineSlice,
 }
 
 /// Main/cross-axis alignment for row, column, and stack layout.
@@ -175,6 +176,14 @@ impl EdgeInsets {
             right: right.max(0.0),
             bottom: bottom.max(0.0),
         }
+    }
+
+    pub fn px4(left: f32, top: f32, right: f32, bottom: f32) -> Self {
+        Self::new(left, top, right, bottom)
+    }
+
+    pub fn xy(horizontal: f32, vertical: f32) -> Self {
+        Self::symmetric(horizontal, vertical)
     }
 
     pub fn horizontal(self) -> f32 {
@@ -380,35 +389,69 @@ pub enum ImageFit {
     Stretch,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum ImageRefKind {
+    #[default]
+    Empty,
+    Key,
+    Path,
+    Url,
+    Asset,
+    BingDaily,
+}
+
 /// Stable image reference emitted by UI widgets and resolved by host renderers.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct ImageRef {
+    kind: ImageRefKind,
     source: String,
     flip_vertically: bool,
 }
 
 impl ImageRef {
-    pub fn new(source: impl Into<String>) -> Self {
+    pub fn new(kind: ImageRefKind, source: impl Into<String>) -> Self {
+        let source = normalize_image_source(source.into());
+        let kind = if source.is_empty() {
+            ImageRefKind::Empty
+        } else {
+            kind
+        };
         Self {
-            source: normalize_image_source(source.into()),
+            kind,
+            source,
             flip_vertically: false,
         }
     }
 
+    pub fn key(key: impl Into<String>) -> Self {
+        Self::new(ImageRefKind::Key, key)
+    }
+
+    pub fn path(path: impl Into<String>) -> Self {
+        Self::new(ImageRefKind::Path, path)
+    }
+
     pub fn uri(uri: impl Into<String>) -> Self {
-        Self::new(uri)
+        Self::url(uri)
+    }
+
+    pub fn url(url: impl Into<String>) -> Self {
+        Self::new(ImageRefKind::Url, url)
     }
 
     pub fn remote(url: impl Into<String>) -> Self {
-        Self::new(url)
+        Self::url(url)
+    }
+
+    pub fn asset(asset: impl Into<String>) -> Self {
+        Self::new(ImageRefKind::Asset, asset)
     }
 
     pub fn bing_daily(idx: i32, mkt: impl AsRef<str>) -> Self {
-        Self::new(format!(
-            "bing://daily?idx={}&mkt={}",
-            idx.max(0),
-            mkt.as_ref()
-        ))
+        Self::new(
+            ImageRefKind::BingDaily,
+            format!("bing://daily?idx={}&mkt={}", idx.max(0), mkt.as_ref()),
+        )
     }
 
     pub fn with_flip_vertically(mut self, value: bool) -> Self {
@@ -424,6 +467,26 @@ impl ImageRef {
         &self.source
     }
 
+    pub fn kind(&self) -> ImageRefKind {
+        self.kind
+    }
+
+    pub fn is_key(&self) -> bool {
+        self.kind == ImageRefKind::Key
+    }
+
+    pub fn is_path(&self) -> bool {
+        self.kind == ImageRefKind::Path
+    }
+
+    pub fn is_url(&self) -> bool {
+        self.kind == ImageRefKind::Url
+    }
+
+    pub fn is_asset(&self) -> bool {
+        self.kind == ImageRefKind::Asset
+    }
+
     pub fn flip_vertically(&self) -> bool {
         self.flip_vertically
     }
@@ -435,18 +498,77 @@ impl ImageRef {
 
 impl From<&str> for ImageRef {
     fn from(value: &str) -> Self {
-        Self::new(value)
+        Self::path(value)
     }
 }
 
 impl From<String> for ImageRef {
     fn from(value: String) -> Self {
-        Self::new(value)
+        Self::path(value)
     }
 }
 
 fn normalize_image_source(source: String) -> String {
     source.trim().to_string()
+}
+
+pub type Insets = EdgeInsets;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Slice {
+    pub left: f32,
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+}
+
+impl Slice {
+    pub const ZERO: Self = Self {
+        left: 0.0,
+        top: 0.0,
+        right: 0.0,
+        bottom: 0.0,
+    };
+
+    pub fn all(value: f32) -> Self {
+        let value = value.max(0.0);
+        Self {
+            left: value,
+            top: value,
+            right: value,
+            bottom: value,
+        }
+    }
+
+    pub fn xy(horizontal: f32, vertical: f32) -> Self {
+        Self {
+            left: horizontal.max(0.0),
+            top: vertical.max(0.0),
+            right: horizontal.max(0.0),
+            bottom: vertical.max(0.0),
+        }
+    }
+
+    pub fn px4(left: f32, top: f32, right: f32, bottom: f32) -> Self {
+        Self {
+            left: left.max(0.0),
+            top: top.max(0.0),
+            right: right.max(0.0),
+            bottom: bottom.max(0.0),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum CenterMode {
+    #[default]
+    Stretch,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum EdgeMode {
+    #[default]
+    Stretch,
 }
 
 /// One node in the declarative neo UI tree.
@@ -499,6 +621,10 @@ pub struct Element {
     pub image: ImageRef,
     pub image_fit: ImageFit,
     pub tint: Color,
+    pub slice: Slice,
+    pub content_inset: Insets,
+    pub center_mode: CenterMode,
+    pub edge_mode: EdgeMode,
 
     pub interactive: bool,
     pub focusable: bool,
@@ -568,6 +694,10 @@ impl Element {
             image: ImageRef::default(),
             image_fit: ImageFit::Cover,
             tint: Color::WHITE,
+            slice: Slice::ZERO,
+            content_inset: Insets::ZERO,
+            center_mode: CenterMode::Stretch,
+            edge_mode: EdgeMode::Stretch,
             interactive: false,
             focusable: false,
             disabled: false,

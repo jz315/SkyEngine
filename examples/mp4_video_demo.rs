@@ -52,7 +52,7 @@ impl AppState for Mp4VideoDemo {
     }
 
     fn update(&mut self, ctx: &mut FrameContext) {
-        let [surface_w, surface_h] = ctx.logical_surface_size();
+        let [surface_w, surface_h] = ctx.logical_view_size().to_array();
         self.camera = Camera::new(surface_w, surface_h);
         let dt = ctx.dt();
 

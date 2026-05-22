@@ -10,6 +10,8 @@
 //! - The manager calculates layout bounds and matrix transforms for
 //!   mapping drawable clip-space coordinates to mask texture UVs.
 
+use super::coords::{ClipToMaskUv, MaskClipToMaskUv, ModelToClip, ModelToMaskClip, ModelToMaskUv};
+use crate::math::{Mat4, Vec3};
 use crate::render::live2d::model::Live2DModel;
 
 /// Mask texture resolution (same as SakuraEngine/Cubism default).
@@ -42,10 +44,12 @@ pub struct ClippingContext {
     /// mask write/read positions are consistent. The base_color NDC conversion
     /// in `renderer.rs` also uses this same convention.
     pub layout_bounds: [f32; 4],
-    /// 4×4 matrix mapping model coords → NDC [-1,1] for mask-pass rasterization.
-    pub mask_matrix: [f32; 16],
-    /// 4×4 matrix mapping model coords → UV [0,1] (Y-flipped) for model-pass mask sampling.
-    pub draw_matrix: [f32; 16],
+    /// Transform mapping model coords → NDC [-1,1] for mask-pass rasterization.
+    pub mask_matrix: ModelToMaskClip,
+    /// Transform mapping model coords → UV [0,1] for drawable mask sampling.
+    pub draw_matrix: ModelToMaskUv,
+    /// Transform mapping clip/NDC coords → UV [0,1] for offscreen composite mask sampling.
+    pub offscreen_draw_matrix: Option<ClipToMaskUv>,
 }
 
 impl ClippingContext {
@@ -55,8 +59,9 @@ impl ClippingContext {
             clipped_object_indices: Vec::new(),
             channel_index: 0,
             layout_bounds: [0.0, 0.0, 1.0, 1.0],
-            mask_matrix: identity_matrix(),
-            draw_matrix: identity_matrix(),
+            mask_matrix: ModelToMaskClip::from_mat4(Mat4::IDENTITY),
+            draw_matrix: ModelToMaskUv::from_mat4(Mat4::IDENTITY),
+            offscreen_draw_matrix: None,
         }
     }
 }
@@ -213,6 +218,26 @@ impl ClippingManager {
     /// The bounding box is computed from **clipped drawables** (the things being
     /// masked, e.g. pupils), not from mask drawables (e.g. eye whites).
     pub fn update_matrices(&mut self, model: &Live2DModel) {
+        self.update_matrices_impl(model, None);
+    }
+
+    /// Update matrices for offscreen composite mask sampling.
+    ///
+    /// Offscreen composites are drawn as a fullscreen quad, so the fragment
+    /// input is clip/NDC space rather than model space. Cubism multiplies the
+    /// draw matrix by `inverse(MVP)` for this path; doing the same here maps
+    /// fullscreen positions back into model coordinates before sampling masks.
+    pub fn update_matrices_for_offscreens(&mut self, model: &Live2DModel, projection: ModelToClip) {
+        debug_assert_eq!(self.kind, ClippingObjectKind::Offscreen);
+        self.update_matrices_impl(model, Some(projection));
+    }
+
+    fn update_matrices_impl(
+        &mut self,
+        model: &Live2DModel,
+        inverse_draw_projection: Option<ModelToClip>,
+    ) {
+        let clip_to_model = inverse_draw_projection.map(ModelToClip::inverse);
         for ctx in &mut self.contexts {
             // Compute bounding box of all CLIPPED drawable vertices
             // (matching SakuraEngine's CalcClippedDrawTotalBounds)
@@ -247,8 +272,10 @@ impl ClippingManager {
             }
 
             if min_x >= max_x || min_y >= max_y {
-                ctx.mask_matrix = identity_matrix();
-                ctx.draw_matrix = identity_matrix();
+                ctx.mask_matrix = ModelToMaskClip::from_mat4(Mat4::IDENTITY);
+                ctx.draw_matrix = ModelToMaskUv::from_mat4(Mat4::IDENTITY);
+                ctx.offscreen_draw_matrix =
+                    clip_to_model.map(|clip_to_model| clip_to_model.then(ctx.draw_matrix));
                 continue;
             }
 
@@ -273,24 +300,13 @@ impl ClippingManager {
             // Transform chain (column-major, mat * vec):
             //   Translate(-1,-1) * Scale(2,2) * Translate(lx,ly) * Scale(sx,sy) * Translate(-min_x,-min_y)
             // Result: positions map to [-1,1] for correct rasterization into the mask texture.
-            ctx.mask_matrix = [
-                2.0 * sx,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                2.0 * sy,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                1.0,
-                0.0,
-                -2.0 * min_x * sx + 2.0 * lx - 1.0,
-                -2.0 * min_y * sy + 2.0 * ly - 1.0,
-                0.0,
-                1.0,
-            ];
+            ctx.mask_matrix = ModelToMaskClip::from_mat4(
+                translate_2d(-1.0, -1.0)
+                    * scale_2d(2.0, 2.0)
+                    * translate_2d(lx, ly)
+                    * scale_2d(sx, sy)
+                    * translate_2d(-min_x, -min_y),
+            );
 
             // ── draw_matrix: model coords → UV [0,1] with Y-flip ───────
             // Compensates for NDC→framebuffer Y inversion:
@@ -298,32 +314,22 @@ impl ClippingManager {
             //   NDC Y=-1 → framebuffer row H → UV v=1
             // So: u = (ndc_x+1)/2,  v = (1-ndc_y)/2
             // Equivalent to: Translate(0.5,0.5) * Scale(0.5,-0.5) * mask_matrix
-            ctx.draw_matrix = [
-                sx,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                -sy,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                1.0,
-                0.0,
-                -min_x * sx + lx,
-                min_y * sy + 1.0 - ly,
-                0.0,
-                1.0,
-            ];
+            let mask_clip_to_uv =
+                MaskClipToMaskUv::from_mat4(translate_2d(0.5, 0.5) * scale_2d(0.5, -0.5));
+            ctx.draw_matrix = ctx.mask_matrix.then(mask_clip_to_uv);
+
+            ctx.offscreen_draw_matrix =
+                clip_to_model.map(|clip_to_model| clip_to_model.then(ctx.draw_matrix));
         }
     }
 }
 
-fn identity_matrix() -> [f32; 16] {
-    [
-        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-    ]
+fn translate_2d(x: f32, y: f32) -> Mat4 {
+    Mat4::from_translation(Vec3::new(x, y, 0.0))
+}
+
+fn scale_2d(x: f32, y: f32) -> Mat4 {
+    Mat4::from_scale(Vec3::new(x, y, 1.0))
 }
 
 fn layout_bounds_for_channel_rect(layout_count: usize, rect_index: usize) -> [f32; 4] {
@@ -382,6 +388,12 @@ mod tests {
         }
     }
 
+    fn assert_xy(actual: [f32; 2], expected: [f32; 2]) {
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert!((actual - expected).abs() < 0.0001);
+        }
+    }
+
     #[test]
     fn five_clip_contexts_match_cubism_channel_packing() {
         let manager = manager_with_context_count(5);
@@ -414,5 +426,26 @@ mod tests {
         assert_bounds(manager.contexts[3].layout_bounds, [0.0, 0.0, 0.5, 1.0]);
         assert_eq!(manager.contexts[4].channel_index, 1);
         assert_bounds(manager.contexts[4].layout_bounds, [0.5, 0.0, 0.5, 1.0]);
+    }
+
+    #[test]
+    fn offscreen_draw_matrix_maps_clip_space_through_inverse_projection() {
+        let draw_matrix = ModelToMaskUv::from_cols_array([
+            0.25, 0.0, 0.0, 0.0, //
+            0.0, -0.5, 0.0, 0.0, //
+            0.0, 0.0, 1.0, 0.0, //
+            0.75, 0.25, 0.0, 1.0,
+        ]);
+        let clip_to_model = ModelToClip::from_cols_array([
+            2.0, 0.0, 0.0, 0.0, //
+            0.0, 4.0, 0.0, 0.0, //
+            0.0, 0.0, 1.0, 0.0, //
+            0.0, 0.0, 0.0, 1.0,
+        ])
+        .inverse();
+
+        let composed = clip_to_model.then(draw_matrix);
+
+        assert_xy(composed.transform_xy(1.0, 1.0), [0.875, 0.125]);
     }
 }

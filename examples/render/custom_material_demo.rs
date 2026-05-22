@@ -244,7 +244,7 @@ impl AppState for CustomMaterialDemo {
 
         let time = self.time;
         let mut query = ctx.world.query::<(&mut Transform, &Spin, &Bob)>();
-        query.for_each(ctx.world, |(transform, spin, bob)| {
+        query.for_each(&mut *ctx.world, |(transform, spin, bob)| {
             transform.rotate_z(spin.speed * ctx.dt);
             transform.position[1] = bob.amplitude * (time + bob.phase).sin();
         });

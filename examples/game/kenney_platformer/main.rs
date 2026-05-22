@@ -490,8 +490,8 @@ impl KenneyPlatformerGame {
         let Some(camera) = self.level.camera else {
             return;
         };
-        let surface = ctx.surface_size();
-        let view_w = ORTHO_HEIGHT * surface[0].max(1) as f32 / surface[1].max(1) as f32;
+        let view_size = ctx.logical_view_size();
+        let view_w = ORTHO_HEIGHT * view_size.width.max(1.0) / view_size.height.max(1.0);
         let player_x = self
             .level
             .player

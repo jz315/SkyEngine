@@ -20,6 +20,7 @@ pub mod progress;
 pub mod radio;
 pub mod scroll;
 pub mod segmented;
+pub mod skin;
 pub mod slider;
 pub mod switch;
 pub mod tabs;
@@ -53,6 +54,12 @@ pub use progress::{progress, ProgressBuilder, ProgressStyle};
 pub use radio::{radio, RadioBuilder, RadioStyle};
 pub use scroll::{scroll, scroll_column, ScrollBuilder, ScrollColumnBuilder, ScrollStyle};
 pub use segmented::{segmented, SegmentedBuilder, SegmentedStyle};
+pub use skin::{
+    skin_button, skin_checkbox, skin_icon_button, skin_panel, skin_slider, skin_status_bar,
+    skin_status_ribbon, ButtonSkinSource, CheckboxSkinSource, PanelSkinSource, SkinButtonBuilder,
+    SkinCheckboxBuilder, SkinIconButtonBuilder, SkinPanelBuilder, SkinSliderBuilder,
+    SkinStatusBarBuilder, SkinStatusRibbonBuilder, SliderSkinSource,
+};
 pub use slider::{slider, SliderBuilder, SliderStyle};
 pub use switch::{switch, toggleSwitch, toggle_switch, SwitchBuilder, SwitchStyle};
 pub use tabs::{tabs, TabsBuilder, TabsStyle};
@@ -69,14 +76,15 @@ mod tests {
     use super::{
         badge, barChart, bodyTextStyle, button, checkbox, colorpicker, contextMenu, context_menu,
         dataTable, datepicker, dialog, dropdown, imageWithStyle, input, lineChart, panelWithStyle,
-        pieChart, progress, radio, scroll, scroll_column, segmented, slider, tabs, timepicker,
-        toast, toggleSwitch,
+        pieChart, progress, radio, scroll, scroll_column, segmented, skin_button, slider, tabs,
+        timepicker, toast, toggleSwitch,
     };
     use crate::expert::UiDrawCommand;
     use crate::Color;
     use crate::{
-        Align, Border, Ease, Gradient, GradientDirection, ImageFit, KeyboardEvent, NeoState,
-        PointerEvent, Runtime, ScrollEvent, Shadow, Size, Transition, Vec2,
+        Align, Border, ButtonSkin, Ease, EdgeInsets, FontRef, Gradient, GradientDirection,
+        ImageFit, ImageRef, KeyboardEvent, NeoSkin, NeoState, PointerEvent, Runtime, ScrollEvent,
+        Shadow, Size, Slice, Transition, Vec2,
     };
     use std::cell::Cell;
     use std::rc::Rc;
@@ -1058,5 +1066,55 @@ mod tests {
         assert_eq!(image.tint.to_array(), style.tint.to_array());
         assert_eq!(image.radius, 7.0);
         assert_eq!(image.opacity, 0.6);
+    }
+
+    #[test]
+    fn skin_button_uses_registered_nine_slice_image_and_font_keys() {
+        let mut runtime = Runtime::new("page");
+        runtime.register_skin(
+            NeoSkin::new("kenney")
+                .image("button.green.normal", ImageRef::path("ui/button_green.png"))
+                .font("future", FontRef::path("ui/Kenney Future.ttf"))
+                .button(
+                    "button.green",
+                    ButtonSkin {
+                        normal: ImageRef::key("kenney.button.green.normal"),
+                        font: FontRef::key("kenney.future"),
+                        slice: Slice::px4(14.0, 12.0, 14.0, 18.0),
+                        content_inset: EdgeInsets::px4(24.0, 8.0, 24.0, 12.0),
+                        ..ButtonSkin::default()
+                    },
+                ),
+        );
+
+        runtime.compose(320.0, 120.0, |ui, _| {
+            skin_button(ui, "play")
+                .skin("kenney.button.green")
+                .text("PLAY")
+                .size(180.0, 56.0)
+                .build();
+        });
+
+        let draw = runtime.draw_list();
+        let nine_slice = draw
+            .commands()
+            .iter()
+            .find_map(|command| match command {
+                UiDrawCommand::NineSlice(draw) => Some(draw),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(nine_slice.image.source(), "ui/button_green.png");
+        assert_eq!(nine_slice.slice.left, 14.0);
+
+        let text = draw
+            .commands()
+            .iter()
+            .find_map(|command| match command {
+                UiDrawCommand::Text(draw) if draw.text == "PLAY" => Some(draw),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(text.font.as_source(), Some("ui/Kenney Future.ttf"));
     }
 }

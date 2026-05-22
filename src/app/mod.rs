@@ -19,6 +19,7 @@ pub mod windows;
 pub(crate) mod egui_integration;
 
 pub use crate::logging::{LogConsole, LogCursor, LogEntry, LogOptions, LogStore};
+pub use crate::math::{LogicalDelta, LogicalPoint, LogicalSize, PhysicalSize};
 pub use config::{RedrawMode, RunnerOptions, WindowOptions, WindowSizeMode};
 #[cfg(feature = "ui-core")]
 pub use frame::UiFrame;

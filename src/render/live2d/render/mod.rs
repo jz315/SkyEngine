@@ -1,4 +1,5 @@
 pub mod clipping;
+pub mod coords;
 mod prepared;
 pub mod renderer;
 

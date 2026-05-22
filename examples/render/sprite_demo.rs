@@ -38,7 +38,7 @@ struct SpriteDemo {
 impl AppState for SpriteDemo {
     fn update(&mut self, ctx: &mut FrameContext) {
         let dt = ctx.dt;
-        let [w, h] = ctx.surface_size();
+        let view_size = ctx.logical_view_size();
 
         let mut query = ctx.world.query::<(
             &mut Transform,
@@ -47,28 +47,31 @@ impl AppState for SpriteDemo {
             &Spin,
             &mut Hue,
         )>();
-        query.for_each(ctx.world, |(transform, sprite, velocity, spin, hue)| {
-            transform.position[0] += velocity.x * dt;
-            transform.position[1] += velocity.y * dt;
-            transform.rotate_z(spin.0 * dt);
-            hue.0 = (hue.0 + 20.0 * dt) % 360.0;
-            sprite.color = Color::hsl(hue.0, 0.8, 0.6);
+        query.for_each(
+            &mut *ctx.world,
+            |(transform, sprite, velocity, spin, hue)| {
+                transform.position[0] += velocity.x * dt;
+                transform.position[1] += velocity.y * dt;
+                transform.rotate_z(spin.0 * dt);
+                hue.0 = (hue.0 + 20.0 * dt) % 360.0;
+                sprite.color = Color::hsl(hue.0, 0.8, 0.6);
 
-            let hw = w as f32 * 0.5 + sprite.width;
-            let hh = h as f32 * 0.5 + sprite.height;
-            if transform.position[0] > hw {
-                transform.position[0] = -hw;
-            }
-            if transform.position[0] < -hw {
-                transform.position[0] = hw;
-            }
-            if transform.position[1] > hh {
-                transform.position[1] = -hh;
-            }
-            if transform.position[1] < -hh {
-                transform.position[1] = hh;
-            }
-        });
+                let hw = view_size.width * 0.5 + sprite.width;
+                let hh = view_size.height * 0.5 + sprite.height;
+                if transform.position[0] > hw {
+                    transform.position[0] = -hw;
+                }
+                if transform.position[0] < -hw {
+                    transform.position[0] = hw;
+                }
+                if transform.position[1] > hh {
+                    transform.position[1] = -hh;
+                }
+                if transform.position[1] < -hh {
+                    transform.position[1] = hh;
+                }
+            },
+        );
 
         ctx.render();
 

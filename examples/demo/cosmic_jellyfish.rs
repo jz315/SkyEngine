@@ -12,6 +12,7 @@
 use sky_engine::app::{App, AssetPlugin, InputPlugin, WindowPlugin};
 use sky_engine::ecs::World;
 use sky_engine::gpu::GpuContext;
+use sky_engine::math::LogicalPoint;
 use sky_engine::render::expert::{
     Bloom, CompositePass, Light2D, LightPass, RenderGraph, SpriteBatch, TargetSize, ToneMap,
     Vignette,
@@ -251,7 +252,7 @@ fn main() {
         }
 
         // Handle resize
-        let size = ctx.surface_size();
+        let size = ctx.physical_surface_size().to_array();
         if size != last_size && last_size != [0, 0] {
             graph.destroy_physical_resources();
             if let Some(rs) = render_state.as_mut() {
@@ -260,18 +261,19 @@ fn main() {
         }
         last_size = size;
 
-        let [w, h] = size;
-        let mouse = ctx.input.mouse_position();
-        let aspect = w as f32 / h as f32;
+        let logical_size = ctx.logical_view_size();
+        let mouse = ctx.input.mouse_logical_position();
+        let aspect = logical_size.width / logical_size.height.max(1.0);
         let camera_h = 1080.0;
         let camera_w = camera_h * aspect;
 
         let mouse_world = {
             let rs = render_state.as_mut().unwrap();
             rs.camera.set_viewport(camera_w, camera_h);
-            let scaled_mouse_x = (mouse[0] / w as f32) * camera_w;
-            let scaled_mouse_y = (mouse[1] / h as f32) * camera_h;
-            rs.camera.screen_to_world(scaled_mouse_x, scaled_mouse_y)
+            let scaled_mouse_x = (mouse.x / logical_size.width.max(1.0)) * camera_w;
+            let scaled_mouse_y = (mouse.y / logical_size.height.max(1.0)) * camera_h;
+            rs.camera
+                .screen_to_world_logical(LogicalPoint::new(scaled_mouse_x, scaled_mouse_y))
         };
 
         // ── ECS: simulate jellyfish ─────────────────────────────────
@@ -281,7 +283,7 @@ fn main() {
             let mut q = ctx
                 .world
                 .query::<(&mut Position, &mut Drift, &mut JellyfishData)>();
-            q.for_each(ctx.world, |(pos, drift, jelly)| {
+            q.for_each(&mut *ctx.world, |(pos, drift, jelly)| {
                 drift.wobble_phase += drift.wobble_freq * dt;
                 jelly.pulse_phase += jelly.pulse_speed * dt;
                 jelly.hue = (jelly.hue + jelly.hue_drift * dt) % 360.0;
@@ -325,7 +327,7 @@ fn main() {
         let mut visuals = Vec::with_capacity(NUM_JELLYFISH);
         {
             let mut q = ctx.world.query::<(&Position, &Drift, &JellyfishData)>();
-            q.for_each(ctx.world, |(pos, drift, jelly)| {
+            q.for_each(&mut *ctx.world, |(pos, drift, jelly)| {
                 let pulse = 0.85 + 0.2 * jelly.pulse_phase.sin();
                 visuals.push(JellyVisual {
                     x: pos.x,

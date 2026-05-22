@@ -164,6 +164,15 @@ struct LookTargetPoint {
     user_time_seconds: f32,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Live2DLookDebugState {
+    pub target: [f32; 2],
+    pub current: [f32; 2],
+    pub velocity: [f32; 2],
+    pub user_time_seconds: f32,
+    pub last_time_seconds: f32,
+}
+
 impl LookTargetPoint {
     fn set(&mut self, x: f32, y: f32) {
         self.face_target_x = x;
@@ -230,6 +239,16 @@ impl LookTargetPoint {
     fn y(self) -> f32 {
         self.face_y
     }
+
+    fn debug_state(self) -> Live2DLookDebugState {
+        Live2DLookDebugState {
+            target: [self.face_target_x, self.face_target_y],
+            current: [self.face_x, self.face_y],
+            velocity: [self.face_vx, self.face_vy],
+            user_time_seconds: self.user_time_seconds,
+            last_time_seconds: self.last_time_seconds,
+        }
+    }
 }
 
 /// Lightweight drag/look runtime matching CubismTargetPoint + Full Demo mapping.
@@ -272,6 +291,10 @@ impl Live2DLook {
 
     pub fn set_target(&mut self, x: f32, y: f32) {
         self.target_point.set(x, y);
+    }
+
+    pub fn debug_state(&self) -> Live2DLookDebugState {
+        self.target_point.debug_state()
     }
 
     pub(crate) fn reset_state(&mut self) {

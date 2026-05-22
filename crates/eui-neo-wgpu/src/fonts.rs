@@ -43,7 +43,11 @@ pub(crate) fn register_font_bytes(
         FontRef::DefaultIcon => {
             *default_icon_family = Some(family.clone());
         }
-        FontRef::Family(_) | FontRef::Source(_) => {}
+        FontRef::Family(_)
+        | FontRef::Key(_)
+        | FontRef::Path(_)
+        | FontRef::Url(_)
+        | FontRef::Asset(_) => {}
     }
     fonts.insert(font.clone(), RegisteredFont { family });
     true
@@ -59,7 +63,11 @@ pub(crate) fn clear_registered_font(
     match font {
         FontRef::DefaultText => *default_text_family = None,
         FontRef::DefaultIcon => *default_icon_family = None,
-        FontRef::Family(_) | FontRef::Source(_) => {}
+        FontRef::Family(_)
+        | FontRef::Key(_)
+        | FontRef::Path(_)
+        | FontRef::Url(_)
+        | FontRef::Asset(_) => {}
     }
 }
 
@@ -81,7 +89,7 @@ pub(crate) fn resolve_family<'a>(
                 Family::Name(value)
             }
         }
-        FontRef::Source(_) => registered
+        FontRef::Key(_) | FontRef::Path(_) | FontRef::Url(_) | FontRef::Asset(_) => registered
             .get(font)
             .map(|font| Family::Name(font.family.as_str()))
             .unwrap_or(Family::SansSerif),

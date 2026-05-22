@@ -11,6 +11,8 @@
 
 ## Canonical API Surface
 - **ECS** entry points: `sky_engine::ecs` - `World`, `EntityId`, `Bundle`, `PreparedQuery`, `Commands`, `With`, `Without`, `System`, `Time`.
+- **Dynamic ECS** entry points: `sky_engine::ecs::dynamic` - runtime-typed bundles and queries for tools, scripting, and reflection-driven workflows.
+- **Expert ECS** entry points: `sky_engine::ecs::expert` - low-level archetype, component metadata, and unsafe uninitialized spawn helpers for engine internals and benchmarks.
 - **Render** entry points: `sky_engine::render` - `RenderRuntime`, `RenderPipelineAsset`, `RenderPipelineBuilder`, `RenderFeature`, `RenderPhase`, `SpriteFeature`, `TilemapFeature`, `SceneRenderer`, `Camera`, `Color`, `Texture`.
 - **Expert render** entry points: `sky_engine::render::expert` - `FramePipeline`, `RenderGraph`, `DrawFunction`, `OpaquePhase`, `TransparentPhase`, passes, post-fx, targets, and lower-level GPU composition primitives.
 - **GPU** entry points: `sky_engine::gpu` - `GpuContext` (wraps wgpu device/queue/surface).
@@ -22,11 +24,11 @@
 - **Scene/VN/audio/video** entry points are feature-gated under `sky_engine::scene`, `sky_engine::vn`, `sky_engine::audio`, and `sky_engine::video`.
 - Preferred entity construction is bundle-based: `world.spawn((A, B, ...))` and `world.spawn_batch(...)`.
 - Preferred query construction is typed: `world.query::<Q>()` or `world.query_filtered::<Q, Flt>()`.
-- Low-level compatibility/benchmark helpers live under `sky_engine::ecs::raw`.
+- There is no `sky_engine::ecs::raw` compatibility layer. Use typed ECS APIs first, `ecs::dynamic` for safe runtime-typed access, and `ecs::expert` for explicit low-level internals.
 
 ## Repo Map
 - `src/lib.rs`: crate root, global allocator setup, public module exports and feature gates.
-- `src/ecs/`: archetype/chunk ECS, typed queries, bundles, resources, commands, and schedule execution.
+- `src/ecs/`: archetype/chunk ECS, typed queries, dynamic queries, expert internals, bundles, resources, commands, and schedule execution.
 - `src/reflect/`: runtime type registry, layout metadata, and type-erased drop support.
 - `src/math/`: engine-facing math re-exports/types, currently backed by `glam`.
 - `src/action_queue.rs`: lightweight action queue utility.
@@ -63,8 +65,9 @@
 - Compile-time archetype filters are supported via `With<T>`, `Without<T>`, and tuples of filters.
 - Query tuple support in `QuerySpec` currently goes up to 8 parameters.
 - Duplicate component types in a single query are rejected intentionally for both typed and dynamic queries.
-- Dynamic `Query { types: Vec<Type> }` + `QueryIter` still exists for compatibility/tooling, but it is not the primary optimization target.
-- `ecs::raw::PreparedQuery` is a low-level/bench-facing export, not the preferred app-facing entry point.
+- Runtime-typed ECS access is through `ecs::dynamic::DynamicQuery` and `ecs::dynamic::DynamicBundle`.
+- `ecs::dynamic` performs runtime access validation and should stay separate from the typed query hot path.
+- `ecs::expert` is the only public low-level ECS surface for archetype metadata and unsafe uninitialized entity construction.
 
 ## World and Structural Model
 - `World` owns entities, archetype-backed data, resources, and the optional system schedule.
@@ -155,10 +158,11 @@
 
 ## Implementation Guidelines
 - Prefer bundle-based `spawn` / `spawn_batch` for normal runtime code.
-- Prefer typed queries over dynamic/raw-pointer iteration for application and system code.
+- Prefer typed queries over dynamic runtime-typed iteration for application and system code.
 - Prefer `for_each_chunk` when a loop is genuinely hot and chunk-slice code helps vectorization or batching.
-- Use `create_archetype().add_rust_component::<T>()` only when low-level archetype construction is actually needed.
-- Keep dynamic query support and `ecs::raw` exports working, but do not optimize them at the expense of typed query codegen.
+- Use `ecs::expert::create_archetype().add_rust_component::<T>()` only when low-level archetype construction is actually needed.
+- Keep `ecs::dynamic` working for tools and reflection-driven code, but do not optimize it at the expense of typed query codegen.
+- Do not reintroduce `ecs::raw` compatibility exports or pointer-based public query iteration.
 - If query caching changes, preserve the epoch-based invalidation model in `World`.
 - If structural transition logic changes, preserve generational entity validity.
 - If structural transition logic changes, preserve moved-entity location updates.

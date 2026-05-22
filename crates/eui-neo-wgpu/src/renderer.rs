@@ -5,7 +5,8 @@ use crate::{
     ScreenUniform,
 };
 use eui_neo::expert::{
-    UiDrawCommand, UiDrawList, UiImageDraw, UiPolygonDraw, UiRectDraw, UiTextDraw,
+    UiDrawCommand, UiDrawList, UiImageDraw, UiNineSliceDraw, UiPolygonDraw, UiRectDraw,
+    UiTextDraw,
 };
 use eui_neo::{
     Color, FontRef, Frame, GradientDirection, HorizontalAlign, ImageFit, ImageRef, LayoutRect,
@@ -483,18 +484,20 @@ impl WgpuRenderer {
     ) -> bool {
         let mut pending = false;
         for command in draw_list.commands() {
-            let UiDrawCommand::Image(draw) = command else {
-                continue;
+            let key = match command {
+                UiDrawCommand::Image(draw) => &draw.image,
+                UiDrawCommand::NineSlice(draw) => &draw.image,
+                _ => continue,
             };
-            if draw.image.is_empty() {
+            if key.is_empty() {
                 continue;
             }
-            match resources.image(&draw.image) {
+            match resources.image(key) {
                 ImageState::Gpu(image) => {
-                    self.cache_gpu_image(device, &draw.image, image);
+                    self.cache_gpu_image(device, key, image);
                 }
                 ImageState::Pixels(pixels) => {
-                    self.cache_pixel_image(device, queue, &draw.image, pixels);
+                    self.cache_pixel_image(device, queue, key, pixels);
                 }
                 ImageState::Pending => {
                     pending = true;
@@ -1331,6 +1334,19 @@ fn collect_draw_items(
                     render_ops.push(RenderOp::Primitive(primitive_ops.len() - 1));
                 }
             }
+            UiDrawCommand::NineSlice(draw) => {
+                if push_nine_slice(
+                    image_vertices,
+                    primitive_ops,
+                    image_items,
+                    draw,
+                    clip,
+                    image_sizes,
+                    surface_is_srgb,
+                ) {
+                    render_ops.push(RenderOp::Primitive(primitive_ops.len() - 1));
+                }
+            }
         }
     }
 }
@@ -1660,6 +1676,155 @@ fn push_image(
         backdrop_blur: 0.0,
     });
     true
+}
+
+fn push_nine_slice(
+    vertices: &mut Vec<NeoImageVertex>,
+    ops: &mut Vec<PrimitiveOp>,
+    images: &mut Vec<ImageItem>,
+    draw: &UiNineSliceDraw,
+    clip: LayoutRect,
+    image_sizes: &FxHashMap<ImageRef, PreparedImageInfo>,
+    surface_is_srgb: bool,
+) -> bool {
+    if draw.image.is_empty()
+        || draw.frame.width <= 0.0
+        || draw.frame.height <= 0.0
+        || draw.opacity <= 0.0
+        || draw.tint.a <= 0.0
+        || clip.width <= 0.0
+        || clip.height <= 0.0
+    {
+        return false;
+    }
+
+    let Some(image_info) = image_sizes.get(&draw.image).copied() else {
+        return false;
+    };
+    if image_info.size[0] == 0 || image_info.size[1] == 0 {
+        return false;
+    }
+
+    let source_w = image_info.size[0] as f32;
+    let source_h = image_info.size[1] as f32;
+    let left_src = draw.slice.left.min(source_w).max(0.0);
+    let right_src = draw.slice.right.min((source_w - left_src).max(0.0)).max(0.0);
+    let top_src = draw.slice.top.min(source_h).max(0.0);
+    let bottom_src = draw
+        .slice
+        .bottom
+        .min((source_h - top_src).max(0.0))
+        .max(0.0);
+
+    let left_dst = left_src.min(draw.frame.width * 0.5);
+    let right_dst = right_src.min((draw.frame.width - left_dst).max(0.0));
+    let top_dst = top_src.min(draw.frame.height * 0.5);
+    let bottom_dst = bottom_src.min((draw.frame.height - top_dst).max(0.0));
+
+    let x = [
+        draw.frame.x,
+        draw.frame.x + left_dst,
+        draw.frame.right() - right_dst,
+        draw.frame.right(),
+    ];
+    let y = [
+        draw.frame.y,
+        draw.frame.y + top_dst,
+        draw.frame.bottom() - bottom_dst,
+        draw.frame.bottom(),
+    ];
+    let u = [
+        0.0,
+        left_src / source_w,
+        (source_w - right_src) / source_w,
+        1.0,
+    ];
+    let v = [
+        0.0,
+        top_src / source_h,
+        (source_h - bottom_src) / source_h,
+        1.0,
+    ];
+
+    let start = vertices.len() as u32;
+    let image_index = images.len();
+    let rect = [
+        draw.frame.x,
+        draw.frame.y,
+        draw.frame.width,
+        draw.frame.height,
+    ];
+    let mut tint = draw.tint;
+    tint.a *= draw.opacity.clamp(0.0, 1.0);
+    let tint = output_color(tint, surface_is_srgb).to_array();
+    let params = [0.0, draw.opacity.clamp(0.0, 1.0), 0.0, 0.0];
+
+    for row in 0..3 {
+        for column in 0..3 {
+            let quad = LayoutRect::new(x[column], y[row], x[column + 1] - x[column], y[row + 1] - y[row]);
+            if quad.width <= 0.0 || quad.height <= 0.0 {
+                continue;
+            }
+            let uv_rect = remap_uv_rect(
+                [u[column], v[row], u[column + 1], v[row + 1]],
+                image_info.uv_rect,
+            );
+            push_image_quad_vertices(vertices, draw.frame, draw.transform, quad, rect, uv_rect, tint, params);
+        }
+    }
+
+    let count = vertices.len() as u32 - start;
+    if count == 0 {
+        return false;
+    }
+    images.push(ImageItem {
+        image: draw.image.clone(),
+    });
+    ops.push(PrimitiveOp {
+        kind: PrimitiveKind::Image { image_index },
+        start,
+        count,
+        clip,
+        backdrop_frame: LayoutRect::ZERO,
+        backdrop_blur: 0.0,
+    });
+    true
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_image_quad_vertices(
+    vertices: &mut Vec<NeoImageVertex>,
+    frame: LayoutRect,
+    transform: Transform,
+    quad: LayoutRect,
+    rect: [f32; 4],
+    uv_rect: [f32; 4],
+    tint: [f32; 4],
+    params: [f32; 4],
+) {
+    let x0 = quad.x;
+    let y0 = quad.y;
+    let x1 = quad.right();
+    let y1 = quad.bottom();
+    let [u0, v0, u1, v1] = uv_rect;
+    let points = [
+        ([x0, y0], [u0, v0]),
+        ([x1, y0], [u1, v0]),
+        ([x1, y1], [u1, v1]),
+        ([x0, y0], [u0, v0]),
+        ([x1, y1], [u1, v1]),
+        ([x0, y1], [u0, v1]),
+    ];
+    for (local, uv) in points {
+        vertices.push(NeoImageVertex {
+            position: transform_point(local, frame, transform),
+            local_pos: local,
+            rect,
+            uv,
+            tint,
+            params,
+        });
+    }
 }
 
 fn remap_uv_rect(local: [f32; 4], visible: [f32; 4]) -> [f32; 4] {

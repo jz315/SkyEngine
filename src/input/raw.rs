@@ -4,6 +4,8 @@
 //! per-frame updates. The runner keeps a live input snapshot and copies it
 //! into the world resource with a plain struct assignment each frame.
 
+use crate::math::{LogicalDelta, LogicalPoint};
+
 /// Total number of key codes (must cover all `KeyCode` variants).
 const KEY_COUNT: usize = 82;
 
@@ -152,10 +154,10 @@ impl Input {
         idx < KEY_COUNT && self.keys_released[idx]
     }
 
-    /// Current mouse position in logical pixels.
+    /// Current mouse position in logical pixels, as a typed coordinate.
     #[inline]
-    pub fn mouse_position(&self) -> [f32; 2] {
-        self.mouse_position
+    pub fn mouse_logical_position(&self) -> LogicalPoint {
+        LogicalPoint::from_array(self.mouse_position)
     }
 
     /// Is the cursor currently inside the window client area?
@@ -164,13 +166,13 @@ impl Input {
         self.cursor_in_window
     }
 
-    /// Mouse movement delta since last frame.
+    /// Mouse movement delta since last frame, in logical pixels.
     #[inline]
-    pub fn mouse_delta(&self) -> [f32; 2] {
-        [
+    pub fn mouse_logical_delta(&self) -> LogicalDelta {
+        LogicalDelta::from_array([
             self.mouse_position[0] - self.mouse_position_prev[0],
             self.mouse_position[1] - self.mouse_position_prev[1],
-        ]
+        ])
     }
 
     /// Scroll wheel delta this frame `[horizontal, vertical]`.
@@ -587,7 +589,7 @@ mod tests {
         let mut input = Input::new();
         input.set_mouse_position_suppressed(32.0, 48.0);
 
-        assert_eq!(input.mouse_position(), [32.0, 48.0]);
+        assert_eq!(input.mouse_logical_position().to_array(), [32.0, 48.0]);
         assert!(!input.mouse_in_window());
     }
 
