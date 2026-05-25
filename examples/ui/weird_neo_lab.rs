@@ -288,7 +288,7 @@ fn draw_lab(
 ) {
     let pulse = time.sin() * 0.5 + 0.5;
     let scan = (time * (0.18 + state.chaos * 0.9)).fract();
-    let motion = Transition::make(0.24, Ease::OutCubic);
+    let motion = Transition::ease(0.24, Ease::OutCubic);
 
     ui.stack("root")
         .size(screen_width, screen_height)
@@ -1148,7 +1148,7 @@ fn meter_row(ui: &mut Ui, id: &str, label: &str, value: f32, color: Color) {
                     .size(250.0 * value, 14.0)
                     .color(color)
                     .radius(999.0)
-                    .transition(Transition::make(0.18, Ease::OutCubic))
+                    .transition(Transition::ease(0.18, Ease::OutCubic))
                     .animate(AnimProperty::FRAME | AnimProperty::COLOR)
                     .build();
             });

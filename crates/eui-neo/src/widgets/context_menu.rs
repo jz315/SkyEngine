@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use crate::Color;
 
-use super::super::{AnimProperty, Binding, Ease, Response, Shadow, Transition, Ui};
+use super::super::{AnimProperty, Binding, Response, Shadow, Transition, Ui};
 use super::theme::{self, ThemeColorTokens};
 
 type SelectCallback = Rc<RefCell<Box<dyn FnMut(i32)>>>;
@@ -73,7 +73,7 @@ impl<'ui> ContextMenuBuilder<'ui> {
             id: id.into(),
             items: Vec::new(),
             style: ContextMenuStyle::default(),
-            transition: Transition::make(0.12, Ease::OutCubic),
+            transition: Transition::responsive(),
             on_select: None,
             on_dismiss: None,
             open: false,
@@ -138,11 +138,6 @@ impl<'ui> ContextMenuBuilder<'ui> {
         self
     }
 
-    pub fn transition_seconds(mut self, duration: f32, ease: Ease) -> Self {
-        self.transition = Transition::make(duration, ease);
-        self
-    }
-
     pub fn z_index(mut self, value: i32) -> Self {
         self.z_index = value;
         self
@@ -166,32 +161,6 @@ impl<'ui> ContextMenuBuilder<'ui> {
     {
         self.on_dismiss = Some(Rc::new(RefCell::new(Box::new(callback))));
         self
-    }
-
-    pub fn transitionSeconds(self, duration: f32, ease: Ease) -> Self {
-        self.transition_seconds(duration, ease)
-    }
-
-    pub fn openBind<T: 'static>(self, binding: Binding<T, bool>) -> Self {
-        self.open_bind(binding)
-    }
-
-    pub fn zIndex(self, value: i32) -> Self {
-        self.z_index(value)
-    }
-
-    pub fn onSelect<F>(self, callback: F) -> Self
-    where
-        F: FnMut(i32) + 'static,
-    {
-        self.on_select(callback)
-    }
-
-    pub fn onDismiss<F>(self, callback: F) -> Self
-    where
-        F: FnMut() + 'static,
-    {
-        self.on_dismiss(callback)
     }
 
     pub fn build(self) -> Response {
@@ -309,14 +278,6 @@ impl<'ui> ContextMenuBuilder<'ui> {
 
 pub fn context_menu(ui: &mut Ui, id: impl Into<String>) -> ContextMenuBuilder<'_> {
     ContextMenuBuilder::new(ui, id)
-}
-
-pub fn contextMenu(ui: &mut Ui, id: impl Into<String>) -> ContextMenuBuilder<'_> {
-    context_menu(ui, id)
-}
-
-pub fn contextmenu(ui: &mut Ui, id: impl Into<String>) -> ContextMenuBuilder<'_> {
-    context_menu(ui, id)
 }
 
 fn call_dismiss(callback: &Option<DismissCallback>) {

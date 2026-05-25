@@ -6,8 +6,8 @@ use std::rc::Rc;
 use crate::Color;
 
 use super::super::{
-    Align, AnimProperty, Binding, CursorShape, DragEvent, Ease, EdgeInsets, Response, Size,
-    Transition, Ui,
+    Align, AnimProperty, Binding, CursorShape, DragEvent, EdgeInsets, Response, Size, Transition,
+    Ui,
 };
 use super::layout::WidgetLayout;
 use super::theme::{self, ThemeColorTokens};
@@ -66,7 +66,7 @@ impl<'ui> ScrollbarBuilder<'ui> {
             ui,
             id: id.into(),
             style: ScrollbarStyle::default(),
-            transition: Transition::make(0.12, Ease::OutCubic),
+            transition: Transition::responsive(),
             on_change: None,
             width: 8.0,
             height: 180.0,
@@ -173,11 +173,6 @@ impl<'ui> ScrollbarBuilder<'ui> {
         self
     }
 
-    pub fn transition_seconds(mut self, duration: f32, ease: Ease) -> Self {
-        self.transition = Transition::make(duration, ease);
-        self
-    }
-
     pub fn on_change<F>(mut self, callback: F) -> Self
     where
         F: FnMut(f32) + 'static,
@@ -192,37 +187,6 @@ impl<'ui> ScrollbarBuilder<'ui> {
             next
         });
         self
-    }
-
-    pub fn viewportHeight(self, value: f32) -> Self {
-        self.viewport_height(value)
-    }
-
-    pub fn offsetBind<T: 'static>(self, binding: Binding<T, f32>) -> Self {
-        self.offset_bind(binding)
-    }
-
-    pub fn valueBind<T: 'static>(self, binding: Binding<T, f32>) -> Self {
-        self.value_bind(binding)
-    }
-
-    pub fn contentHeight(self, value: f32) -> Self {
-        self.content_height(value)
-    }
-
-    pub fn zIndex(self, value: i32) -> Self {
-        self.z_index(value)
-    }
-
-    pub fn transitionSeconds(self, duration: f32, ease: Ease) -> Self {
-        self.transition_seconds(duration, ease)
-    }
-
-    pub fn onChange<F>(self, callback: F) -> Self
-    where
-        F: FnMut(f32) + 'static,
-    {
-        self.on_change(callback)
     }
 
     pub fn build(self) -> Response {
@@ -421,10 +385,6 @@ impl<'ui> ScrollColumnBuilder<'ui> {
         self
     }
 
-    pub fn contentHeight(self, value: f32) -> Self {
-        self.content_height(value)
-    }
-
     pub fn offset(mut self, value: f32) -> Self {
         self.offset = value.max(0.0);
         self
@@ -435,20 +395,12 @@ impl<'ui> ScrollColumnBuilder<'ui> {
         self.offset(value).on_change(move |next| binding.set(next))
     }
 
-    pub fn offsetBind<T: 'static>(self, binding: Binding<T, f32>) -> Self {
-        self.offset_bind(binding)
-    }
-
     pub fn value(self, value: f32) -> Self {
         self.offset(value)
     }
 
     pub fn value_bind<T: 'static>(self, binding: Binding<T, f32>) -> Self {
         self.offset_bind(binding)
-    }
-
-    pub fn valueBind<T: 'static>(self, binding: Binding<T, f32>) -> Self {
-        self.value_bind(binding)
     }
 
     pub fn step(mut self, value: f32) -> Self {
@@ -461,17 +413,9 @@ impl<'ui> ScrollColumnBuilder<'ui> {
         self
     }
 
-    pub fn scrollbarWidth(self, value: f32) -> Self {
-        self.scrollbar_width(value)
-    }
-
     pub fn scrollbar_gap(mut self, value: f32) -> Self {
         self.scrollbar_gap = value.max(0.0);
         self
-    }
-
-    pub fn scrollbarGap(self, value: f32) -> Self {
-        self.scrollbar_gap(value)
     }
 
     pub fn style(mut self, value: ScrollbarStyle) -> Self {
@@ -498,13 +442,6 @@ impl<'ui> ScrollColumnBuilder<'ui> {
             next
         });
         self
-    }
-
-    pub fn onChange<F>(self, callback: F) -> Self
-    where
-        F: FnMut(f32) + 'static,
-    {
-        self.on_change(callback)
     }
 
     pub fn content(self, content: impl FnOnce(&mut Ui)) -> Response {

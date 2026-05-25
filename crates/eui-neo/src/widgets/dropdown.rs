@@ -6,7 +6,7 @@ use std::rc::Rc;
 use crate::Color;
 
 use super::super::{
-    AnimProperty, Binding, Ease, HorizontalAlign, Response, Shadow, Transition, Ui, VerticalAlign,
+    AnimProperty, Binding, HorizontalAlign, Response, Shadow, Transition, Ui, VerticalAlign,
 };
 use super::theme::{self, ThemeColorTokens};
 
@@ -84,7 +84,7 @@ impl<'ui> DropdownBuilder<'ui> {
             id: id.into(),
             items: Vec::new(),
             style: DropdownStyle::default(),
-            transition: Transition::make(0.16, Ease::OutCubic),
+            transition: Transition::smooth(),
             on_change: None,
             on_open_change: None,
             placeholder: "Select".to_string(),
@@ -159,11 +159,6 @@ impl<'ui> DropdownBuilder<'ui> {
         self
     }
 
-    pub fn transition_seconds(mut self, duration: f32, ease: Ease) -> Self {
-        self.transition = Transition::make(duration, ease);
-        self
-    }
-
     pub fn z_index(mut self, value: i32) -> Self {
         self.z_index = value;
         self
@@ -203,40 +198,6 @@ impl<'ui> DropdownBuilder<'ui> {
             next
         });
         self
-    }
-
-    pub fn itemHeight(self, value: f32) -> Self {
-        self.item_height(value)
-    }
-
-    pub fn selectedBind<T: 'static>(self, binding: Binding<T, i32>) -> Self {
-        self.selected_bind(binding)
-    }
-
-    pub fn openBind<T: 'static>(self, binding: Binding<T, bool>) -> Self {
-        self.open_bind(binding)
-    }
-
-    pub fn transitionSeconds(self, duration: f32, ease: Ease) -> Self {
-        self.transition_seconds(duration, ease)
-    }
-
-    pub fn zIndex(self, value: i32) -> Self {
-        self.z_index(value)
-    }
-
-    pub fn onChange<F>(self, callback: F) -> Self
-    where
-        F: FnMut(i32) + 'static,
-    {
-        self.on_change(callback)
-    }
-
-    pub fn onOpenChange<F>(self, callback: F) -> Self
-    where
-        F: FnMut(bool) + 'static,
-    {
-        self.on_open_change(callback)
     }
 
     pub fn build(self) -> Response {

@@ -4,8 +4,8 @@ use super::DragEvent;
 use super::{
     Align, AnimProperty, Border, CenterMode, CursorShape, EdgeInsets, EdgeMode, Element, FontRef,
     Gradient, GradientDirection, HorizontalAlign, ImageFit, ImageRef, Insets, IntoPolygonPoints,
-    KeyboardEvent, LayoutRect, PointerEvent, ScrollEvent, Shadow, Size, Slice, Transform,
-    Transition, Ui, VerticalAlign,
+    KeyboardEvent, LayoutRect, MotionPreset, PointerEvent, ScrollEvent, Shadow, Size, Slice,
+    Transform, Transition, Ui, VerticalAlign,
 };
 
 /// Immediate response returned by neo component/element builders.
@@ -632,8 +632,17 @@ impl<'ui> ElementBuilder<'ui> {
         self
     }
 
-    pub fn transition_seconds(mut self, duration: f32, ease: super::Ease) -> Self {
-        self.element.transition = Transition::make(duration, ease);
+    pub fn motion(mut self, preset: MotionPreset) -> Self {
+        self.element.transition = Transition::spring_preset(preset);
+        self
+    }
+
+    pub fn motion_preset(self, preset: MotionPreset) -> Self {
+        self.motion(preset)
+    }
+
+    pub fn spring(mut self, response_seconds: f32, damping_ratio: f32) -> Self {
+        self.element.transition = Transition::spring(response_seconds, damping_ratio);
         self
     }
 
@@ -731,265 +740,8 @@ impl<'ui> ElementBuilder<'ui> {
         self
     }
 
-    pub fn wrapContent(self) -> Self {
-        self.wrap_content()
-    }
-
-    pub fn marginXY(self, horizontal: f32, vertical: f32) -> Self {
-        self.margin_xy(horizontal, vertical)
-    }
-
-    pub fn marginEach(self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
-        self.margin_each(left, top, right, bottom)
-    }
-
-    pub fn paddingXY(self, horizontal: f32, vertical: f32) -> Self {
-        self.padding_xy(horizontal, vertical)
-    }
-
-    pub fn paddingEach(self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
-        self.padding_each(left, top, right, bottom)
-    }
-
-    pub fn minWidth(self, value: f32) -> Self {
-        self.min_width(value)
-    }
-
-    pub fn justifyContent(self, value: Align) -> Self {
-        self.justify_content(value)
-    }
-
-    pub fn alignItems(self, value: Align) -> Self {
-        self.align_items(value)
-    }
-
-    pub fn zIndex(self, value: i32) -> Self {
-        self.z_index(value)
-    }
-
-    pub fn overflowHidden(self, value: bool) -> Self {
-        self.overflow_hidden(value)
-    }
-
-    pub fn gradientStyle(self, value: Gradient) -> Self {
-        self.gradient_style(value)
-    }
-
-    pub fn gradientDirection(self, direction: GradientDirection) -> Self {
-        self.gradient_direction(direction)
-    }
-
-    pub fn borderStyle(self, value: Border) -> Self {
-        self.border_style(value)
-    }
-
-    pub fn shadowStyle(self, value: Shadow) -> Self {
-        self.shadow_style(value)
-    }
-
-    pub fn translateX(self, value: f32) -> Self {
-        self.translate_x(value)
-    }
-
-    pub fn translateY(self, value: f32) -> Self {
-        self.translate_y(value)
-    }
-
-    pub fn scaleXY(self, x: f32, y: f32) -> Self {
-        self.scale_xy(x, y)
-    }
-
-    pub fn transformOrigin(self, x: f32, y: f32) -> Self {
-        self.transform_origin(x, y)
-    }
-
-    pub fn iconCodepoint(self, codepoint: u32) -> Self {
-        self.icon_codepoint(codepoint)
-    }
-
-    pub fn fontFamily(self, value: impl Into<String>) -> Self {
-        self.font_family(value)
-    }
-
-    pub fn customFont(self, value: impl Into<String>) -> Self {
-        self.custom_font(value)
-    }
-
-    pub fn fontSource(self, value: impl Into<String>) -> Self {
-        self.font_source(value)
-    }
-
-    pub fn iconFont(self) -> Self {
-        self.icon_font()
-    }
-
-    pub fn fontSize(self, value: f32) -> Self {
-        self.font_size(value)
-    }
-
-    pub fn fontWeight(self, value: i32) -> Self {
-        self.font_weight(value)
-    }
-
-    pub fn textColor(self, value: impl Into<Color>) -> Self {
-        self.text_color(value)
-    }
-
-    pub fn textColour(self, value: impl Into<Color>) -> Self {
-        self.text_colour(value)
-    }
-
-    pub fn maxWidth(self, value: f32) -> Self {
-        self.max_width(value)
-    }
-
-    pub fn minHeight(self, value: f32) -> Self {
-        self.min_height(value)
-    }
-
-    pub fn maxHeight(self, value: f32) -> Self {
-        self.max_height(value)
-    }
-
-    pub fn textMaxWidth(self, value: f32) -> Self {
-        self.text_max_width(value)
-    }
-
-    pub fn horizontalAlign(self, value: HorizontalAlign) -> Self {
-        self.horizontal_align(value)
-    }
-
-    pub fn verticalAlign(self, value: VerticalAlign) -> Self {
-        self.vertical_align(value)
-    }
-
-    pub fn lineHeight(self, value: f32) -> Self {
-        self.line_height(value)
-    }
-
-    pub fn imageSource(self, value: impl Into<ImageRef>) -> Self {
-        self.image_source(value)
-    }
-
-    pub fn bingDaily(self, idx: i32, mkt: impl AsRef<str>) -> Self {
-        self.bing_daily(idx, mkt)
-    }
-
-    pub fn imageFit(self, value: ImageFit) -> Self {
-        self.image_fit(value)
-    }
-
     pub fn fit(self, value: ImageFit) -> Self {
         self.image_fit(value)
-    }
-
-    pub fn flipVertically(self, value: bool) -> Self {
-        self.flip_vertically(value)
-    }
-
-    pub fn polygonPoints(self, points: impl IntoPolygonPoints) -> Self {
-        self.polygon_points(points)
-    }
-
-    pub fn clearPoints(self) -> Self {
-        self.clear_points()
-    }
-
-    pub fn pressedScale(self, value: f32) -> Self {
-        self.pressed_scale(value)
-    }
-
-    pub fn imeRect(self, x: f32, y: f32, width: f32, height: f32) -> Self {
-        self.ime_rect(x, y, width, height)
-    }
-
-    pub fn hoverColor(self, value: impl Into<Color>) -> Self {
-        self.hover_color(value)
-    }
-
-    pub fn pressedColor(self, value: impl Into<Color>) -> Self {
-        self.pressed_color(value)
-    }
-
-    pub fn smoothStates(self, value: bool) -> Self {
-        self.smooth_states(value)
-    }
-
-    pub fn instantStates(self) -> Self {
-        self.instant_states()
-    }
-
-    pub fn visualStateFrom(self, id: impl AsRef<str>, pressed_scale: f32) -> Self {
-        self.visual_state_from(id, pressed_scale)
-    }
-
-    pub fn hoverOpacityFrom(
-        self,
-        id: impl AsRef<str>,
-        hidden_opacity: f32,
-        visible_opacity: f32,
-    ) -> Self {
-        self.hover_opacity_from(id, hidden_opacity, visible_opacity)
-    }
-
-    pub fn transitionSeconds(self, duration: f32, ease: super::Ease) -> Self {
-        self.transition_seconds(duration, ease)
-    }
-
-    pub fn onClick<F>(self, callback: F) -> Self
-    where
-        F: FnMut() + 'static,
-    {
-        self.on_click(callback)
-    }
-
-    pub fn onPress<F>(self, callback: F) -> Self
-    where
-        F: FnMut(PointerEvent, LayoutRect) + 'static,
-    {
-        self.on_press(callback)
-    }
-
-    pub fn onContextMenu<F>(self, callback: F) -> Self
-    where
-        F: FnMut(PointerEvent, LayoutRect) + 'static,
-    {
-        self.on_context_menu(callback)
-    }
-
-    pub fn onFocusChanged<F>(self, callback: F) -> Self
-    where
-        F: FnMut(bool) + 'static,
-    {
-        self.on_focus_changed(callback)
-    }
-
-    pub fn onTextInput<F>(self, callback: F) -> Self
-    where
-        F: FnMut(KeyboardEvent) + 'static,
-    {
-        self.on_text_input(callback)
-    }
-
-    pub fn onScroll<F>(self, callback: F) -> Self
-    where
-        F: FnMut(ScrollEvent) + 'static,
-    {
-        self.on_scroll(callback)
-    }
-
-    pub fn onDrag<F>(self, callback: F) -> Self
-    where
-        F: FnMut(DragEvent) + 'static,
-    {
-        self.on_drag(callback)
-    }
-
-    pub fn onTimer<F>(self, seconds: f32, callback: F) -> Self
-    where
-        F: FnMut() + 'static,
-    {
-        self.on_timer(seconds, callback)
     }
 
     pub fn build(self) -> Response {

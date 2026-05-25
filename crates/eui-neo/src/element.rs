@@ -118,10 +118,6 @@ impl Size {
         Self::WrapContent
     }
 
-    pub const fn wrapContent() -> Self {
-        Self::wrap_content()
-    }
-
     pub const fn fill() -> Self {
         Self::Fill
     }
@@ -243,14 +239,7 @@ impl LayoutRect {
     pub fn contains_point(self, point: Vec2) -> bool {
         self.contains([point.x, point.y])
     }
-
-    pub fn containsPoint(self, x: f32, y: f32) -> bool {
-        self.contains_xy(x, y)
-    }
 }
-
-/// Source-shaped alias for EUI-NEO's `core::Rect`.
-pub type Rect = LayoutRect;
 
 /// Lightweight 2D transform metadata. Rendering support lands later.
 #[derive(Debug, Clone, Copy, PartialEq)]

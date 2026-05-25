@@ -155,10 +155,6 @@ impl KeyboardEvent {
             || self.copy
             || self.cut
     }
-
-    pub fn hasInput(&self) -> bool {
-        self.has_input()
-    }
 }
 
 /// Scroll delta in logical UI coordinates.

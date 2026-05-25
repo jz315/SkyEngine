@@ -8,7 +8,7 @@ use rustc_hash::FxHashMap;
 use crate::Color;
 
 use super::super::{
-    AnimProperty, Binding, DragEvent, Ease, LayoutRect, PointerEvent, Response, Transition, Ui,
+    AnimProperty, Binding, DragEvent, LayoutRect, PointerEvent, Response, Transition, Ui,
 };
 use super::theme::{self, ThemeColorTokens};
 
@@ -62,7 +62,7 @@ impl<'ui> SliderBuilder<'ui> {
             ui,
             id: id.into(),
             style: SliderStyle::default(),
-            transition: Transition::make(0.16, Ease::OutCubic),
+            transition: Transition::snappy(),
             on_change: None,
             width: 300.0,
             height: 28.0,
@@ -101,11 +101,6 @@ impl<'ui> SliderBuilder<'ui> {
         self
     }
 
-    pub fn transition_seconds(mut self, duration: f32, ease: Ease) -> Self {
-        self.transition = Transition::make(duration, ease);
-        self
-    }
-
     pub fn on_change<F>(mut self, callback: F) -> Self
     where
         F: FnMut(f32) + 'static,
@@ -120,21 +115,6 @@ impl<'ui> SliderBuilder<'ui> {
             next
         });
         self
-    }
-
-    pub fn transitionSeconds(self, duration: f32, ease: Ease) -> Self {
-        self.transition_seconds(duration, ease)
-    }
-
-    pub fn valueBind<T: 'static>(self, binding: Binding<T, f32>) -> Self {
-        self.value_bind(binding)
-    }
-
-    pub fn onChange<F>(self, callback: F) -> Self
-    where
-        F: FnMut(f32) + 'static,
-    {
-        self.on_change(callback)
     }
 
     pub fn build(self) -> Response {

@@ -152,9 +152,7 @@ impl<'ui> SkinButtonBuilder<'ui> {
         } else {
             skin.text_color
         };
-        let transition = crate::Transition::default()
-            .duration(0.08)
-            .easing(crate::Ease::OutCubic);
+        let transition = crate::Transition::responsive();
         let mut on_click = self.on_click.take();
 
         let mut root = self
@@ -920,7 +918,7 @@ impl<'ui> SkinStatusBarBuilder<'ui> {
                 track: Color::rgba8(28, 42, 52, 235),
                 fill: self.fill,
             })
-            .transition_seconds(0.20, crate::Ease::OutCubic)
+            .transition(crate::Transition::ease(0.20, crate::Ease::OutCubic))
             .build();
         self.ui
             .text(format!("{id}.value"))

@@ -31,26 +31,20 @@ pub mod toast;
 pub mod virtual_list;
 
 pub use badge::{badge, BadgeBuilder, BadgeStyle};
-pub use bar_chart::{barChart, bar_chart, barchart, BarChartBuilder, BarChartStyle};
+pub use bar_chart::{bar_chart, BarChartBuilder, BarChartStyle};
 pub use button::{button, ButtonBuilder, ButtonStyle};
 pub use checkbox::{checkbox, CheckboxBuilder, CheckboxStyle};
-pub use color_picker::{color_picker, colorpicker, ColorPickerBuilder, ColorPickerStyle};
-pub use context_menu::{
-    contextMenu, context_menu, contextmenu, ContextMenuBuilder, ContextMenuStyle,
-};
-pub use data_table::{dataTable, data_table, datatable, DataTableBuilder, DataTableStyle};
-pub use date_picker::{date_picker, datepicker, DatePickerBuilder, DatePickerStyle};
+pub use color_picker::{color_picker, ColorPickerBuilder, ColorPickerStyle};
+pub use context_menu::{context_menu, ContextMenuBuilder, ContextMenuStyle};
+pub use data_table::{data_table, DataTableBuilder, DataTableStyle};
+pub use date_picker::{date_picker, DatePickerBuilder, DatePickerStyle};
 pub use dialog::{dialog, DialogBuilder, DialogStyle};
 pub use dropdown::{dropdown, DropdownBuilder, DropdownStyle};
-pub use image::{
-    image, imageWithStyle, imageWithTheme, image_with_style, image_with_theme, ImageStyle,
-};
+pub use image::{image, image_with_style, image_with_theme, ImageStyle};
 pub use input::{input, InputBuilder, InputStyle};
-pub use line_chart::{lineChart, line_chart, linechart, LineChartBuilder, LineChartStyle};
-pub use panel::{
-    panel, panelWithStyle, panelWithTheme, panel_with_style, panel_with_theme, PanelStyle,
-};
-pub use pie_chart::{pieChart, pie_chart, piechart, PieChartBuilder, PieChartStyle};
+pub use line_chart::{line_chart, LineChartBuilder, LineChartStyle};
+pub use panel::{panel, panel_with_style, panel_with_theme, PanelStyle};
+pub use pie_chart::{pie_chart, PieChartBuilder, PieChartStyle};
 pub use progress::{progress, ProgressBuilder, ProgressStyle};
 pub use radio::{radio, RadioBuilder, RadioStyle};
 pub use scroll::{scroll_column, scrollbar, ScrollColumnBuilder, ScrollbarBuilder, ScrollbarStyle};
@@ -62,33 +56,28 @@ pub use skin::{
     SkinStatusBarBuilder, SkinStatusRibbonBuilder, SliderSkinSource,
 };
 pub use slider::{slider, SliderBuilder, SliderStyle};
-pub use switch::{switch, toggleSwitch, toggle_switch, SwitchBuilder, SwitchStyle};
+pub use switch::{switch, SwitchBuilder, SwitchStyle};
 pub use tabs::{tabs, TabsBuilder, TabsStyle};
 pub use text::{
-    bodyTextStyle, body_text_style, label, labelWithTheme, label_with_theme, measureTextWidth,
-    measure_text_width, subtitleTextStyle, subtitle_text_style, text, textWithStyle, textWithTheme,
-    text_with_style, text_with_theme, titleTextStyle, title_text_style, TextStyle,
+    body_text_style, label, label_with_theme, measure_text_width, subtitle_text_style, text,
+    text_with_style, text_with_theme, title_text_style, TextStyle,
 };
-pub use time_picker::{time_picker, timepicker, TimePickerBuilder, TimePickerStyle};
+pub use time_picker::{time_picker, TimePickerBuilder, TimePickerStyle};
 pub use toast::{toast, ToastBuilder, ToastStyle};
-pub use virtual_list::{
-    virtualList, virtual_list, VirtualListBuilder, VirtualListItem, VirtualListRange,
-};
+pub use virtual_list::{virtual_list, VirtualListBuilder, VirtualListItem, VirtualListRange};
 
 #[cfg(test)]
 mod tests {
     use super::{
-        badge, barChart, bodyTextStyle, button, checkbox, colorpicker, contextMenu, context_menu,
-        dataTable, datepicker, dialog, dropdown, imageWithStyle, input, lineChart, panelWithStyle,
-        pieChart, progress, radio, scroll_column, scrollbar, segmented, skin_button, slider, tabs,
-        timepicker, toast, toggleSwitch,
+        badge, button, checkbox, context_menu, date_picker, dialog, dropdown, image_with_style,
+        input, progress, radio, scroll_column, scrollbar, segmented, skin_button, slider, switch,
+        tabs, time_picker, toast,
     };
     use crate::expert::UiDrawCommand;
     use crate::Color;
     use crate::{
-        Align, Border, ButtonSkin, Ease, EdgeInsets, FontRef, Gradient, GradientDirection,
-        ImageFit, ImageRef, KeyboardEvent, NeoSkin, NeoState, PointerEvent, Runtime, ScrollEvent,
-        Shadow, Size, Slice, Transition, Vec2,
+        ButtonSkin, EdgeInsets, FontRef, ImageFit, ImageRef, KeyboardEvent, NeoSkin, NeoState,
+        PointerEvent, Runtime, ScrollEvent, Size, Slice,
     };
     use std::cell::Cell;
     use std::rc::Rc;
@@ -263,7 +252,7 @@ mod tests {
         runtime.compose(240.0, 80.0, move |ui, _| {
             let checked =
                 compose_state.bind(|state| state.checked, |state, value| state.checked = value);
-            toggleSwitch(ui, "night")
+            switch(ui, "night")
                 .checked_bind(checked)
                 .label("Night")
                 .build();
@@ -698,7 +687,7 @@ mod tests {
         runtime.compose(480.0, 360.0, move |ui, _| {
             let open = compose_state.bind(|state| state.open, |state, value| state.open = value);
             let date = compose_state.bind(|state| state.date, |state, value| state.date = value);
-            datepicker(ui, "date")
+            date_picker(ui, "date")
                 .open_bind(open)
                 .date_bind(date)
                 .screen(480.0, 360.0)
@@ -726,7 +715,7 @@ mod tests {
         runtime.compose(420.0, 340.0, move |ui, _| {
             let open = compose_state.bind(|state| state.open, |state, value| state.open = value);
             let time = compose_state.bind(|state| state.time, |state, value| state.time = value);
-            timepicker(ui, "time")
+            time_picker(ui, "time")
                 .open_bind(open)
                 .time_bind(time)
                 .screen(420.0, 340.0)
@@ -763,277 +752,6 @@ mod tests {
     }
 
     #[test]
-    fn eui_source_name_aliases_compose_for_existing_files() {
-        let tokens = super::theme::DarkThemeColors();
-        let mut runtime = Runtime::new("page");
-        runtime.compose(640.0, 420.0, move |ui, screen| {
-            ui.stack("root")
-                .size(screen.width, screen.height)
-                .justifyContent(Align::Start)
-                .alignItems(Align::Start)
-                .zIndex(1)
-                .overflowHidden(false)
-                .content(|ui| {
-                    let panel_style = super::panel::PanelStyle::new(tokens);
-                    panelWithStyle(ui, "panel", panel_style)
-                        .size(320.0, 260.0)
-                        .gradientStyle(Gradient::default())
-                        .borderStyle(Border {
-                            width: 1.0,
-                            color: tokens.border,
-                        })
-                        .shadowStyle(Shadow::default())
-                        .transitionSeconds(0.1, Ease::OutCubic)
-                        .build();
-
-                    ui.column("content")
-                        .x(12.0)
-                        .y(12.0)
-                        .gap(6.0)
-                        .wrapContent()
-                        .content(|ui| {
-                            ui.text("title")
-                                .text("Parity")
-                                .fontFamily("")
-                                .fontSize(18.0)
-                                .fontWeight(400)
-                                .textColor(tokens.text)
-                                .maxWidth(220.0)
-                                .horizontalAlign(super::super::HorizontalAlign::Left)
-                                .verticalAlign(super::super::VerticalAlign::Top)
-                                .lineHeight(20.0)
-                                .build();
-
-                            ui.rect("shape")
-                                .size(42.0, 18.0)
-                                .gradient(tokens.primary, tokens.surface)
-                                .gradientDirection(GradientDirection::Horizontal)
-                                .translateX(1.0)
-                                .translateY(2.0)
-                                .scaleXY(1.0, 1.0)
-                                .transformOrigin(0.5, 0.5)
-                                .pressedScale(0.9)
-                                .smoothStates(true)
-                                .instantStates()
-                                .onClick(|| {})
-                                .build();
-
-                            ui.polygon("tri")
-                                .size(20.0, 18.0)
-                                .points([
-                                    Vec2::new(0.0, 18.0),
-                                    Vec2::new(10.0, 0.0),
-                                    Vec2::new(20.0, 18.0),
-                                ])
-                                .color(tokens.primary)
-                                .build();
-
-                            button(ui, "button")
-                                .size(120.0, 28.0)
-                                .text("Go")
-                                .iconCodepoint(0xF061)
-                                .fontSize(12.0)
-                                .iconSize(12.0)
-                                .textColor(Color::WHITE)
-                                .iconColor(Color::WHITE)
-                                .primaryTheme(tokens)
-                                .translateX(0.0)
-                                .translateY(0.0)
-                                .pressScale(0.96)
-                                .transitionSeconds(0.1, Ease::OutCubic)
-                                .onClick(|| {})
-                                .onContextMenu(|_, _| {})
-                                .build();
-
-                            progress(ui, "progress")
-                                .size(120.0, 8.0)
-                                .value(0.4)
-                                .transitionSeconds(0.1, Ease::OutCubic)
-                                .build();
-
-                            slider(ui, "slider")
-                                .size(120.0, 20.0)
-                                .value(0.5)
-                                .transitionSeconds(0.1, Ease::OutCubic)
-                                .onChange(|_| {})
-                                .build();
-
-                            scrollbar(ui, "scrollbar")
-                                .size(8.0, 48.0)
-                                .viewportHeight(48.0)
-                                .contentHeight(120.0)
-                                .zIndex(2)
-                                .transitionSeconds(0.1, Ease::OutCubic)
-                                .onChange(|_| {})
-                                .build();
-
-                            checkbox(ui, "check")
-                                .checked(true)
-                                .text("Check")
-                                .fontSize(12.0)
-                                .boxSize(16.0)
-                                .transitionSeconds(0.1, Ease::OutCubic)
-                                .onChange(|_| {})
-                                .build();
-
-                            toggleSwitch(ui, "switch")
-                                .checked(false)
-                                .label("Switch")
-                                .fontSize(12.0)
-                                .trackSize(34.0, 18.0)
-                                .transitionSeconds(0.1, Ease::OutCubic)
-                                .onChange(|_| {})
-                                .build();
-
-                            segmented(ui, "segmented")
-                                .items(["A", "B"])
-                                .selected(0)
-                                .fontSize(12.0)
-                                .transitionSeconds(0.1, Ease::OutCubic)
-                                .onChange(|_| {})
-                                .build();
-                        });
-
-                    imageWithStyle(ui, "image", super::image::ImageStyle::new(tokens))
-                        .x(350.0)
-                        .y(12.0)
-                        .size(48.0, 48.0)
-                        .source("missing.png")
-                        .fit(ImageFit::Contain)
-                        .flipVertically(false)
-                        .build();
-
-                    input(ui, "input")
-                        .size(180.0, 32.0)
-                        .text("abc")
-                        .fontSize(14.0)
-                        .transitionSeconds(0.1, Ease::OutCubic)
-                        .onChange(|_| {})
-                        .onEnter(|| {})
-                        .onFocus(|_| {})
-                        .build();
-
-                    dropdown(ui, "dropdown")
-                        .items(["One", "Two"])
-                        .selected(0)
-                        .open(false)
-                        .itemHeight(28.0)
-                        .zIndex(3)
-                        .transitionSeconds(0.1, Ease::OutCubic)
-                        .onChange(|_| {})
-                        .onOpenChange(|_| {})
-                        .build();
-
-                    tabs(ui, "tabs")
-                        .items(["One", "Two"])
-                        .selected(0)
-                        .fontSize(12.0)
-                        .transitionSeconds(0.1, Ease::OutCubic)
-                        .onChange(|_| {})
-                        .build();
-
-                    dialog(ui, "dialog")
-                        .open(false)
-                        .primaryText("Yes")
-                        .secondaryText("No")
-                        .zIndex(4)
-                        .transitionSeconds(0.1, Ease::OutCubic)
-                        .onPrimary(|| {})
-                        .onSecondary(|| {})
-                        .onClose(|| {})
-                        .build();
-
-                    contextMenu(ui, "menu")
-                        .open(false)
-                        .items(["Copy"])
-                        .zIndex(5)
-                        .transitionSeconds(0.1, Ease::OutCubic)
-                        .onSelect(|_| {})
-                        .onDismiss(|| {})
-                        .build();
-
-                    toast(ui, "toast")
-                        .visible(false)
-                        .iconCodepoint(0xF058)
-                        .zIndex(6)
-                        .autoDismiss(1.0)
-                        .transitionSeconds(0.1, Ease::OutCubic)
-                        .onAutoDismiss(|| {})
-                        .onDismiss(|| {})
-                        .build();
-
-                    datepicker(ui, "date")
-                        .open(false)
-                        .screen(640.0, 420.0)
-                        .date(2026, 5, 13)
-                        .zIndex(7)
-                        .transitionSeconds(0.1, Ease::OutCubic)
-                        .onChange(|_, _, _| {})
-                        .onOpenChange(|_| {})
-                        .build();
-
-                    timepicker(ui, "time")
-                        .open(false)
-                        .screen(640.0, 420.0)
-                        .time(9, 30)
-                        .minuteStep(5)
-                        .zIndex(8)
-                        .transitionSeconds(0.1, Ease::OutCubic)
-                        .onChange(|_, _| {})
-                        .onOpenChange(|_| {})
-                        .build();
-
-                    colorpicker(ui, "color")
-                        .open(false)
-                        .screen(640.0, 420.0)
-                        .value(tokens.primary)
-                        .colors([tokens.primary, tokens.surface])
-                        .zIndex(9)
-                        .transitionSeconds(0.1, Ease::OutCubic)
-                        .onChange(|_| {})
-                        .onOpenChange(|_| {})
-                        .build();
-
-                    dataTable(ui, "table")
-                        .columns(["Name", "Value"])
-                        .rows([["FPS", "60"], ["Mode", "Neo"]])
-                        .transitionSeconds(0.1, Ease::OutCubic)
-                        .build();
-
-                    lineChart(ui, "line")
-                        .values([0.2, 0.6, 0.4])
-                        .labels(["A", "B", "C"])
-                        .transitionSeconds(0.1, Ease::OutCubic)
-                        .build();
-
-                    barChart(ui, "bars")
-                        .values([0.3, 0.8])
-                        .labels(["A", "B"])
-                        .colors([tokens.primary, tokens.surface_active])
-                        .transitionSeconds(0.1, Ease::OutCubic)
-                        .build();
-
-                    pieChart(ui, "pie")
-                        .values([0.4, 0.6])
-                        .labels(["A", "B"])
-                        .colors([tokens.primary, tokens.surface_active])
-                        .transitionSeconds(0.1, Ease::OutCubic)
-                        .build();
-
-                    let _style = bodyTextStyle(tokens, "body");
-                    let _transition = Transition::none().durationSeconds(0.1).delaySeconds(0.0);
-                });
-        });
-
-        assert!(runtime.find("root").is_some());
-        assert!(runtime.find("button.bg").is_some());
-        assert!(runtime.find("table.bg").is_some());
-        assert!(runtime.find("line.point.0").is_some());
-        assert!(runtime.find("bars.bar.0").is_some());
-        assert!(runtime.find("pie.slice.0").is_some());
-    }
-
-    #[test]
     fn image_with_style_emits_source_shaped_draw_command() {
         let style = super::image::ImageStyle {
             tint: Color::new(0.5, 0.75, 1.0, 0.8),
@@ -1042,12 +760,12 @@ mod tests {
         };
         let mut runtime = Runtime::new("page");
         runtime.compose(200.0, 100.0, move |ui, _| {
-            imageWithStyle(ui, "avatar", style)
+            image_with_style(ui, "avatar", style)
                 .position(10.0, 20.0)
                 .size(80.0, 40.0)
                 .source("avatar.png")
                 .contain()
-                .flipVertically(true)
+                .flip_vertically(true)
                 .build();
         });
 

@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use crate::Color;
 
-use super::super::{AnimProperty, Binding, Ease, Response, Transition, Ui, VerticalAlign};
+use super::super::{AnimProperty, Binding, Response, Transition, Ui, VerticalAlign};
 use super::text::measure_text_width;
 use super::theme::{self, ThemeColorTokens};
 
@@ -75,7 +75,7 @@ impl<'ui> CheckboxBuilder<'ui> {
             ui,
             id: id.into(),
             style: CheckboxStyle::default(),
-            transition: Transition::make(0.16, Ease::OutCubic),
+            transition: Transition::snappy(),
             on_change: None,
             text: String::new(),
             checked: false,
@@ -133,11 +133,6 @@ impl<'ui> CheckboxBuilder<'ui> {
         self
     }
 
-    pub fn transition_seconds(mut self, duration: f32, ease: Ease) -> Self {
-        self.transition = Transition::make(duration, ease);
-        self
-    }
-
     pub fn on_change<F>(mut self, callback: F) -> Self
     where
         F: FnMut(bool) + 'static,
@@ -152,29 +147,6 @@ impl<'ui> CheckboxBuilder<'ui> {
             next
         });
         self
-    }
-
-    pub fn fontSize(self, value: f32) -> Self {
-        self.font_size(value)
-    }
-
-    pub fn boxSize(self, value: f32) -> Self {
-        self.box_size(value)
-    }
-
-    pub fn checkedBind<T: 'static>(self, binding: Binding<T, bool>) -> Self {
-        self.checked_bind(binding)
-    }
-
-    pub fn transitionSeconds(self, duration: f32, ease: Ease) -> Self {
-        self.transition_seconds(duration, ease)
-    }
-
-    pub fn onChange<F>(self, callback: F) -> Self
-    where
-        F: FnMut(bool) + 'static,
-    {
-        self.on_change(callback)
     }
 
     pub fn build(self) -> Response {
@@ -200,18 +172,12 @@ impl<'ui> CheckboxBuilder<'ui> {
         let mark_long_x = mark_corner_x - mark_overlap * mark_angle_cos;
         let mark_long_y = mark_corner_y + mark_overlap * mark_angle_sin;
         let mark_short_transition = if self.checked {
-            self.transition
-                .duration(0.09)
-                .delay(0.0)
-                .easing(Ease::OutCubic)
+            Transition::spring(0.11, 0.88).delay(0.0)
         } else {
             Transition::none()
         };
         let mark_long_transition = if self.checked {
-            self.transition
-                .duration(0.12)
-                .delay(0.08)
-                .easing(Ease::OutCubic)
+            Transition::spring(0.14, 0.88).delay(0.06)
         } else {
             Transition::none()
         };

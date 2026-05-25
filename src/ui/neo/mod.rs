@@ -5,8 +5,6 @@
 //! interaction, and animation state. Rendering and platform input are adapted
 //! to SkyEngine instead of copying EUI-NEO's OpenGL/GLFW backend.
 
-#![allow(non_snake_case)]
-
 mod api;
 mod backend;
 mod color;
@@ -28,5 +26,5 @@ pub use backend::NeoUiBackend;
 pub use config::{NeoUiConfig, NeoWindowConfig};
 pub use eui_neo::expert;
 pub use eui_neo::prelude::*;
-pub use eui_neo::{applyEase, apply_ease, hasAnimProperty, has_anim_property};
+pub use eui_neo::{apply_ease, has_anim_property};
 pub use plugin::{install_neo_ui_backend, NeoUiPlugin};

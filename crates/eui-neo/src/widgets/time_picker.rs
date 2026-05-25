@@ -8,8 +8,8 @@ use rustc_hash::FxHashMap;
 use crate::Color;
 
 use super::super::{
-    AnimProperty, Binding, Ease, HorizontalAlign, LayoutRect, PointerEvent, Response, Shadow,
-    Transition, Ui, VerticalAlign,
+    AnimProperty, Binding, HorizontalAlign, LayoutRect, PointerEvent, Response, Shadow, Transition,
+    Ui, VerticalAlign,
 };
 use super::theme::{self, ThemeColorTokens};
 
@@ -118,7 +118,7 @@ impl<'ui> TimePickerBuilder<'ui> {
             ui,
             id: id.into(),
             style: TimePickerStyle::default(),
-            transition: Transition::make(0.16, Ease::OutCubic),
+            transition: Transition::smooth(),
             on_change: None,
             on_open_change: None,
             hour: 9,
@@ -187,11 +187,6 @@ impl<'ui> TimePickerBuilder<'ui> {
         self
     }
 
-    pub fn transition_seconds(mut self, duration: f32, ease: Ease) -> Self {
-        self.transition = Transition::make(duration, ease);
-        self
-    }
-
     pub fn z_index(mut self, value: i32) -> Self {
         self.z_index = value;
         self
@@ -231,40 +226,6 @@ impl<'ui> TimePickerBuilder<'ui> {
             next
         });
         self
-    }
-
-    pub fn minuteStep(self, value: i32) -> Self {
-        self.minute_step(value)
-    }
-
-    pub fn timeBind<T: 'static>(self, binding: Binding<T, [i32; 2]>) -> Self {
-        self.time_bind(binding)
-    }
-
-    pub fn openBind<T: 'static>(self, binding: Binding<T, bool>) -> Self {
-        self.open_bind(binding)
-    }
-
-    pub fn transitionSeconds(self, duration: f32, ease: Ease) -> Self {
-        self.transition_seconds(duration, ease)
-    }
-
-    pub fn zIndex(self, value: i32) -> Self {
-        self.z_index(value)
-    }
-
-    pub fn onChange<F>(self, callback: F) -> Self
-    where
-        F: FnMut(i32, i32) + 'static,
-    {
-        self.on_change(callback)
-    }
-
-    pub fn onOpenChange<F>(self, callback: F) -> Self
-    where
-        F: FnMut(bool) + 'static,
-    {
-        self.on_open_change(callback)
     }
 
     pub fn build(self) -> Response {
@@ -333,12 +294,8 @@ impl<'ui> TimePickerBuilder<'ui> {
     }
 }
 
-pub fn timepicker(ui: &mut Ui, id: impl Into<String>) -> TimePickerBuilder<'_> {
-    TimePickerBuilder::new(ui, id)
-}
-
 pub fn time_picker(ui: &mut Ui, id: impl Into<String>) -> TimePickerBuilder<'_> {
-    timepicker(ui, id)
+    TimePickerBuilder::new(ui, id)
 }
 
 #[allow(clippy::too_many_arguments)]

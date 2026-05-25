@@ -7,7 +7,7 @@ use rustc_hash::FxHashMap;
 
 use crate::Color;
 
-use super::super::{Ease, Response, Shadow, Transition, Ui};
+use super::super::{Response, Shadow, Transition, Ui};
 use super::line_chart::{chart_tooltip, data_label, percent};
 use super::theme::{self, ThemeColorTokens};
 
@@ -92,7 +92,7 @@ impl<'ui> PieChartBuilder<'ui> {
             values: Vec::new(),
             labels: Vec::new(),
             style: PieChartStyle::default(),
-            transition: Transition::make(0.16, Ease::OutCubic),
+            transition: Transition::gentle(),
             width: 206.0,
             height: 236.0,
         }
@@ -147,15 +147,6 @@ impl<'ui> PieChartBuilder<'ui> {
     pub fn transition(mut self, value: Transition) -> Self {
         self.transition = value;
         self
-    }
-
-    pub fn transition_seconds(mut self, duration: f32, ease: Ease) -> Self {
-        self.transition = Transition::make(duration, ease);
-        self
-    }
-
-    pub fn transitionSeconds(self, duration: f32, ease: Ease) -> Self {
-        self.transition_seconds(duration, ease)
     }
 
     pub fn build(mut self) -> Response {
@@ -268,16 +259,8 @@ impl<'ui> PieChartBuilder<'ui> {
     }
 }
 
-pub fn piechart(ui: &mut Ui, id: impl Into<String>) -> PieChartBuilder<'_> {
-    PieChartBuilder::new(ui, id)
-}
-
-pub fn pieChart(ui: &mut Ui, id: impl Into<String>) -> PieChartBuilder<'_> {
-    piechart(ui, id)
-}
-
 pub fn pie_chart(ui: &mut Ui, id: impl Into<String>) -> PieChartBuilder<'_> {
-    piechart(ui, id)
+    PieChartBuilder::new(ui, id)
 }
 
 fn sync_animation(id: &str, values: &[f32]) -> (Vec<f32>, bool) {

@@ -3,7 +3,7 @@
 use crate::Color;
 
 use super::super::{
-    AnimProperty, Ease, HorizontalAlign, Response, Shadow, Transition, Ui, VerticalAlign,
+    AnimProperty, HorizontalAlign, Response, Shadow, Transition, Ui, VerticalAlign,
 };
 use super::theme::{self, ThemeColorTokens};
 
@@ -89,7 +89,7 @@ impl<'ui> LineChartBuilder<'ui> {
                 .map(str::to_string)
                 .collect(),
             style: LineChartStyle::default(),
-            transition: Transition::make(0.16, Ease::OutCubic),
+            transition: Transition::gentle(),
             width: 206.0,
             height: 236.0,
         }
@@ -136,15 +136,6 @@ impl<'ui> LineChartBuilder<'ui> {
     pub fn transition(mut self, value: Transition) -> Self {
         self.transition = value;
         self
-    }
-
-    pub fn transition_seconds(mut self, duration: f32, ease: Ease) -> Self {
-        self.transition = Transition::make(duration, ease);
-        self
-    }
-
-    pub fn transitionSeconds(self, duration: f32, ease: Ease) -> Self {
-        self.transition_seconds(duration, ease)
     }
 
     pub fn build(mut self) -> Response {
@@ -295,16 +286,8 @@ impl<'ui> LineChartBuilder<'ui> {
     }
 }
 
-pub fn linechart(ui: &mut Ui, id: impl Into<String>) -> LineChartBuilder<'_> {
-    LineChartBuilder::new(ui, id)
-}
-
-pub fn lineChart(ui: &mut Ui, id: impl Into<String>) -> LineChartBuilder<'_> {
-    linechart(ui, id)
-}
-
 pub fn line_chart(ui: &mut Ui, id: impl Into<String>) -> LineChartBuilder<'_> {
-    linechart(ui, id)
+    LineChartBuilder::new(ui, id)
 }
 
 fn point_at(

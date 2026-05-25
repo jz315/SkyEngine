@@ -139,30 +139,6 @@ impl<'ui> BadgeBuilder<'ui> {
         self
     }
 
-    pub fn marginXY(self, horizontal: f32, vertical: f32) -> Self {
-        self.margin_xy(horizontal, vertical)
-    }
-
-    pub fn marginEach(self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
-        self.margin_each(left, top, right, bottom)
-    }
-
-    pub fn minWidth(self, value: f32) -> Self {
-        self.min_width(value)
-    }
-
-    pub fn maxWidth(self, value: f32) -> Self {
-        self.max_width(value)
-    }
-
-    pub fn minHeight(self, value: f32) -> Self {
-        self.min_height(value)
-    }
-
-    pub fn maxHeight(self, value: f32) -> Self {
-        self.max_height(value)
-    }
-
     pub fn build(self) -> Response {
         let id = self.id.clone();
         let bg_id = format!("{id}.bg");

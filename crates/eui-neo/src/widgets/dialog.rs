@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use crate::Color;
 
-use super::super::{AnimProperty, Binding, Ease, Response, Shadow, Transition, Ui};
+use super::super::{AnimProperty, Binding, Response, Shadow, Transition, Ui};
 use super::button::button;
 use super::theme::{self, ThemeColorTokens};
 
@@ -82,7 +82,7 @@ impl<'ui> DialogBuilder<'ui> {
             ui,
             id: id.into(),
             style: DialogStyle::default(),
-            transition: Transition::make(0.16, Ease::OutCubic),
+            transition: Transition::smooth(),
             on_primary: None,
             on_secondary: None,
             on_close: None,
@@ -156,11 +156,6 @@ impl<'ui> DialogBuilder<'ui> {
         self
     }
 
-    pub fn transition_seconds(mut self, duration: f32, ease: Ease) -> Self {
-        self.transition = Transition::make(duration, ease);
-        self
-    }
-
     pub fn z_index(mut self, value: i32) -> Self {
         self.z_index = value;
         self
@@ -192,47 +187,6 @@ impl<'ui> DialogBuilder<'ui> {
     {
         self.on_close = Some(Rc::new(RefCell::new(Box::new(callback))));
         self
-    }
-
-    pub fn primaryText(self, value: impl Into<String>) -> Self {
-        self.primary_text(value)
-    }
-
-    pub fn openBind<T: 'static>(self, binding: Binding<T, bool>) -> Self {
-        self.open_bind(binding)
-    }
-
-    pub fn secondaryText(self, value: impl Into<String>) -> Self {
-        self.secondary_text(value)
-    }
-
-    pub fn transitionSeconds(self, duration: f32, ease: Ease) -> Self {
-        self.transition_seconds(duration, ease)
-    }
-
-    pub fn zIndex(self, value: i32) -> Self {
-        self.z_index(value)
-    }
-
-    pub fn onPrimary<F>(self, callback: F) -> Self
-    where
-        F: FnMut() + 'static,
-    {
-        self.on_primary(callback)
-    }
-
-    pub fn onSecondary<F>(self, callback: F) -> Self
-    where
-        F: FnMut() + 'static,
-    {
-        self.on_secondary(callback)
-    }
-
-    pub fn onClose<F>(self, callback: F) -> Self
-    where
-        F: FnMut() + 'static,
-    {
-        self.on_close(callback)
     }
 
     pub fn build(self) -> Response {

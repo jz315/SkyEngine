@@ -40,14 +40,6 @@ pub fn image_with_theme<'ui>(
     image_with_style(ui, id, ImageStyle::new(tokens))
 }
 
-pub fn imageWithTheme<'ui>(
-    ui: &'ui mut Ui,
-    id: impl Into<String>,
-    tokens: ThemeColorTokens,
-) -> ElementBuilder<'ui> {
-    image_with_theme(ui, id, tokens)
-}
-
 pub fn image_with_style<'ui>(
     ui: &'ui mut Ui,
     id: impl Into<String>,
@@ -57,12 +49,4 @@ pub fn image_with_style<'ui>(
         .tint(style.tint)
         .radius(style.radius)
         .opacity(style.opacity)
-}
-
-pub fn imageWithStyle<'ui>(
-    ui: &'ui mut Ui,
-    id: impl Into<String>,
-    style: ImageStyle,
-) -> ElementBuilder<'ui> {
-    image_with_style(ui, id, style)
 }

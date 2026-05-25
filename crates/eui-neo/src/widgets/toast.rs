@@ -6,7 +6,7 @@ use std::rc::Rc;
 use crate::Color;
 
 use super::super::{
-    AnimProperty, Binding, Ease, HorizontalAlign, Response, Shadow, Transition, Ui, VerticalAlign,
+    AnimProperty, Binding, HorizontalAlign, Response, Shadow, Transition, Ui, VerticalAlign,
 };
 use super::theme::{self, ThemeColorTokens};
 
@@ -72,7 +72,7 @@ impl<'ui> ToastBuilder<'ui> {
             ui,
             id: id.into(),
             style: ToastStyle::default(),
-            transition: Transition::make(0.16, Ease::OutCubic),
+            transition: Transition::smooth(),
             on_dismiss: None,
             on_auto_dismiss: None,
             title: "Toast".to_string(),
@@ -149,11 +149,6 @@ impl<'ui> ToastBuilder<'ui> {
         self
     }
 
-    pub fn transition_seconds(mut self, duration: f32, ease: Ease) -> Self {
-        self.transition = Transition::make(duration, ease);
-        self
-    }
-
     pub fn z_index(mut self, value: i32) -> Self {
         self.z_index = value;
         self
@@ -202,40 +197,6 @@ impl<'ui> ToastBuilder<'ui> {
             next
         });
         self
-    }
-
-    pub fn iconCodepoint(self, codepoint: u32) -> Self {
-        self.icon_codepoint(codepoint)
-    }
-
-    pub fn visibleBind<T: 'static>(self, binding: Binding<T, bool>) -> Self {
-        self.visible_bind(binding)
-    }
-
-    pub fn transitionSeconds(self, duration: f32, ease: Ease) -> Self {
-        self.transition_seconds(duration, ease)
-    }
-
-    pub fn zIndex(self, value: i32) -> Self {
-        self.z_index(value)
-    }
-
-    pub fn autoDismiss(self, seconds: f32) -> Self {
-        self.auto_dismiss(seconds)
-    }
-
-    pub fn onAutoDismiss<F>(self, callback: F) -> Self
-    where
-        F: FnMut() + 'static,
-    {
-        self.on_auto_dismiss(callback)
-    }
-
-    pub fn onDismiss<F>(self, callback: F) -> Self
-    where
-        F: FnMut() + 'static,
-    {
-        self.on_dismiss(callback)
     }
 
     pub fn build(self) -> Response {

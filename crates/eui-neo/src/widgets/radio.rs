@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use crate::Color;
 
-use super::super::{AnimProperty, Binding, Ease, Response, Transition, Ui, VerticalAlign};
+use super::super::{AnimProperty, Binding, Response, Transition, Ui, VerticalAlign};
 use super::text::measure_text_width;
 use super::theme::{self, ThemeColorTokens};
 
@@ -65,7 +65,7 @@ impl<'ui> RadioBuilder<'ui> {
             ui,
             id: id.into(),
             style: RadioStyle::default(),
-            transition: Transition::make(0.16, Ease::OutCubic),
+            transition: Transition::snappy(),
             on_select: None,
             on_change: None,
             text: String::new(),
@@ -133,11 +133,6 @@ impl<'ui> RadioBuilder<'ui> {
         self
     }
 
-    pub fn transition_seconds(mut self, duration: f32, ease: Ease) -> Self {
-        self.transition = Transition::make(duration, ease);
-        self
-    }
-
     pub fn on_select<F>(mut self, callback: F) -> Self
     where
         F: FnMut() + 'static,
@@ -170,40 +165,6 @@ impl<'ui> RadioBuilder<'ui> {
         self
     }
 
-    pub fn fontSize(self, value: f32) -> Self {
-        self.font_size(value)
-    }
-
-    pub fn dotSize(self, value: f32) -> Self {
-        self.dot_size(value)
-    }
-
-    pub fn transitionSeconds(self, duration: f32, ease: Ease) -> Self {
-        self.transition_seconds(duration, ease)
-    }
-
-    pub fn onSelect<F>(self, callback: F) -> Self
-    where
-        F: FnMut() + 'static,
-    {
-        self.on_select(callback)
-    }
-
-    pub fn selectedBind<T: 'static>(self, binding: Binding<T, bool>) -> Self {
-        self.selected_bind(binding)
-    }
-
-    pub fn checkedBind<T: 'static>(self, binding: Binding<T, bool>) -> Self {
-        self.checked_bind(binding)
-    }
-
-    pub fn onChange<F>(self, callback: F) -> Self
-    where
-        F: FnMut(bool) + 'static,
-    {
-        self.on_change(callback)
-    }
-
     pub fn build(self) -> Response {
         let id = self.id.clone();
         let hit_id = format!("{id}.hit");
@@ -222,10 +183,11 @@ impl<'ui> RadioBuilder<'ui> {
             self.width
                 .min(label_x + measure_text_width(&self.text, "", self.font_size, 400))
         };
-        let dot_transition = self
-            .transition
-            .duration(if self.selected { 0.16 } else { 0.10 })
-            .easing(Ease::OutCubic);
+        let dot_transition = if self.selected {
+            Transition::responsive()
+        } else {
+            Transition::spring(0.14, 1.0)
+        };
         let on_select = self.on_select.clone();
         let on_change = self.on_change.clone();
         let text = self.text.clone();

@@ -6,7 +6,7 @@ use std::rc::Rc;
 use crate::Color;
 
 use super::super::{
-    AnimProperty, Binding, Ease, HorizontalAlign, Response, Transition, Ui, VerticalAlign,
+    AnimProperty, Binding, HorizontalAlign, Response, Transition, Ui, VerticalAlign,
 };
 use super::theme::{self, ThemeColorTokens};
 
@@ -59,7 +59,7 @@ impl<'ui> TabsBuilder<'ui> {
             id: id.into(),
             items: Vec::new(),
             style: TabsStyle::default(),
-            transition: Transition::make(0.16, Ease::OutCubic),
+            transition: Transition::snappy(),
             on_change: None,
             selected: 0,
             width: 360.0,
@@ -114,11 +114,6 @@ impl<'ui> TabsBuilder<'ui> {
         self
     }
 
-    pub fn transition_seconds(mut self, duration: f32, ease: Ease) -> Self {
-        self.transition = Transition::make(duration, ease);
-        self
-    }
-
     pub fn on_change<F>(mut self, callback: F) -> Self
     where
         F: FnMut(i32) + 'static,
@@ -133,25 +128,6 @@ impl<'ui> TabsBuilder<'ui> {
             next
         });
         self
-    }
-
-    pub fn fontSize(self, value: f32) -> Self {
-        self.font_size(value)
-    }
-
-    pub fn selectedBind<T: 'static>(self, binding: Binding<T, i32>) -> Self {
-        self.selected_bind(binding)
-    }
-
-    pub fn transitionSeconds(self, duration: f32, ease: Ease) -> Self {
-        self.transition_seconds(duration, ease)
-    }
-
-    pub fn onChange<F>(self, callback: F) -> Self
-    where
-        F: FnMut(i32) + 'static,
-    {
-        self.on_change(callback)
     }
 
     pub fn build(self) -> Response {

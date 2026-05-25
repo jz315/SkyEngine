@@ -2,7 +2,7 @@
 
 use crate::Color;
 
-use super::super::{AnimProperty, Ease, HorizontalAlign, Response, Shadow, Transition, Ui};
+use super::super::{AnimProperty, HorizontalAlign, Response, Shadow, Transition, Ui};
 use super::line_chart::{chart_tooltip, data_label, percent};
 use super::theme::{self, ThemeColorTokens};
 
@@ -80,7 +80,7 @@ impl<'ui> BarChartBuilder<'ui> {
             values: Vec::new(),
             labels: Vec::new(),
             style: BarChartStyle::default(),
-            transition: Transition::make(0.16, Ease::OutCubic),
+            transition: Transition::gentle(),
             width: 206.0,
             height: 236.0,
         }
@@ -135,15 +135,6 @@ impl<'ui> BarChartBuilder<'ui> {
     pub fn transition(mut self, value: Transition) -> Self {
         self.transition = value;
         self
-    }
-
-    pub fn transition_seconds(mut self, duration: f32, ease: Ease) -> Self {
-        self.transition = Transition::make(duration, ease);
-        self
-    }
-
-    pub fn transitionSeconds(self, duration: f32, ease: Ease) -> Self {
-        self.transition_seconds(duration, ease)
     }
 
     pub fn build(mut self) -> Response {
@@ -271,14 +262,6 @@ impl<'ui> BarChartBuilder<'ui> {
     }
 }
 
-pub fn barchart(ui: &mut Ui, id: impl Into<String>) -> BarChartBuilder<'_> {
-    BarChartBuilder::new(ui, id)
-}
-
-pub fn barChart(ui: &mut Ui, id: impl Into<String>) -> BarChartBuilder<'_> {
-    barchart(ui, id)
-}
-
 pub fn bar_chart(ui: &mut Ui, id: impl Into<String>) -> BarChartBuilder<'_> {
-    barchart(ui, id)
+    BarChartBuilder::new(ui, id)
 }

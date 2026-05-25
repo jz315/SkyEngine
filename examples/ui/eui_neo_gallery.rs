@@ -2748,7 +2748,7 @@ fn theme_tokens(state: &GallerySnapshot) -> ThemeColorTokens {
 
 fn page_transition(enabled: bool) -> Transition {
     if enabled {
-        Transition::make(0.28, Ease::OutCubic)
+        Transition::ease(0.28, Ease::OutCubic)
     } else {
         Transition::default()
     }
@@ -2756,7 +2756,7 @@ fn page_transition(enabled: bool) -> Transition {
 
 fn motion_transition(enabled: bool) -> Transition {
     if enabled {
-        Transition::make(0.42, Ease::OutBack)
+        Transition::ease(0.42, Ease::OutBack)
     } else {
         Transition::default()
     }

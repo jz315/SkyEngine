@@ -46,14 +46,6 @@ pub fn panel_with_theme<'ui>(
     panel_with_style(ui, id, PanelStyle::new(tokens))
 }
 
-pub fn panelWithTheme<'ui>(
-    ui: &'ui mut Ui,
-    id: impl Into<String>,
-    tokens: ThemeColorTokens,
-) -> ElementBuilder<'ui> {
-    panel_with_theme(ui, id, tokens)
-}
-
 pub fn panel_with_style<'ui>(
     ui: &'ui mut Ui,
     id: impl Into<String>,
@@ -66,12 +58,4 @@ pub fn panel_with_style<'ui>(
         .shadow_style(style.shadow)
         .radius(style.radius)
         .opacity(style.opacity)
-}
-
-pub fn panelWithStyle<'ui>(
-    ui: &'ui mut Ui,
-    id: impl Into<String>,
-    style: PanelStyle,
-) -> ElementBuilder<'ui> {
-    panel_with_style(ui, id, style)
 }

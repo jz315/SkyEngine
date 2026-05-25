@@ -6,7 +6,7 @@ use std::rc::Rc;
 use crate::Color;
 
 use super::super::{
-    AnimProperty, Binding, Ease, HorizontalAlign, Response, Transition, Ui, VerticalAlign,
+    AnimProperty, Binding, HorizontalAlign, Response, Transition, Ui, VerticalAlign,
 };
 use super::text::measure_text_width;
 use super::theme::{self, ThemeColorTokens};
@@ -64,7 +64,7 @@ impl<'ui> SwitchBuilder<'ui> {
             ui,
             id: id.into(),
             style: SwitchStyle::default(),
-            transition: Transition::make(0.18, Ease::OutCubic),
+            transition: Transition::smooth(),
             on_change: None,
             label: String::new(),
             checked: false,
@@ -128,11 +128,6 @@ impl<'ui> SwitchBuilder<'ui> {
         self
     }
 
-    pub fn transition_seconds(mut self, duration: f32, ease: Ease) -> Self {
-        self.transition = Transition::make(duration, ease);
-        self
-    }
-
     pub fn on_change<F>(mut self, callback: F) -> Self
     where
         F: FnMut(bool) + 'static,
@@ -147,29 +142,6 @@ impl<'ui> SwitchBuilder<'ui> {
             next
         });
         self
-    }
-
-    pub fn fontSize(self, value: f32) -> Self {
-        self.font_size(value)
-    }
-
-    pub fn trackSize(self, width: f32, height: f32) -> Self {
-        self.track_size(width, height)
-    }
-
-    pub fn checkedBind<T: 'static>(self, binding: Binding<T, bool>) -> Self {
-        self.checked_bind(binding)
-    }
-
-    pub fn transitionSeconds(self, duration: f32, ease: Ease) -> Self {
-        self.transition_seconds(duration, ease)
-    }
-
-    pub fn onChange<F>(self, callback: F) -> Self
-    where
-        F: FnMut(bool) + 'static,
-    {
-        self.on_change(callback)
     }
 
     pub fn build(self) -> Response {
@@ -254,14 +226,6 @@ impl<'ui> SwitchBuilder<'ui> {
 
         self.ui.response(&format!("{id}.hit"))
     }
-}
-
-pub fn toggle_switch(ui: &mut Ui, id: impl Into<String>) -> SwitchBuilder<'_> {
-    SwitchBuilder::new(ui, id)
-}
-
-pub fn toggleSwitch(ui: &mut Ui, id: impl Into<String>) -> SwitchBuilder<'_> {
-    toggle_switch(ui, id)
 }
 
 pub fn switch(ui: &mut Ui, id: impl Into<String>) -> SwitchBuilder<'_> {

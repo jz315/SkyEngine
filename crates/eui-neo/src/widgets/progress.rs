@@ -2,7 +2,7 @@
 
 use crate::Color;
 
-use super::super::{AnimProperty, Ease, Response, Transition, Ui};
+use super::super::{AnimProperty, Response, Transition, Ui};
 use super::theme::{self, ThemeColorTokens};
 
 #[derive(Debug, Clone, Copy)]
@@ -42,7 +42,7 @@ impl<'ui> ProgressBuilder<'ui> {
             ui,
             id: id.into(),
             style: ProgressStyle::default(),
-            transition: Transition::make(0.18, Ease::OutCubic),
+            transition: Transition::smooth(),
             width: 300.0,
             height: 15.0,
             value: 0.0,
@@ -73,15 +73,6 @@ impl<'ui> ProgressBuilder<'ui> {
     pub fn transition(mut self, value: Transition) -> Self {
         self.transition = value;
         self
-    }
-
-    pub fn transition_seconds(mut self, duration: f32, ease: Ease) -> Self {
-        self.transition = Transition::make(duration, ease);
-        self
-    }
-
-    pub fn transitionSeconds(self, duration: f32, ease: Ease) -> Self {
-        self.transition_seconds(duration, ease)
     }
 
     pub fn build(self) -> Response {

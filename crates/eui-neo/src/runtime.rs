@@ -9,7 +9,7 @@ use super::text_measure::{DefaultTextSystem, TextSystem};
 use super::Color;
 use super::{
     AnimProperty, AnimatedValue, Border, DragEvent, Element, ElementKind, KeyboardEvent,
-    LayoutRect, Lerp, PointerEvent, Response, Screen, ScrollEvent, Shadow, SmoothedValue,
+    LayoutRect, Lerp, Motion, PointerEvent, Response, Screen, ScrollEvent, Shadow, SmoothedValue,
     Transform, Transition, Ui,
 };
 use std::hash::{Hash, Hasher};
@@ -1413,9 +1413,18 @@ fn element_signature(element: &Element) -> u64 {
     hash_f32(element.transition.delay_seconds, &mut hasher);
     element.transition.ease.hash(&mut hasher);
     element.transition.properties.hash(&mut hasher);
+    hash_motion(element.transition.motion, &mut hasher);
+    hash_f32(element.transition.damping_ratio, &mut hasher);
     element.explicit_frame_animation.hash(&mut hasher);
     hash_f32(element.timer_seconds, &mut hasher);
     hasher.finish()
+}
+
+fn hash_motion(motion: Motion, hasher: &mut impl Hasher) {
+    match motion {
+        Motion::Ease => 0_u8.hash(hasher),
+        Motion::Spring => 1_u8.hash(hasher),
+    }
 }
 
 fn hash_size(size: super::Size, hasher: &mut impl Hasher) {
@@ -1707,7 +1716,7 @@ mod tests {
         runtime.compose(200.0, 100.0, |ui, _| {
             ui.rect("bar")
                 .size(10.0, 10.0)
-                .transition(Transition::make(1.0, Ease::Linear))
+                .transition(Transition::ease(1.0, Ease::Linear))
                 .animate(AnimProperty::FRAME)
                 .build();
         });
@@ -1717,7 +1726,7 @@ mod tests {
         runtime.compose(200.0, 100.0, |ui, _| {
             ui.rect("bar")
                 .size(110.0, 10.0)
-                .transition(Transition::make(1.0, Ease::Linear))
+                .transition(Transition::ease(1.0, Ease::Linear))
                 .animate(AnimProperty::FRAME)
                 .build();
         });
@@ -1743,7 +1752,7 @@ mod tests {
                 ui.stack("content").size(100.0, 160.0).content(|ui| {
                     ui.rect("indicator")
                         .size(20.0, 10.0)
-                        .transition(Transition::make(1.0, Ease::Linear))
+                        .transition(Transition::ease(1.0, Ease::Linear))
                         .animate(AnimProperty::FRAME)
                         .build();
                 });
@@ -1760,7 +1769,7 @@ mod tests {
                     .content(|ui| {
                         ui.rect("indicator")
                             .size(20.0, 10.0)
-                            .transition(Transition::make(1.0, Ease::Linear))
+                            .transition(Transition::ease(1.0, Ease::Linear))
                             .animate(AnimProperty::FRAME)
                             .build();
                     });

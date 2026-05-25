@@ -8,7 +8,7 @@ use rustc_hash::FxHashMap;
 use crate::Color;
 
 use super::super::{
-    AnimProperty, Binding, Ease, KeyboardEvent, LayoutRect, PointerEvent, Response, Shadow, Size,
+    AnimProperty, Binding, KeyboardEvent, LayoutRect, PointerEvent, Response, Shadow, Size,
     Transition, Ui, VerticalAlign,
 };
 use super::layout::WidgetLayout;
@@ -87,7 +87,7 @@ impl<'ui> InputBuilder<'ui> {
             ui,
             id: id.into(),
             style: InputStyle::default(),
-            transition: Transition::make(0.16, Ease::OutCubic),
+            transition: Transition::snappy(),
             on_change: None,
             on_enter: None,
             on_focus: None,
@@ -209,11 +209,6 @@ impl<'ui> InputBuilder<'ui> {
         self
     }
 
-    pub fn transition_seconds(mut self, duration: f32, ease: Ease) -> Self {
-        self.transition = Transition::make(duration, ease);
-        self
-    }
-
     pub fn on_change<F>(mut self, callback: F) -> Self
     where
         F: FnMut(&str) + 'static,
@@ -244,67 +239,6 @@ impl<'ui> InputBuilder<'ui> {
     {
         self.on_focus = Some(Rc::new(RefCell::new(Box::new(callback))));
         self
-    }
-
-    pub fn marginXY(self, horizontal: f32, vertical: f32) -> Self {
-        self.margin_xy(horizontal, vertical)
-    }
-
-    pub fn marginEach(self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
-        self.margin_each(left, top, right, bottom)
-    }
-
-    pub fn minWidth(self, value: f32) -> Self {
-        self.min_width(value)
-    }
-
-    pub fn maxWidth(self, value: f32) -> Self {
-        self.max_width(value)
-    }
-
-    pub fn minHeight(self, value: f32) -> Self {
-        self.min_height(value)
-    }
-
-    pub fn maxHeight(self, value: f32) -> Self {
-        self.max_height(value)
-    }
-
-    pub fn fontSize(self, value: f32) -> Self {
-        self.font_size(value)
-    }
-
-    pub fn textBind<T: 'static>(self, binding: Binding<T, String>) -> Self {
-        self.text_bind(binding)
-    }
-
-    pub fn valueBind<T: 'static>(self, binding: Binding<T, String>) -> Self {
-        self.value_bind(binding)
-    }
-
-    pub fn transitionSeconds(self, duration: f32, ease: Ease) -> Self {
-        self.transition_seconds(duration, ease)
-    }
-
-    pub fn onChange<F>(self, callback: F) -> Self
-    where
-        F: FnMut(&str) + 'static,
-    {
-        self.on_change(callback)
-    }
-
-    pub fn onEnter<F>(self, callback: F) -> Self
-    where
-        F: FnMut() + 'static,
-    {
-        self.on_enter(callback)
-    }
-
-    pub fn onFocus<F>(self, callback: F) -> Self
-    where
-        F: FnMut(bool) + 'static,
-    {
-        self.on_focus(callback)
     }
 
     pub fn build(self) -> Response {

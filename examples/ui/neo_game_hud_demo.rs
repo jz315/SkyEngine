@@ -18,7 +18,7 @@ use sky_engine::render::{
 };
 use sky_engine::ui::neo::widgets;
 use sky_engine::ui::neo::{
-    AnimProperty, Color, Ease, HorizontalAlign, NeoState, Ui, VerticalAlign,
+    AnimProperty, Color, Ease, HorizontalAlign, NeoState, Transition, Ui, VerticalAlign,
 };
 
 const WINDOW_W: u32 = 1280;
@@ -375,7 +375,7 @@ fn draw_party(ui: &mut Ui, screen_w: f32, state: &NeoState<GameUiState>, active:
                             },
                         )
                         .shadow(18.0, 0.0, 7.0, c(0.0, 0.0, 0.0, 0.22))
-                        .transition_seconds(0.16, Ease::OutCubic)
+                        .transition(Transition::ease(0.16, Ease::OutCubic))
                         .animate(AnimProperty::COLOR | AnimProperty::BORDER)
                         .on_click(move || {
                             state_for_click.update(|state| state.active_party = index);
@@ -502,7 +502,7 @@ fn stat_bar(
         .radius(height * 0.5)
         .color(color)
         .shadow(10.0, 0.0, 0.0, color.with_alpha(0.28))
-        .transition_seconds(0.20, Ease::OutCubic)
+        .transition(Transition::ease(0.20, Ease::OutCubic))
         .animate(AnimProperty::FRAME)
         .build();
 }
@@ -573,7 +573,7 @@ fn command_button(
         .position(x, y)
         .size(size, size)
         .scale(scale)
-        .transition_seconds(0.18, Ease::OutBack)
+        .transition(Transition::ease(0.18, Ease::OutBack))
         .animate(AnimProperty::TRANSFORM)
         .content(|ui| {
             ui.rect(format!("{id}.ring"))

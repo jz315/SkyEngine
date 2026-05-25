@@ -297,45 +297,6 @@ impl<'ui> VirtualListBuilder<'ui> {
         self
     }
 
-    pub fn itemCount(self, value: usize) -> Self {
-        self.item_count(value)
-    }
-
-    pub fn itemHeight(self, value: f32) -> Self {
-        self.item_height(value)
-    }
-
-    pub fn rowHeight(self, value: f32) -> Self {
-        self.row_height(value)
-    }
-
-    pub fn overscanItems(self, value: usize) -> Self {
-        self.overscan_items(value)
-    }
-
-    pub fn offsetBind<T: 'static>(self, binding: Binding<T, f32>) -> Self {
-        self.offset_bind(binding)
-    }
-
-    pub fn valueBind<T: 'static>(self, binding: Binding<T, f32>) -> Self {
-        self.value_bind(binding)
-    }
-
-    pub fn scrollbarWidth(self, value: f32) -> Self {
-        self.scrollbar_width(value)
-    }
-
-    pub fn scrollbarGap(self, value: f32) -> Self {
-        self.scrollbar_gap(value)
-    }
-
-    pub fn onChange<F>(self, callback: F) -> Self
-    where
-        F: FnMut(f32) + 'static,
-    {
-        self.on_change(callback)
-    }
-
     pub fn content(self, mut render_item: impl FnMut(&mut Ui, VirtualListItem)) -> Response {
         let id = self.id.clone();
         let viewport_h = self.layout.fixed_height_or(240.0);
@@ -427,10 +388,6 @@ impl<'ui> VirtualListBuilder<'ui> {
 
 pub fn virtual_list(ui: &mut Ui, id: impl Into<String>) -> VirtualListBuilder<'_> {
     VirtualListBuilder::new(ui, id)
-}
-
-pub fn virtualList(ui: &mut Ui, id: impl Into<String>) -> VirtualListBuilder<'_> {
-    virtual_list(ui, id)
 }
 
 fn fixed_height_content(item_count: usize, item_height: f32, gap: f32) -> f32 {

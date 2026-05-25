@@ -8,7 +8,7 @@ use rustc_hash::FxHashMap;
 use crate::Color;
 
 use super::super::{
-    AnimProperty, Binding, Ease, HorizontalAlign, Response, Shadow, Transition, Ui, VerticalAlign,
+    AnimProperty, Binding, HorizontalAlign, Response, Shadow, Transition, Ui, VerticalAlign,
 };
 use super::slider::{slider, SliderStyle};
 use super::theme::{self, ThemeColorTokens};
@@ -103,7 +103,7 @@ impl<'ui> ColorPickerBuilder<'ui> {
             ui,
             id: id.into(),
             style: ColorPickerStyle::default(),
-            transition: Transition::make(0.16, Ease::OutCubic),
+            transition: Transition::smooth(),
             on_change: None,
             on_open_change: None,
             colors: Vec::new(),
@@ -172,11 +172,6 @@ impl<'ui> ColorPickerBuilder<'ui> {
         self
     }
 
-    pub fn transition_seconds(mut self, duration: f32, ease: Ease) -> Self {
-        self.transition = Transition::make(duration, ease);
-        self
-    }
-
     pub fn z_index(mut self, value: i32) -> Self {
         self.z_index = value;
         self
@@ -216,36 +211,6 @@ impl<'ui> ColorPickerBuilder<'ui> {
             next
         });
         self
-    }
-
-    pub fn transitionSeconds(self, duration: f32, ease: Ease) -> Self {
-        self.transition_seconds(duration, ease)
-    }
-
-    pub fn openBind<T: 'static>(self, binding: Binding<T, bool>) -> Self {
-        self.open_bind(binding)
-    }
-
-    pub fn valueBind<T: 'static>(self, binding: Binding<T, Color>) -> Self {
-        self.value_bind(binding)
-    }
-
-    pub fn zIndex(self, value: i32) -> Self {
-        self.z_index(value)
-    }
-
-    pub fn onChange<F>(self, callback: F) -> Self
-    where
-        F: FnMut(Color) + 'static,
-    {
-        self.on_change(callback)
-    }
-
-    pub fn onOpenChange<F>(self, callback: F) -> Self
-    where
-        F: FnMut(bool) + 'static,
-    {
-        self.on_open_change(callback)
     }
 
     pub fn build(self) -> Response {
@@ -313,12 +278,8 @@ impl<'ui> ColorPickerBuilder<'ui> {
     }
 }
 
-pub fn colorpicker(ui: &mut Ui, id: impl Into<String>) -> ColorPickerBuilder<'_> {
-    ColorPickerBuilder::new(ui, id)
-}
-
 pub fn color_picker(ui: &mut Ui, id: impl Into<String>) -> ColorPickerBuilder<'_> {
-    colorpicker(ui, id)
+    ColorPickerBuilder::new(ui, id)
 }
 
 #[allow(clippy::too_many_arguments)]

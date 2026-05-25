@@ -67,18 +67,6 @@ pub fn subtitle_text_style(tokens: ThemeColorTokens, value: impl Into<String>) -
     }
 }
 
-pub fn bodyTextStyle(tokens: ThemeColorTokens, value: impl Into<String>) -> TextStyle {
-    body_text_style(tokens, value)
-}
-
-pub fn titleTextStyle(tokens: ThemeColorTokens, value: impl Into<String>) -> TextStyle {
-    title_text_style(tokens, value)
-}
-
-pub fn subtitleTextStyle(tokens: ThemeColorTokens, value: impl Into<String>) -> TextStyle {
-    subtitle_text_style(tokens, value)
-}
-
 pub fn text<'ui>(ui: &'ui mut Ui, id: impl Into<String>) -> ElementBuilder<'ui> {
     let tokens = theme::dark_theme_colors();
     ui.text(id).color(tokens.text)
@@ -92,14 +80,6 @@ pub fn text_with_theme<'ui>(
     ui.text(id).color(tokens.text)
 }
 
-pub fn textWithTheme<'ui>(
-    ui: &'ui mut Ui,
-    id: impl Into<String>,
-    tokens: ThemeColorTokens,
-) -> ElementBuilder<'ui> {
-    text_with_theme(ui, id, tokens)
-}
-
 pub fn label<'ui>(ui: &'ui mut Ui, id: impl Into<String>) -> ElementBuilder<'ui> {
     let tokens = theme::dark_theme_colors();
     ui.label(id).color(tokens.text)
@@ -111,14 +91,6 @@ pub fn label_with_theme<'ui>(
     tokens: ThemeColorTokens,
 ) -> ElementBuilder<'ui> {
     ui.label(id).color(tokens.text)
-}
-
-pub fn labelWithTheme<'ui>(
-    ui: &'ui mut Ui,
-    id: impl Into<String>,
-    tokens: ThemeColorTokens,
-) -> ElementBuilder<'ui> {
-    label_with_theme(ui, id, tokens)
 }
 
 pub fn text_with_style<'ui>(
@@ -139,21 +111,9 @@ pub fn text_with_style<'ui>(
         .line_height(style.line_height)
 }
 
-pub fn textWithStyle<'ui>(
-    ui: &'ui mut Ui,
-    id: impl Into<String>,
-    style: TextStyle,
-) -> ElementBuilder<'ui> {
-    text_with_style(ui, id, style)
-}
-
-pub fn measureTextWidth(value: &str, font_family: &str, font_size: f32, font_weight: i32) -> f32 {
-    measure_text_width(value, font_family, font_size, font_weight)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{measureTextWidth, measure_text_width};
+    use super::measure_text_width;
 
     #[test]
     fn measure_text_width_empty_is_zero() {
@@ -180,13 +140,5 @@ mod tests {
         let large = measure_text_width("Sky", "", 32.0, 400);
         assert!(large > small * 1.9);
         assert!(large < small * 2.1);
-    }
-
-    #[test]
-    fn eui_source_name_alias_matches_snake_case() {
-        assert_eq!(
-            measureTextWidth("Sky", "", 16.0, 400),
-            measure_text_width("Sky", "", 16.0, 400)
-        );
     }
 }

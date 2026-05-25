@@ -67,16 +67,59 @@ pub fn apply_ease(ease: Ease, t: f32) -> f32 {
     ease.sample(t)
 }
 
-pub fn applyEase(ease: Ease, t: f32) -> f32 {
-    apply_ease(ease, t)
-}
-
 pub fn has_anim_property(mask: AnimProperty, property: AnimProperty) -> bool {
     mask.contains(property)
 }
 
-pub fn hasAnimProperty(mask: AnimProperty, property: AnimProperty) -> bool {
-    has_anim_property(mask, property)
+/// Spring parameters for interruptible target-state motion.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpringMotion {
+    pub response_seconds: f32,
+    pub damping_ratio: f32,
+}
+
+impl SpringMotion {
+    pub const fn new(response_seconds: f32, damping_ratio: f32) -> Self {
+        Self {
+            response_seconds,
+            damping_ratio,
+        }
+    }
+}
+
+/// Apple-style motion presets for common UI state changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MotionPreset {
+    Smooth,
+    Snappy,
+    Gentle,
+    Responsive,
+}
+
+impl MotionPreset {
+    pub const fn spring(self) -> SpringMotion {
+        match self {
+            Self::Smooth => SpringMotion::new(0.32, 1.0),
+            Self::Snappy => SpringMotion::new(0.22, 0.82),
+            Self::Gentle => SpringMotion::new(0.44, 1.08),
+            Self::Responsive => SpringMotion::new(0.18, 0.88),
+        }
+    }
+
+    pub fn transition(self) -> Transition {
+        Transition::spring_preset(self)
+    }
+}
+
+/// Transition interpolation mode.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Motion {
+    Ease,
+    Spring,
+}
+
+impl Motion {
+    pub const EASE: Self = Self::Ease;
 }
 
 /// Transition metadata for target-state animation.
@@ -87,6 +130,8 @@ pub struct Transition {
     pub delay_seconds: f32,
     pub ease: Ease,
     pub properties: AnimProperty,
+    pub motion: Motion,
+    pub damping_ratio: f32,
 }
 
 impl Transition {
@@ -96,29 +141,68 @@ impl Transition {
         delay_seconds: 0.0,
         ease: Ease::OutCubic,
         properties: AnimProperty::ALL,
+        motion: Motion::EASE,
+        damping_ratio: 1.0,
     };
 
-    pub fn new(duration_seconds: f32, ease: Ease) -> Self {
+    pub fn ease(duration_seconds: f32, ease: Ease) -> Self {
         Self {
             enabled: true,
             duration_seconds: duration_seconds.max(0.0),
             delay_seconds: 0.0,
             ease,
             properties: AnimProperty::ALL,
+            motion: Motion::EASE,
+            damping_ratio: 1.0,
         }
+    }
+
+    pub fn spring(response_seconds: f32, damping_ratio: f32) -> Self {
+        let spring = SpringMotion {
+            response_seconds: response_seconds.max(0.001),
+            damping_ratio: damping_ratio.max(0.001),
+        };
+        Self {
+            enabled: true,
+            duration_seconds: spring.response_seconds,
+            delay_seconds: 0.0,
+            ease: Ease::OutCubic,
+            properties: AnimProperty::ALL,
+            motion: Motion::Spring,
+            damping_ratio: spring.damping_ratio,
+        }
+    }
+
+    pub fn spring_preset(preset: MotionPreset) -> Self {
+        let spring = preset.spring();
+        Self::spring(spring.response_seconds, spring.damping_ratio)
+    }
+
+    pub fn smooth() -> Self {
+        Self::spring_preset(MotionPreset::Smooth)
+    }
+
+    pub fn snappy() -> Self {
+        Self::spring_preset(MotionPreset::Snappy)
+    }
+
+    pub fn gentle() -> Self {
+        Self::spring_preset(MotionPreset::Gentle)
+    }
+
+    pub fn responsive() -> Self {
+        Self::spring_preset(MotionPreset::Responsive)
     }
 
     pub fn none() -> Self {
         Self::DISABLED
     }
 
-    pub fn make(duration_seconds: f32, ease: Ease) -> Self {
-        Self::new(duration_seconds, ease)
-    }
-
     pub fn duration(mut self, duration_seconds: f32) -> Self {
         self.enabled = true;
         self.duration_seconds = duration_seconds.max(0.0);
+        self.motion = Motion::EASE;
+        self.damping_ratio = 1.0;
         self
     }
 
@@ -131,6 +215,25 @@ impl Transition {
     pub fn easing(mut self, ease: Ease) -> Self {
         self.enabled = true;
         self.ease = ease;
+        self.motion = Motion::EASE;
+        self.damping_ratio = 1.0;
+        self
+    }
+
+    pub fn spring_motion(mut self, response_seconds: f32, damping_ratio: f32) -> Self {
+        self.enabled = true;
+        self.duration_seconds = response_seconds.max(0.001);
+        self.motion = Motion::Spring;
+        self.damping_ratio = damping_ratio.max(0.001);
+        self
+    }
+
+    pub fn preset(mut self, preset: MotionPreset) -> Self {
+        let spring = preset.spring();
+        self.enabled = true;
+        self.duration_seconds = spring.response_seconds;
+        self.motion = Motion::Spring;
+        self.damping_ratio = spring.damping_ratio;
         self
     }
 
@@ -140,12 +243,11 @@ impl Transition {
         self
     }
 
-    pub fn durationSeconds(self, duration_seconds: f32) -> Self {
-        self.duration(duration_seconds)
-    }
-
-    pub fn delaySeconds(self, delay_seconds: f32) -> Self {
-        self.delay(delay_seconds)
+    pub fn spring_motion_params(self) -> SpringMotion {
+        SpringMotion {
+            response_seconds: self.duration_seconds.max(0.001),
+            damping_ratio: self.damping_ratio.max(0.001),
+        }
     }
 }
 
@@ -159,6 +261,14 @@ impl Default for Transition {
 pub trait Lerp: Copy {
     fn lerp(from: Self, to: Self, amount: f32) -> Self;
     fn close_enough(left: Self, right: Self) -> bool;
+    fn zero() -> Self;
+    fn spring_step(
+        current: Self,
+        velocity: Self,
+        target: Self,
+        spring: SpringMotion,
+        dt: f32,
+    ) -> (Self, Self);
 }
 
 impl Lerp for f32 {
@@ -168,6 +278,20 @@ impl Lerp for f32 {
 
     fn close_enough(left: Self, right: Self) -> bool {
         (left - right).abs() <= 0.001
+    }
+
+    fn zero() -> Self {
+        0.0
+    }
+
+    fn spring_step(
+        current: Self,
+        velocity: Self,
+        target: Self,
+        spring: SpringMotion,
+        dt: f32,
+    ) -> (Self, Self) {
+        spring_step_f32(current, velocity, target, spring, dt)
     }
 }
 
@@ -182,6 +306,22 @@ impl Lerp for [f32; 2] {
     fn close_enough(left: Self, right: Self) -> bool {
         <f32 as Lerp>::close_enough(left[0], right[0])
             && <f32 as Lerp>::close_enough(left[1], right[1])
+    }
+
+    fn zero() -> Self {
+        [0.0, 0.0]
+    }
+
+    fn spring_step(
+        current: Self,
+        velocity: Self,
+        target: Self,
+        spring: SpringMotion,
+        dt: f32,
+    ) -> (Self, Self) {
+        let (x, vx) = <f32 as Lerp>::spring_step(current[0], velocity[0], target[0], spring, dt);
+        let (y, vy) = <f32 as Lerp>::spring_step(current[1], velocity[1], target[1], spring, dt);
+        ([x, y], [vx, vy])
     }
 }
 
@@ -201,6 +341,37 @@ impl Lerp for Color {
             && <f32 as Lerp>::close_enough(left.b, right.b)
             && <f32 as Lerp>::close_enough(left.a, right.a)
     }
+
+    fn zero() -> Self {
+        Self {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.0,
+        }
+    }
+
+    fn spring_step(
+        current: Self,
+        velocity: Self,
+        target: Self,
+        spring: SpringMotion,
+        dt: f32,
+    ) -> (Self, Self) {
+        let (r, vr) = <f32 as Lerp>::spring_step(current.r, velocity.r, target.r, spring, dt);
+        let (g, vg) = <f32 as Lerp>::spring_step(current.g, velocity.g, target.g, spring, dt);
+        let (b, vb) = <f32 as Lerp>::spring_step(current.b, velocity.b, target.b, spring, dt);
+        let (a, va) = <f32 as Lerp>::spring_step(current.a, velocity.a, target.a, spring, dt);
+        (
+            Self { r, g, b, a },
+            Self {
+                r: vr,
+                g: vg,
+                b: vb,
+                a: va,
+            },
+        )
+    }
 }
 
 impl Lerp for LayoutRect {
@@ -219,6 +390,39 @@ impl Lerp for LayoutRect {
             && <f32 as Lerp>::close_enough(left.width, right.width)
             && <f32 as Lerp>::close_enough(left.height, right.height)
     }
+
+    fn zero() -> Self {
+        Self::ZERO
+    }
+
+    fn spring_step(
+        current: Self,
+        velocity: Self,
+        target: Self,
+        spring: SpringMotion,
+        dt: f32,
+    ) -> (Self, Self) {
+        let (x, vx) = <f32 as Lerp>::spring_step(current.x, velocity.x, target.x, spring, dt);
+        let (y, vy) = <f32 as Lerp>::spring_step(current.y, velocity.y, target.y, spring, dt);
+        let (width, vwidth) =
+            <f32 as Lerp>::spring_step(current.width, velocity.width, target.width, spring, dt);
+        let (height, vheight) =
+            <f32 as Lerp>::spring_step(current.height, velocity.height, target.height, spring, dt);
+        (
+            Self {
+                x,
+                y,
+                width,
+                height,
+            },
+            Self {
+                x: vx,
+                y: vy,
+                width: vwidth,
+                height: vheight,
+            },
+        )
+    }
 }
 
 impl Lerp for Border {
@@ -232,6 +436,33 @@ impl Lerp for Border {
     fn close_enough(left: Self, right: Self) -> bool {
         <f32 as Lerp>::close_enough(left.width, right.width)
             && Color::close_enough(left.color, right.color)
+    }
+
+    fn zero() -> Self {
+        Self {
+            width: 0.0,
+            color: Color::zero(),
+        }
+    }
+
+    fn spring_step(
+        current: Self,
+        velocity: Self,
+        target: Self,
+        spring: SpringMotion,
+        dt: f32,
+    ) -> (Self, Self) {
+        let (width, vwidth) =
+            <f32 as Lerp>::spring_step(current.width, velocity.width, target.width, spring, dt);
+        let (color, vcolor) =
+            Color::spring_step(current.color, velocity.color, target.color, spring, dt);
+        (
+            Self { width, color },
+            Self {
+                width: vwidth,
+                color: vcolor,
+            },
+        )
     }
 }
 
@@ -259,6 +490,60 @@ impl Lerp for Shadow {
             && <f32 as Lerp>::close_enough(left.spread, right.spread)
             && Color::close_enough(left.color, right.color)
     }
+
+    fn zero() -> Self {
+        Self {
+            enabled: false,
+            offset: [0.0, 0.0],
+            blur: 0.0,
+            spread: 0.0,
+            color: Color::zero(),
+        }
+    }
+
+    fn spring_step(
+        mut current: Self,
+        velocity: Self,
+        mut target: Self,
+        spring: SpringMotion,
+        dt: f32,
+    ) -> (Self, Self) {
+        if !current.enabled {
+            current.color.a = 0.0;
+        }
+        if !target.enabled {
+            target.color.a = 0.0;
+        }
+        let (offset, voffset) = <[f32; 2] as Lerp>::spring_step(
+            current.offset,
+            velocity.offset,
+            target.offset,
+            spring,
+            dt,
+        );
+        let (blur, vblur) =
+            <f32 as Lerp>::spring_step(current.blur, velocity.blur, target.blur, spring, dt);
+        let (spread, vspread) =
+            <f32 as Lerp>::spring_step(current.spread, velocity.spread, target.spread, spring, dt);
+        let (color, vcolor) =
+            Color::spring_step(current.color, velocity.color, target.color, spring, dt);
+        (
+            Self {
+                enabled: current.enabled || target.enabled,
+                offset,
+                blur,
+                spread,
+                color,
+            },
+            Self {
+                enabled: false,
+                offset: voffset,
+                blur: vblur,
+                spread: vspread,
+                color: vcolor,
+            },
+        )
+    }
 }
 
 impl Lerp for Transform {
@@ -277,6 +562,66 @@ impl Lerp for Transform {
             && <f32 as Lerp>::close_enough(left.rotation, right.rotation)
             && <[f32; 2] as Lerp>::close_enough(left.origin, right.origin)
     }
+
+    fn zero() -> Self {
+        Self {
+            translate: [0.0, 0.0],
+            scale: [0.0, 0.0],
+            rotation: 0.0,
+            origin: [0.0, 0.0],
+        }
+    }
+
+    fn spring_step(
+        current: Self,
+        velocity: Self,
+        target: Self,
+        spring: SpringMotion,
+        dt: f32,
+    ) -> (Self, Self) {
+        let (translate, vtranslate) = <[f32; 2] as Lerp>::spring_step(
+            current.translate,
+            velocity.translate,
+            target.translate,
+            spring,
+            dt,
+        );
+        let (scale, vscale) = <[f32; 2] as Lerp>::spring_step(
+            current.scale,
+            velocity.scale,
+            target.scale,
+            spring,
+            dt,
+        );
+        let (rotation, vrotation) = <f32 as Lerp>::spring_step(
+            current.rotation,
+            velocity.rotation,
+            target.rotation,
+            spring,
+            dt,
+        );
+        let (origin, vorigin) = <[f32; 2] as Lerp>::spring_step(
+            current.origin,
+            velocity.origin,
+            target.origin,
+            spring,
+            dt,
+        );
+        (
+            Self {
+                translate,
+                scale,
+                rotation,
+                origin,
+            },
+            Self {
+                translate: vtranslate,
+                scale: vscale,
+                rotation: vrotation,
+                origin: vorigin,
+            },
+        )
+    }
 }
 
 /// Target-state animated value.
@@ -288,6 +633,7 @@ where
     current: T,
     start: T,
     target: T,
+    velocity: T,
     elapsed: f32,
     transition: Transition,
     animating: bool,
@@ -302,6 +648,7 @@ where
             current: value,
             start: value,
             target: value,
+            velocity: T::zero(),
             elapsed: 0.0,
             transition: Transition::DISABLED,
             animating: false,
@@ -333,14 +680,22 @@ where
         if T::close_enough(self.target, target) {
             return false;
         }
+        let keep_velocity = matches!(self.transition.motion, Motion::Spring)
+            && matches!(transition.motion, Motion::Spring)
+            && self.animating;
         self.start = self.current;
         self.target = target;
         self.elapsed = 0.0;
+        if !keep_velocity {
+            self.velocity = T::zero();
+        }
         self.transition = transition;
-        self.animating =
-            transition.enabled && animate_property && transition.duration_seconds > 0.0;
+        self.animating = transition.enabled
+            && animate_property
+            && (transition.duration_seconds > 0.0 || matches!(transition.motion, Motion::Spring));
         if !self.animating {
             self.current = target;
+            self.velocity = T::zero();
         }
         true
     }
@@ -354,15 +709,64 @@ where
         if self.elapsed - self.transition.delay_seconds <= 0.0 {
             return false;
         }
-        let duration = self.transition.duration_seconds.max(0.0001);
-        let t = ((self.elapsed - self.transition.delay_seconds) / duration).clamp(0.0, 1.0);
-        self.current = T::lerp(self.start, self.target, self.transition.ease.sample(t));
-        if t >= 1.0 || T::close_enough(self.current, self.target) {
-            self.current = self.target;
-            self.animating = false;
+        match self.transition.motion {
+            Motion::Ease => {
+                let duration = self.transition.duration_seconds.max(0.0001);
+                let t = ((self.elapsed - self.transition.delay_seconds) / duration).clamp(0.0, 1.0);
+                self.current = T::lerp(self.start, self.target, self.transition.ease.sample(t));
+                if t >= 1.0 || T::close_enough(self.current, self.target) {
+                    self.current = self.target;
+                    self.velocity = T::zero();
+                    self.animating = false;
+                }
+            }
+            Motion::Spring => {
+                let step_dt = dt.max(0.0);
+                let (current, velocity) = T::spring_step(
+                    self.current,
+                    self.velocity,
+                    self.target,
+                    self.transition.spring_motion_params(),
+                    step_dt,
+                );
+                self.current = current;
+                self.velocity = velocity;
+                if T::close_enough(self.current, self.target)
+                    && T::close_enough(self.velocity, T::zero())
+                {
+                    self.current = self.target;
+                    self.velocity = T::zero();
+                    self.animating = false;
+                }
+            }
         }
         !T::close_enough(previous, self.current)
     }
+}
+
+fn spring_step_f32(
+    mut current: f32,
+    mut velocity: f32,
+    target: f32,
+    spring: SpringMotion,
+    dt: f32,
+) -> (f32, f32) {
+    let response = spring.response_seconds.max(0.001);
+    let damping_ratio = spring.damping_ratio.max(0.001);
+    let omega = std::f32::consts::TAU / response;
+    let stiffness = omega * omega;
+    let damping = 2.0 * damping_ratio * omega;
+    let mut remaining = dt.clamp(0.0, 0.25);
+
+    while remaining > 0.0 {
+        let step = remaining.min(1.0 / 120.0);
+        let acceleration = stiffness * (target - current) - damping * velocity;
+        velocity += acceleration * step;
+        current += velocity * step;
+        remaining -= step;
+    }
+
+    (current, velocity)
 }
 
 /// Smoothly approaches a target value, useful for hover/press blends.
@@ -440,7 +844,7 @@ impl Default for SmoothedValue {
 
 #[cfg(test)]
 mod tests {
-    use super::{AnimatedValue, Ease, SmoothedValue, Transition};
+    use super::{AnimatedValue, Ease, Motion, MotionPreset, SmoothedValue, Transition};
 
     #[test]
     fn easing_curves_stay_in_expected_range() {
@@ -453,7 +857,7 @@ mod tests {
     #[test]
     fn animated_value_reaches_target() {
         let mut value = AnimatedValue::new(0.0);
-        value.set_target(10.0, Transition::new(1.0, Ease::Linear));
+        value.set_target(10.0, Transition::ease(1.0, Ease::Linear));
 
         assert!(value.is_animating());
         value.update(0.5);
@@ -461,6 +865,41 @@ mod tests {
         value.update(0.5);
         assert_eq!(value.current(), 10.0);
         assert!(!value.is_animating());
+    }
+
+    #[test]
+    fn spring_value_reaches_target() {
+        let mut value = AnimatedValue::new(0.0);
+        value.set_target(10.0, Transition::smooth());
+
+        for _ in 0..80 {
+            value.update(1.0 / 60.0);
+        }
+
+        assert!((value.current() - 10.0).abs() < 0.01);
+        assert!(!value.is_animating());
+    }
+
+    #[test]
+    fn spring_retarget_keeps_velocity() {
+        let mut value = AnimatedValue::new(0.0);
+        value.set_target(100.0, Transition::snappy());
+        value.update(0.08);
+        let velocity_before = value.velocity;
+        assert!(velocity_before > 0.0);
+
+        value.set_target(0.0, Transition::snappy());
+
+        assert_eq!(value.velocity, velocity_before);
+        assert!(value.is_animating());
+    }
+
+    #[test]
+    fn motion_preset_builds_spring_transition() {
+        let transition = MotionPreset::Responsive.transition();
+
+        assert!(matches!(transition.motion, Motion::Spring));
+        assert!(transition.enabled);
     }
 
     #[test]

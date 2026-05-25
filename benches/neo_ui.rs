@@ -3,7 +3,8 @@ use std::time::Duration;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use sky_engine::ui::neo::{
-    widgets, Align, Color, HorizontalAlign, NeoState, PointerEvent, Runtime, Size, VerticalAlign,
+    widgets, Align, AnimProperty, Color, HorizontalAlign, MotionPreset, NeoState, PointerEvent,
+    Runtime, Size, VerticalAlign,
 };
 
 #[path = "../examples/ui/neo_control_center/actions.rs"]
@@ -131,7 +132,7 @@ fn compose_common_controls(runtime: &mut Runtime) {
                                 .selected(row % 3 == 0)
                                 .text("Primary")
                                 .build();
-                            widgets::toggle_switch(ui, format!("row.{row}.switch"))
+                            widgets::switch(ui, format!("row.{row}.switch"))
                                 .size(110.0, 28.0)
                                 .checked(row % 2 == 1)
                                 .label("Live")
@@ -175,6 +176,61 @@ fn compose_control_center(runtime: &mut Runtime, state: &NeoState<model::AppMode
 
     runtime.compose(CONTROL_CENTER_WIDTH, CONTROL_CENTER_HEIGHT, |ui, screen| {
         state.read(|model| view::render(ui, screen, state, model, runtime_info));
+    });
+}
+
+fn compose_motion_scene(runtime: &mut Runtime, expanded: bool) {
+    let card_x = if expanded { 382.0 } else { 96.0 };
+    let card_y = if expanded { 106.0 } else { 220.0 };
+    let card_w = if expanded { 300.0 } else { 210.0 };
+    let card_h = if expanded { 176.0 } else { 112.0 };
+    let card_scale = if expanded { 1.0 } else { 0.94 };
+    let accent_opacity = if expanded { 1.0 } else { 0.32 };
+
+    runtime.compose(800.0, 480.0, |ui, screen| {
+        ui.rect("background")
+            .size(screen.width, screen.height)
+            .color(Color::new(0.05, 0.06, 0.08, 1.0))
+            .build();
+
+        ui.stack("card")
+            .position(card_x, card_y)
+            .size(card_w, card_h)
+            .scale(card_scale)
+            .motion(MotionPreset::Smooth)
+            .animate(AnimProperty::FRAME | AnimProperty::TRANSFORM)
+            .content(|ui| {
+                ui.rect("card.surface")
+                    .size(Size::fill(), Size::fill())
+                    .color(Color::new(0.13, 0.15, 0.19, 1.0))
+                    .radius(22.0)
+                    .border(1.0, Color::new(0.30, 0.35, 0.44, 1.0))
+                    .shadow(28.0, 0.0, 14.0, Color::new(0.0, 0.0, 0.0, 0.28))
+                    .motion(MotionPreset::Smooth)
+                    .animate(AnimProperty::FRAME | AnimProperty::BORDER | AnimProperty::SHADOW)
+                    .build();
+
+                ui.rect("card.accent")
+                    .x(18.0)
+                    .y(18.0)
+                    .size(if expanded { 96.0 } else { 48.0 }, 8.0)
+                    .color(Color::new(0.42, 0.70, 1.0, 1.0))
+                    .radius(4.0)
+                    .opacity(accent_opacity)
+                    .motion(MotionPreset::Responsive)
+                    .animate(AnimProperty::FRAME | AnimProperty::OPACITY)
+                    .build();
+
+                ui.stack("card.button.slot")
+                    .position(18.0, card_h - 52.0)
+                    .size(128.0, 34.0)
+                    .content(|ui| {
+                        widgets::button(ui, "card.button")
+                            .size(128.0, 34.0)
+                            .text(if expanded { "Collapse" } else { "Expand" })
+                            .build();
+                    });
+            });
     });
 }
 
@@ -298,10 +354,38 @@ fn bench_neo_ui_control_center(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_neo_ui_motion(c: &mut Criterion) {
+    let mut group = c.benchmark_group("neo_ui_motion");
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_millis(500));
+    group.measurement_time(Duration::from_secs(2));
+
+    group.bench_function("spring_retarget_tick_and_draw", |b| {
+        let mut runtime = Runtime::new("bench");
+        let mut expanded = false;
+        let mut frame = 0_u32;
+        compose_motion_scene(&mut runtime, expanded);
+        runtime.tick_animations(0.0);
+
+        b.iter(|| {
+            if frame % 12 == 0 {
+                expanded = !expanded;
+                compose_motion_scene(&mut runtime, expanded);
+            }
+            frame = frame.wrapping_add(1);
+            black_box(runtime.tick_animations(1.0 / 120.0));
+            black_box(runtime.draw_list());
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     neo_ui_benches,
     bench_neo_ui_lists,
     bench_neo_ui_common_controls,
-    bench_neo_ui_control_center
+    bench_neo_ui_control_center,
+    bench_neo_ui_motion
 );
 criterion_main!(neo_ui_benches);

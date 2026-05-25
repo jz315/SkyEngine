@@ -2,7 +2,7 @@
 
 use crate::Color;
 
-use super::super::{Ease, Response, Transition, Ui, VerticalAlign};
+use super::super::{Response, Transition, Ui, VerticalAlign};
 use super::theme::{self, ThemeColorTokens};
 
 #[derive(Debug, Clone, Copy)]
@@ -71,7 +71,7 @@ impl<'ui> DataTableBuilder<'ui> {
             columns: Vec::new(),
             rows: Vec::new(),
             style: DataTableStyle::default(),
-            transition: Transition::make(0.12, Ease::OutCubic),
+            transition: Transition::responsive(),
             width: 420.0,
             height: 174.0,
         }
@@ -118,15 +118,6 @@ impl<'ui> DataTableBuilder<'ui> {
     pub fn transition(mut self, value: Transition) -> Self {
         self.transition = value;
         self
-    }
-
-    pub fn transition_seconds(mut self, duration: f32, ease: Ease) -> Self {
-        self.transition = Transition::make(duration, ease);
-        self
-    }
-
-    pub fn transitionSeconds(self, duration: f32, ease: Ease) -> Self {
-        self.transition_seconds(duration, ease)
     }
 
     pub fn build(self) -> Response {
@@ -275,12 +266,4 @@ impl<'ui> DataTableBuilder<'ui> {
 
 pub fn data_table(ui: &mut Ui, id: impl Into<String>) -> DataTableBuilder<'_> {
     DataTableBuilder::new(ui, id)
-}
-
-pub fn dataTable(ui: &mut Ui, id: impl Into<String>) -> DataTableBuilder<'_> {
-    data_table(ui, id)
-}
-
-pub fn datatable(ui: &mut Ui, id: impl Into<String>) -> DataTableBuilder<'_> {
-    data_table(ui, id)
 }

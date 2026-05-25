@@ -5,8 +5,6 @@
 //! widgets, and draw-list generation. Platform input, native windows, and GPU
 //! rendering live in adapter crates or engine integration layers.
 
-#![allow(non_snake_case)]
-
 mod animation;
 mod binding;
 mod builder;
@@ -27,8 +25,8 @@ pub use crate::{
     neo_bind_clone as bind_clone, neo_bind_eq as bind_eq, neo_bind_max as bind_max,
 };
 pub use animation::{
-    applyEase, apply_ease, hasAnimProperty, has_anim_property, AnimProperty, AnimatedValue, Ease,
-    Lerp, SmoothedValue, Transition,
+    apply_ease, has_anim_property, AnimProperty, AnimatedValue, Ease, Lerp, Motion, MotionPreset,
+    SmoothedValue, SpringMotion, Transition,
 };
 pub use binding::{Binding, NeoState};
 pub use builder::{ElementBuilder, Response};
@@ -37,7 +35,7 @@ pub use dsl::{Screen, Ui};
 pub use element::{
     Align, Border, CenterMode, CursorShape, EdgeInsets, EdgeMode, Element, ElementKind, Gradient,
     GradientDirection, HorizontalAlign, ImageFit, ImageRef, ImageRefKind, Insets,
-    IntoPolygonPoints, LayoutRect, Rect, Shadow, Size, Slice, Transform, Vec2, VerticalAlign,
+    IntoPolygonPoints, LayoutRect, Shadow, Size, Slice, Transform, Vec2, VerticalAlign,
 };
 pub use event::{DragEvent, KeyboardEvent, PointerEvent, ScrollEvent};
 pub use fonts::FontRef;
@@ -52,10 +50,11 @@ pub mod prelude {
         AnimProperty, Binding, Border, ButtonSkin, CenterMode, CheckboxSkin, Color, CursorShape,
         DefaultTextSystem, DragEvent, Ease, EdgeInsets, EdgeMode, FontRef, Frame, FrameInput,
         FrameResult, Gradient, GradientDirection, HorizontalAlign, ImageFit, ImageRef,
-        ImageRefKind, Insets, IntoPolygonPoints, KeyboardEvent, LayoutRect, Lerp, NeoSkin,
-        NeoState, PanelSkin, PointerEvent, Rect, Response, Runtime, Screen, ScrollEvent, Shadow,
-        Size, SkinRegistry, Slice, SliderSkin, SmoothedValue, TextMeasure, TextMeasureRequest,
-        TextSystem, Transform, Transition, Ui, Vec2, VerticalAlign,
+        ImageRefKind, Insets, IntoPolygonPoints, KeyboardEvent, LayoutRect, Lerp, Motion,
+        MotionPreset, NeoSkin, NeoState, PanelSkin, PointerEvent, Response, Runtime, Screen,
+        ScrollEvent, Shadow, Size, SkinRegistry, Slice, SliderSkin, SmoothedValue, SpringMotion,
+        TextMeasure, TextMeasureRequest, TextSystem, Transform, Transition, Ui, Vec2,
+        VerticalAlign,
     };
 }
 

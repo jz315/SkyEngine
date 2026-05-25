@@ -8,7 +8,7 @@ use rustc_hash::FxHashMap;
 use crate::Color;
 
 use super::super::{
-    AnimProperty, Binding, DragEvent, Ease, HorizontalAlign, LayoutRect, PointerEvent, Response,
+    AnimProperty, Binding, DragEvent, HorizontalAlign, LayoutRect, PointerEvent, Response,
     ScrollEvent, Shadow, Transition, Ui, VerticalAlign,
 };
 use super::theme::{self, ThemeColorTokens};
@@ -130,7 +130,7 @@ impl<'ui> DatePickerBuilder<'ui> {
             ui,
             id: id.into(),
             style: DatePickerStyle::default(),
-            transition: Transition::make(0.16, Ease::OutCubic),
+            transition: Transition::smooth(),
             on_change: None,
             on_open_change: None,
             year: 2026,
@@ -195,11 +195,6 @@ impl<'ui> DatePickerBuilder<'ui> {
         self
     }
 
-    pub fn transition_seconds(mut self, duration: f32, ease: Ease) -> Self {
-        self.transition = Transition::make(duration, ease);
-        self
-    }
-
     pub fn z_index(mut self, value: i32) -> Self {
         self.z_index = value;
         self
@@ -239,36 +234,6 @@ impl<'ui> DatePickerBuilder<'ui> {
             next
         });
         self
-    }
-
-    pub fn transitionSeconds(self, duration: f32, ease: Ease) -> Self {
-        self.transition_seconds(duration, ease)
-    }
-
-    pub fn openBind<T: 'static>(self, binding: Binding<T, bool>) -> Self {
-        self.open_bind(binding)
-    }
-
-    pub fn dateBind<T: 'static>(self, binding: Binding<T, [i32; 3]>) -> Self {
-        self.date_bind(binding)
-    }
-
-    pub fn zIndex(self, value: i32) -> Self {
-        self.z_index(value)
-    }
-
-    pub fn onChange<F>(self, callback: F) -> Self
-    where
-        F: FnMut(i32, i32, i32) + 'static,
-    {
-        self.on_change(callback)
-    }
-
-    pub fn onOpenChange<F>(self, callback: F) -> Self
-    where
-        F: FnMut(bool) + 'static,
-    {
-        self.on_open_change(callback)
     }
 
     pub fn build(self) -> Response {
@@ -337,12 +302,8 @@ impl<'ui> DatePickerBuilder<'ui> {
     }
 }
 
-pub fn datepicker(ui: &mut Ui, id: impl Into<String>) -> DatePickerBuilder<'_> {
-    DatePickerBuilder::new(ui, id)
-}
-
 pub fn date_picker(ui: &mut Ui, id: impl Into<String>) -> DatePickerBuilder<'_> {
-    datepicker(ui, id)
+    DatePickerBuilder::new(ui, id)
 }
 
 fn date_panel(

@@ -3,8 +3,8 @@
 use crate::Color;
 
 use super::super::{
-    Align, Border, Ease, HorizontalAlign, LayoutRect, PointerEvent, Response, Shadow, Size,
-    Transition, Ui, VerticalAlign,
+    Align, Border, HorizontalAlign, LayoutRect, PointerEvent, Response, Shadow, Size, Transition,
+    Ui, VerticalAlign,
 };
 use super::layout::{scale_size, WidgetLayout};
 use super::text::measure_text_width;
@@ -87,7 +87,7 @@ impl<'ui> ButtonBuilder<'ui> {
             text: "Button".to_string(),
             icon: String::new(),
             style: ButtonStyle::default(),
-            transition: Transition::default(),
+            transition: Transition::responsive(),
             on_click: None,
             on_context_menu: None,
             layout: WidgetLayout::new(DEFAULT_WIDTH, DEFAULT_HEIGHT).width(Size::WrapContent),
@@ -299,11 +299,6 @@ impl<'ui> ButtonBuilder<'ui> {
         self
     }
 
-    pub fn transition_seconds(mut self, duration: f32, ease: Ease) -> Self {
-        self.transition = Transition::make(duration, ease);
-        self
-    }
-
     pub fn on_click<F>(mut self, callback: F) -> Self
     where
         F: FnMut() + 'static,
@@ -318,88 +313,6 @@ impl<'ui> ButtonBuilder<'ui> {
     {
         self.on_context_menu = Some(Box::new(callback));
         self
-    }
-
-    pub fn iconCodepoint(self, codepoint: u32) -> Self {
-        self.icon_codepoint(codepoint)
-    }
-
-    pub fn marginXY(self, horizontal: f32, vertical: f32) -> Self {
-        self.margin_xy(horizontal, vertical)
-    }
-
-    pub fn marginEach(self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
-        self.margin_each(left, top, right, bottom)
-    }
-
-    pub fn minWidth(self, value: f32) -> Self {
-        self.min_width(value)
-    }
-
-    pub fn maxWidth(self, value: f32) -> Self {
-        self.max_width(value)
-    }
-
-    pub fn minHeight(self, value: f32) -> Self {
-        self.min_height(value)
-    }
-
-    pub fn maxHeight(self, value: f32) -> Self {
-        self.max_height(value)
-    }
-
-    pub fn fontSize(self, value: f32) -> Self {
-        self.font_size(value)
-    }
-
-    pub fn iconSize(self, value: f32) -> Self {
-        self.icon_size(value)
-    }
-
-    pub fn textColor(self, value: impl Into<Color>) -> Self {
-        self.text_color(value)
-    }
-
-    pub fn iconColor(self, value: impl Into<Color>) -> Self {
-        self.icon_color(value)
-    }
-
-    pub fn primaryTheme(self, tokens: ThemeColorTokens) -> Self {
-        self.primary_theme(tokens)
-    }
-
-    pub fn secondaryTheme(self, tokens: ThemeColorTokens) -> Self {
-        self.secondary_theme(tokens)
-    }
-
-    pub fn translateX(self, value: f32) -> Self {
-        self.translate_x(value)
-    }
-
-    pub fn translateY(self, value: f32) -> Self {
-        self.translate_y(value)
-    }
-
-    pub fn pressScale(self, value: f32) -> Self {
-        self.press_scale(value)
-    }
-
-    pub fn transitionSeconds(self, duration: f32, ease: Ease) -> Self {
-        self.transition_seconds(duration, ease)
-    }
-
-    pub fn onClick<F>(self, callback: F) -> Self
-    where
-        F: FnMut() + 'static,
-    {
-        self.on_click(callback)
-    }
-
-    pub fn onContextMenu<F>(self, callback: F) -> Self
-    where
-        F: FnMut(PointerEvent, LayoutRect) + 'static,
-    {
-        self.on_context_menu(callback)
     }
 
     pub fn build(mut self) -> Response {
@@ -435,6 +348,13 @@ impl<'ui> ButtonBuilder<'ui> {
         };
         let root_width = scale_size(self.layout.width, self.scale, natural_width);
         let root_height = scale_size(self.layout.height, self.scale, DEFAULT_HEIGHT);
+        let label_width = match root_width {
+            Size::Fixed(width) if has_icon => {
+                Size::Fixed((width - icon_width - gap - HORIZONTAL_PADDING * self.scale).max(0.0))
+            }
+            Size::Fixed(width) => Size::Fixed(width),
+            Size::WrapContent | Size::Fill => Size::WrapContent,
+        };
         let mut border = self.style.border;
         border.width *= self.scale;
         let mut shadow = self.style.shadow;
@@ -504,7 +424,7 @@ impl<'ui> ButtonBuilder<'ui> {
                         }
 
                         ui.text(text_id)
-                            .size(Size::fill(), Size::fill())
+                            .size(label_width, Size::fill())
                             .text(text)
                             .font_size(font)
                             .line_height(font)
