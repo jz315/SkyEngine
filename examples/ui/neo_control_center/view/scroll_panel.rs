@@ -42,7 +42,7 @@ pub fn scroll_panel<T: 'static>(
             });
 
         if scrollable {
-            widgets::scroll(ui, format!("{id}.scrollbar"))
+            widgets::scrollbar(ui, format!("{id}.scrollbar"))
                 .x((width - bar_w).max(0.0))
                 .size(bar_w, height)
                 .viewport(height)

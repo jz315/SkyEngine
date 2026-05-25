@@ -1,7 +1,7 @@
 //! Visual stress lab for the EUI-NEO-style UI backend.
 //!
 //! ```bash
-//! cargo run --example weird_neo_lab --features ui-neo --release
+//! cargo run --example ui_neo_stress_lab --features ui-neo --release
 //! ```
 
 use sky_engine::app::{
@@ -658,7 +658,7 @@ fn draw_control_cabinet(
                 });
         });
 
-    widgets::scroll(ui, "cabinet.scrollbar")
+    widgets::scrollbar(ui, "cabinet.scrollbar")
         .x(300.0)
         .y(438.0)
         .size(8.0, viewport_h)

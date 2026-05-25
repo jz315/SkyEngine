@@ -8,6 +8,8 @@ use super::{Align, Element, ElementKind, LayoutRect, Size};
 struct MeasuredNode {
     width: f32,
     height: f32,
+    child_available_width: f32,
+    child_available_height: f32,
     children: Vec<MeasuredNode>,
 }
 
@@ -89,6 +91,8 @@ fn measure_node(
             content_height + element.padding.vertical(),
             available_height,
         ),
+        child_available_width,
+        child_available_height,
         children,
     }
 }
@@ -280,20 +284,21 @@ fn layout_element(
         return;
     }
     let content = content_rect(element);
-    let layout_children = element
-        .children
-        .iter()
-        .map(|child| measure_node(child, content.width, content.height, text_system))
-        .collect();
-    let layout_measured = MeasuredNode {
-        width: measured.width,
-        height: measured.height,
-        children: layout_children,
+    let layout_children;
+    let children = if same_measure_space(measured, content) {
+        &measured.children
+    } else {
+        layout_children = element
+            .children
+            .iter()
+            .map(|child| measure_node(child, content.width, content.height, text_system))
+            .collect::<Vec<_>>();
+        &layout_children
     };
     match element.kind {
-        ElementKind::Row => layout_row(element, &layout_measured, text_system),
-        ElementKind::Column => layout_column(element, &layout_measured, text_system),
-        ElementKind::Stack => layout_stack(element, &layout_measured, text_system),
+        ElementKind::Row => layout_row(element, children, text_system),
+        ElementKind::Column => layout_column(element, children, text_system),
+        ElementKind::Stack => layout_stack(element, children, text_system),
         ElementKind::Rect
         | ElementKind::Polygon
         | ElementKind::Text
@@ -302,17 +307,31 @@ fn layout_element(
     }
 }
 
-fn layout_row(element: &mut Element, measured: &MeasuredNode, text_system: &mut dyn TextSystem) {
+fn layout_row(element: &mut Element, children: &[MeasuredNode], text_system: &mut dyn TextSystem) {
     let content = content_rect(element);
-    let child_widths = row_child_widths(element, measured, content.width);
-    let total_width = row_total_width_from(element, measured, &child_widths);
+    if !has_growing_child(element) {
+        let total_width = row_total_width(element, children);
+        let mut cursor = content.x + align_offset(element.main_align, content.width, total_width);
+
+        for (child, child_measured) in element.children.iter_mut().zip(children) {
+            let child_outer_height = outer_height(child, child_measured);
+            let child_x = cursor + child.margin.left;
+            let child_y = content.y
+                + align_offset(element.cross_align, content.height, child_outer_height)
+                + child.margin.top;
+            layout_element(child, child_measured, child_x, child_y, text_system);
+            cursor +=
+                child_measured.width + child.margin.left + child.margin.right + element.spacing;
+        }
+        return;
+    }
+
+    let child_widths = row_child_widths(element, children, content.width);
+    let total_width = row_total_width_from(element, children, &child_widths);
     let mut cursor = content.x + align_offset(element.main_align, content.width, total_width);
 
-    for ((child, child_measured), child_width) in element
-        .children
-        .iter_mut()
-        .zip(&measured.children)
-        .zip(child_widths)
+    for ((child, child_measured), child_width) in
+        element.children.iter_mut().zip(children).zip(child_widths)
     {
         let mut adjusted = child_measured.clone();
         adjusted.width = child_width;
@@ -326,17 +345,35 @@ fn layout_row(element: &mut Element, measured: &MeasuredNode, text_system: &mut 
     }
 }
 
-fn layout_column(element: &mut Element, measured: &MeasuredNode, text_system: &mut dyn TextSystem) {
+fn layout_column(
+    element: &mut Element,
+    children: &[MeasuredNode],
+    text_system: &mut dyn TextSystem,
+) {
     let content = content_rect(element);
-    let child_heights = column_child_heights(element, measured, content.height);
-    let total_height = column_total_height_from(element, measured, &child_heights);
+    if !has_growing_child(element) {
+        let total_height = column_total_height(element, children);
+        let mut cursor = content.y + align_offset(element.main_align, content.height, total_height);
+
+        for (child, child_measured) in element.children.iter_mut().zip(children) {
+            let child_outer_width = outer_width(child, child_measured);
+            let child_x = content.x
+                + align_offset(element.cross_align, content.width, child_outer_width)
+                + child.margin.left;
+            let child_y = cursor + child.margin.top;
+            layout_element(child, child_measured, child_x, child_y, text_system);
+            cursor +=
+                child_measured.height + child.margin.top + child.margin.bottom + element.spacing;
+        }
+        return;
+    }
+
+    let child_heights = column_child_heights(element, children, content.height);
+    let total_height = column_total_height_from(element, children, &child_heights);
     let mut cursor = content.y + align_offset(element.main_align, content.height, total_height);
 
-    for ((child, child_measured), child_height) in element
-        .children
-        .iter_mut()
-        .zip(&measured.children)
-        .zip(child_heights)
+    for ((child, child_measured), child_height) in
+        element.children.iter_mut().zip(children).zip(child_heights)
     {
         let mut adjusted = child_measured.clone();
         adjusted.height = child_height;
@@ -350,9 +387,13 @@ fn layout_column(element: &mut Element, measured: &MeasuredNode, text_system: &m
     }
 }
 
-fn layout_stack(element: &mut Element, measured: &MeasuredNode, text_system: &mut dyn TextSystem) {
+fn layout_stack(
+    element: &mut Element,
+    children: &[MeasuredNode],
+    text_system: &mut dyn TextSystem,
+) {
     let parent = content_rect(element);
-    for (child, child_measured) in element.children.iter_mut().zip(&measured.children) {
+    for (child, child_measured) in element.children.iter_mut().zip(children) {
         let child_outer_width = outer_width(child, child_measured);
         let child_outer_height = outer_height(child, child_measured);
         let x = if child.has_x {
@@ -373,6 +414,15 @@ fn layout_stack(element: &mut Element, measured: &MeasuredNode, text_system: &mu
     }
 }
 
+fn same_measure_space(measured: &MeasuredNode, content: LayoutRect) -> bool {
+    close_enough(measured.child_available_width, content.width)
+        && close_enough(measured.child_available_height, content.height)
+}
+
+fn close_enough(left: f32, right: f32) -> bool {
+    (left - right).abs() <= 0.001
+}
+
 fn content_rect(element: &Element) -> LayoutRect {
     let frame = element.frame;
     LayoutRect::new(
@@ -391,31 +441,50 @@ fn outer_height(element: &Element, measured: &MeasuredNode) -> f32 {
     measured.height + element.margin.top + element.margin.bottom
 }
 
-fn row_total_width_from(element: &Element, measured: &MeasuredNode, widths: &[f32]) -> f32 {
+fn has_growing_child(element: &Element) -> bool {
+    element.children.iter().any(|child| child.grow > 0.0)
+}
+
+fn row_total_width(element: &Element, children: &[MeasuredNode]) -> f32 {
     let mut total = 0.0;
-    for (index, ((child, _), width)) in element
-        .children
-        .iter()
-        .zip(&measured.children)
-        .zip(widths.iter())
-        .enumerate()
-    {
-        total += width + child.margin.left + child.margin.right;
-        if index + 1 < measured.children.len() {
+    for (index, (child, measured)) in element.children.iter().zip(children).enumerate() {
+        total += outer_width(child, measured);
+        if index + 1 < children.len() {
             total += element.spacing;
         }
     }
     total
 }
 
-fn row_child_widths(element: &Element, measured: &MeasuredNode, available_width: f32) -> Vec<f32> {
+fn row_total_width_from(element: &Element, children: &[MeasuredNode], widths: &[f32]) -> f32 {
+    let mut total = 0.0;
+    for (index, ((child, _), width)) in element
+        .children
+        .iter()
+        .zip(children)
+        .zip(widths.iter())
+        .enumerate()
+    {
+        total += width + child.margin.left + child.margin.right;
+        if index + 1 < children.len() {
+            total += element.spacing;
+        }
+    }
+    total
+}
+
+fn row_child_widths(
+    element: &Element,
+    children: &[MeasuredNode],
+    available_width: f32,
+) -> Vec<f32> {
     let mut widths: Vec<f32> = element
         .children
         .iter()
-        .zip(&measured.children)
+        .zip(children)
         .map(|(child, child_measured)| clamp_width(child, child_measured.width))
         .collect();
-    let total_width = row_total_width_from(element, measured, &widths);
+    let total_width = row_total_width_from(element, children, &widths);
     let mut remaining = (available_width - total_width).max(0.0);
     let mut active: Vec<usize> = element
         .children
@@ -462,17 +531,28 @@ fn row_child_widths(element: &Element, measured: &MeasuredNode, available_width:
     widths
 }
 
-fn column_total_height_from(element: &Element, measured: &MeasuredNode, heights: &[f32]) -> f32 {
+fn column_total_height(element: &Element, children: &[MeasuredNode]) -> f32 {
+    let mut total = 0.0;
+    for (index, (child, measured)) in element.children.iter().zip(children).enumerate() {
+        total += outer_height(child, measured);
+        if index + 1 < children.len() {
+            total += element.spacing;
+        }
+    }
+    total
+}
+
+fn column_total_height_from(element: &Element, children: &[MeasuredNode], heights: &[f32]) -> f32 {
     let mut total = 0.0;
     for (index, ((child, _), height)) in element
         .children
         .iter()
-        .zip(&measured.children)
+        .zip(children)
         .zip(heights.iter())
         .enumerate()
     {
         total += height + child.margin.top + child.margin.bottom;
-        if index + 1 < measured.children.len() {
+        if index + 1 < children.len() {
             total += element.spacing;
         }
     }
@@ -481,16 +561,16 @@ fn column_total_height_from(element: &Element, measured: &MeasuredNode, heights:
 
 fn column_child_heights(
     element: &Element,
-    measured: &MeasuredNode,
+    children: &[MeasuredNode],
     available_height: f32,
 ) -> Vec<f32> {
     let mut heights: Vec<f32> = element
         .children
         .iter()
-        .zip(&measured.children)
+        .zip(children)
         .map(|(child, child_measured)| clamp_height(child, child_measured.height))
         .collect();
-    let total_height = column_total_height_from(element, measured, &heights);
+    let total_height = column_total_height_from(element, children, &heights);
     let mut remaining = (available_height - total_height).max(0.0);
     let mut active: Vec<usize> = element
         .children

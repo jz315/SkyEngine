@@ -5,8 +5,6 @@
 //! visual transform semantics, then emits backend-neutral draw commands for
 //! host renderers.
 
-use rustc_hash::FxHashMap;
-
 use super::Color;
 
 use super::{
@@ -136,39 +134,20 @@ impl Default for RenderTransform {
 }
 
 pub(crate) fn build_draw_list(runtime: &Runtime) -> UiDrawList {
-    let elements = collect_element_map(runtime.roots());
     let mut commands = Vec::new();
     let transform = RenderTransform::default();
-    for root in ordered_elements(runtime.roots()) {
-        draw_element(root, runtime, &elements, transform, None, &mut commands);
-    }
+    draw_elements(runtime.roots(), runtime, transform, None, &mut commands);
     UiDrawList::new(commands)
-}
-
-fn collect_element_map<'a>(elements: &'a [Element]) -> FxHashMap<&'a str, &'a Element> {
-    let mut map = FxHashMap::default();
-    for element in elements {
-        collect_element(element, &mut map);
-    }
-    map
-}
-
-fn collect_element<'a>(element: &'a Element, map: &mut FxHashMap<&'a str, &'a Element>) {
-    map.insert(element.id.as_str(), element);
-    for child in &element.children {
-        collect_element(child, map);
-    }
 }
 
 fn draw_element(
     element: &Element,
     runtime: &Runtime,
-    elements: &FxHashMap<&str, &Element>,
     inherited: RenderTransform,
     inherited_clip: Option<LayoutRect>,
     commands: &mut Vec<UiDrawCommand>,
 ) {
-    let render_transform = resolve_render_transform(element, runtime, elements, inherited);
+    let render_transform = resolve_render_transform(element, runtime, inherited);
     if render_transform.opacity <= 0.001 {
         return;
     }
@@ -252,32 +231,62 @@ fn draw_element(
         ElementKind::Row | ElementKind::Column | ElementKind::Stack => {}
     }
 
-    for child in ordered_elements(&element.children) {
-        draw_element(
-            child,
-            runtime,
-            elements,
-            render_transform,
-            active_clip,
-            commands,
-        );
-    }
+    draw_elements(
+        &element.children,
+        runtime,
+        render_transform,
+        active_clip,
+        commands,
+    );
 
     if pushed_clip {
         commands.push(UiDrawCommand::PopClip);
     }
 }
 
-fn ordered_elements(elements: &[Element]) -> Vec<&Element> {
-    let mut ordered: Vec<_> = elements.iter().collect();
-    ordered.sort_by_key(|element| element.z_index);
-    ordered
+fn draw_elements(
+    elements: &[Element],
+    runtime: &Runtime,
+    inherited: RenderTransform,
+    inherited_clip: Option<LayoutRect>,
+    commands: &mut Vec<UiDrawCommand>,
+) {
+    if elements.len() <= 1 {
+        for element in elements {
+            draw_element(element, runtime, inherited, inherited_clip, commands);
+        }
+        return;
+    }
+
+    if z_order_is_stable(elements) {
+        for element in elements {
+            draw_element(element, runtime, inherited, inherited_clip, commands);
+        }
+        return;
+    }
+
+    let mut order: Vec<usize> = (0..elements.len()).collect();
+    order.sort_by_key(|&index| (elements[index].z_index, index));
+    for index in order {
+        draw_element(
+            &elements[index],
+            runtime,
+            inherited,
+            inherited_clip,
+            commands,
+        );
+    }
+}
+
+fn z_order_is_stable(elements: &[Element]) -> bool {
+    elements
+        .windows(2)
+        .all(|pair| pair[0].z_index <= pair[1].z_index)
 }
 
 fn resolve_render_transform(
     element: &Element,
     runtime: &Runtime,
-    _elements: &FxHashMap<&str, &Element>,
     inherited: RenderTransform,
 ) -> RenderTransform {
     let mut result = inherited;

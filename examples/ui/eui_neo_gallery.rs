@@ -5,7 +5,7 @@
 //! content surface, component sections, chart/table widgets, and overlay widgets.
 //!
 //! ```bash
-//! cargo run --example eui_neo_gallery --features ui-neo --release
+//! cargo run --example ui_neo_eui_gallery --features ui-neo --release
 //! ```
 
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -745,7 +745,7 @@ fn draw_content(
                         });
 
                     if scrollable {
-                        widgets::scroll(ui, "page.scrollbar")
+                        widgets::scrollbar(ui, "page.scrollbar")
                             .x((inner_width - scroll_width).max(0.0))
                             .size(scroll_width, body_height)
                             .viewport(body_height)

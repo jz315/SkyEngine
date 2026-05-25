@@ -18,7 +18,7 @@ pub mod panel;
 pub mod pie_chart;
 pub mod progress;
 pub mod radio;
-pub mod scroll;
+mod scroll;
 pub mod segmented;
 pub mod skin;
 pub mod slider;
@@ -28,6 +28,7 @@ pub mod text;
 pub mod theme;
 pub mod time_picker;
 pub mod toast;
+pub mod virtual_list;
 
 pub use badge::{badge, BadgeBuilder, BadgeStyle};
 pub use bar_chart::{barChart, bar_chart, barchart, BarChartBuilder, BarChartStyle};
@@ -52,7 +53,7 @@ pub use panel::{
 pub use pie_chart::{pieChart, pie_chart, piechart, PieChartBuilder, PieChartStyle};
 pub use progress::{progress, ProgressBuilder, ProgressStyle};
 pub use radio::{radio, RadioBuilder, RadioStyle};
-pub use scroll::{scroll, scroll_column, ScrollBuilder, ScrollColumnBuilder, ScrollStyle};
+pub use scroll::{scroll_column, scrollbar, ScrollColumnBuilder, ScrollbarBuilder, ScrollbarStyle};
 pub use segmented::{segmented, SegmentedBuilder, SegmentedStyle};
 pub use skin::{
     skin_button, skin_checkbox, skin_icon_button, skin_panel, skin_slider, skin_status_bar,
@@ -70,13 +71,16 @@ pub use text::{
 };
 pub use time_picker::{time_picker, timepicker, TimePickerBuilder, TimePickerStyle};
 pub use toast::{toast, ToastBuilder, ToastStyle};
+pub use virtual_list::{
+    virtualList, virtual_list, VirtualListBuilder, VirtualListItem, VirtualListRange,
+};
 
 #[cfg(test)]
 mod tests {
     use super::{
         badge, barChart, bodyTextStyle, button, checkbox, colorpicker, contextMenu, context_menu,
         dataTable, datepicker, dialog, dropdown, imageWithStyle, input, lineChart, panelWithStyle,
-        pieChart, progress, radio, scroll, scroll_column, segmented, skin_button, slider, tabs,
+        pieChart, progress, radio, scroll_column, scrollbar, segmented, skin_button, slider, tabs,
         timepicker, toast, toggleSwitch,
     };
     use crate::expert::UiDrawCommand;
@@ -313,13 +317,13 @@ mod tests {
     }
 
     #[test]
-    fn scroll_wheel_reports_clamped_offset_change() {
+    fn scrollbar_wheel_reports_clamped_offset_change() {
         let offset = Rc::new(Cell::new(-1.0));
         let callback_offset = offset.clone();
         let mut runtime = Runtime::new("page");
         runtime.compose(80.0, 240.0, move |ui, _| {
             let callback_offset = callback_offset.clone();
-            scroll(ui, "list.scroll")
+            scrollbar(ui, "list.scrollbar")
                 .size(8.0, 100.0)
                 .offset(20.0)
                 .viewport(100.0)
@@ -563,7 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn scroll_binding_writes_wheel_offset_to_state() {
+    fn scrollbar_binding_writes_wheel_offset_to_state() {
         let state = NeoState::new(BoundWidgetState {
             offset: 20.0,
             ..BoundWidgetState::default()
@@ -573,7 +577,7 @@ mod tests {
         runtime.compose(80.0, 240.0, move |ui, _| {
             let offset =
                 compose_state.bind(|state| state.offset, |state, value| state.offset = value);
-            scroll(ui, "list.scroll")
+            scrollbar(ui, "list.scrollbar")
                 .size(8.0, 100.0)
                 .offset_bind(offset)
                 .viewport(100.0)
@@ -854,7 +858,7 @@ mod tests {
                                 .onChange(|_| {})
                                 .build();
 
-                            scroll(ui, "scroll")
+                            scrollbar(ui, "scrollbar")
                                 .size(8.0, 48.0)
                                 .viewportHeight(48.0)
                                 .contentHeight(120.0)

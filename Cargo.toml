@@ -530,6 +530,11 @@ name = "parallel_query"
 path = "benches/parallel_query.rs"
 harness = false
 
+[[bench]]
+name = "neo_ui"
+path = "benches/neo_ui.rs"
+harness = false
+required-features = ["ui-neo"]
 [profile.release]
 debug = true
 

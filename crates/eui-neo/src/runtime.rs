@@ -1,4 +1,4 @@
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 
 use super::dsl::UiCallbacks;
 use super::event::InteractionState;
@@ -326,7 +326,6 @@ impl Runtime {
     }
 
     pub fn compose(&mut self, width: f32, height: f32, compose: impl FnOnce(&mut Ui, Screen)) {
-        let previous = self.structure.clone();
         self.needs_compose = false;
         let screen = Screen { width, height };
         let mut ui = Ui::new(self.page_id.clone());
@@ -338,11 +337,12 @@ impl Runtime {
         compose(&mut ui, screen);
         let (mut roots, callbacks) = ui.into_parts();
         layout_roots_with_text_system(&mut roots, width, height, self.text_system.as_mut());
-        self.structure = collect_structure(&roots);
-        if self.structure != previous || self.screen != screen {
+        let next_structure = collect_structure(&roots, self.structure.len());
+        if next_structure != self.structure || self.screen != screen {
             self.needs_render = true;
             self.full_redraw = true;
         }
+        self.structure = next_structure;
         self.screen = screen;
         self.roots = roots;
         self.callbacks = callbacks;
@@ -535,8 +535,11 @@ impl Runtime {
         let captured_id = self.active_id.clone();
         let hover_id = captured_id.clone().or(hit_id.clone());
         let mut ids = FxHashSet::default();
-        collect_interactive_ids(&self.roots, &mut ids);
+        ids.extend(self.interactions.keys().cloned());
         if let Some(id) = captured_id.as_ref() {
+            ids.insert(id.clone());
+        }
+        if let Some(id) = hit_id.as_ref() {
             ids.insert(id.clone());
         }
 
@@ -619,17 +622,21 @@ impl Runtime {
                     self.needs_render = true;
                 }
             }
-            responses.insert(
-                id.clone(),
-                Response {
-                    hovered,
-                    pressed,
-                    clicked,
-                    focused: false,
-                    changed: state.changed,
-                },
-            );
-            next.insert(id, state);
+            if state != InteractionState::default() || state.changed {
+                responses.insert(
+                    id.clone(),
+                    Response {
+                        hovered,
+                        pressed,
+                        clicked,
+                        focused: false,
+                        changed: state.changed,
+                    },
+                );
+            }
+            if state != InteractionState::default() {
+                next.insert(id, state);
+            }
         }
 
         if event.released_this_frame {
@@ -1055,13 +1062,22 @@ impl Runtime {
         if id.is_empty() || self.page_id.is_empty() {
             return id.to_string();
         }
-        let prefix = format!("{}.", self.page_id);
-        if id.starts_with(&prefix) {
+        if is_resolved_id(id, &self.page_id) {
             id.to_string()
         } else {
-            format!("{prefix}{id}")
+            let mut resolved = String::with_capacity(self.page_id.len() + 1 + id.len());
+            resolved.push_str(&self.page_id);
+            resolved.push('.');
+            resolved.push_str(id);
+            resolved
         }
     }
+}
+
+fn is_resolved_id(id: &str, page_id: &str) -> bool {
+    id.len() > page_id.len()
+        && id.as_bytes().get(page_id.len()) == Some(&b'.')
+        && id.as_bytes().starts_with(page_id.as_bytes())
 }
 
 fn ordered_element_clones(elements: &[Element]) -> Vec<Element> {
@@ -1167,8 +1183,8 @@ fn color_close_enough(left: Color, right: Color) -> bool {
         && (left.a - right.a).abs() <= 0.001
 }
 
-fn collect_structure(roots: &[Element]) -> Vec<ElementSnapshot> {
-    let mut snapshots = Vec::new();
+fn collect_structure(roots: &[Element], previous_len: usize) -> Vec<ElementSnapshot> {
+    let mut snapshots = Vec::with_capacity(previous_len);
     for root in roots {
         collect_element_structure(root, &mut snapshots);
     }
@@ -1199,15 +1215,6 @@ fn find_element<'a>(element: &'a Element, id: &str) -> Option<&'a Element> {
         .find_map(|child| find_element(child, id))
 }
 
-fn collect_interactive_ids(elements: &[Element], ids: &mut FxHashSet<String>) {
-    for element in elements {
-        if element.interactive && !element.disabled {
-            ids.insert(element.id.clone());
-        }
-        collect_interactive_ids(&element.children, ids);
-    }
-}
-
 fn hit_test_interactive(elements: &[Element], position: Option<[f32; 2]>) -> Option<String> {
     hit_test(elements, position, |element| {
         element.interactive && !element.disabled
@@ -1226,41 +1233,81 @@ fn hit_test(
     predicate: impl Fn(&Element) -> bool,
 ) -> Option<String> {
     let position = position?;
-    let mut target = None;
-    hit_test_elements(elements, position, None, &predicate, &mut target);
-    target
+    hit_test_elements(elements, position, None, &predicate).map(|element| element.id.clone())
 }
 
-fn hit_test_elements(
-    elements: &[Element],
+fn hit_test_elements<'a>(
+    elements: &'a [Element],
     position: [f32; 2],
     clip: Option<LayoutRect>,
     predicate: &impl Fn(&Element) -> bool,
-    target: &mut Option<String>,
-) {
+) -> Option<&'a Element> {
+    if elements.len() <= 1 {
+        for element in elements.iter().rev() {
+            if let Some(target) = hit_test_element(element, position, clip, predicate) {
+                return Some(target);
+            }
+        }
+        return None;
+    }
+
+    if z_order_is_stable(elements) {
+        for element in elements.iter().rev() {
+            if let Some(target) = hit_test_element(element, position, clip, predicate) {
+                return Some(target);
+            }
+        }
+        return None;
+    }
+
     let mut order: Vec<usize> = (0..elements.len()).collect();
     order.sort_by_key(|&index| (elements[index].z_index, index));
-    for index in order {
-        let element = &elements[index];
-        if clip.is_some_and(|clip| !clip.contains(position)) {
-            continue;
+    for index in order.into_iter().rev() {
+        if let Some(target) = hit_test_element(&elements[index], position, clip, predicate) {
+            return Some(target);
         }
-        let next_clip = if element.clip {
-            Some(match clip {
-                Some(parent) => intersect_rect(parent, element.frame).unwrap_or(LayoutRect::ZERO),
-                None => element.frame,
-            })
-        } else {
-            clip
-        };
-        if predicate(element)
-            && hit_contains(element, position)
-            && next_clip.is_none_or(|clip| clip.contains(position))
-        {
-            *target = Some(element.id.clone());
-        }
-        hit_test_elements(&element.children, position, next_clip, predicate, target);
     }
+    None
+}
+
+fn z_order_is_stable(elements: &[Element]) -> bool {
+    elements
+        .windows(2)
+        .all(|pair| pair[0].z_index <= pair[1].z_index)
+}
+
+fn hit_test_element<'a>(
+    element: &'a Element,
+    position: [f32; 2],
+    clip: Option<LayoutRect>,
+    predicate: &impl Fn(&Element) -> bool,
+) -> Option<&'a Element> {
+    if clip.is_some_and(|clip| !clip.contains(position)) {
+        return None;
+    }
+    let next_clip = if element.clip {
+        let clip = match clip {
+            Some(parent) => intersect_rect(parent, element.frame)?,
+            None => element.frame,
+        };
+        if !clip.contains(position) {
+            return None;
+        }
+        Some(clip)
+    } else {
+        clip
+    };
+
+    let element_hit = if predicate(element)
+        && hit_contains(element, position)
+        && next_clip.is_none_or(|clip| clip.contains(position))
+    {
+        Some(element)
+    } else {
+        None
+    };
+
+    hit_test_elements(&element.children, position, next_clip, predicate).or(element_hit)
 }
 
 fn hit_contains(element: &Element, position: [f32; 2]) -> bool {
@@ -1315,7 +1362,7 @@ fn collect_timer_ids(elements: &[Element], timers: &mut Vec<(String, f32)>) {
 }
 
 fn element_signature(element: &Element) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut hasher = FxHasher::default();
     element.kind.hash(&mut hasher);
     element.id.hash(&mut hasher);
     element.has_x.hash(&mut hasher);
@@ -1772,6 +1819,22 @@ mod tests {
 
         assert!(runtime.response("button").clicked());
         assert!(runtime.needs_render());
+    }
+
+    #[test]
+    fn pointer_hover_leave_reports_changed_response() {
+        let mut runtime = Runtime::new("demo");
+        runtime.compose(100.0, 100.0, |ui, _| {
+            ui.rect("button").size(40.0, 30.0).interactive(true).build();
+        });
+
+        runtime.update_pointer(PointerEvent::at(10.0, 10.0));
+        assert!(runtime.response("button").hovered());
+
+        runtime.update_pointer(PointerEvent::at(90.0, 90.0));
+        let response = runtime.response("button");
+        assert!(!response.hovered());
+        assert!(response.changed());
     }
 
     #[test]

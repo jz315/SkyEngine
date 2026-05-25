@@ -1,4 +1,4 @@
-//! Port of `EUI-NEO/components/scroll.h`.
+//! Scrollbar and scroll-container composition helpers.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -15,7 +15,7 @@ use super::theme::{self, ThemeColorTokens};
 type ChangeCallback = Rc<RefCell<Box<dyn FnMut(f32)>>>;
 
 #[derive(Debug, Clone, Copy)]
-pub struct ScrollStyle {
+pub struct ScrollbarStyle {
     pub track: Color,
     pub thumb: Color,
     pub thumb_hover: Color,
@@ -23,7 +23,7 @@ pub struct ScrollStyle {
     pub radius: f32,
 }
 
-impl ScrollStyle {
+impl ScrollbarStyle {
     pub fn new(tokens: ThemeColorTokens) -> Self {
         Self {
             track: theme::with_opacity(tokens.surface_hover, if tokens.dark { 0.34 } else { 0.46 }),
@@ -35,16 +35,16 @@ impl ScrollStyle {
     }
 }
 
-impl Default for ScrollStyle {
+impl Default for ScrollbarStyle {
     fn default() -> Self {
         Self::new(theme::dark_theme_colors())
     }
 }
 
-pub struct ScrollBuilder<'ui> {
+pub struct ScrollbarBuilder<'ui> {
     ui: &'ui mut Ui,
     id: String,
-    style: ScrollStyle,
+    style: ScrollbarStyle,
     transition: Transition,
     on_change: Option<ChangeCallback>,
     width: f32,
@@ -60,12 +60,12 @@ pub struct ScrollBuilder<'ui> {
     z_index: i32,
 }
 
-impl<'ui> ScrollBuilder<'ui> {
+impl<'ui> ScrollbarBuilder<'ui> {
     pub fn new(ui: &'ui mut Ui, id: impl Into<String>) -> Self {
         Self {
             ui,
             id: id.into(),
-            style: ScrollStyle::default(),
+            style: ScrollbarStyle::default(),
             transition: Transition::make(0.12, Ease::OutCubic),
             on_change: None,
             width: 8.0,
@@ -158,13 +158,13 @@ impl<'ui> ScrollBuilder<'ui> {
         self.z_index(value)
     }
 
-    pub fn style(mut self, value: ScrollStyle) -> Self {
+    pub fn style(mut self, value: ScrollbarStyle) -> Self {
         self.style = value;
         self
     }
 
     pub fn theme(mut self, tokens: ThemeColorTokens) -> Self {
-        self.style = ScrollStyle::new(tokens);
+        self.style = ScrollbarStyle::new(tokens);
         self
     }
 
@@ -300,15 +300,15 @@ impl<'ui> ScrollBuilder<'ui> {
     }
 }
 
-pub fn scroll(ui: &mut Ui, id: impl Into<String>) -> ScrollBuilder<'_> {
-    ScrollBuilder::new(ui, id)
+pub fn scrollbar(ui: &mut Ui, id: impl Into<String>) -> ScrollbarBuilder<'_> {
+    ScrollbarBuilder::new(ui, id)
 }
 
 pub struct ScrollColumnBuilder<'ui> {
     ui: &'ui mut Ui,
     id: String,
     layout: WidgetLayout,
-    style: ScrollStyle,
+    style: ScrollbarStyle,
     offset: f32,
     content_height: f32,
     step: f32,
@@ -325,7 +325,7 @@ impl<'ui> ScrollColumnBuilder<'ui> {
             ui,
             id: id.into(),
             layout: WidgetLayout::new(320.0, 240.0),
-            style: ScrollStyle::default(),
+            style: ScrollbarStyle::default(),
             offset: 0.0,
             content_height: 240.0,
             step: 48.0,
@@ -474,13 +474,13 @@ impl<'ui> ScrollColumnBuilder<'ui> {
         self.scrollbar_gap(value)
     }
 
-    pub fn style(mut self, value: ScrollStyle) -> Self {
+    pub fn style(mut self, value: ScrollbarStyle) -> Self {
         self.style = value;
         self
     }
 
     pub fn theme(mut self, tokens: ThemeColorTokens) -> Self {
-        self.style = ScrollStyle::new(tokens);
+        self.style = ScrollbarStyle::new(tokens);
         self
     }
 
@@ -555,7 +555,7 @@ impl<'ui> ScrollColumnBuilder<'ui> {
                 });
 
                 if scrollable && self.scrollbar_width > 0.0 {
-                    scroll(ui, format!("{id}.scrollbar"))
+                    scrollbar(ui, format!("{id}.scrollbar"))
                         .size(self.scrollbar_width, viewport_h)
                         .viewport(viewport_h)
                         .content(self.content_height)
@@ -587,7 +587,7 @@ mod tests {
     use crate::DragEvent;
 
     #[test]
-    fn scroll_drag_offset_uses_thumb_travel_ratio() {
+    fn scrollbar_drag_offset_uses_thumb_travel_ratio() {
         let event = DragEvent {
             delta_y: 10.0,
             ..DragEvent::default()

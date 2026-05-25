@@ -204,11 +204,14 @@ impl Ui {
         if id.is_empty() || self.page_id.is_empty() {
             return id.to_string();
         }
-        let prefix = format!("{}.", self.page_id);
-        if id.starts_with(&prefix) {
+        if is_resolved_id(id, &self.page_id) {
             id.to_string()
         } else {
-            format!("{prefix}{id}")
+            let mut resolved = String::with_capacity(self.page_id.len() + 1 + id.len());
+            resolved.push_str(&self.page_id);
+            resolved.push('.');
+            resolved.push_str(id);
+            resolved
         }
     }
 
@@ -271,6 +274,12 @@ impl Ui {
     pub(crate) fn register_on_timer(&mut self, id: String, callback: Box<dyn FnMut()>) {
         self.callbacks.on_timer.insert(id, callback);
     }
+}
+
+fn is_resolved_id(id: &str, page_id: &str) -> bool {
+    id.len() > page_id.len()
+        && id.as_bytes().get(page_id.len()) == Some(&b'.')
+        && id.as_bytes().starts_with(page_id.as_bytes())
 }
 
 fn children_at_path_mut<'a>(
