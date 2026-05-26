@@ -16,7 +16,7 @@ impl AssetSourceLocation {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub(crate) struct ResolvedAssetSource {
     entry: AssetManifestEntry,
     location: AssetSourceLocation,

@@ -7,7 +7,9 @@ use std::time::Instant;
 
 use super::font::{FontAsset, FontAssetFactory};
 use super::io::{AssetIoService, AssetIoSubmitError};
-use super::provider::{AssetProvider, AssetSourceLocation, LocalAssetProvider, ResolvedAssetSource};
+use super::provider::{
+    AssetProvider, AssetSourceLocation, LocalAssetProvider, ResolvedAssetSource,
+};
 use super::registry::{AssetRuntimeFactory, ErasedAssetFactory, FactoryAdapter, ManifestIndex};
 use super::request::{AssetRequest, AssetRequestPhase};
 use super::texture::{
@@ -1040,8 +1042,13 @@ impl AssetsInner {
         let tx = self.load_tx.clone();
 
         match self.io.submit(move || {
-            let result =
-                load_resolved_source_asset(id, &source, factory.as_ref(), &asset_root, &cooked_root);
+            let result = load_resolved_source_asset(
+                id,
+                &source,
+                factory.as_ref(),
+                &asset_root,
+                &cooked_root,
+            );
 
             let completion = match result {
                 Ok((loaded, cooked_hash)) => CompletedLoad {
@@ -1861,6 +1868,34 @@ fn load_raw_source_asset(
     })
 }
 
+fn load_resolved_source_asset(
+    id: AssetId,
+    source: &ResolvedAssetSource,
+    factory: &dyn ErasedAssetFactory,
+    asset_root: &Path,
+    cooked_root: &Path,
+) -> Result<
+    (
+        crate::asset::LoadedAsset<Arc<dyn Any + Send + Sync>>,
+        String,
+    ),
+    AssetError,
+> {
+    let bytes = source.read_bytes(id)?;
+    let content_hash = hash_bytes(&bytes);
+    let loaded = match source.location() {
+        AssetSourceLocation::Raw(path) => load_raw_source_asset(source.entry(), path, &bytes)?,
+        AssetSourceLocation::Cooked(_) => factory.load(AssetLoadContext {
+            asset_id: id,
+            entry: source.entry(),
+            bytes: &bytes,
+            asset_root,
+            cooked_root,
+        })?,
+    };
+    Ok((loaded, content_hash))
+}
+
 fn manifest_entry_fingerprint(entry: &AssetManifestEntry) -> Result<String, AssetError> {
     let fingerprint = serde_json::json!({
         "asset_id": entry.asset_id.to_string(),
@@ -1879,14 +1914,6 @@ fn manifest_entry_fingerprint(entry: &AssetManifestEntry) -> Result<String, Asse
     });
     let bytes = serde_json::to_vec(&fingerprint).map_err(|error| AssetError::Internal {
         message: format!("failed to serialize asset manifest fingerprint: {error}"),
-    })?;
-    Ok(hash_bytes(&bytes))
-}
-
-fn file_hash(path: &Path) -> Result<String, AssetError> {
-    let bytes = std::fs::read(path).map_err(|error| AssetError::Io {
-        path: path.to_path_buf(),
-        message: error.to_string(),
     })?;
     Ok(hash_bytes(&bytes))
 }
@@ -1938,27 +1965,6 @@ fn load_manifest(config: &AssetConfig) -> Result<AssetRegistryManifest, AssetErr
     }
 
     Ok(manifest)
-}
-
-fn map_read_error(id: AssetId, path: &PathBuf, error: std::io::Error) -> AssetError {
-    if error.kind() == std::io::ErrorKind::NotFound {
-        AssetError::MissingCookedArtifact {
-            id,
-            path: path.clone(),
-        }
-    } else {
-        AssetError::Io {
-            path: path.clone(),
-            message: error.to_string(),
-        }
-    }
-}
-
-fn map_raw_source_read_error(path: &PathBuf, error: std::io::Error) -> AssetError {
-    AssetError::Io {
-        path: path.clone(),
-        message: error.to_string(),
-    }
 }
 
 #[cfg(test)]
