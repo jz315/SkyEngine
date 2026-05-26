@@ -207,7 +207,8 @@ impl SceneRenderer for KajiyaSceneRenderer {
                     eprintln!("[SkyEngine] Kajiya render failed: {error}");
                     self.warned = true;
                 }
-                let outcome = SceneRenderOutcome::Skipped(SceneFrameSkipReason::BackendRenderFailed);
+                let outcome =
+                    SceneRenderOutcome::Skipped(SceneFrameSkipReason::BackendRenderFailed);
                 frame_token.set_render_outcome(outcome);
                 return outcome;
             } else {

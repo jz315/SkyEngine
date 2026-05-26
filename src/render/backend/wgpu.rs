@@ -110,7 +110,10 @@ impl SceneRenderer for WgpuSceneRenderer {
     fn end_frame(&mut self, frame: SceneFrame) {
         debug_assert_eq!(frame.backend_kind(), RenderBackendKind::Wgpu);
         if !frame.is_presentable() {
-            clear_active_surface(&mut self.gpu, RenderSettings::default().clear_color.to_wgpu());
+            clear_active_surface(
+                &mut self.gpu,
+                RenderSettings::default().clear_color.to_wgpu(),
+            );
         }
         self.gpu.end_frame();
     }
