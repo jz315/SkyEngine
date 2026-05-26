@@ -138,7 +138,7 @@ impl From<&ChatState> for ChatSnapshot {
 impl AppState for NeoAiChatDemo {
     fn setup(&mut self, ctx: &mut SetupContext<'_>) {
         ctx.world.insert_resource(RenderSettings {
-            clear_color: c(0.035, 0.043, 0.052, 1.0).into(),
+            clear_color: sky_engine::render::Color::new(0.035, 0.043, 0.052, 1.0),
             ..Default::default()
         });
         ctx.world.spawn((

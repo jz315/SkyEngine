@@ -214,7 +214,7 @@ impl CalculatorState {
 impl AppState for NeoCalculatorDemo {
     fn setup(&mut self, ctx: &mut SetupContext<'_>) {
         ctx.world.insert_resource(RenderSettings {
-            clear_color: c(0.070, 0.082, 0.096, 1.0).into(),
+            clear_color: sky_engine::render::Color::new(0.070, 0.082, 0.096, 1.0),
             ..Default::default()
         });
         ctx.world.spawn((

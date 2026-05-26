@@ -113,7 +113,7 @@ impl Default for LabState {
 impl AppState for NeoUiStressLab {
     fn setup(&mut self, ctx: &mut SetupContext<'_>) {
         ctx.world.insert_resource(RenderSettings {
-            clear_color: c(0.020, 0.024, 0.034, 1.0).into(),
+            clear_color: sky_engine::render::Color::new(0.020, 0.024, 0.034, 1.0),
             ..Default::default()
         });
         ctx.world.spawn((

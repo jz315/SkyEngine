@@ -69,7 +69,7 @@ impl AppState for NeoControlCenter {
     fn setup(&mut self, ctx: &mut SetupContext<'_>) {
         let shell = theme::resolve(self.state.read(|model| model.theme_mode));
         ctx.world.insert_resource(RenderSettings {
-            clear_color: shell.background_bottom.into(),
+            clear_color: sky_engine::ui::neo::to_render_color(shell.background_bottom),
             ..Default::default()
         });
         ctx.world.spawn((

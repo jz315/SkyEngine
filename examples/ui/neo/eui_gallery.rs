@@ -9,6 +9,7 @@
 //! ```
 
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+#[cfg(feature = "ui-neo-net")]
 use std::time::Duration;
 
 use sky_engine::app::{
@@ -157,7 +158,7 @@ impl Default for GalleryState {
 impl AppState for EuiNeoGallery {
     fn setup(&mut self, ctx: &mut SetupContext<'_>) {
         ctx.world.insert_resource(RenderSettings {
-            clear_color: c(0.07, 0.08, 0.10, 1.0).into(),
+            clear_color: sky_engine::render::Color::new(0.07, 0.08, 0.10, 1.0),
             ..Default::default()
         });
         ctx.world.spawn((
@@ -2772,28 +2773,36 @@ fn icon(codepoint: u32) -> String {
 }
 
 fn bing_api_text() -> String {
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(12))
-        .build();
-    let Ok(response) = agent
-        .get("https://www.bing.com/HPImageArchive.aspx?format=js&n=1&idx=0&mkt=zh-CN")
-        .call()
-    else {
-        return "Network text request failed.".to_string();
-    };
-    let Ok(body) = response.into_string() else {
-        return "Network text request failed.".to_string();
-    };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) else {
-        return "Bing API returned text data.".to_string();
-    };
-    json.get("images")
-        .and_then(|images| images.get(0))
-        .and_then(|image| image.get("copyright"))
-        .and_then(serde_json::Value::as_str)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("Bing API returned text data.")
-        .to_string()
+    #[cfg(not(feature = "ui-neo-net"))]
+    {
+        return "Network text support requires the `ui-neo-net` feature.".to_string();
+    }
+
+    #[cfg(feature = "ui-neo-net")]
+    {
+        let agent = ureq::AgentBuilder::new()
+            .timeout(Duration::from_secs(12))
+            .build();
+        let Ok(response) = agent
+            .get("https://www.bing.com/HPImageArchive.aspx?format=js&n=1&idx=0&mkt=zh-CN")
+            .call()
+        else {
+            return "Network text request failed.".to_string();
+        };
+        let Ok(body) = response.into_string() else {
+            return "Network text request failed.".to_string();
+        };
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) else {
+            return "Bing API returned text data.".to_string();
+        };
+        json.get("images")
+            .and_then(|images| images.get(0))
+            .and_then(|image| image.get("copyright"))
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("Bing API returned text data.")
+            .to_string()
+    }
 }
 
 fn with_alpha(mut color: Color, alpha: f32) -> Color {

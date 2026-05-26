@@ -1,7 +1,7 @@
-//! Small `scroll_x` validation demo.
+//! Small `scroll_xy` validation demo.
 //!
 //! ```bash
-//! cargo run --example ui_neo_scroll_x --features ui-neo --release
+//! cargo run --example ui_neo_scroll_xy --features ui-neo --release
 //! ```
 
 use sky_engine::app::{
@@ -15,19 +15,19 @@ use sky_engine::render::{
 use sky_engine::ui::neo::{widgets, Align, Color, NeoState, Size};
 
 const WINDOW_W: u32 = 980;
-const WINDOW_H: u32 = 520;
+const WINDOW_H: u32 = 620;
 
-struct NeoScrollXDemo {
+struct NeoScrollXYDemo {
     state: NeoState<DemoState>,
     screenshot: ScreenshotProbe,
 }
 
 #[derive(Debug, Default)]
 struct DemoState {
-    strip_scroll: f32,
+    canvas_scroll: (f32, f32),
 }
 
-impl Default for NeoScrollXDemo {
+impl Default for NeoScrollXYDemo {
     fn default() -> Self {
         Self {
             state: NeoState::new(DemoState::default()),
@@ -36,10 +36,10 @@ impl Default for NeoScrollXDemo {
     }
 }
 
-impl AppState for NeoScrollXDemo {
+impl AppState for NeoScrollXYDemo {
     fn setup(&mut self, ctx: &mut SetupContext<'_>) {
         ctx.world.insert_resource(RenderSettings {
-            clear_color: sky_engine::render::Color::new(0.060, 0.075, 0.095, 1.0),
+            clear_color: sky_engine::render::Color::new(0.055, 0.065, 0.082, 1.0),
             ..Default::default()
         });
         ctx.world.spawn((
@@ -53,40 +53,37 @@ impl AppState for NeoScrollXDemo {
     fn update(&mut self, ctx: &mut FrameContext<'_>) {
         let state = self.state.clone();
         sky_engine::ui::neo::compose(ctx, move |ui, screen| {
-            let strip_scroll = state.bind(
-                |state| state.strip_scroll,
-                |state, value| state.strip_scroll = value.max(0.0),
+            let canvas_scroll = state.bind(
+                |state| state.canvas_scroll,
+                |state, value| state.canvas_scroll = (value.0.max(0.0), value.1.max(0.0)),
             );
 
             ui.rect("background")
                 .size(screen.width, screen.height)
-                .gradient(c(0.060, 0.075, 0.095, 1.0), c(0.105, 0.135, 0.170, 1.0))
+                .gradient(c(0.055, 0.065, 0.082, 1.0), c(0.095, 0.118, 0.145, 1.0))
                 .build();
 
             ui.stack("stage")
                 .size(screen.width, screen.height)
-                .padding(32.0)
+                .padding(34.0)
                 .align(Align::Center, Align::Center)
                 .content(|ui| {
                     widgets::panel(ui, "panel")
                         .fill()
                         .radius(30.0)
-                        .gradient(
-                            c(0.115, 0.150, 0.185, 0.96),
-                            c(0.075, 0.092, 0.125, 0.98),
-                        )
-                        .border(1.0, c(0.400, 0.510, 0.610, 0.24))
-                        .shadow(32.0, 0.0, 16.0, c(0.0, 0.0, 0.0, 0.30))
+                        .gradient(c(0.105, 0.132, 0.165, 0.98), c(0.075, 0.087, 0.112, 0.99))
+                        .border(1.0, c(0.440, 0.560, 0.660, 0.24))
+                        .shadow(34.0, 0.0, 18.0, c(0.0, 0.0, 0.0, 0.30))
                         .build();
 
                     ui.column("panel.content")
                         .fill()
                         .padding(28.0)
-                        .gap(22.0)
+                        .gap(20.0)
                         .content(|ui| {
                             ui.text("title")
                                 .size(Size::fill(), 34.0)
-                                .text("scroll_x")
+                                .text("scroll_xy")
                                 .font_size(28.0)
                                 .line_height(34.0)
                                 .color(c(0.945, 0.970, 1.0, 1.0))
@@ -94,28 +91,23 @@ impl AppState for NeoScrollXDemo {
 
                             ui.text("subtitle")
                                 .size(Size::fill(), 22.0)
-                                .text(
-                                    "A panel-safe horizontal scroll area with explicit state and automatic clipping.",
-                                )
+                                .text("A bidirectional scroll area for canvas-like UI without manual viewport math.")
                                 .font_size(15.0)
                                 .line_height(20.0)
                                 .wrap(true)
-                                .max_width(650.0)
+                                .max_width(690.0)
                                 .color(c(0.650, 0.725, 0.805, 1.0))
                                 .build();
 
-                            ui.scroll_x("cards")
-                                .size(Size::fill(), 190.0)
-                                .content_width(1120.0)
-                                .content_padding_xy(18.0, 18.0)
-                                .gap(16.0)
-                                .scrollbar_height(8.0)
+                            ui.scroll_xy("canvas")
+                                .size(Size::fill(), Size::fill())
+                                .content_size(980.0, 620.0)
+                                .content_padding(18.0)
+                                .scrollbar_size(8.0)
                                 .scrollbar_gap(12.0)
-                                .offset_bind(strip_scroll)
+                                .offset_bind(canvas_scroll)
                                 .content(|ui| {
-                                    for index in 0..8 {
-                                        feature_card(ui, index);
-                                    }
+                                    draw_canvas(ui);
                                 });
                         });
                 });
@@ -128,45 +120,47 @@ impl AppState for NeoScrollXDemo {
     }
 }
 
-fn feature_card(ui: &mut sky_engine::ui::neo::Ui, index: usize) {
-    let id = format!("card.{index}");
-    let accent = match index % 4 {
-        0 => c(0.280, 0.640, 0.960, 1.0),
-        1 => c(0.460, 0.820, 0.620, 1.0),
-        2 => c(0.760, 0.620, 0.960, 1.0),
-        _ => c(0.920, 0.560, 0.320, 1.0),
-    };
+fn draw_canvas(ui: &mut sky_engine::ui::neo::Ui) {
+    for y in 0..5 {
+        for x in 0..7 {
+            let id = format!("tile.{x}.{y}");
+            let px = 22.0 + x as f32 * 132.0;
+            let py = 22.0 + y as f32 * 112.0;
+            let accent = match (x + y) % 5 {
+                0 => c(0.280, 0.640, 0.960, 1.0),
+                1 => c(0.420, 0.800, 0.620, 1.0),
+                2 => c(0.760, 0.620, 0.960, 1.0),
+                3 => c(0.920, 0.560, 0.320, 1.0),
+                _ => c(0.950, 0.780, 0.350, 1.0),
+            };
 
-    ui.stack(id.clone()).size(124.0, 118.0).content(|ui| {
-        ui.rect(format!("{id}.bg"))
-            .size(Size::fill(), Size::fill())
-            .color(c(0.095, 0.120, 0.155, 0.92))
-            .radius(18.0)
-            .border(1.0, c(0.400, 0.510, 0.610, 0.24))
-            .build();
-        ui.rect(format!("{id}.chip"))
-            .position(16.0, 16.0)
-            .size(44.0, 10.0)
-            .color(accent)
-            .radius(5.0)
-            .build();
-        ui.text(format!("{id}.title"))
-            .position(16.0, 46.0)
-            .size(92.0, 24.0)
-            .text(format!("Card {:02}", index + 1))
-            .font_size(17.0)
-            .line_height(22.0)
-            .color(c(0.900, 0.940, 0.980, 1.0))
-            .build();
-        ui.text(format!("{id}.meta"))
-            .position(16.0, 76.0)
-            .size(92.0, 20.0)
-            .text("horizontal")
-            .font_size(12.0)
-            .line_height(16.0)
-            .color(c(0.600, 0.700, 0.790, 1.0))
-            .build();
-    });
+            ui.stack(id.clone())
+                .position(px, py)
+                .size(112.0, 86.0)
+                .content(|ui| {
+                    ui.rect(format!("{id}.bg"))
+                        .size(Size::fill(), Size::fill())
+                        .color(c(0.090, 0.115, 0.145, 0.94))
+                        .radius(16.0)
+                        .border(1.0, c(0.400, 0.510, 0.610, 0.22))
+                        .build();
+                    ui.rect(format!("{id}.accent"))
+                        .position(14.0, 14.0)
+                        .size(38.0, 8.0)
+                        .color(accent)
+                        .radius(4.0)
+                        .build();
+                    ui.text(format!("{id}.label"))
+                        .position(14.0, 40.0)
+                        .size(82.0, 22.0)
+                        .text(format!("{x},{y}"))
+                        .font_size(16.0)
+                        .line_height(20.0)
+                        .color(c(0.900, 0.940, 0.980, 1.0))
+                        .build();
+                });
+        }
+    }
 }
 
 fn c(r: f32, g: f32, b: f32, a: f32) -> Color {
@@ -228,7 +222,7 @@ fn main() {
     let mut world = World::new();
     world
         .install(
-            WindowPlugin::new("Neo Scroll X Demo", WINDOW_W, WINDOW_H)
+            WindowPlugin::new("Neo Scroll XY Demo", WINDOW_W, WINDOW_H)
                 .with_vsync(false)
                 .with_resizable(true),
         )
@@ -244,5 +238,5 @@ fn main() {
         ))
         .unwrap();
 
-    App::new(world).run(NeoScrollXDemo::default());
+    App::new(world).run(NeoScrollXYDemo::default());
 }

@@ -81,7 +81,7 @@ impl From<&GameUiState> for GameSnapshot {
 impl AppState for NeoGameHudDemo {
     fn setup(&mut self, ctx: &mut SetupContext<'_>) {
         ctx.world.insert_resource(RenderSettings {
-            clear_color: c(0.040, 0.055, 0.070, 1.0).into(),
+            clear_color: sky_engine::render::Color::new(0.040, 0.055, 0.070, 1.0),
             ..Default::default()
         });
         ctx.world.spawn((

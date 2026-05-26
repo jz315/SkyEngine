@@ -49,7 +49,9 @@ pub use pie_chart::{pie_chart, PieChartBuilder, PieChartStyle};
 pub use popover::{popover, PopoverBuilder, PopoverPlacement};
 pub use progress::{progress, ProgressBuilder, ProgressStyle};
 pub use radio::{radio, RadioBuilder, RadioStyle};
-pub use scroll::{scroll_x, scroll_y, ScrollXBuilder, ScrollYBuilder, ScrollbarStyle};
+pub use scroll::{
+    scroll_x, scroll_xy, scroll_y, ScrollXBuilder, ScrollXYBuilder, ScrollYBuilder, ScrollbarStyle,
+};
 pub use segmented::{segmented, SegmentedBuilder, SegmentedStyle};
 pub use skin::{
     skin_button, skin_checkbox, skin_icon_button, skin_panel, skin_slider, skin_status_bar,
@@ -505,6 +507,78 @@ mod tests {
         assert_eq!(scrollbar.x, 10.0);
         assert_eq!(scrollbar.y, 62.0);
         assert_eq!(scrollbar.width, 120.0);
+    }
+
+    #[test]
+    fn scroll_xy_explicit_content_size_composes_viewport_content_and_scrollbars() {
+        let offset = Rc::new(Cell::new((-1.0, -1.0)));
+        let callback_offset = offset.clone();
+        let mut runtime = Runtime::new("page");
+        runtime.compose(220.0, 160.0, move |ui, _| {
+            let callback_offset = callback_offset.clone();
+            ui.scroll_xy("grid")
+                .size(160.0, 100.0)
+                .content_size(320.0, 260.0)
+                .offset(24.0, 40.0)
+                .step_xy(10.0, 20.0)
+                .padding(6.0)
+                .on_change(move |next_x, next_y| callback_offset.set((next_x, next_y)))
+                .content(|ui| {
+                    ui.rect("cell.a").size(80.0, 60.0).build();
+                    ui.rect("cell.b")
+                        .position(180.0, 160.0)
+                        .size(80.0, 60.0)
+                        .build();
+                });
+        });
+
+        assert_eq!(runtime.find("grid").unwrap().frame.width, 160.0);
+        assert_eq!(runtime.find("grid.viewport").unwrap().frame.width, 160.0);
+        assert_eq!(runtime.find("grid.viewport").unwrap().frame.height, 100.0);
+        assert_eq!(runtime.find("grid.content").unwrap().frame.x, -24.0);
+        assert_eq!(runtime.find("grid.content").unwrap().frame.y, -40.0);
+        assert_eq!(runtime.find("grid.content").unwrap().frame.width, 320.0);
+        assert_eq!(runtime.find("grid.content").unwrap().frame.height, 260.0);
+        assert!(runtime.find("grid.scrollbar.x").is_some());
+        assert!(runtime.find("grid.scrollbar.y").is_some());
+        assert!(runtime.find("grid.scrollbar.corner").is_some());
+
+        runtime.update_pointer(PointerEvent::at(10.0, 10.0));
+        runtime.update_scroll(ScrollEvent { x: -2.0, y: -1.0 });
+
+        assert_eq!(offset.get(), (44.0, 60.0));
+    }
+
+    #[test]
+    fn scroll_xy_inset_keeps_viewport_and_scrollbars_inside_outer_shell() {
+        let mut runtime = Runtime::new("page");
+        runtime.compose(220.0, 160.0, |ui, _| {
+            ui.scroll_xy("panel")
+                .size(160.0, 110.0)
+                .inset(10.0)
+                .content_size(320.0, 260.0)
+                .content(|ui| {
+                    ui.rect("cell").size(320.0, 260.0).build();
+                });
+        });
+
+        let viewport = runtime.find("panel.viewport").unwrap().frame;
+        let scrollbar_x = runtime.find("panel.scrollbar.x").unwrap().frame;
+        let scrollbar_y = runtime.find("panel.scrollbar.y").unwrap().frame;
+        let corner = runtime.find("panel.scrollbar.corner").unwrap().frame;
+
+        assert_eq!(viewport.x, 10.0);
+        assert_eq!(viewport.y, 10.0);
+        assert_eq!(viewport.width, 140.0);
+        assert_eq!(viewport.height, 90.0);
+        assert_eq!(scrollbar_x.x, 10.0);
+        assert_eq!(scrollbar_x.y, 92.0);
+        assert_eq!(scrollbar_x.width, 124.0);
+        assert_eq!(scrollbar_y.x, 142.0);
+        assert_eq!(scrollbar_y.y, 10.0);
+        assert_eq!(scrollbar_y.height, 74.0);
+        assert_eq!(corner.x, 142.0);
+        assert_eq!(corner.y, 92.0);
     }
 
     #[test]
