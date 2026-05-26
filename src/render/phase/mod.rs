@@ -21,7 +21,7 @@ pub use draw_registry::{DrawFunction, DrawFunctionRegistry};
 pub use errors::DrawError;
 #[cfg(feature = "live2d")]
 pub use item::Live2DDrawData;
-pub use item::{MeshDrawData, PhaseItem, SpriteDrawData};
+pub use item::{MeshDrawData, PhaseItem, PhasePayload, PhasePayloadKind, SpriteDrawData};
 pub use mesh_draw::DrawMesh;
 #[allow(unused_imports)]
 pub use scene_bindings::create_model_bind_group_layout;

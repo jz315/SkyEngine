@@ -8,8 +8,33 @@ use rustc_hash::FxHashMap;
 struct ValidatedBufferToTextureCopy {
     width: u32,
     height: u32,
-    row_bytes: u32,
-    rows_per_image: u32,
+    row_bytes: Option<u32>,
+    rows_per_image: Option<u32>,
+}
+
+enum ValidatedCopyOp<'a> {
+    TextureToTexture {
+        src: TextureHandle,
+        dst: TextureHandle,
+        extent: wgpu::Extent3d,
+    },
+    BufferToBuffer {
+        src: BufferHandle,
+        dst: BufferHandle,
+        size: u64,
+    },
+    BufferToTexture {
+        src: BufferHandle,
+        dst: TextureHandle,
+        copy: ValidatedBufferToTextureCopy,
+    },
+    UploadToTexture {
+        data: &'a [u8],
+        dst: TextureHandle,
+        width: u32,
+        height: u32,
+        bytes_per_pixel: u32,
+    },
 }
 
 impl RenderGraph {
@@ -105,6 +130,25 @@ impl RenderGraph {
         }
     }
 
+    fn texture_actual_usage_for(&self, handle: TextureHandle) -> wgpu::TextureUsages {
+        self.textures[handle.0]
+            .imported
+            .as_ref()
+            .map_or_else(|| self.texture_usage_for(handle), |imported| imported.usage)
+    }
+
+    fn buffer_actual_usage_for(&self, handle: BufferHandle) -> wgpu::BufferUsages {
+        self.buffers[handle.0].imported.as_ref().map_or_else(
+            || self.buffer_usage_for(handle),
+            |imported| imported.usage(),
+        )
+    }
+
+    #[inline]
+    fn align_to_256(value: u32) -> u32 {
+        value.div_ceil(256) * 256
+    }
+
     fn flush_before_aliased_owner_change(
         &self,
         ctx: &mut GpuContext,
@@ -167,6 +211,36 @@ impl RenderGraph {
                 )),
             });
         }
+        if src_desc.sample_count != 1 || dst_desc.sample_count != 1 {
+            return Err(RenderGraphError::InvalidTextureCopy {
+                src,
+                dst,
+                details: Cow::Owned(format!(
+                    "texture-to-texture copies require single-sampled textures, got source sample_count={} and destination sample_count={}",
+                    src_desc.sample_count, dst_desc.sample_count
+                )),
+            });
+        }
+        let src_usage = self.texture_actual_usage_for(src);
+        if !src_usage.contains(wgpu::TextureUsages::COPY_SRC) {
+            return Err(RenderGraphError::InvalidTextureCopy {
+                src,
+                dst,
+                details: Cow::Owned(format!(
+                    "source texture usage {src_usage:?} does not include COPY_SRC"
+                )),
+            });
+        }
+        let dst_usage = self.texture_actual_usage_for(dst);
+        if !dst_usage.contains(wgpu::TextureUsages::COPY_DST) {
+            return Err(RenderGraphError::InvalidTextureCopy {
+                src,
+                dst,
+                details: Cow::Owned(format!(
+                    "destination texture usage {dst_usage:?} does not include COPY_DST"
+                )),
+            });
+        }
 
         let src_extent = self.resolve_texture_extent(src, surface_size);
         let dst_extent = self.resolve_texture_extent(dst, surface_size);
@@ -195,6 +269,26 @@ impl RenderGraph {
     ) -> Result<u64, RenderGraphError> {
         let src_size = self.buffers[src.0].size_bytes;
         let dst_size = self.buffers[dst.0].size_bytes;
+        let src_usage = self.buffer_actual_usage_for(src);
+        if !src_usage.contains(wgpu::BufferUsages::COPY_SRC) {
+            return Err(RenderGraphError::InvalidBufferCopy {
+                src,
+                dst,
+                details: Cow::Owned(format!(
+                    "source buffer usage {src_usage:?} does not include COPY_SRC"
+                )),
+            });
+        }
+        let dst_usage = self.buffer_actual_usage_for(dst);
+        if !dst_usage.contains(wgpu::BufferUsages::COPY_DST) {
+            return Err(RenderGraphError::InvalidBufferCopy {
+                src,
+                dst,
+                details: Cow::Owned(format!(
+                    "destination buffer usage {dst_usage:?} does not include COPY_DST"
+                )),
+            });
+        }
         if src_size != dst_size {
             return Err(RenderGraphError::InvalidBufferCopy {
                 src,
@@ -216,6 +310,36 @@ impl RenderGraph {
         surface_size: [u32; 2],
     ) -> Result<ValidatedBufferToTextureCopy, RenderGraphError> {
         let [width, height] = self.resolve_texture_extent(dst, surface_size);
+        let dst_sample_count = self.textures[dst.0].sample_count;
+        if dst_sample_count != 1 {
+            return Err(RenderGraphError::InvalidBufferTextureCopyLayout {
+                buffer: src,
+                texture: dst,
+                details: Cow::Owned(format!(
+                    "buffer-to-texture copies require single-sampled textures, got sample_count={dst_sample_count}"
+                )),
+            });
+        }
+        let src_usage = self.buffer_actual_usage_for(src);
+        if !src_usage.contains(wgpu::BufferUsages::COPY_SRC) {
+            return Err(RenderGraphError::InvalidBufferTextureCopyLayout {
+                buffer: src,
+                texture: dst,
+                details: Cow::Owned(format!(
+                    "source buffer usage {src_usage:?} does not include COPY_SRC"
+                )),
+            });
+        }
+        let dst_usage = self.texture_actual_usage_for(dst);
+        if !dst_usage.contains(wgpu::TextureUsages::COPY_DST) {
+            return Err(RenderGraphError::InvalidBufferTextureCopyLayout {
+                buffer: src,
+                texture: dst,
+                details: Cow::Owned(format!(
+                    "destination texture usage {dst_usage:?} does not include COPY_DST"
+                )),
+            });
+        }
         let dst_format = self.textures[dst.0].format;
         let bytes_per_pixel = texture_format_bytes_per_pixel(dst_format).ok_or(
             RenderGraphError::UnsupportedBufferTextureCopyFormat {
@@ -224,37 +348,51 @@ impl RenderGraph {
             },
         )?;
         let min_row_bytes = width * bytes_per_pixel;
-        let row_bytes = bytes_per_row.unwrap_or(min_row_bytes);
-        if row_bytes % 256 != 0 {
-            return Err(RenderGraphError::InvalidBufferTextureCopyLayout {
-                buffer: src,
-                texture: dst,
-                details: Cow::Owned(format!("bytes_per_row={row_bytes} is not 256-byte aligned")),
-            });
-        }
-        if row_bytes < min_row_bytes {
-            return Err(RenderGraphError::InvalidBufferTextureCopyLayout {
-                buffer: src,
-                texture: dst,
-                details: Cow::Owned(format!(
-                    "bytes_per_row={row_bytes} is smaller than the required row size {min_row_bytes}"
-                )),
-            });
-        }
-
-        let rows_per_image = rows_per_image.unwrap_or(height);
-        if rows_per_image < height {
-            return Err(RenderGraphError::InvalidBufferTextureCopyLayout {
-                buffer: src,
-                texture: dst,
-                details: Cow::Owned(format!(
-                    "rows_per_image={rows_per_image} is smaller than the copy height {height}"
-                )),
-            });
+        let row_bytes = match bytes_per_row {
+            Some(row_bytes) => Some(row_bytes),
+            None if height == 1 => None,
+            None => Some(Self::align_to_256(min_row_bytes)),
+        };
+        if let Some(row_bytes) = row_bytes {
+            if row_bytes % 256 != 0 {
+                return Err(RenderGraphError::InvalidBufferTextureCopyLayout {
+                    buffer: src,
+                    texture: dst,
+                    details: Cow::Owned(format!(
+                        "bytes_per_row={row_bytes} is not 256-byte aligned"
+                    )),
+                });
+            }
+            if row_bytes < min_row_bytes {
+                return Err(RenderGraphError::InvalidBufferTextureCopyLayout {
+                    buffer: src,
+                    texture: dst,
+                    details: Cow::Owned(format!(
+                        "bytes_per_row={row_bytes} is smaller than the required row size {min_row_bytes}"
+                    )),
+                });
+            }
         }
 
-        let required_bytes =
-            row_bytes as u64 * rows_per_image.saturating_sub(1) as u64 + min_row_bytes as u64;
+        if let Some(rows_per_image) = rows_per_image {
+            if rows_per_image < height {
+                return Err(RenderGraphError::InvalidBufferTextureCopyLayout {
+                    buffer: src,
+                    texture: dst,
+                    details: Cow::Owned(format!(
+                        "rows_per_image={rows_per_image} is smaller than the copy height {height}"
+                    )),
+                });
+            }
+        }
+        let rows_per_image = row_bytes.and(rows_per_image);
+
+        let required_bytes = match row_bytes {
+            Some(row_bytes) => {
+                row_bytes as u64 * height.saturating_sub(1) as u64 + min_row_bytes as u64
+            }
+            None => min_row_bytes as u64,
+        };
         let actual_bytes = self.buffers[src.0].size_bytes;
         if actual_bytes < required_bytes {
             return Err(RenderGraphError::SourceBufferTooSmall {
@@ -285,6 +423,24 @@ impl RenderGraph {
             return Err(RenderGraphError::InvalidTextureUpload {
                 texture: dst,
                 details: Cow::Borrowed("upload extent must be non-zero"),
+            });
+        }
+        let dst_sample_count = self.textures[dst.0].sample_count;
+        if dst_sample_count != 1 {
+            return Err(RenderGraphError::InvalidTextureUpload {
+                texture: dst,
+                details: Cow::Owned(format!(
+                    "texture uploads require single-sampled textures, got sample_count={dst_sample_count}"
+                )),
+            });
+        }
+        let dst_usage = self.texture_actual_usage_for(dst);
+        if !dst_usage.contains(wgpu::TextureUsages::COPY_DST) {
+            return Err(RenderGraphError::InvalidTextureUpload {
+                texture: dst,
+                details: Cow::Owned(format!(
+                    "destination texture usage {dst_usage:?} does not include COPY_DST"
+                )),
             });
         }
 
@@ -329,6 +485,92 @@ impl RenderGraph {
         Ok(())
     }
 
+    fn validate_copy_op<'a>(
+        &self,
+        op: &'a CopyOp,
+        surface_size: [u32; 2],
+    ) -> Result<ValidatedCopyOp<'a>, RenderGraphError> {
+        match op {
+            CopyOp::TextureToTexture { src, dst } => {
+                let extent = self.validate_texture_to_texture_copy(*src, *dst, surface_size)?;
+                Ok(ValidatedCopyOp::TextureToTexture {
+                    src: *src,
+                    dst: *dst,
+                    extent,
+                })
+            }
+            CopyOp::BufferToBuffer { src, dst } => {
+                let size = self.validate_buffer_to_buffer_copy(*src, *dst)?;
+                Ok(ValidatedCopyOp::BufferToBuffer {
+                    src: *src,
+                    dst: *dst,
+                    size,
+                })
+            }
+            CopyOp::BufferToTexture {
+                src,
+                dst,
+                bytes_per_row,
+                rows_per_image,
+            } => {
+                let copy = self.validate_buffer_to_texture_copy(
+                    *src,
+                    *dst,
+                    *bytes_per_row,
+                    *rows_per_image,
+                    surface_size,
+                )?;
+                Ok(ValidatedCopyOp::BufferToTexture {
+                    src: *src,
+                    dst: *dst,
+                    copy,
+                })
+            }
+            CopyOp::UploadToTexture {
+                data,
+                dst,
+                width,
+                height,
+                bytes_per_pixel,
+            } => {
+                self.validate_texture_upload(
+                    *dst,
+                    *width,
+                    *height,
+                    *bytes_per_pixel,
+                    data.len(),
+                    surface_size,
+                )?;
+                Ok(ValidatedCopyOp::UploadToTexture {
+                    data,
+                    dst: *dst,
+                    width: *width,
+                    height: *height,
+                    bytes_per_pixel: *bytes_per_pixel,
+                })
+            }
+        }
+    }
+
+    fn validate_copy_passes<'a>(
+        &self,
+        compiled: &'a [CompiledPass],
+        surface_size: [u32; 2],
+    ) -> Result<Vec<Vec<ValidatedCopyOp<'a>>>, RenderGraphError> {
+        compiled
+            .iter()
+            .map(|pass| {
+                if pass.pass_type != PassType::Copy {
+                    return Ok(Vec::new());
+                }
+                pass.copy_ops
+                    .iter()
+                    .map(|op| self.validate_copy_op(op, surface_size))
+                    .collect()
+            })
+            .collect()
+    }
+
     // ── Execution ───────────────────────────────────────────────────────
 
     /// Execute copy operations for a single copy pass.
@@ -338,10 +580,10 @@ impl RenderGraph {
     /// `self` fields.  If this method ever needs `&mut self`, the borrow
     /// pattern in `try_execute` must be restructured (e.g. by cloning the
     /// compiled pass list or splitting the struct).
-    pub(super) fn execute_copy_pass(
+    fn execute_copy_pass(
         &self,
         ctx: &mut GpuContext,
-        pass: &CompiledPass,
+        ops: &[ValidatedCopyOp<'_>],
     ) -> Result<(), RenderGraphError> {
         if ctx.has_active_frame() {
             ctx.flush("render_graph_encoder_after_copy");
@@ -353,13 +595,10 @@ impl RenderGraph {
                 ctx.queue().submit(std::iter::once(encoder.finish()));
             }
         };
-        let surface_size = ctx.surface_size();
 
-        for op in &pass.copy_ops {
+        for op in ops {
             match op {
-                CopyOp::TextureToTexture { src, dst } => {
-                    let copy_extent =
-                        self.validate_texture_to_texture_copy(*src, *dst, surface_size)?;
+                ValidatedCopyOp::TextureToTexture { src, dst, extent } => {
                     let src_tex = self.try_resolve_texture(*src)?;
                     let dst_tex = self.try_resolve_texture(*dst)?;
                     let encoder = encoder.get_or_insert_with(|| {
@@ -371,11 +610,10 @@ impl RenderGraph {
                     encoder.copy_texture_to_texture(
                         src_tex.as_image_copy(),
                         dst_tex.as_image_copy(),
-                        copy_extent,
+                        *extent,
                     );
                 }
-                CopyOp::BufferToBuffer { src, dst } => {
-                    let size = self.validate_buffer_to_buffer_copy(*src, *dst)?;
+                ValidatedCopyOp::BufferToBuffer { src, dst, size } => {
                     let src_buf = self.try_resolve_buffer(*src)?;
                     let dst_buf = self.try_resolve_buffer(*dst)?;
                     let encoder = encoder.get_or_insert_with(|| {
@@ -384,22 +622,9 @@ impl RenderGraph {
                                 label: Some("render_graph_copy_pass"),
                             })
                     });
-                    encoder.copy_buffer_to_buffer(src_buf, 0, dst_buf, 0, size);
+                    encoder.copy_buffer_to_buffer(src_buf, 0, dst_buf, 0, *size);
                 }
-                CopyOp::BufferToTexture {
-                    src,
-                    dst,
-                    bytes_per_row,
-                    rows_per_image,
-                } => {
-                    let validated = self.validate_buffer_to_texture_copy(
-                        *src,
-                        *dst,
-                        *bytes_per_row,
-                        *rows_per_image,
-                        surface_size,
-                    )?;
-
+                ValidatedCopyOp::BufferToTexture { src, dst, copy } => {
                     let src_buf = self.try_resolve_buffer(*src)?;
                     let dst_tex = self.try_resolve_texture(*dst)?;
                     let encoder = encoder.get_or_insert_with(|| {
@@ -413,33 +638,25 @@ impl RenderGraph {
                             buffer: src_buf,
                             layout: wgpu::TexelCopyBufferLayout {
                                 offset: 0,
-                                bytes_per_row: Some(validated.row_bytes),
-                                rows_per_image: Some(validated.rows_per_image),
+                                bytes_per_row: copy.row_bytes,
+                                rows_per_image: copy.rows_per_image,
                             },
                         },
                         dst_tex.as_image_copy(),
                         wgpu::Extent3d {
-                            width: validated.width,
-                            height: validated.height,
+                            width: copy.width,
+                            height: copy.height,
                             depth_or_array_layers: 1,
                         },
                     );
                 }
-                CopyOp::UploadToTexture {
+                ValidatedCopyOp::UploadToTexture {
                     data,
                     dst,
                     width,
                     height,
                     bytes_per_pixel,
                 } => {
-                    self.validate_texture_upload(
-                        *dst,
-                        *width,
-                        *height,
-                        *bytes_per_pixel,
-                        data.len(),
-                        surface_size,
-                    )?;
                     submit_pending(ctx, &mut encoder);
                     let dst_tex = self.try_resolve_texture(*dst)?;
                     // NOTE: Unlike encoder.copy_buffer_to_texture (which requires
@@ -447,10 +664,10 @@ impl RenderGraph {
                     // staging internally and accepts any valid bytes_per_row.
                     ctx.queue().write_texture(
                         dst_tex.as_image_copy(),
-                        data,
+                        *data,
                         wgpu::TexelCopyBufferLayout {
                             offset: 0,
-                            bytes_per_row: Some(width * bytes_per_pixel),
+                            bytes_per_row: Some(*width * *bytes_per_pixel),
                             rows_per_image: Some(*height),
                         },
                         wgpu::Extent3d {
@@ -485,11 +702,20 @@ impl RenderGraph {
             self.compile()?;
         }
 
-        self.allocate_physical_resources(ctx);
-
         let compiled = std::mem::take(&mut self.cached_compiled);
-        self.trace_aliasing_state(&compiled);
         let result = {
+            let validated_copy_passes =
+                match self.validate_copy_passes(&compiled, ctx.surface_size()) {
+                    Ok(validated) => validated,
+                    Err(err) => {
+                        self.cached_compiled = compiled;
+                        return Err(err);
+                    }
+                };
+
+            self.allocate_physical_resources(ctx);
+            self.trace_aliasing_state(&compiled);
+
             let resources = PhysicalResources {
                 handle_token: self.handle_token,
                 textures: &self.physical_textures,
@@ -502,7 +728,7 @@ impl RenderGraph {
 
             let mut err = None;
             let mut active_alias_owners = FxHashMap::default();
-            for pass in &compiled {
+            for (pass, copy_ops) in compiled.iter().zip(validated_copy_passes.iter()) {
                 if Self::trace_aliasing_enabled() {
                     eprintln!(
                         "[RenderGraph][alias] executing {}#{}",
@@ -511,7 +737,7 @@ impl RenderGraph {
                 }
                 self.flush_before_aliased_owner_change(ctx, pass, &mut active_alias_owners);
                 if pass.pass_type == PassType::Copy {
-                    if let Err(e) = self.execute_copy_pass(ctx, pass) {
+                    if let Err(e) = self.execute_copy_pass(ctx, copy_ops) {
                         err = Some(e);
                         break;
                     }
@@ -569,11 +795,20 @@ impl RenderGraph {
 
         profiler.on_compile(self.passes.len(), self.culled_count, self.max_dep_level);
 
-        self.allocate_physical_resources(ctx);
-
         let compiled = std::mem::take(&mut self.cached_compiled);
-        self.trace_aliasing_state(&compiled);
         let result = {
+            let validated_copy_passes =
+                match self.validate_copy_passes(&compiled, ctx.surface_size()) {
+                    Ok(validated) => validated,
+                    Err(err) => {
+                        self.cached_compiled = compiled;
+                        return Err(err);
+                    }
+                };
+
+            self.allocate_physical_resources(ctx);
+            self.trace_aliasing_state(&compiled);
+
             let resources = PhysicalResources {
                 handle_token: self.handle_token,
                 textures: &self.physical_textures,
@@ -586,7 +821,7 @@ impl RenderGraph {
 
             let mut err = None;
             let mut active_alias_owners = FxHashMap::default();
-            for pass in &compiled {
+            for (pass, copy_ops) in compiled.iter().zip(validated_copy_passes.iter()) {
                 self.flush_before_aliased_owner_change(ctx, pass, &mut active_alias_owners);
                 profiler.on_pass_begin(&pass.name, pass.pass_type);
                 let start = std::time::Instant::now();
@@ -594,7 +829,7 @@ impl RenderGraph {
                     eprintln!("[RenderGraph][alias] begin {}", pass.name);
                 }
                 if pass.pass_type == PassType::Copy {
-                    if let Err(e) = self.execute_copy_pass(ctx, pass) {
+                    if let Err(e) = self.execute_copy_pass(ctx, copy_ops) {
                         profiler.on_pass_end(&pass.name, start.elapsed());
                         err = Some(e);
                         break;

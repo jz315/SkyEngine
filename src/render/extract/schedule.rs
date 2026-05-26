@@ -7,12 +7,36 @@ use crate::render::resources::{
     material::{MaterialError, MaterialRegistry},
     mesh::{MeshHandle, MeshRegistry},
 };
-use crate::render::view::{ResolvedSceneTransforms, SceneView};
+use crate::render::view::{ResolvedSceneTransforms, SceneView, SceneViewKind};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExtractorViewKinds(u8);
+
+impl ExtractorViewKinds {
+    pub const MAIN: Self = Self(0b0000_0001);
+    pub const DIRECTIONAL_SHADOW: Self = Self(0b0000_0010);
+    pub const ALL: Self = Self(Self::MAIN.0 | Self::DIRECTIONAL_SHADOW.0);
+
+    #[inline]
+    pub fn contains(self, kind: SceneViewKind) -> bool {
+        let flag = match kind {
+            SceneViewKind::Main => Self::MAIN,
+            SceneViewKind::DirectionalShadow => Self::DIRECTIONAL_SHADOW,
+        };
+        self.0 & flag.0 != 0
+    }
+}
 
 pub trait Extractor: Send {
     fn name(&self) -> &'static str {
         std::any::type_name::<Self>()
     }
+
+    fn supported_view_kinds(&self) -> ExtractorViewKinds {
+        ExtractorViewKinds::ALL
+    }
+
+    fn begin_frame(&mut self) {}
 
     fn extract(
         &mut self,
@@ -73,6 +97,12 @@ impl ExtractSchedule {
         self.extractors.push(Box::new(extractor));
     }
 
+    pub fn begin_frame(&mut self) {
+        for extractor in &mut self.extractors {
+            extractor.begin_frame();
+        }
+    }
+
     pub fn extract(
         &mut self,
         world: &World,
@@ -81,6 +111,9 @@ impl ExtractSchedule {
         ctx: &mut ExtractContext<'_>,
     ) -> Result<(), ExtractError> {
         for extractor in &mut self.extractors {
+            if !extractor.supported_view_kinds().contains(view.kind) {
+                continue;
+            }
             extractor.extract(world, transforms, view, ctx)?;
         }
         Ok(())

@@ -2,6 +2,7 @@ mod executor;
 mod frame;
 mod frame_coordinator;
 mod history;
+mod outcome;
 mod pipeline_runtime;
 mod presentation;
 mod runtime;
@@ -13,6 +14,7 @@ mod tests;
 mod view_collection;
 
 pub use history::{HistoryTexture, HistoryTextureRequest, HistoryTextureSize};
+pub use outcome::{FrameRenderOutcome, FrameSkipReason};
 pub use runtime::RenderRuntime;
 pub use stats::RenderTimingStats;
 

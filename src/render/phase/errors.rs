@@ -1,7 +1,7 @@
 use crate::render::resources::material::{MaterialError, SceneBindingKind};
 use crate::render::resources::mesh::MeshHandle;
 
-use super::DrawFunctionId;
+use super::{DrawFunctionId, PhasePayloadKind};
 
 #[derive(Debug)]
 pub enum DrawError {
@@ -34,6 +34,11 @@ pub enum DrawError {
     MissingSceneBinding {
         type_name: &'static str,
         kind: SceneBindingKind,
+    },
+    PhasePayloadMismatch {
+        id: DrawFunctionId,
+        expected: PhasePayloadKind,
+        actual: PhasePayloadKind,
     },
     Material(MaterialError),
 }
@@ -86,6 +91,16 @@ impl std::fmt::Display for DrawError {
                     "Material `{type_name}` requires scene binding `{kind:?}` but it is unavailable"
                 )
             }
+            Self::PhasePayloadMismatch {
+                id,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "Draw function {id:?} expected phase payload `{}` but received `{}`",
+                expected.type_name(),
+                actual.type_name()
+            ),
             Self::Material(error) => error.fmt(f),
         }
     }

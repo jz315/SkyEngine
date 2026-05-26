@@ -139,6 +139,77 @@ fn buffer_usage_for_infers_copy_src_from_copy_pass() {
 }
 
 #[test]
+fn texture_copy_infers_required_usage() {
+    let (device, queue) = create_test_device();
+    let mut ctx = crate::gpu::GpuContext::new_headless(
+        device,
+        queue,
+        wgpu::TextureFormat::Bgra8Unorm,
+        [64, 64],
+    );
+
+    let mut graph = RenderGraph::new();
+    let src = graph.create_texture(|b| {
+        b.name("src")
+            .size(TargetSize::Exact(1, 1))
+            .format(TextureFormat::Rgba8Unorm)
+            .usage(wgpu::TextureUsages::TEXTURE_BINDING);
+    });
+    let dst = graph.create_texture(|b| {
+        b.name("dst")
+            .size(TargetSize::Exact(1, 1))
+            .format(TextureFormat::Rgba8Unorm)
+            .usage(wgpu::TextureUsages::TEXTURE_BINDING);
+    });
+
+    graph.add_copy_pass("upload_src", |s| {
+        s.upload_to_texture(vec![255, 0, 0, 255], src, 1, 1, 4);
+    });
+    graph.add_copy_pass("copy", |s| {
+        s.texture_to_texture(src, dst);
+    });
+    graph.add_render_pass("present", |s| {
+        s.read(dst);
+        s.write_surface();
+    });
+
+    graph
+        .try_execute(&mut ctx, |_pass, _gpu, _resources| Ok(()))
+        .expect("graph-owned textures should infer COPY_SRC/COPY_DST usage");
+}
+
+#[test]
+fn upload_to_texture_infers_copy_dst_usage() {
+    let (device, queue) = create_test_device();
+    let mut ctx = crate::gpu::GpuContext::new_headless(
+        device,
+        queue,
+        wgpu::TextureFormat::Bgra8Unorm,
+        [64, 64],
+    );
+
+    let mut graph = RenderGraph::new();
+    let tex = graph.create_texture(|b| {
+        b.name("upload_dst")
+            .size(TargetSize::Exact(1, 1))
+            .format(TextureFormat::Rgba8Unorm)
+            .usage(wgpu::TextureUsages::TEXTURE_BINDING);
+    });
+
+    graph.add_copy_pass("upload", |s| {
+        s.upload_to_texture(vec![0, 255, 0, 255], tex, 1, 1, 4);
+    });
+    graph.add_render_pass("present", |s| {
+        s.read(tex);
+        s.write_surface();
+    });
+
+    graph
+        .try_execute(&mut ctx, |_pass, _gpu, _resources| Ok(()))
+        .expect("graph-owned upload targets should infer COPY_DST usage");
+}
+
+#[test]
 fn copy_pass_buffer_to_texture_establishes_dependency() {
     let mut graph = RenderGraph::new();
     let buf = graph.create_buffer(|b| {
@@ -164,6 +235,80 @@ fn copy_pass_buffer_to_texture_establishes_dependency() {
     // Verify ordering: fill_buf < upload < present.
     let names: Vec<_> = passes.iter().map(|p| p.name.as_ref()).collect();
     assert_eq!(names, vec!["fill_buf", "upload", "present"]);
+}
+
+#[test]
+fn single_row_buffer_to_texture_copy_accepts_tight_layout() {
+    let (device, queue) = create_test_device();
+    let mut ctx = crate::gpu::GpuContext::new_headless(
+        device,
+        queue,
+        wgpu::TextureFormat::Bgra8Unorm,
+        [64, 64],
+    );
+
+    let mut graph = RenderGraph::new();
+    let buf = graph.create_buffer(|b| {
+        b.name("single_row").size(4);
+    });
+    let tex = graph.create_texture(|b| {
+        b.name("target")
+            .size(TargetSize::Exact(1, 1))
+            .format(TextureFormat::Rgba8Unorm)
+            .usage(wgpu::TextureUsages::TEXTURE_BINDING);
+    });
+
+    graph.add_compute_pass("fill", |s| {
+        s.write_buffer(buf);
+    });
+    graph.add_copy_pass("upload", |s| {
+        s.buffer_to_texture(buf, tex);
+    });
+    graph.add_render_pass("present", |s| {
+        s.read(tex);
+        s.write_surface();
+    });
+
+    graph
+        .try_execute(&mut ctx, |_pass, _gpu, _resources| Ok(()))
+        .expect("single-row buffer-to-texture copy should allow tight layout");
+}
+
+#[test]
+fn buffer_to_texture_rows_per_image_padding_does_not_inflate_single_layer_size() {
+    let (device, queue) = create_test_device();
+    let mut ctx = crate::gpu::GpuContext::new_headless(
+        device,
+        queue,
+        wgpu::TextureFormat::Bgra8Unorm,
+        [64, 64],
+    );
+
+    let mut graph = RenderGraph::new();
+    let buf = graph.create_buffer(|b| {
+        b.name("sparse_rows").size(264);
+    });
+    let tex = graph.create_texture(|b| {
+        b.name("target")
+            .size(TargetSize::Exact(2, 2))
+            .format(TextureFormat::Rgba8Unorm)
+            .usage(wgpu::TextureUsages::TEXTURE_BINDING);
+    });
+
+    graph.add_compute_pass("fill", |s| {
+        s.write_buffer(buf);
+    });
+    graph.add_copy_pass("upload", |s| {
+        s.buffer_to_texture_with_layout(buf, tex, Some(256), Some(8));
+    });
+    graph.add_render_pass("present", |s| {
+        s.read(tex);
+        s.write_surface();
+    });
+
+    graph
+        .try_execute(&mut ctx, |_pass, _gpu, _resources| Ok(()))
+        .expect("single-layer copy size should not include unused rows_per_image padding");
 }
 
 #[test]
@@ -204,6 +349,49 @@ fn copy_pass_buffer_to_texture_with_layout_has_extra_params() {
         }
         other => panic!("expected BufferToTexture, got {:?}", other),
     }
+}
+
+#[test]
+fn texture_to_texture_rejects_msaa_copy_before_allocation() {
+    let (device, queue) = create_test_device();
+    let mut ctx = crate::gpu::GpuContext::new_headless(
+        device,
+        queue,
+        wgpu::TextureFormat::Bgra8Unorm,
+        [64, 64],
+    );
+
+    let mut graph = RenderGraph::new();
+    let src = graph.create_texture(|b| {
+        b.name("src_msaa")
+            .size(TargetSize::Exact(4, 4))
+            .format(TextureFormat::Rgba8Unorm)
+            .sample_count(4);
+    });
+    let dst = graph.create_texture(|b| {
+        b.name("dst")
+            .size(TargetSize::Exact(4, 4))
+            .format(TextureFormat::Rgba8Unorm);
+    });
+
+    graph.add_render_pass("produce", |s| {
+        s.write(src);
+    });
+    graph.add_copy_pass("copy", |s| {
+        s.texture_to_texture(src, dst);
+    });
+    graph.add_render_pass("present", |s| {
+        s.read(dst);
+        s.write_surface();
+    });
+
+    let err = graph
+        .try_execute(&mut ctx, |_pass, _gpu, _resources| Ok(()))
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        RenderGraphError::InvalidTextureCopy { src: s, dst: d, .. } if s == src && d == dst
+    ));
 }
 
 #[test]

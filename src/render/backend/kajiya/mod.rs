@@ -16,7 +16,10 @@ mod native;
 use self::config::KajiyaRendererConfig;
 use self::native::NativeKajiyaRuntime;
 
-use super::scene_renderer::{SceneRenderer, SceneRendererError, SceneRendererInitError};
+use super::scene_renderer::{
+    SceneFrame, SceneFrameSkipReason, SceneRenderOutcome, SceneRenderer, SceneRendererError,
+    SceneRendererInitError,
+};
 use super::{SceneSnapshot, SceneSnapshotExtractor, SceneSnapshotStats};
 
 pub type KajiyaSceneSyncStats = SceneSnapshotStats;
@@ -159,24 +162,25 @@ impl SceneRenderer for KajiyaSceneRenderer {
         RenderBackendKind::Kajiya
     }
 
-    fn begin_frame(&mut self) -> Result<(), SceneRendererError> {
+    fn begin_frame(&mut self) -> Result<SceneFrame, SceneRendererError> {
         if self.config.should_trace_frame(self.frame_index) {
             eprintln!(
                 "[SkyEngine][Kajiya] begin_frame frame={} surface={}x{}",
                 self.frame_index, self.surface_size[0], self.surface_size[1]
             );
         }
-        Ok(())
+        Ok(SceneFrame::new(RenderBackendKind::Kajiya))
     }
 
-    fn end_frame(&mut self) {
+    fn end_frame(&mut self, frame: SceneFrame) {
+        debug_assert_eq!(frame.backend_kind(), RenderBackendKind::Kajiya);
         if self.config.should_trace_frame(self.frame_index) {
             eprintln!("[SkyEngine][Kajiya] end_frame frame={}", self.frame_index);
         }
         self.frame_index = self.frame_index.wrapping_add(1);
     }
 
-    fn render_world(&mut self, world: &World) {
+    fn render_world(&mut self, frame_token: &mut SceneFrame, world: &World) -> SceneRenderOutcome {
         let frame = self.frame_index;
         self.sync_world(world);
         let scene_stats = self.snapshot.stats();
@@ -203,6 +207,9 @@ impl SceneRenderer for KajiyaSceneRenderer {
                     eprintln!("[SkyEngine] Kajiya render failed: {error}");
                     self.warned = true;
                 }
+                let outcome = SceneRenderOutcome::Skipped(SceneFrameSkipReason::BackendRenderFailed);
+                frame_token.set_render_outcome(outcome);
+                return outcome;
             } else {
                 let asset_stats = runtime.asset_sync_stats();
                 self.stats.resident_render_assets = asset_stats.resident_meshes;
@@ -218,6 +225,9 @@ impl SceneRenderer for KajiyaSceneRenderer {
                     );
                 }
                 self.warned = false;
+                let outcome = SceneRenderOutcome::Rendered;
+                frame_token.set_render_outcome(outcome);
+                return outcome;
             }
         } else if trace {
             eprintln!(
@@ -225,6 +235,9 @@ impl SceneRenderer for KajiyaSceneRenderer {
                 frame
             );
         }
+        let outcome = SceneRenderOutcome::Skipped(SceneFrameSkipReason::BackendFrameUnavailable);
+        frame_token.set_render_outcome(outcome);
+        outcome
     }
 
     fn resize(&mut self, width: u32, height: u32) {

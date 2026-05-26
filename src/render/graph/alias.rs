@@ -100,8 +100,10 @@ pub(crate) fn compute_texture_aliases(
     handle_token: u64,
     surface_size: [u32; 2],
 ) -> (Vec<AliasGroup>, AliasingStats) {
-    compute_texture_aliases_with_forbidden_pairs(
+    let texture_usages = textures.iter().map(|desc| desc.usage).collect::<Vec<_>>();
+    compute_texture_aliases_with_forbidden_pairs_and_usages(
         textures,
+        &texture_usages,
         lifetimes,
         handle_token,
         surface_size,
@@ -109,6 +111,7 @@ pub(crate) fn compute_texture_aliases(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn compute_texture_aliases_with_forbidden_pairs(
     textures: &[TextureDesc],
     lifetimes: &FxHashMap<ResourceRef, ResourceLifetime>,
@@ -116,6 +119,26 @@ pub(crate) fn compute_texture_aliases_with_forbidden_pairs(
     surface_size: [u32; 2],
     forbidden_pairs: &FxHashSet<(usize, usize)>,
 ) -> (Vec<AliasGroup>, AliasingStats) {
+    let texture_usages = textures.iter().map(|desc| desc.usage).collect::<Vec<_>>();
+    compute_texture_aliases_with_forbidden_pairs_and_usages(
+        textures,
+        &texture_usages,
+        lifetimes,
+        handle_token,
+        surface_size,
+        forbidden_pairs,
+    )
+}
+
+pub(crate) fn compute_texture_aliases_with_forbidden_pairs_and_usages(
+    textures: &[TextureDesc],
+    texture_usages: &[wgpu::TextureUsages],
+    lifetimes: &FxHashMap<ResourceRef, ResourceLifetime>,
+    handle_token: u64,
+    surface_size: [u32; 2],
+    forbidden_pairs: &FxHashSet<(usize, usize)>,
+) -> (Vec<AliasGroup>, AliasingStats) {
+    debug_assert_eq!(textures.len(), texture_usages.len());
     // ── Step 1: Collect candidates ──────────────────────────────────────
     // Only transient, non-imported textures with a valid lifetime are eligible.
     let mut candidates: Vec<(usize, [u32; 2])> = Vec::new();
@@ -162,6 +185,7 @@ pub(crate) fn compute_texture_aliases_with_forbidden_pairs(
 
     for &(tex_idx, [w, h]) in &candidates {
         let desc = &textures[tex_idx];
+        let usage = texture_usages[tex_idx];
         let handle = TextureHandle(tex_idx, handle_token);
         let resource = ResourceRef::Texture(handle);
         let lifetime = &lifetimes[&resource];
@@ -181,7 +205,7 @@ pub(crate) fn compute_texture_aliases_with_forbidden_pairs(
             if !can_fit_in_group(
                 tex_idx,
                 desc.format,
-                desc.usage,
+                usage,
                 desc.sample_count,
                 desc.mip_level_count,
                 desc.array_layer_count,
@@ -213,7 +237,7 @@ pub(crate) fn compute_texture_aliases_with_forbidden_pairs(
             groups.push(AliasGroup {
                 members: vec![tex_idx],
                 format: desc.format,
-                usage: desc.usage,
+                usage,
                 sample_count: desc.sample_count,
                 mip_level_count: desc.mip_level_count,
                 array_layer_count: desc.array_layer_count,

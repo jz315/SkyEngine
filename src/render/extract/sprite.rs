@@ -5,7 +5,7 @@ use crate::render::resources::material::{MaterialError, SpriteMaterial};
 use crate::render::view::{ResolvedSceneTransforms, SceneView};
 use rustc_hash::FxHashMap;
 
-use super::{ExtractContext, ExtractError, Extractor};
+use super::{ExtractContext, ExtractError, Extractor, ExtractorViewKinds};
 
 pub struct ExtractSprites {
     draw_function_id: DrawFunctionId,
@@ -27,6 +27,10 @@ impl ExtractSprites {
 }
 
 impl Extractor for ExtractSprites {
+    fn supported_view_kinds(&self) -> ExtractorViewKinds {
+        ExtractorViewKinds::MAIN
+    }
+
     fn extract(
         &mut self,
         world: &World,

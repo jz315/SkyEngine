@@ -2,6 +2,7 @@ use crate::asset::Assets;
 use crate::ecs::World;
 use crate::gpu::GpuContext;
 use crate::render::resources::texture_cache::SharedRenderAssetCache;
+use crate::render::runtime::{FrameRenderOutcome, FrameSkipReason};
 
 use super::frame::{
     begin_frame_inputs, execute_prepared_frame, extract_frame, finish_frame_stats,
@@ -28,7 +29,7 @@ impl Default for FrameCoordinator {
 }
 
 impl RenderRuntime {
-    pub fn render_world(&mut self, gpu: &mut GpuContext, world: &World) {
+    pub fn render_world(&mut self, gpu: &mut GpuContext, world: &World) -> FrameRenderOutcome {
         let asset_cache = &self.asset_cache;
         self.frame.render_world(
             gpu,
@@ -41,7 +42,7 @@ impl RenderRuntime {
                 shadows: &mut self.shadows,
                 executor: &mut self.executor,
             },
-        );
+        )
     }
 }
 
@@ -52,7 +53,7 @@ impl FrameCoordinator {
         world: &World,
         asset_cache: &SharedRenderAssetCache,
         mut parts: FrameRuntimeParts<'_>,
-    ) {
+    ) -> FrameRenderOutcome {
         let asset_server = world.get_resource::<Assets>().cloned();
         let inputs = begin_frame_inputs(&mut parts, gpu, world, Some(asset_cache));
         let mut extracted = extract_frame(
@@ -67,7 +68,7 @@ impl FrameCoordinator {
             let render_asset_stats = finish_render_assets(Some(asset_cache));
             finish_skipped_frame_stats(&mut parts, &inputs, &extracted, render_asset_stats);
             remember_previous_models(&mut parts, &inputs);
-            return;
+            return FrameRenderOutcome::Skipped(FrameSkipReason::ResourcePreparationFailed);
         }
         let uploads = upload_scene_data(&mut parts, gpu, world, &inputs, &mut extracted);
         prepare_global_illumination(&mut parts, gpu, &extracted, &uploads);
@@ -84,5 +85,6 @@ impl FrameCoordinator {
             &execution,
         );
         remember_previous_models(&mut parts, &inputs);
+        FrameRenderOutcome::Rendered
     }
 }

@@ -16,7 +16,10 @@ use winit::window::Window;
 
 use crate::render::pipeline::{RenderBackendKind, RenderPipelineAsset};
 
-pub use scene_renderer::{SceneRenderer, SceneRendererError, SceneRendererInitError};
+pub use scene_renderer::{
+    SceneFrame, SceneFrameClearReason, SceneFrameSkipReason, SceneRenderOutcome, SceneRenderer,
+    SceneRendererError, SceneRendererInitError,
+};
 pub use snapshot::{
     SceneCamera, SceneDirectionalLight, SceneMeshInstance, ScenePointLight, SceneSnapshot,
     SceneSnapshotExtractor, SceneSnapshotStats, SceneSpotLight,

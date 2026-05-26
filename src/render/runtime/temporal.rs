@@ -155,7 +155,7 @@ fn halton(mut index: u64, base: u64) -> f32 {
 mod tests {
     use super::*;
     use crate::render::component::Transform;
-    use crate::render::view::{Projection, SceneView, ViewportRect};
+    use crate::render::view::{Projection, ProjectionViewUniformExt, SceneView, ViewportRect};
 
     fn test_view(transform: Transform, projection: Projection) -> SceneView {
         let target_size = [128, 64];

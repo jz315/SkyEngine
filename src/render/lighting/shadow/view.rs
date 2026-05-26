@@ -1129,6 +1129,7 @@ pub(crate) const IDENTITY_MATRIX: [f32; 16] = [
 mod tests {
     use super::*;
     use crate::ecs::World;
+    use crate::render::view::ProjectionViewUniformExt;
     use crate::render::view::ViewportRect;
 
     fn project_point(view_proj: [f32; 16], point: [f32; 3]) -> [f32; 3] {
@@ -1381,7 +1382,7 @@ mod tests {
             *axis *= 0.125;
         }
         center_light_z *= 0.125;
-        let legacy_receiver_depth_extent = (center_light_z - min_light_z).abs() * 4.0;
+        let previous_receiver_depth_extent = (center_light_z - min_light_z).abs() * 4.0;
 
         let (shadow_view, setup) =
             build_shadow_view(&main_view, light, 0, 0).expect("cascade 0 should build");
@@ -1390,7 +1391,7 @@ mod tests {
             "caster culling range should be wider than the tight receiver slice"
         );
         assert!(
-            setup.receiver_depth_extent >= legacy_receiver_depth_extent - 0.001,
+            setup.receiver_depth_extent >= previous_receiver_depth_extent - 0.001,
             "sampling projection should keep the receiver slice depth range"
         );
 
@@ -1398,7 +1399,7 @@ mod tests {
             .try_normalized()
             .expect("test light direction should normalize");
         let caster_offset =
-            (legacy_receiver_depth_extent + 4.0).min(setup.caster_depth_extent - 1.0);
+            (previous_receiver_depth_extent + 4.0).min(setup.caster_depth_extent - 1.0);
         let caster_center = Vec3::from_array(center_world) - light_direction * caster_offset;
         assert!(
             shadow_view

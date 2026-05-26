@@ -104,7 +104,7 @@ Game/editor tile scene path
 - Do not make sprites understand tilemaps. Tile object rendering may use `SpriteRenderer`, but the conversion lives here.
 - Do not turn `GpuScene` into a tilemap cache. Tilemap-specific GPU state belongs in `TilemapFrameCache`.
 - Do not use `TiledMapInstance` as a general app scene system.
-- Do not introduce `TiledAdapter` or `TmjExporter`; current tile-scene format facades are `TiledImporter` and `TiledExporter` under `src/tile/adapters/tiled`.
+- Do not introduce `TiledAdapter` or `TmjExporter`; current tile-scene format facades are `TiledImporter` and `TiledExporter` under `src/tile/io/tiled`.
 
 ## Public API Expectations
 - Render-only app code can load a Tiled map directly with:

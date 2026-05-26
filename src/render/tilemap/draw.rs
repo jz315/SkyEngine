@@ -1,7 +1,9 @@
 use rustc_hash::FxHashMap;
 
 use crate::ecs::EntityId;
-use crate::render::phase::{DrawContext, DrawError, DrawFunction, PhaseItem};
+use crate::render::phase::{
+    DrawContext, DrawError, DrawFunction, PhaseItem, PhasePayload, PhasePayloadKind,
+};
 use crate::render::resources::mesh::MeshHandle;
 use crate::render::view::ResolvedSceneTransforms;
 use crate::render::ModelMatrixTable;
@@ -59,6 +61,8 @@ impl TilemapDrawData {
         start..end
     }
 }
+
+impl PhasePayload for TilemapDrawData {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct TilemapPipelineKey {
@@ -264,6 +268,11 @@ impl DrawTilemap {
 }
 
 impl DrawFunction for DrawTilemap {
+    #[inline]
+    fn payload_kind(&self) -> PhasePayloadKind {
+        PhasePayloadKind::of::<TilemapDrawData>()
+    }
+
     fn draw(
         &mut self,
         ctx: &mut DrawContext<'_, '_, '_>,

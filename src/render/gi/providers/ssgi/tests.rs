@@ -15,6 +15,7 @@ use super::settings::SsgiSettings;
 use super::uniforms::SsgiUniform;
 use crate::math::Mat4;
 use crate::render::graph::{RenderGraph, ResourceRef, TargetSize, TextureSubresource};
+use crate::render::view::ProjectionViewUniformExt;
 use rustc_hash::FxHashSet;
 
 fn create_test_device() -> (wgpu::Device, wgpu::Queue) {

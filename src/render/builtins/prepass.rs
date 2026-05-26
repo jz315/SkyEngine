@@ -914,7 +914,7 @@ mod tests {
     use crate::render::execution::{PhaseState, TextureFormat};
     use crate::render::graph::{LoadOp, RenderGraph, ResourceRef, TargetSize};
     use crate::render::phase::{DrawFunctionId, MeshDrawData, PhaseItem};
-    use crate::render::view::{Projection, ViewportRect};
+    use crate::render::view::{Projection, ProjectionViewUniformExt, ViewportRect};
 
     fn test_scene_view() -> SceneView {
         let target_size = [64, 64];

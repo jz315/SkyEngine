@@ -13,7 +13,10 @@ use crate::render::asset::{
 use crate::render::pipeline::{RenderBackendKind, RenderPipelineAsset};
 use crate::render::view::RenderStats;
 
-use super::scene_renderer::{SceneRenderer, SceneRendererError, SceneRendererInitError};
+use super::scene_renderer::{
+    SceneFrame, SceneFrameSkipReason, SceneRenderOutcome, SceneRenderer, SceneRendererError,
+    SceneRendererInitError,
+};
 use super::{SceneCamera, SceneSnapshot, SceneSnapshotExtractor, SceneSnapshotStats};
 
 pub type RenderlingSceneSyncStats = SceneSnapshotStats;
@@ -46,6 +49,7 @@ pub struct RenderlingSceneRenderer {
     active_lights: Vec<RLight>,
     active_directional_lights: Vec<RDirectionalLight>,
     active_point_lights: Vec<RPointLight>,
+    pending_frame: Option<::renderling::Frame>,
     warned_assets: bool,
 }
 
@@ -84,6 +88,7 @@ impl RenderlingSceneRenderer {
             active_lights: Vec::new(),
             active_directional_lights: Vec::new(),
             active_point_lights: Vec::new(),
+            pending_frame: None,
             warned_assets: false,
         })
     }
@@ -110,6 +115,7 @@ impl RenderlingSceneRenderer {
             active_lights: Vec::new(),
             active_directional_lights: Vec::new(),
             active_point_lights: Vec::new(),
+            pending_frame: None,
             warned_assets: false,
         }
     }
@@ -293,13 +299,28 @@ impl SceneRenderer for RenderlingSceneRenderer {
         RenderBackendKind::Renderling
     }
 
-    fn begin_frame(&mut self) -> Result<(), SceneRendererError> {
-        Ok(())
+    fn begin_frame(&mut self) -> Result<SceneFrame, SceneRendererError> {
+        match self.context.get_next_frame() {
+            Ok(frame) => {
+                self.pending_frame = Some(frame);
+                Ok(SceneFrame::new(RenderBackendKind::Renderling))
+            }
+            Err(error) => Err(SceneRendererError::Other(error.to_string())),
+        }
     }
 
-    fn end_frame(&mut self) {}
+    fn end_frame(&mut self, frame: SceneFrame) {
+        debug_assert_eq!(frame.backend_kind(), RenderBackendKind::Renderling);
+        let Some(pending_frame) = self.pending_frame.take() else {
+            return;
+        };
+        if !frame.is_presentable() {
+            self.stage.render(&pending_frame.view());
+        }
+        pending_frame.present();
+    }
 
-    fn render_world(&mut self, world: &World) {
+    fn render_world(&mut self, frame: &mut SceneFrame, world: &World) -> SceneRenderOutcome {
         self.stats.uploaded_render_assets = 0;
         self.sync_world(world);
         let snapshot = self.snapshot.clone();
@@ -307,15 +328,16 @@ impl SceneRenderer for RenderlingSceneRenderer {
         self.snapshot = snapshot;
         self.rebuild_stage_frame(assets.as_ref());
 
-        match self.context.get_next_frame() {
-            Ok(frame) => {
-                self.stage.render(&frame.view());
-                frame.present();
-            }
-            Err(error) => {
-                eprintln!("[SkyEngine] Renderling frame failed: {error}");
-            }
-        }
+        let Some(pending_frame) = self.pending_frame.as_ref() else {
+            let outcome = SceneRenderOutcome::Skipped(SceneFrameSkipReason::BackendFrameUnavailable);
+            frame.set_render_outcome(outcome);
+            return outcome;
+        };
+
+        self.stage.render(&pending_frame.view());
+        let outcome = SceneRenderOutcome::Rendered;
+        frame.set_render_outcome(outcome);
+        outcome
     }
 
     fn resize(&mut self, width: u32, height: u32) {

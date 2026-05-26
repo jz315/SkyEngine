@@ -14,7 +14,7 @@ use crate::render::phase::{
     create_model_bind_group_layout, DrawContext, DrawFunctionRegistry, DrawMesh, DrawSprite,
     MeshDrawData, OpaquePhase, PhaseItem, SpriteDrawData, TransparentPhase,
 };
-use crate::render::view::{Projection, SceneView, SceneViewKind};
+use crate::render::view::{Projection, ProjectionViewUniformExt, SceneView, SceneViewKind};
 use crate::render::{
     expert::{Mesh, MeshRegistry},
     Color, GpuScene, LightTable, Material, MaterialError, MaterialRenderState, ModelMatrixTable,
@@ -70,6 +70,23 @@ fn make_view(size: [u32; 2]) -> SceneView {
         projection,
         projection.view_uniform(Transform::default(), size),
         true,
+    )
+}
+
+fn make_shadow_view(size: [u32; 2]) -> SceneView {
+    let projection = Projection::orthographic_fixed(size[0] as f32, size[1] as f32);
+    SceneView::from_parts(
+        0,
+        ViewportRect::from_surface_size(size),
+        size,
+        false,
+        SceneViewKind::DirectionalShadow,
+        Some(0),
+        u32::MAX,
+        Transform::default(),
+        projection,
+        projection.view_uniform(Transform::default(), size),
+        false,
     )
 }
 
@@ -457,6 +474,49 @@ fn sprite_extract_schedule_renders_through_transparent_phase() {
         "rendered sprite should contribute red channel"
     );
     assert!(pixel[3] > 0, "rendered sprite should contribute alpha");
+}
+
+#[test]
+fn sprite_extractor_is_not_called_for_shadow_views() {
+    let (device, queue) = create_test_device();
+    let ctx = GpuContext::new_headless(device, queue, wgpu::TextureFormat::Rgba8Unorm, [64, 64]);
+    let mut draw_functions = DrawFunctionRegistry::new();
+    let draw_sprite = draw_functions.register(DrawSprite::new());
+    let mut schedule = ExtractSchedule::new();
+    schedule.add(ExtractSprites::new(draw_sprite));
+
+    let mut world = crate::ecs::World::new();
+    world.spawn((
+        Transform::from_xy(0.0, 0.0),
+        SpriteRenderer::new(16.0, 16.0).color(Color::RED),
+    ));
+
+    let transforms = crate::render::view::ResolvedSceneTransforms::default();
+    let shadow_view = make_shadow_view([64, 64]);
+    let mut material_registry = crate::render::resources::material::MaterialRegistry::default();
+    let mesh_registry = MeshRegistry::default();
+    let mut opaque_phase = OpaquePhase::new();
+    let mut transparent_phase = TransparentPhase::new();
+
+    schedule
+        .extract(
+            &world,
+            &transforms,
+            &shadow_view,
+            &mut ExtractContext {
+                gpu: &ctx,
+                asset_server: None,
+                render_assets: None,
+                material_registry: &mut material_registry,
+                mesh_registry: &mesh_registry,
+                opaque_phase: &mut opaque_phase,
+                transparent_phase: &mut transparent_phase,
+                quad_mesh_handle: crate::render::resources::mesh::MeshHandle::BUILTIN_QUAD,
+            },
+        )
+        .expect("scheduler should skip sprite extraction for shadow views");
+
+    assert!(transparent_phase.is_empty());
 }
 
 #[test]

@@ -109,6 +109,9 @@ fn collect_standard_gi_renderables<'a, P>(
             if draw_functions.material_type_id(item.draw_function_id) != Some(standard_type) {
                 continue;
             }
+            if !item.has_payload::<MeshDrawData>() {
+                continue;
+            }
             let draw = *item.data::<MeshDrawData>();
             let Some(mesh) = mesh_registry.get(draw.mesh_handle()) else {
                 continue;

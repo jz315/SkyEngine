@@ -22,7 +22,7 @@ pub(super) use crate::render::pipeline::{
     ComputePass, GraphPass, PostFxPass, RenderPass, RenderPhase,
 };
 pub(super) use crate::render::resources::texture_cache::SharedRenderAssetCache;
-pub(super) use crate::render::view::Projection;
+pub(super) use crate::render::view::{Projection, ProjectionViewUniformExt};
 pub(super) use crate::render::{
     CameraMarker, CameraViewport, Color, ComputePassExecuteContext, ComputePassSetupContext,
     DirectionalLight, MainCamera, MaterialError, PostFxPassExecuteContext, PostFxPassSetupContext,

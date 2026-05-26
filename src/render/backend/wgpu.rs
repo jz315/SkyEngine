@@ -6,14 +6,18 @@ use crate::asset::{Assets, Handle};
 use crate::ecs::World;
 use crate::gpu::GpuContext;
 use crate::render::asset::{MeshAsset, StandardMaterialAsset};
+use crate::render::component::RenderSettings;
 use crate::render::pipeline::{RenderBackendKind, RenderPipelineAsset};
 use crate::render::resources::material::MaterialHandle;
 use crate::render::resources::mesh::MeshHandle;
 use crate::render::resources::texture_cache::SharedRenderAssetCache;
-use crate::render::runtime::RenderRuntime;
+use crate::render::runtime::{FrameRenderOutcome, RenderRuntime};
 use crate::render::view::RenderStats;
 
-use super::scene_renderer::{SceneRenderer, SceneRendererError, SceneRendererInitError};
+use super::scene_renderer::{
+    SceneFrame, SceneFrameClearReason, SceneFrameSkipReason, SceneRenderOutcome, SceneRenderer,
+    SceneRendererError, SceneRendererInitError,
+};
 use super::wgpu_asset_bridge::WgpuRenderAssetCache;
 
 /// Native `wgpu` backend wrapper around the high-level [`RenderRuntime`].
@@ -98,15 +102,20 @@ impl SceneRenderer for WgpuSceneRenderer {
         RenderBackendKind::Wgpu
     }
 
-    fn begin_frame(&mut self) -> Result<(), SceneRendererError> {
-        self.gpu.begin_frame().map_err(SceneRendererError::from)
+    fn begin_frame(&mut self) -> Result<SceneFrame, SceneRendererError> {
+        self.gpu.begin_frame().map_err(SceneRendererError::from)?;
+        Ok(SceneFrame::new(RenderBackendKind::Wgpu))
     }
 
-    fn end_frame(&mut self) {
+    fn end_frame(&mut self, frame: SceneFrame) {
+        debug_assert_eq!(frame.backend_kind(), RenderBackendKind::Wgpu);
+        if !frame.is_presentable() {
+            clear_active_surface(&mut self.gpu, RenderSettings::default().clear_color.to_wgpu());
+        }
         self.gpu.end_frame();
     }
 
-    fn render_world(&mut self, world: &World) {
+    fn render_world(&mut self, frame: &mut SceneFrame, world: &World) -> SceneRenderOutcome {
         let Some(render_runtime) = self.render_runtime.as_mut() else {
             if !self.warned_missing_pipeline {
                 eprintln!(
@@ -115,10 +124,36 @@ impl SceneRenderer for WgpuSceneRenderer {
                 );
                 self.warned_missing_pipeline = true;
             }
-            return;
+            return self.clear_frame(frame, world, SceneFrameClearReason::MissingPipeline);
         };
 
-        render_runtime.render_world(&mut self.gpu, world);
+        let outcome = match render_runtime.render_world(&mut self.gpu, world) {
+            FrameRenderOutcome::Rendered => SceneRenderOutcome::Rendered,
+            FrameRenderOutcome::Skipped(reason) => {
+                self.clear_frame(frame, world, SceneFrameClearReason::RuntimeSkipped(reason))
+            }
+        };
+        frame.set_render_outcome(outcome);
+        outcome
+    }
+
+    fn clear_frame(
+        &mut self,
+        frame: &mut SceneFrame,
+        world: &World,
+        reason: SceneFrameClearReason,
+    ) -> SceneRenderOutcome {
+        let settings = world
+            .get_resource::<RenderSettings>()
+            .cloned()
+            .unwrap_or_default();
+        let outcome = if clear_active_surface(&mut self.gpu, settings.clear_color.to_wgpu()) {
+            SceneRenderOutcome::Cleared(reason)
+        } else {
+            SceneRenderOutcome::Skipped(SceneFrameSkipReason::ClearUnsupported(reason))
+        };
+        frame.set_render_outcome(outcome);
+        outcome
     }
 
     fn resize(&mut self, width: u32, height: u32) {
@@ -179,4 +214,16 @@ impl SceneRenderer for WgpuSceneRenderer {
             .map(RenderRuntime::render_asset_cache);
         Some((&mut self.gpu, render_assets))
     }
+}
+
+fn clear_active_surface(gpu: &mut GpuContext, color: wgpu::Color) -> bool {
+    if !gpu.has_surface() || !gpu.has_active_frame() {
+        return false;
+    }
+
+    {
+        let mut frame = gpu.frame();
+        let _pass = frame.begin_surface_pass("scene_frame_clear", Some(color));
+    }
+    true
 }

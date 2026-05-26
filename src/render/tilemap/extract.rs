@@ -18,7 +18,7 @@ use crate::render::view::{ResolvedSceneTransforms, SceneView};
 use crate::render::Color;
 use crate::render::Texture;
 
-use crate::render::extract::{ExtractContext, ExtractError, Extractor};
+use crate::render::extract::{ExtractContext, ExtractError, Extractor, ExtractorViewKinds};
 
 pub struct ExtractTilemaps {
     draw_function_id: DrawFunctionId,
@@ -42,6 +42,17 @@ impl ExtractTilemaps {
 }
 
 impl Extractor for ExtractTilemaps {
+    fn supported_view_kinds(&self) -> ExtractorViewKinds {
+        ExtractorViewKinds::MAIN
+    }
+
+    fn begin_frame(&mut self) {
+        self.cache
+            .lock()
+            .expect("tilemap frame cache poisoned")
+            .begin_frame();
+    }
+
     fn extract(
         &mut self,
         world: &World,
@@ -50,12 +61,6 @@ impl Extractor for ExtractTilemaps {
         ctx: &mut ExtractContext<'_>,
     ) -> Result<(), ExtractError> {
         let mut cache = self.cache.lock().expect("tilemap frame cache poisoned");
-        if view.execution_order() == 0 {
-            cache.begin_frame();
-        }
-        if view.is_shadow() {
-            return Ok(());
-        }
 
         let Some(storage) = world.get_resource::<TilemapStorage>() else {
             return Ok(());
@@ -112,8 +117,16 @@ impl Extractor for ExtractTilemaps {
                         continue;
                     };
 
-                    let draw_chunk =
-                        draw_visible && chunk_intersects_view(bounds, renderer, transform, view);
+                    let draw_chunk = draw_visible
+                        && chunk_intersects_view(
+                            map,
+                            layer,
+                            bounds,
+                            renderer,
+                            transform,
+                            view,
+                            animation_time,
+                        );
                     if !draw_chunk && !prewarm_only {
                         continue;
                     }
@@ -360,10 +373,13 @@ fn multiply_color(lhs: Color, rhs: Color) -> Color {
 }
 
 fn chunk_intersects_view(
+    map: &Tilemap,
+    layer: u32,
     bounds: TileChunkBounds,
     renderer: &TilemapRenderer,
     transform: Transform,
     view: &SceneView,
+    animation_time: f32,
 ) -> bool {
     if !view.is_planar_2d {
         return true;
@@ -386,42 +402,51 @@ fn chunk_intersects_view(
     let mut chunk_max_x = f32::NEG_INFINITY;
     let mut chunk_min_y = f32::INFINITY;
     let mut chunk_max_y = f32::NEG_INFINITY;
-    let max_cell_x = bounds.x + bounds.width - 1;
-    let max_cell_y = bounds.y + bounds.height - 1;
-    let cells = [
-        [bounds.x, bounds.y],
-        [max_cell_x, bounds.y],
-        [bounds.x, max_cell_y],
-        [max_cell_x, max_cell_y],
-    ];
-    for [cell_x, cell_y] in cells {
-        let origin = renderer.cell_to_local_origin([cell_x as i32, cell_y as i32]);
-        let [tile_w, tile_h] = renderer.tile_draw_size;
-        let local_corners = [
-            [
+    for y in bounds.y..bounds.y + bounds.height {
+        for x in bounds.x..bounds.x + bounds.width {
+            let Some(tile) = map.tile(layer, x, y) else {
+                continue;
+            };
+            if tile.is_empty() {
+                continue;
+            }
+            let tile_id = renderer.tileset.animated_tile_id(tile.id, animation_time);
+            if renderer.tileset.uv_rect(tile_id).is_none() {
+                continue;
+            }
+            let tile_size = renderer
+                .tileset
+                .tile_draw_size(tile_id)
+                .map(|size| [size[0] as f32, size[1] as f32])
+                .unwrap_or(renderer.tile_draw_size);
+            let origin = renderer.cell_to_local_origin([x as i32, y as i32]);
+            let local_min = [
                 origin[0] + renderer.tile_offset[0],
                 origin[1] + renderer.tile_offset[1],
-            ],
-            [
-                origin[0] + renderer.tile_offset[0] + tile_w,
-                origin[1] + renderer.tile_offset[1],
-            ],
-            [
-                origin[0] + renderer.tile_offset[0],
-                origin[1] + renderer.tile_offset[1] + tile_h,
-            ],
-            [
-                origin[0] + renderer.tile_offset[0] + tile_w,
-                origin[1] + renderer.tile_offset[1] + tile_h,
-            ],
-        ];
-        for [local_x, local_y] in local_corners {
-            let corner = transform.transform_point(Vec3::new(local_x, local_y, 0.0));
-            chunk_min_x = chunk_min_x.min(corner.x());
-            chunk_max_x = chunk_max_x.max(corner.x());
-            chunk_min_y = chunk_min_y.min(corner.y());
-            chunk_max_y = chunk_max_y.max(corner.y());
+            ];
+            let local_max = [local_min[0] + tile_size[0], local_min[1] + tile_size[1]];
+            let local_corners = [
+                [local_min[0], local_min[1]],
+                [local_max[0], local_min[1]],
+                [local_min[0], local_max[1]],
+                [local_max[0], local_max[1]],
+            ];
+            for [local_x, local_y] in local_corners {
+                let corner = transform.transform_point(Vec3::new(local_x, local_y, 0.0));
+                chunk_min_x = chunk_min_x.min(corner.x());
+                chunk_max_x = chunk_max_x.max(corner.x());
+                chunk_min_y = chunk_min_y.min(corner.y());
+                chunk_max_y = chunk_max_y.max(corner.y());
+            }
         }
+    }
+
+    if !chunk_min_x.is_finite()
+        || !chunk_max_x.is_finite()
+        || !chunk_min_y.is_finite()
+        || !chunk_max_y.is_finite()
+    {
+        return false;
     }
 
     chunk_max_x >= view_min_x
@@ -672,8 +697,27 @@ fn tilemap_batch_key_for(draw_function_id: DrawFunctionId, texture_key: u64) -> 
 mod tests {
     use super::*;
     use crate::asset::{AssetId, Handle, TextureAsset};
-    use crate::render::component::{TileAnimation, TileAnimationFrame, TilesetGrid};
-    use crate::render::tilemap::{Tile, TileId, TilemapDescriptor, TilemapHandle};
+    use crate::render::component::{
+        TileAnimation, TileAnimationFrame, TilesetGrid, TilesetTileRect,
+    };
+    use crate::render::tilemap::{
+        Tile, TileId, TilemapDescriptor, TilemapFrameCache, TilemapHandle,
+    };
+    use crate::render::view::SceneViewKind;
+    use crate::render::view::{Projection, ProjectionViewUniformExt, ViewportRect};
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn tilemap_extractor_declares_main_views_only() {
+        let extractor = ExtractTilemaps::new(
+            DrawFunctionId::from_raw(0),
+            Arc::new(Mutex::new(TilemapFrameCache::default())),
+        );
+        let view_kinds = extractor.supported_view_kinds();
+
+        assert!(view_kinds.contains(SceneViewKind::Main));
+        assert!(!view_kinds.contains(SceneViewKind::DirectionalShadow));
+    }
 
     #[test]
     fn tile_uv_transform_keeps_plain_rect() {
@@ -767,6 +811,43 @@ mod tests {
         );
 
         assert_eq!(renderer_hash_for(&renderer), renderer_hash_for(&renderer));
+    }
+
+    #[test]
+    fn chunk_culling_uses_tileset_draw_extents() {
+        let texture = Handle::<TextureAsset>::new(AssetId::new());
+        let tileset = TilesetGrid::new(texture, [16, 16], 1, 1)
+            .texture_size([64, 64])
+            .tile_rects([Some(TilesetTileRect::new(0, 0, 64, 64))]);
+        let renderer = TilemapRenderer::new(TilemapHandle::new(0, 0), tileset)
+            .tile_size([16.0, 16.0])
+            .tile_draw_size([16.0, 16.0]);
+        let mut map = Tilemap::new(TilemapDescriptor::new(1, 1, 1));
+        assert!(map.set_tile(0, 0, 0, Tile::new(TileId(0))).is_some());
+        let bounds = map.chunk_bounds(0, 0).unwrap();
+        let projection = Projection::orthographic_fixed(16.0, 16.0);
+        let camera = Transform::from_xy(58.0, 8.0);
+        let view = SceneView::new(
+            0,
+            ViewportRect::from_surface_size([16, 16]),
+            [16, 16],
+            false,
+            u32::MAX,
+            camera,
+            projection,
+            projection.view_uniform(camera, [16, 16]),
+            true,
+        );
+
+        assert!(chunk_intersects_view(
+            &map,
+            0,
+            bounds,
+            &renderer,
+            Transform::default(),
+            &view,
+            0.0,
+        ));
     }
 
     #[test]

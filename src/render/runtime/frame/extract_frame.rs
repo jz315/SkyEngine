@@ -57,10 +57,16 @@ pub(crate) fn extract_frame(
 
     let mut opaque_phases = Vec::with_capacity(views.len());
     let mut transparent_phases = Vec::with_capacity(views.len());
+    for extractor in &mut parts.plan.extractors {
+        extractor.begin_frame();
+    }
     for (view_index, view) in views.iter().enumerate() {
         let mut opaque_phase = OpaquePhase::new();
         let mut transparent_phase = TransparentPhase::new();
         for extractor in &mut parts.plan.extractors {
+            if !extractor.supported_view_kinds().contains(view.kind) {
+                continue;
+            }
             let extractor_name = extractor.name();
             if let Err(error) = extractor.extract(
                 world,

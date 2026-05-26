@@ -171,11 +171,18 @@ fn count_shadow_batches(items: &[PhaseItem]) -> usize {
     let mut draws = 0usize;
     let mut cursor = 0usize;
     while cursor < items.len() {
+        if !items[cursor].has_payload::<MeshDrawData>() {
+            cursor += 1;
+            continue;
+        }
         let base = *items[cursor].data::<MeshDrawData>();
         let base_draw_function = items[cursor].draw_function_id;
         let base_material = base.material_handle::<crate::render::StandardMaterial>();
         let mut batch_end = cursor + 1;
         while batch_end < items.len() {
+            if !items[batch_end].has_payload::<MeshDrawData>() {
+                break;
+            }
             let next = *items[batch_end].data::<MeshDrawData>();
             let next_draw_function = items[batch_end].draw_function_id;
             if next.mesh_handle() != base.mesh_handle()

@@ -1,8 +1,8 @@
 use crate::render::phase::{
-    opaque_sort_key, transparent_sort_key, DrawFunctionId, MeshDrawData, OpaquePhase, PhaseItem,
-    TransparentPhase,
+    opaque_sort_key, transparent_sort_key, DrawError, DrawFunctionId, DrawFunctionRegistry,
+    DrawSprite, MeshDrawData, OpaquePhase, PhaseItem, SpriteDrawData, TransparentPhase,
 };
-use crate::render::view::{Projection, SceneView};
+use crate::render::view::{Projection, ProjectionViewUniformExt, SceneView};
 use crate::render::{SortingLayer, SpriteMaterial, Transform, ViewportRect};
 
 fn make_view() -> SceneView {
@@ -87,4 +87,43 @@ fn opaque_phase_sorts_front_to_back() {
     assert_eq!(items.len(), 2);
     assert_eq!(items[0].entity.index(), 1);
     assert_eq!(items[1].entity.index(), 2);
+}
+
+#[test]
+fn draw_function_rejects_wrong_phase_payload_kind_before_execution() {
+    let mesh = crate::render::expert::Mesh::QUAD;
+    let fake_material = crate::render::MaterialHandle::new::<SpriteMaterial>(0, 0);
+    let entity = crate::ecs::EntityId::new(1, 0);
+    let mut draw_functions = DrawFunctionRegistry::new();
+    let sprite_draw = draw_functions.register(DrawSprite::new());
+    let item = PhaseItem::new(
+        0,
+        sprite_draw,
+        entity,
+        0,
+        MeshDrawData::new(mesh, fake_material, 0),
+    );
+
+    let err = draw_functions
+        .validate_phase_payloads(sprite_draw, std::slice::from_ref(&item))
+        .unwrap_err();
+
+    assert!(matches!(
+        err,
+        DrawError::PhasePayloadMismatch { id, .. } if id == sprite_draw
+    ));
+}
+
+#[test]
+fn sprite_draw_data_preserves_public_f32_semantics() {
+    let material = crate::render::MaterialHandle::new::<SpriteMaterial>(3, 1);
+    let size = [12.5, 4097.25];
+    let color = [1.25, -0.25, 0.5, 0.75];
+    let uv = [-0.5, 0.25, 1.5, 2.0];
+
+    let data = SpriteDrawData::new(material, size, color, uv);
+
+    assert_eq!(data.size(), size);
+    assert_eq!(data.color(), color);
+    assert_eq!(data.uv_rect(), uv);
 }

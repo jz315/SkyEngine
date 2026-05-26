@@ -56,7 +56,10 @@ impl ViewportBlitNode {
     }
 }
 
-impl FrameViewNode<dyn RuntimeRenderServices + '_> for ViewportBlitNode {
+impl<S> FrameViewNode<S> for ViewportBlitNode
+where
+    S: RuntimeRenderServices + ?Sized,
+{
     fn name(&self) -> &'static str {
         "viewport_blit"
     }
@@ -82,7 +85,7 @@ impl FrameViewNode<dyn RuntimeRenderServices + '_> for ViewportBlitNode {
             .payload::<RenderSettings>()
             .cloned()
             .unwrap_or_default();
-        let input = require_current_color(state, self.name());
+        let input = require_current_color(state, "viewport_blit");
         graph.add_render_pass("viewport_blit", |s| {
             s.read(input.handle());
             if view.clear_surface() {
@@ -102,7 +105,7 @@ impl FrameViewNode<dyn RuntimeRenderServices + '_> for ViewportBlitNode {
         ctx: &mut GpuContext,
         resources: &PhysicalResources<'_>,
         execution: &ViewExecutionContext<'_>,
-        _services: &mut (dyn RuntimeRenderServices + '_),
+        _services: &mut S,
     ) -> Result<(), RenderGraphError> {
         if execution
             .view_payload::<SceneView>()
@@ -115,8 +118,8 @@ impl FrameViewNode<dyn RuntimeRenderServices + '_> for ViewportBlitNode {
             .payload::<RenderSettings>()
             .cloned()
             .unwrap_or_default();
-        let input = pass_first_read_texture(pass, self.name(), "input");
-        let input_rt = require_render_target(resources, input, self.name(), "input");
+        let input = pass_first_read_texture(pass, "viewport_blit", "input");
+        let input_rt = require_render_target(resources, input, "viewport_blit", "input");
         let bind_group = ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("viewport_blit_bg"),
             layout: &self.texture_bgl,
@@ -167,11 +170,7 @@ impl FrameViewNode<dyn RuntimeRenderServices + '_> for ViewportBlitNode {
         Ok(())
     }
 
-    fn draw_calls(
-        &self,
-        _execution: &ViewExecutionContext<'_>,
-        _services: &(dyn RuntimeRenderServices + '_),
-    ) -> usize {
+    fn draw_calls(&self, _execution: &ViewExecutionContext<'_>, _services: &S) -> usize {
         if _execution
             .view_payload::<SceneView>()
             .is_some_and(|scene_view| !scene_view.presents_to_surface())

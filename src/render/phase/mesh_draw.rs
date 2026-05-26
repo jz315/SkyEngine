@@ -11,7 +11,8 @@ use crate::render::view::ResolvedSceneTransforms;
 use super::mesh_instance::mesh_phase_instance_buffer;
 use super::scene_bindings::IDENTITY_MODEL;
 use super::{
-    DrawContext, DrawError, DrawFunction, MeshDrawData, PhaseItem, SceneMaterialPrepassContext,
+    DrawContext, DrawError, DrawFunction, MeshDrawData, PhaseItem, PhasePayloadKind,
+    SceneMaterialPrepassContext,
 };
 
 pub struct DrawMesh<M> {
@@ -37,6 +38,11 @@ impl<M> DrawFunction for DrawMesh<M>
 where
     M: Material,
 {
+    #[inline]
+    fn payload_kind(&self) -> PhasePayloadKind {
+        PhasePayloadKind::of::<MeshDrawData>()
+    }
+
     #[inline]
     fn material_type_id(&self) -> Option<TypeId> {
         Some(TypeId::of::<M>())

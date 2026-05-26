@@ -1,8 +1,33 @@
+use std::any::TypeId;
+
 use crate::ecs::EntityId;
 use crate::render::resources::{
     material::{Material, MaterialHandle},
     mesh::MeshHandle,
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PhasePayloadKind {
+    type_id: TypeId,
+    type_name: &'static str,
+}
+
+impl PhasePayloadKind {
+    #[inline]
+    pub fn of<T: PhasePayload>() -> Self {
+        Self {
+            type_id: TypeId::of::<T>(),
+            type_name: std::any::type_name::<T>(),
+        }
+    }
+
+    #[inline]
+    pub fn type_name(self) -> &'static str {
+        self.type_name
+    }
+}
+
+pub trait PhasePayload: Copy + 'static {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
@@ -70,6 +95,8 @@ impl MeshDrawData {
     }
 }
 
+impl PhasePayload for MeshDrawData {}
+
 #[cfg(feature = "live2d")]
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -90,14 +117,17 @@ impl Live2DDrawData {
     }
 }
 
+#[cfg(feature = "live2d")]
+impl PhasePayload for Live2DDrawData {}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct SpriteDrawData {
     material_index: u32,
     material_generation: u32,
-    color_rgba8: u32,
-    size_half: [u16; 2],
-    uv_rect_half: [u16; 4],
+    color: [f32; 4],
+    size: [f32; 2],
+    uv_rect: [f32; 4],
 }
 
 impl SpriteDrawData {
@@ -111,9 +141,9 @@ impl SpriteDrawData {
         Self {
             material_index: material_handle.index(),
             material_generation: material_handle.generation(),
-            color_rgba8: pack_rgba8(color),
-            size_half: size.map(pack_size_half),
-            uv_rect_half: uv_rect.map(pack_half),
+            color,
+            size,
+            uv_rect,
         }
     }
 
@@ -127,19 +157,21 @@ impl SpriteDrawData {
 
     #[inline]
     pub fn color(self) -> [f32; 4] {
-        unpack_rgba8(self.color_rgba8)
+        self.color
     }
 
     #[inline]
     pub fn size(self) -> [f32; 2] {
-        self.size_half.map(unpack_size_half)
+        self.size
     }
 
     #[inline]
     pub fn uv_rect(self) -> [f32; 4] {
-        self.uv_rect_half.map(unpack_half)
+        self.uv_rect
     }
 }
+
+impl PhasePayload for SpriteDrawData {}
 
 #[derive(Clone)]
 pub struct PhaseItem {
@@ -147,12 +179,13 @@ pub struct PhaseItem {
     pub draw_function_id: crate::render::phase::DrawFunctionId,
     pub entity: EntityId,
     pub batch_key: u64,
-    data: [u64; 3],
+    payload_kind: PhasePayloadKind,
+    data: [u64; 6],
 }
 
 impl PhaseItem {
     #[inline]
-    pub fn new<T: Copy>(
+    pub fn new<T: PhasePayload>(
         sort_key: u64,
         draw_function_id: crate::render::phase::DrawFunctionId,
         entity: EntityId,
@@ -164,68 +197,56 @@ impl PhaseItem {
             draw_function_id,
             entity,
             batch_key,
-            data: [0; 3],
+            payload_kind: PhasePayloadKind::of::<T>(),
+            data: [0; 6],
         };
         item.set_data(payload);
         item
     }
 
     #[inline]
-    pub fn set_data<T: Copy>(&mut self, value: T) {
-        const { assert!(std::mem::size_of::<T>() <= 24) };
+    pub fn set_data<T: PhasePayload>(&mut self, value: T) {
+        const { assert!(std::mem::size_of::<T>() <= 48) };
         const { assert!(std::mem::align_of::<T>() <= std::mem::align_of::<u64>()) };
+        self.payload_kind = PhasePayloadKind::of::<T>();
         unsafe {
             std::ptr::write(self.data.as_mut_ptr().cast::<T>(), value);
         }
     }
 
     #[inline]
-    pub fn data<T: Copy>(&self) -> &T {
-        const { assert!(std::mem::size_of::<T>() <= 24) };
+    pub fn data<T: PhasePayload>(&self) -> &T {
+        const { assert!(std::mem::size_of::<T>() <= 48) };
         const { assert!(std::mem::align_of::<T>() <= std::mem::align_of::<u64>()) };
+        assert!(
+            self.has_payload::<T>(),
+            "phase payload mismatch: item stores `{}`, requested `{}`",
+            self.payload_kind.type_name(),
+            std::any::type_name::<T>()
+        );
         unsafe { &*self.data.as_ptr().cast::<T>() }
     }
 
     #[inline]
-    pub fn data_mut<T: Copy>(&mut self) -> &mut T {
-        const { assert!(std::mem::size_of::<T>() <= 24) };
+    pub fn data_mut<T: PhasePayload>(&mut self) -> &mut T {
+        const { assert!(std::mem::size_of::<T>() <= 48) };
         const { assert!(std::mem::align_of::<T>() <= std::mem::align_of::<u64>()) };
+        assert!(
+            self.has_payload::<T>(),
+            "phase payload mismatch: item stores `{}`, requested `{}`",
+            self.payload_kind.type_name(),
+            std::any::type_name::<T>()
+        );
         unsafe { &mut *self.data.as_mut_ptr().cast::<T>() }
     }
-}
 
-#[inline]
-fn pack_rgba8(color: [f32; 4]) -> u32 {
-    let [r, g, b, a] = color.map(|value| (value.clamp(0.0, 1.0) * 255.0).round() as u32);
-    r | (g << 8) | (b << 16) | (a << 24)
-}
+    #[inline]
+    pub fn payload_kind(&self) -> PhasePayloadKind {
+        self.payload_kind
+    }
 
-#[inline]
-fn unpack_rgba8(color: u32) -> [f32; 4] {
-    [
-        (color & 0xff) as f32 / 255.0,
-        ((color >> 8) & 0xff) as f32 / 255.0,
-        ((color >> 16) & 0xff) as f32 / 255.0,
-        ((color >> 24) & 0xff) as f32 / 255.0,
-    ]
-}
-
-#[inline]
-fn pack_half(value: f32) -> u16 {
-    (value.clamp(0.0, 1.0) * 65535.0).round() as u16
-}
-
-#[inline]
-fn unpack_half(value: u16) -> f32 {
-    value as f32 / 65535.0
-}
-
-#[inline]
-fn pack_size_half(value: f32) -> u16 {
-    value.clamp(0.0, 4096.0).round() as u16
-}
-
-#[inline]
-fn unpack_size_half(value: u16) -> f32 {
-    value as f32
+    #[inline]
+    pub fn has_payload<T: PhasePayload>(&self) -> bool {
+        self.payload_kind == PhasePayloadKind::of::<T>()
+    }
 }

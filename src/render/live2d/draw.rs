@@ -1,6 +1,6 @@
 use crate::render::live2d::{Live2DPhaseRenderer, PreparedLive2DPhaseView};
 use crate::render::phase::{
-    DrawError, DrawFunction, Live2DDrawData, PhaseItem, StandaloneDrawContext,
+    DrawError, DrawFunction, Live2DDrawData, PhaseItem, PhasePayloadKind, StandaloneDrawContext,
 };
 
 #[derive(Default)]
@@ -14,6 +14,11 @@ impl DrawLive2D {
 }
 
 impl DrawFunction for DrawLive2D {
+    #[inline]
+    fn payload_kind(&self) -> PhasePayloadKind {
+        PhasePayloadKind::of::<Live2DDrawData>()
+    }
+
     fn draw(
         &mut self,
         _ctx: &mut crate::render::phase::DrawContext<'_, '_, '_>,

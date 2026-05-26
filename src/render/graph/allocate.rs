@@ -77,6 +77,41 @@ impl RenderGraph {
         usage
     }
 
+    pub(super) fn texture_usage_for(&self, handle: TextureHandle) -> wgpu::TextureUsages {
+        debug_assert!(
+            self.compiled,
+            "texture_usage_for() called before compile() — inferred COPY_SRC/COPY_DST \
+             flags from copy passes will be missing"
+        );
+        let mut usage = self.textures[handle.0].usage;
+
+        if self.compiled {
+            for &pass_idx in &self.order {
+                for op in &self.passes[pass_idx].copy_ops {
+                    match op {
+                        CopyOp::TextureToTexture { src, dst } => {
+                            if *src == handle {
+                                usage |= wgpu::TextureUsages::COPY_SRC;
+                            }
+                            if *dst == handle {
+                                usage |= wgpu::TextureUsages::COPY_DST;
+                            }
+                        }
+                        CopyOp::BufferToTexture { dst, .. }
+                        | CopyOp::UploadToTexture { dst, .. } => {
+                            if *dst == handle {
+                                usage |= wgpu::TextureUsages::COPY_DST;
+                            }
+                        }
+                        CopyOp::BufferToBuffer { .. } => {}
+                    }
+                }
+            }
+        }
+
+        usage
+    }
+
     pub(super) fn try_resolve_texture(
         &self,
         handle: TextureHandle,
@@ -148,18 +183,23 @@ impl RenderGraph {
             .resize_with(self.textures.len(), || None);
         self.physical_buffers
             .resize_with(self.buffers.len(), || None);
+        let effective_texture_usages = (0..self.textures.len())
+            .map(|tex_idx| self.texture_usage_for(TextureHandle(tex_idx, self.handle_token)))
+            .collect::<Vec<_>>();
 
         // ── Memory alias analysis (deferred from compile) ───────────────
         // Computed here instead of in compile() because we need the real
         // surface dimensions for best-fit waste calculations.
         let forbidden_alias_pairs = self.pass_local_texture_alias_conflicts();
-        let (alias_groups, alias_stats) = alias::compute_texture_aliases_with_forbidden_pairs(
-            &self.textures,
-            &self.lifetimes,
-            self.handle_token,
-            surface_size,
-            &forbidden_alias_pairs,
-        );
+        let (alias_groups, alias_stats) =
+            alias::compute_texture_aliases_with_forbidden_pairs_and_usages(
+                &self.textures,
+                &effective_texture_usages,
+                &self.lifetimes,
+                self.handle_token,
+                surface_size,
+                &forbidden_alias_pairs,
+            );
         self.alias_groups = alias_groups;
         self.alias_stats = Some(alias_stats);
 
@@ -228,7 +268,6 @@ impl RenderGraph {
         for tex_idx in 0..self.textures.len() {
             let (
                 desc_format,
-                desc_usage,
                 desc_size,
                 desc_sample_count,
                 desc_mip_level_count,
@@ -240,7 +279,6 @@ impl RenderGraph {
                 let desc = &self.textures[tex_idx];
                 (
                     desc.format,
-                    desc.usage,
                     desc.size,
                     desc.sample_count,
                     desc.mip_level_count,
@@ -281,9 +319,10 @@ impl RenderGraph {
             }
 
             let [w, h] = resolve_target_size(surface_size, desc_size);
+            let effective_usage = effective_texture_usages[tex_idx];
             let key = PoolKey {
                 format: desc_format,
-                usage: desc_usage,
+                usage: effective_usage,
                 width: w,
                 height: h,
                 sample_count: desc_sample_count,
@@ -298,7 +337,7 @@ impl RenderGraph {
                 }
             } else {
                 let descriptor = RenderTargetDescriptor::new(w, h, desc_format)
-                    .usage(desc_usage)
+                    .usage(effective_usage)
                     .sample_count(desc_sample_count)
                     .mip_level_count(desc_mip_level_count)
                     .array_layer_count(desc_array_layer_count)

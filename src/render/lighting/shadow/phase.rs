@@ -589,6 +589,9 @@ impl RenderPhase for DirectionalShadowPhase {
                 render_pass.set_pipeline(clear_pipeline);
                 render_pass.draw(0..3, 0..1);
             }
+            if !has_transparent_mesh_shadow_candidates(transparent_phase.items(), draw_functions) {
+                return Ok(());
+            }
 
             let material_layout = standard_material_layout.as_ref().ok_or_else(|| {
                 RenderGraphError::ExecutionFailed(
@@ -604,6 +607,10 @@ impl RenderPhase for DirectionalShadowPhase {
             let mut cursor = 0usize;
             while cursor < transparent_phase.items().len() {
                 let base_item = &transparent_phase.items()[cursor];
+                if !base_item.has_payload::<MeshDrawData>() {
+                    cursor += 1;
+                    continue;
+                }
                 let base = *base_item.data::<MeshDrawData>();
                 let mesh_handle = base.mesh_handle();
                 let sub_mesh_index = base.sub_mesh_index();
@@ -616,6 +623,9 @@ impl RenderPhase for DirectionalShadowPhase {
                 let mut batch_end = cursor + 1;
                 while batch_end < transparent_phase.items().len() {
                     let next_item = &transparent_phase.items()[batch_end];
+                    if !next_item.has_payload::<MeshDrawData>() {
+                        break;
+                    }
                     let next = *next_item.data::<MeshDrawData>();
                     if next.mesh_handle() != mesh_handle
                         || next.sub_mesh_index() != sub_mesh_index
@@ -777,6 +787,10 @@ impl RenderPhase for DirectionalShadowPhase {
         let mut cursor = 0usize;
         while cursor < opaque_phase.items().len() {
             let base_item = &opaque_phase.items()[cursor];
+            if !base_item.has_payload::<MeshDrawData>() {
+                cursor += 1;
+                continue;
+            }
             let base = *base_item.data::<MeshDrawData>();
             let mesh_handle = base.mesh_handle();
             let sub_mesh_index = base.sub_mesh_index();
@@ -784,6 +798,9 @@ impl RenderPhase for DirectionalShadowPhase {
             let mut batch_end = cursor + 1;
             while batch_end < opaque_phase.items().len() {
                 let next_item = &opaque_phase.items()[batch_end];
+                if !next_item.has_payload::<MeshDrawData>() {
+                    break;
+                }
                 let next = *next_item.data::<MeshDrawData>();
                 if next.mesh_handle() != mesh_handle
                     || next.sub_mesh_index() != sub_mesh_index
@@ -991,6 +1008,9 @@ fn shadow_caster_kind(
     draw_functions: &DrawFunctionRegistry,
     material_registry: &MaterialRegistry,
 ) -> ShadowCasterKind {
+    if !item.has_payload::<MeshDrawData>() {
+        return ShadowCasterKind::Opaque;
+    }
     if draw_functions.material_type_id(item.draw_function_id)
         != Some(TypeId::of::<StandardMaterial>())
     {
@@ -1025,6 +1045,9 @@ fn transparent_shadow_material_handle(
     draw_functions: &DrawFunctionRegistry,
     material_registry: &MaterialRegistry,
 ) -> Option<MaterialHandle> {
+    if !item.has_payload::<MeshDrawData>() {
+        return None;
+    }
     if draw_functions.material_type_id(item.draw_function_id)
         != Some(TypeId::of::<StandardMaterial>())
     {
@@ -1048,15 +1071,33 @@ fn transparent_shadow_material_handle(
         .then_some(material_handle.into())
 }
 
+fn has_transparent_mesh_shadow_candidates(
+    items: &[PhaseItem],
+    draw_functions: &DrawFunctionRegistry,
+) -> bool {
+    items.iter().any(|item| {
+        item.has_payload::<MeshDrawData>()
+            && draw_functions.material_type_id(item.draw_function_id)
+                == Some(TypeId::of::<StandardMaterial>())
+    })
+}
+
 fn count_phase_shadow_batches(items: &[PhaseItem]) -> usize {
     let mut draws = 0usize;
     let mut cursor = 0usize;
     while cursor < items.len() {
+        if !items[cursor].has_payload::<MeshDrawData>() {
+            cursor += 1;
+            continue;
+        }
         let base = *items[cursor].data::<MeshDrawData>();
         let base_draw_function = items[cursor].draw_function_id;
         let base_material = base.material_handle::<StandardMaterial>();
         let mut batch_end = cursor + 1;
         while batch_end < items.len() {
+            if !items[batch_end].has_payload::<MeshDrawData>() {
+                break;
+            }
             let next = *items[batch_end].data::<MeshDrawData>();
             let next_draw_function = items[batch_end].draw_function_id;
             if next.mesh_handle() != base.mesh_handle()
@@ -1111,10 +1152,12 @@ mod tests {
         append_directional_shadow_views, create_shadow_compare_sampler, sync_shadow_views,
         ShadowResourceKind,
     };
-    use crate::render::phase::{DrawFunctionId, MeshDrawData, PhaseItem};
+    use crate::render::phase::{
+        DrawFunctionId, DrawSprite, MeshDrawData, PhaseItem, SpriteDrawData,
+    };
     use crate::render::pipeline::RenderPhase;
     use crate::render::resources::mesh::VertexAttribute;
-    use crate::render::view::{Projection, ViewportRect};
+    use crate::render::view::{Projection, ProjectionViewUniformExt, ViewportRect};
     use crate::render::{DirectionalLight, GpuScene, LightTable, MaterialHandle, Transform};
 
     fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
@@ -1340,6 +1383,25 @@ mod tests {
             transparent_shadow_material_handle(&item, &draw_functions, &material_registry),
             Some(blend.into())
         );
+    }
+
+    #[test]
+    fn transparent_shadow_candidates_ignore_sprite_payloads() {
+        let mut draw_functions = DrawFunctionRegistry::new();
+        let draw_sprite = draw_functions.register(DrawSprite::new());
+        let material = MaterialHandle::new::<crate::render::SpriteMaterial>(0, 0);
+        let item = PhaseItem::new(
+            0,
+            draw_sprite,
+            EntityId::new(0, 0),
+            0,
+            SpriteDrawData::new(material, [16.0, 16.0], [1.0; 4], [0.0, 0.0, 1.0, 1.0]),
+        );
+
+        assert!(!has_transparent_mesh_shadow_candidates(
+            std::slice::from_ref(&item),
+            &draw_functions
+        ));
     }
 
     #[test]

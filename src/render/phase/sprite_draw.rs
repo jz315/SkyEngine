@@ -6,7 +6,7 @@ use crate::render::resources::material::{MaterialError, SpriteMaterial};
 use crate::render::resources::mesh::MeshHandle;
 use crate::render::view::ResolvedSceneTransforms;
 
-use super::{DrawContext, DrawError, DrawFunction, PhaseItem, SpriteDrawData};
+use super::{DrawContext, DrawError, DrawFunction, PhaseItem, PhasePayloadKind, SpriteDrawData};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -209,6 +209,11 @@ impl DrawSprite {
 }
 
 impl DrawFunction for DrawSprite {
+    #[inline]
+    fn payload_kind(&self) -> PhasePayloadKind {
+        PhasePayloadKind::of::<SpriteDrawData>()
+    }
+
     fn draw(
         &mut self,
         ctx: &mut DrawContext<'_, '_, '_>,

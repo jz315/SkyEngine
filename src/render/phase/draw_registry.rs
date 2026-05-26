@@ -6,8 +6,8 @@ use crate::ecs::EntityId;
 use crate::render::view::ResolvedSceneTransforms;
 
 use super::{
-    DrawContext, DrawError, DrawFunctionId, PhaseItem, SceneMaterialPrepassContext,
-    StandaloneDrawContext,
+    DrawContext, DrawError, DrawFunctionId, PhaseItem, PhasePayloadKind,
+    SceneMaterialPrepassContext, StandaloneDrawContext,
 };
 
 #[allow(private_interfaces)]
@@ -15,6 +15,8 @@ pub trait DrawFunction: Send {
     fn name(&self) -> &'static str {
         std::any::type_name::<Self>()
     }
+
+    fn payload_kind(&self) -> PhasePayloadKind;
 
     fn draw(
         &mut self,
@@ -115,6 +117,7 @@ impl DrawFunctionRegistry {
         let Some(function) = self.functions.get_mut(id.index()) else {
             return Err(DrawError::MissingDrawFunction { id });
         };
+        validate_phase_payloads(id, function.payload_kind(), std::slice::from_ref(item))?;
         function.draw(ctx, item)
     }
 
@@ -127,6 +130,7 @@ impl DrawFunctionRegistry {
         let Some(function) = self.functions.get_mut(id.index()) else {
             return Err(DrawError::MissingDrawFunction { id });
         };
+        validate_phase_payloads(id, function.payload_kind(), items)?;
         function.draw_batch(ctx, items)
     }
 
@@ -139,6 +143,7 @@ impl DrawFunctionRegistry {
         let Some(function) = self.functions.get_mut(id.index()) else {
             return Err(DrawError::MissingDrawFunction { id });
         };
+        validate_phase_payloads(id, function.payload_kind(), std::slice::from_ref(item))?;
         function.draw_standalone(ctx, item)
     }
 
@@ -151,7 +156,13 @@ impl DrawFunctionRegistry {
     pub fn draw_call_count(&self, id: DrawFunctionId, items: &[PhaseItem]) -> usize {
         self.functions
             .get(id.index())
-            .map_or(items.len(), |function| function.draw_call_count(items))
+            .map_or(items.len(), |function| {
+                let expected = function.payload_kind();
+                if items.iter().any(|item| item.payload_kind() != expected) {
+                    return items.len();
+                }
+                function.draw_call_count(items)
+            })
     }
 
     pub fn material_type_id(&self, id: DrawFunctionId) -> Option<TypeId> {
@@ -166,6 +177,17 @@ impl DrawFunctionRegistry {
             .is_some_and(|function| function.supports_scene_material_prepass())
     }
 
+    pub fn validate_phase_payloads(
+        &self,
+        id: DrawFunctionId,
+        items: &[PhaseItem],
+    ) -> Result<(), DrawError> {
+        let Some(function) = self.functions.get(id.index()) else {
+            return Err(DrawError::MissingDrawFunction { id });
+        };
+        validate_phase_payloads(id, function.payload_kind(), items)
+    }
+
     #[allow(private_interfaces)]
     pub fn draw_scene_material_prepass_batch(
         &mut self,
@@ -176,6 +198,7 @@ impl DrawFunctionRegistry {
         let Some(function) = self.functions.get_mut(id.index()) else {
             return Err(DrawError::MissingDrawFunction { id });
         };
+        validate_phase_payloads(id, function.payload_kind(), items)?;
         function.draw_scene_material_prepass_batch(ctx, items)
     }
 
@@ -190,7 +213,28 @@ impl DrawFunctionRegistry {
             let Some(function) = self.functions.get_mut(item.draw_function_id.index()) else {
                 continue;
             };
+            if item.payload_kind() != function.payload_kind() {
+                continue;
+            }
             function.assign_model_matrix(item, transforms, entity_to_slot, model_matrices);
         }
     }
+}
+
+fn validate_phase_payloads(
+    id: DrawFunctionId,
+    expected: PhasePayloadKind,
+    items: &[PhaseItem],
+) -> Result<(), DrawError> {
+    for item in items {
+        let actual = item.payload_kind();
+        if actual != expected {
+            return Err(DrawError::PhasePayloadMismatch {
+                id,
+                expected,
+                actual,
+            });
+        }
+    }
+    Ok(())
 }

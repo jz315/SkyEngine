@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use crate::math::Mat4;
+use crate::math::{Mat4, Vec4};
 
 /// Live2D model-local logical coordinates before view/projection transforms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,7 +76,10 @@ impl<From, To> CoordTransform<From, To> {
 
     #[cfg(test)]
     pub fn transform_xy(self, x: f32, y: f32) -> [f32; 2] {
-        let transformed = self.matrix.0.mul_vec4(glam::Vec4::new(x, y, 0.0, 1.0));
-        [transformed.x / transformed.w, transformed.y / transformed.w]
+        let transformed = self.matrix.transform_vec4(Vec4::new(x, y, 0.0, 1.0));
+        [
+            transformed.x() / transformed.w(),
+            transformed.y() / transformed.w(),
+        ]
     }
 }
