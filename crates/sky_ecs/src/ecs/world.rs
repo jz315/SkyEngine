@@ -444,6 +444,18 @@ impl World {
         self.entity_location(entity).is_some()
     }
 
+    /// Iterates all live entities in dense storage order.
+    ///
+    /// Entity IDs are runtime-local handles. Systems that need persistent
+    /// document identity should store their own stable component alongside
+    /// these IDs.
+    pub fn entities(&self) -> impl Iterator<Item = EntityId> + '_ {
+        self.data
+            .iter()
+            .flat_map(|data| data.chunks.iter())
+            .flat_map(|chunk| chunk.entities().iter().copied())
+    }
+
     /// Inserts a singleton resource, returning the previous value if one existed.
     pub fn insert_resource<R: 'static>(&mut self, resource: R) -> Option<R> {
         self.resources.insert(resource)
