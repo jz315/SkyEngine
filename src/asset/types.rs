@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub const ASSET_SYSTEM_VERSION: u32 = 1;
+pub const DEFAULT_ASSET_IO_WORKER_THREADS: usize = 2;
+pub const DEFAULT_ASSET_IO_QUEUE_CAPACITY: usize = 256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -302,6 +304,46 @@ impl From<AssetState> for AssetStatus {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AssetStateCounts {
+    pub unloaded: usize,
+    pub loading: usize,
+    pub loaded: usize,
+    pub waiting_dependencies: usize,
+    pub installing: usize,
+    pub installed: usize,
+    pub uninstalling: usize,
+    pub unloading: usize,
+    pub failed: usize,
+}
+
+impl AssetStateCounts {
+    pub(crate) fn record(&mut self, state: AssetState) {
+        match state {
+            AssetState::Unloaded => self.unloaded += 1,
+            AssetState::Loading => self.loading += 1,
+            AssetState::Loaded => self.loaded += 1,
+            AssetState::WaitingDependencies => self.waiting_dependencies += 1,
+            AssetState::Installing => self.installing += 1,
+            AssetState::Installed => self.installed += 1,
+            AssetState::Uninstalling => self.uninstalling += 1,
+            AssetState::Unloading => self.unloading += 1,
+            AssetState::Failed => self.failed += 1,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AssetStats {
+    pub records: usize,
+    pub queued_requests: usize,
+    pub inflight_loads: usize,
+    pub retained_events: usize,
+    pub strong_references: usize,
+    pub dependency_references: usize,
+    pub states: AssetStateCounts,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AssetEventKind {
     ReloadQueued,
@@ -316,6 +358,44 @@ pub struct AssetEvent {
     pub id: AssetId,
     pub kind: AssetEventKind,
     pub state: AssetState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssetFailurePhase {
+    Lookup,
+    Read,
+    Decode,
+    Dependency,
+    Install,
+    Runtime,
+    Verification,
+}
+
+impl AssetFailurePhase {
+    #[must_use]
+    pub fn from_error(error: &AssetError) -> Self {
+        match error {
+            AssetError::ManifestMissing { .. }
+            | AssetError::AssetNotFound { .. }
+            | AssetError::AssetPathNotFound { .. }
+            | AssetError::AssetTypeMismatch { .. }
+            | AssetError::FactoryNotRegistered { .. } => Self::Lookup,
+            AssetError::MissingCookedArtifact { .. } | AssetError::Io { .. } => Self::Read,
+            AssetError::Json { .. }
+            | AssetError::InvalidCookedAsset { .. }
+            | AssetError::VersionMismatch { .. } => Self::Decode,
+            AssetError::MissingDependency { .. }
+            | AssetError::DependencyFailed { .. }
+            | AssetError::DependencyCycle { .. } => Self::Dependency,
+            AssetError::VerificationFailed { .. } => Self::Verification,
+            AssetError::InvalidAssetId { .. }
+            | AssetError::InvalidConfig { .. }
+            | AssetError::AssetNotInstalled { .. }
+            | AssetError::InvalidState { .. }
+            | AssetError::Unsupported { .. }
+            | AssetError::Internal { .. } => Self::Runtime,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -547,6 +627,8 @@ pub struct AssetConfig {
     pub target: String,
     pub background_loading: bool,
     pub install_budget_per_update: Option<usize>,
+    pub io_worker_threads: usize,
+    pub io_queue_capacity: usize,
 }
 
 impl AssetConfig {
@@ -557,6 +639,8 @@ impl AssetConfig {
             target: target.into(),
             background_loading: false,
             install_budget_per_update: None,
+            io_worker_threads: DEFAULT_ASSET_IO_WORKER_THREADS,
+            io_queue_capacity: DEFAULT_ASSET_IO_QUEUE_CAPACITY,
         }
     }
 
@@ -569,6 +653,18 @@ impl AssetConfig {
     #[must_use]
     pub fn with_install_budget_per_update(mut self, budget: usize) -> Self {
         self.install_budget_per_update = Some(budget);
+        self
+    }
+
+    #[must_use]
+    pub fn with_io_worker_threads(mut self, worker_threads: usize) -> Self {
+        self.io_worker_threads = worker_threads.max(1);
+        self
+    }
+
+    #[must_use]
+    pub fn with_io_queue_capacity(mut self, queue_capacity: usize) -> Self {
+        self.io_queue_capacity = queue_capacity.max(1);
         self
     }
 
@@ -632,6 +728,25 @@ pub struct AssetLoadContext<'a> {
 pub struct AssetInstallContext<'a> {
     pub asset_id: AssetId,
     pub entry: &'a AssetManifestEntry,
+}
+
+pub enum AssetInstallPoll<T> {
+    Pending,
+    Ready(T),
+}
+
+pub trait AssetInstallTask: Send + 'static {
+    type Output: Send + Sync + 'static;
+
+    fn poll_install(
+        &mut self,
+        ctx: AssetInstallContext<'_>,
+    ) -> Result<AssetInstallPoll<Self::Output>, AssetError>;
+}
+
+pub enum AssetInstallResult<T: Send + Sync + 'static> {
+    Ready(T),
+    Pending(Box<dyn AssetInstallTask<Output = T>>),
 }
 
 pub struct LoadedAsset<T> {

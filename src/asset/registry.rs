@@ -3,8 +3,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::types::{
-    normalize_source_key, Asset, AssetError, AssetId, AssetInstallContext, AssetLoadContext,
-    AssetManifestEntry, AssetRegistryManifest, LoadedAsset,
+    normalize_source_key, Asset, AssetError, AssetId, AssetInstallContext, AssetInstallPoll,
+    AssetInstallResult, AssetInstallTask, AssetLoadContext, AssetManifestEntry,
+    AssetRegistryManifest, LoadedAsset,
 };
 
 pub trait AssetRuntimeFactory: Send + Sync + 'static {
@@ -17,11 +18,11 @@ pub trait AssetRuntimeFactory: Send + Sync + 'static {
 
     fn load(&self, ctx: AssetLoadContext<'_>) -> Result<LoadedAsset<Self::Loaded>, AssetError>;
 
-    fn install(
+    fn begin_install(
         &self,
         loaded: &Self::Loaded,
         ctx: AssetInstallContext<'_>,
-    ) -> Result<Self::Asset, AssetError>;
+    ) -> Result<AssetInstallResult<Self::Asset>, AssetError>;
 }
 
 pub(crate) trait ErasedAssetFactory: Send + Sync {
@@ -31,11 +32,11 @@ pub(crate) trait ErasedAssetFactory: Send + Sync {
         &self,
         ctx: AssetLoadContext<'_>,
     ) -> Result<LoadedAsset<Arc<dyn Any + Send + Sync>>, AssetError>;
-    fn install(
+    fn begin_install(
         &self,
         loaded: &Arc<dyn Any + Send + Sync>,
         ctx: AssetInstallContext<'_>,
-    ) -> Result<Arc<dyn Any + Send + Sync>, AssetError>;
+    ) -> Result<AssetInstallResult<Arc<dyn Any + Send + Sync>>, AssetError>;
 }
 
 pub(crate) struct FactoryAdapter<F>(pub F);
@@ -63,11 +64,11 @@ where
         })
     }
 
-    fn install(
+    fn begin_install(
         &self,
         loaded: &Arc<dyn Any + Send + Sync>,
         ctx: AssetInstallContext<'_>,
-    ) -> Result<Arc<dyn Any + Send + Sync>, AssetError> {
+    ) -> Result<AssetInstallResult<Arc<dyn Any + Send + Sync>>, AssetError> {
         let typed = loaded
             .downcast_ref::<F::Loaded>()
             .ok_or_else(|| AssetError::Internal {
@@ -76,8 +77,32 @@ where
                     self.asset_type()
                 ),
             })?;
-        let asset = self.0.install(typed, ctx)?;
-        Ok(Arc::new(asset))
+        match self.0.begin_install(typed, ctx)? {
+            AssetInstallResult::Ready(asset) => Ok(AssetInstallResult::Ready(Arc::new(asset))),
+            AssetInstallResult::Pending(task) => {
+                Ok(AssetInstallResult::Pending(Box::new(ErasedInstallTask {
+                    inner: task,
+                })))
+            }
+        }
+    }
+}
+
+struct ErasedInstallTask<T: Asset> {
+    inner: Box<dyn AssetInstallTask<Output = T>>,
+}
+
+impl<T: Asset> AssetInstallTask for ErasedInstallTask<T> {
+    type Output = Arc<dyn Any + Send + Sync>;
+
+    fn poll_install(
+        &mut self,
+        ctx: AssetInstallContext<'_>,
+    ) -> Result<AssetInstallPoll<Self::Output>, AssetError> {
+        match self.inner.poll_install(ctx)? {
+            AssetInstallPoll::Pending => Ok(AssetInstallPoll::Pending),
+            AssetInstallPoll::Ready(asset) => Ok(AssetInstallPoll::Ready(Arc::new(asset))),
+        }
     }
 }
 

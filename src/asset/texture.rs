@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use super::registry::AssetRuntimeFactory;
 use super::types::{
-    Asset, AssetError, AssetId, AssetInstallContext, AssetLoadContext, LoadedAsset,
+    Asset, AssetError, AssetId, AssetInstallContext, AssetInstallResult, AssetLoadContext,
+    LoadedAsset,
 };
 
 const TEXTURE_COOKED_MAGIC: &[u8; 8] = b"SKYTEX01";
@@ -170,12 +171,12 @@ impl AssetRuntimeFactory for TextureAssetFactory {
         Ok(LoadedAsset::new(texture).with_dependencies(ctx.entry.dependencies.clone()))
     }
 
-    fn install(
+    fn begin_install(
         &self,
         loaded: &Self::Loaded,
         _ctx: AssetInstallContext<'_>,
-    ) -> Result<Self::Asset, AssetError> {
-        Ok(loaded.clone())
+    ) -> Result<AssetInstallResult<Self::Asset>, AssetError> {
+        Ok(AssetInstallResult::Ready(loaded.clone()))
     }
 }
 

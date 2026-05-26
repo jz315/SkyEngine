@@ -231,6 +231,18 @@ impl AssetPlugin {
         self.config.install_budget_per_update = Some(budget);
         self
     }
+
+    #[inline]
+    pub fn with_io_worker_threads(mut self, worker_threads: usize) -> Self {
+        self.config = self.config.with_io_worker_threads(worker_threads);
+        self
+    }
+
+    #[inline]
+    pub fn with_io_queue_capacity(mut self, queue_capacity: usize) -> Self {
+        self.config = self.config.with_io_queue_capacity(queue_capacity);
+        self
+    }
 }
 
 impl Default for AssetPlugin {

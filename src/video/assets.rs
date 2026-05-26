@@ -4,8 +4,8 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::asset::{
-    Asset, AssetError, AssetId, AssetInstallContext, AssetLoadContext, AssetRuntimeFactory, Assets,
-    Handle, LoadedAsset, TextureAsset, WeakHandle,
+    Asset, AssetError, AssetId, AssetInstallContext, AssetInstallResult, AssetLoadContext,
+    AssetRuntimeFactory, Assets, Handle, LoadedAsset, TextureAsset, WeakHandle,
 };
 use crate::video::types::VideoError;
 
@@ -182,11 +182,11 @@ impl AssetRuntimeFactory for VideoClipFactory {
         Ok(LoadedAsset::new(descriptor).with_dependencies(dependencies))
     }
 
-    fn install(
+    fn begin_install(
         &self,
         loaded: &Self::Loaded,
         _ctx: AssetInstallContext<'_>,
-    ) -> Result<Self::Asset, AssetError> {
+    ) -> Result<AssetInstallResult<Self::Asset>, AssetError> {
         let frames = loaded
             .frames
             .iter()
@@ -206,12 +206,13 @@ impl AssetRuntimeFactory for VideoClipFactory {
                 ))
             })
             .collect::<Result<Vec<_>, AssetError>>()?;
-        VideoClip::new(loaded.width, loaded.height, frames).map_err(|error| {
+        let clip = VideoClip::new(loaded.width, loaded.height, frames).map_err(|error| {
             AssetError::InvalidCookedAsset {
                 id: None,
                 message: error.to_string(),
             }
-        })
+        })?;
+        Ok(AssetInstallResult::Ready(clip))
     }
 }
 

@@ -5,8 +5,8 @@ use kira::sound::static_sound::StaticSoundData;
 use kira::sound::streaming::StreamingSoundData;
 
 use crate::asset::{
-    Asset, AssetError, AssetInstallContext, AssetLoadContext, AssetRuntimeFactory, Assets,
-    LoadedAsset,
+    Asset, AssetError, AssetInstallContext, AssetInstallResult, AssetLoadContext,
+    AssetRuntimeFactory, Assets, LoadedAsset,
 };
 
 #[derive(Clone, Debug)]
@@ -43,20 +43,20 @@ impl AssetRuntimeFactory for SoundClipFactory {
             .with_dependencies(ctx.entry.dependencies.clone()))
     }
 
-    fn install(
+    fn begin_install(
         &self,
         loaded: &Self::Loaded,
         _ctx: AssetInstallContext<'_>,
-    ) -> Result<Self::Asset, AssetError> {
+    ) -> Result<AssetInstallResult<Self::Asset>, AssetError> {
         let data = StaticSoundData::from_cursor(Cursor::new(loaded.clone())).map_err(|error| {
             AssetError::InvalidCookedAsset {
                 id: None,
                 message: error.to_string(),
             }
         })?;
-        Ok(SoundClip {
+        Ok(AssetInstallResult::Ready(SoundClip {
             data: Arc::new(data),
-        })
+        }))
     }
 }
 
@@ -71,19 +71,19 @@ impl AssetRuntimeFactory for MusicTrackFactory {
             .with_dependencies(ctx.entry.dependencies.clone()))
     }
 
-    fn install(
+    fn begin_install(
         &self,
         loaded: &Self::Loaded,
         _ctx: AssetInstallContext<'_>,
-    ) -> Result<Self::Asset, AssetError> {
+    ) -> Result<AssetInstallResult<Self::Asset>, AssetError> {
         StreamingSoundData::from_cursor(Cursor::new(loaded.clone())).map_err(|error| {
             AssetError::InvalidCookedAsset {
                 id: None,
                 message: error.to_string(),
             }
         })?;
-        Ok(MusicTrack {
+        Ok(AssetInstallResult::Ready(MusicTrack {
             bytes: loaded.clone(),
-        })
+        }))
     }
 }

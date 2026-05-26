@@ -3,20 +3,26 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use super::font::{FontAsset, FontAssetFactory};
+use super::io::{AssetIoService, AssetIoSubmitError};
+use super::provider::{AssetProvider, AssetSourceLocation, LocalAssetProvider, ResolvedAssetSource};
 use super::registry::{AssetRuntimeFactory, ErasedAssetFactory, FactoryAdapter, ManifestIndex};
+use super::request::{AssetRequest, AssetRequestPhase};
 use super::texture::{
     decode_texture_source_bytes, TextureAsset, TextureAssetFactory, TextureColorSpace,
 };
 use super::types::{
     Asset, AssetConfig, AssetError, AssetEvent, AssetEventCursor, AssetEventKind,
-    AssetHandleProvider, AssetId, AssetInstallContext, AssetLease, AssetLoadContext,
-    AssetManifestEntry, AssetRegistryManifest, AssetState, AssetStatus, Handle, WeakHandle,
+    AssetFailurePhase, AssetHandleProvider, AssetId, AssetInstallContext, AssetInstallPoll,
+    AssetInstallResult, AssetInstallTask, AssetLease, AssetLoadContext, AssetManifestEntry,
+    AssetRegistryManifest, AssetState, AssetStats, AssetStatus, Handle, WeakHandle,
     ASSET_SYSTEM_VERSION,
 };
 
 const ASSET_EVENT_LOG_CAP: usize = 1024;
+const BLOCKING_LOAD_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1);
 
 #[derive(Clone)]
 pub struct Assets {
@@ -125,27 +131,67 @@ impl Assets {
     }
 
     pub fn load_blocking<T: Asset>(&self, id: AssetId) -> Result<Arc<T>, AssetError> {
+        self.load_blocking_until::<T>(id, None)
+    }
+
+    pub fn load_blocking_with_timeout<T: Asset>(
+        &self,
+        id: AssetId,
+        timeout: std::time::Duration,
+    ) -> Result<Arc<T>, AssetError> {
+        let deadline =
+            Instant::now()
+                .checked_add(timeout)
+                .ok_or_else(|| AssetError::InvalidState {
+                    id,
+                    state: self.state_untyped(id),
+                    message: "blocking load timeout is too large".to_string(),
+                })?;
+        self.load_blocking_until::<T>(id, Some(deadline))
+    }
+
+    fn load_blocking_until<T: Asset>(
+        &self,
+        id: AssetId,
+        deadline: Option<Instant>,
+    ) -> Result<Arc<T>, AssetError> {
         let handle = self.load_id::<T>(id)?;
-        for _ in 0..64 {
-            self.update()?;
-            if self.is_installed(&handle) {
-                return self.get(&handle);
+
+        loop {
+            {
+                let mut inner = self.inner.lock().expect("assets mutex poisoned");
+                inner.apply_blocking_update(id, deadline.is_none())?;
             }
-            if self.state(&handle) == AssetState::Failed {
-                return match self.error(&handle) {
-                    Some(error) => Err(error),
-                    None => Err(AssetError::AssetNotInstalled {
-                        id,
-                        state: AssetState::Failed,
-                    }),
-                };
+
+            match self.state(&handle) {
+                AssetState::Installed => return self.get(&handle),
+                AssetState::Failed => {
+                    return match self.error(&handle) {
+                        Some(error) => Err(error),
+                        None => Err(AssetError::AssetNotInstalled {
+                            id,
+                            state: AssetState::Failed,
+                        }),
+                    }
+                }
+                state => {
+                    if let Some(deadline) = deadline {
+                        let now = Instant::now();
+                        if now >= deadline {
+                            return Err(AssetError::InvalidState {
+                                id,
+                                state,
+                                message: "asset did not reach a terminal state before blocking load timeout".to_string(),
+                            });
+                        }
+                        let remaining = deadline.saturating_duration_since(now);
+                        std::thread::sleep(remaining.min(BLOCKING_LOAD_POLL_INTERVAL));
+                    } else {
+                        std::thread::sleep(BLOCKING_LOAD_POLL_INTERVAL);
+                    }
+                }
             }
         }
-        Err(AssetError::InvalidState {
-            id,
-            state: self.state(&handle),
-            message: "asset did not reach a terminal state after blocking updates".to_string(),
-        })
     }
 
     pub fn update(&self) -> Result<(), AssetError> {
@@ -210,6 +256,26 @@ impl Assets {
             .records
             .get(&handle.id())
             .and_then(|record| record.error.clone())
+    }
+
+    #[must_use]
+    pub fn failure_phase<T: Asset>(&self, handle: &Handle<T>) -> Option<AssetFailurePhase> {
+        self.failure_phase_untyped(handle.id())
+    }
+
+    #[must_use]
+    pub fn failure_phase_untyped(&self, id: AssetId) -> Option<AssetFailurePhase> {
+        self.inner
+            .lock()
+            .expect("assets mutex poisoned")
+            .records
+            .get(&id)
+            .and_then(|record| record.failure_phase)
+    }
+
+    #[must_use]
+    pub fn stats(&self) -> AssetStats {
+        self.inner.lock().expect("assets mutex poisoned").stats()
     }
 
     #[must_use]
@@ -333,6 +399,7 @@ impl AssetHandleProvider for Mutex<AssetsInner> {
 
 struct AssetsInner {
     config: AssetConfig,
+    provider: LocalAssetProvider,
     manifest: ManifestIndex,
     factories: HashMap<String, Arc<dyn ErasedAssetFactory>>,
     records: HashMap<AssetId, AssetRecord>,
@@ -342,6 +409,7 @@ struct AssetsInner {
     release_rx: Receiver<AssetId>,
     load_tx: Sender<CompletedLoad>,
     load_rx: Receiver<CompletedLoad>,
+    io: AssetIoService,
     inflight_loads: HashSet<(AssetId, u64)>,
     events: VecDeque<AssetEvent>,
     next_event_sequence: u64,
@@ -354,8 +422,12 @@ impl AssetsInner {
         release_rx: Receiver<AssetId>,
     ) -> Self {
         let (load_tx, load_rx) = mpsc::channel();
+        let io_worker_threads = config.io_worker_threads;
+        let io_queue_capacity = config.io_queue_capacity;
+        let provider = LocalAssetProvider::new(&config);
         Self {
             config,
+            provider,
             manifest: ManifestIndex::new(manifest),
             factories: HashMap::default(),
             records: HashMap::default(),
@@ -365,6 +437,7 @@ impl AssetsInner {
             release_rx,
             load_tx,
             load_rx,
+            io: AssetIoService::new(io_worker_threads, io_queue_capacity),
             inflight_loads: HashSet::default(),
             events: VecDeque::new(),
             next_event_sequence: 0,
@@ -401,6 +474,24 @@ impl AssetsInner {
         events
     }
 
+    fn stats(&self) -> AssetStats {
+        let mut stats = AssetStats {
+            records: self.records.len(),
+            queued_requests: self.requests.len(),
+            inflight_loads: self.inflight_loads.len(),
+            retained_events: self.events.len(),
+            ..AssetStats::default()
+        };
+
+        for record in self.records.values() {
+            stats.strong_references += record.strong_ref_count;
+            stats.dependency_references += record.dependency_ref_count;
+            stats.states.record(record.state);
+        }
+
+        stats
+    }
+
     fn set_manifest(&mut self, manifest: AssetRegistryManifest) {
         self.manifest = ManifestIndex::new(manifest);
 
@@ -426,7 +517,8 @@ impl AssetsInner {
             if let Some(record) = self.records.get_mut(&id) {
                 record.loaded = None;
                 record.installed = None;
-                record.error = Some(AssetError::AssetNotFound { id });
+                record.install_task = None;
+                record.set_error(AssetError::AssetNotFound { id }, AssetFailurePhase::Lookup);
                 record.state = AssetState::Failed;
             }
             self.push_event(id, AssetEventKind::Failed, AssetState::Failed);
@@ -508,10 +600,8 @@ impl AssetsInner {
                 record.requested_type = Some(TypeId::of::<TextureAsset>());
             }
         }
-        self.requests.push_back(AssetRequest {
-            id,
-            requested_type: Some(TypeId::of::<TextureAsset>()),
-        });
+        self.requests
+            .push_back(AssetRequest::new(id, Some(TypeId::of::<TextureAsset>())));
         Ok(id)
     }
 
@@ -552,10 +642,8 @@ impl AssetsInner {
                 record.requested_type = Some(TypeId::of::<FontAsset>());
             }
         }
-        self.requests.push_back(AssetRequest {
-            id,
-            requested_type: Some(TypeId::of::<FontAsset>()),
-        });
+        self.requests
+            .push_back(AssetRequest::new(id, Some(TypeId::of::<FontAsset>())));
         Ok(id)
     }
 
@@ -573,7 +661,8 @@ impl AssetsInner {
 
     fn acquire_direct_lease(&mut self, id: AssetId, requested_type: Option<TypeId>) {
         self.retain_direct_lease(id, requested_type);
-        self.requests.push_back(AssetRequest { id, requested_type });
+        self.requests
+            .push_back(AssetRequest::new(id, requested_type));
     }
 
     fn retain_direct_lease(&mut self, id: AssetId, requested_type: Option<TypeId>) {
@@ -609,15 +698,15 @@ impl AssetsInner {
             AssetState::Unloaded | AssetState::Failed => {
                 record.load_generation = record.load_generation.wrapping_add(1);
                 record.state = AssetState::Loading;
-                record.error = None;
+                record.clear_error();
             }
             AssetState::Uninstalling => {
                 record.state = AssetState::Installed;
-                record.error = None;
+                record.clear_error();
             }
             AssetState::Unloading => {
                 record.load_generation = record.load_generation.wrapping_add(1);
-                record.error = None;
+                record.clear_error();
                 record.state = if record.loaded.is_some() {
                     AssetState::Loaded
                 } else {
@@ -770,7 +859,8 @@ impl AssetsInner {
                 }
                 record.loaded = None;
                 record.installed = None;
-                record.error = None;
+                record.install_task = None;
+                record.clear_error();
                 record.loaded_entry_fingerprint = None;
                 record.loaded_cooked_hash = None;
                 record.reload_pending = false;
@@ -834,8 +924,9 @@ impl AssetsInner {
         record.load_generation = record.load_generation.wrapping_add(1);
         record.loaded = None;
         record.installed = None;
+        record.install_task = None;
         record.dependencies.clear();
-        record.error = None;
+        record.clear_error();
         record.loaded_entry_fingerprint = None;
         record.loaded_cooked_hash = None;
 
@@ -843,7 +934,7 @@ impl AssetsInner {
             record.state = AssetState::Loading;
             self.push_event(id, AssetEventKind::ReloadQueued, AssetState::Loading);
         } else {
-            record.error = Some(AssetError::AssetNotFound { id });
+            record.set_error(AssetError::AssetNotFound { id }, AssetFailurePhase::Lookup);
             record.state = AssetState::Failed;
             record.reload_pending = false;
             self.push_event(id, AssetEventKind::Failed, AssetState::Failed);
@@ -870,8 +961,8 @@ impl AssetsInner {
             };
 
             let current_entry_fingerprint = manifest_entry_fingerprint(entry)?;
-            let current_cooked_hash =
-                file_hash(&self.config.cooked_root().join(&entry.cooked_path))?;
+            let source = self.resolve_record_source(id)?;
+            let current_cooked_hash = hash_bytes(&source.read_bytes(id)?);
             if record.loaded_entry_fingerprint.as_ref() != Some(&current_entry_fingerprint)
                 || record.loaded_cooked_hash.as_ref() != Some(&current_cooked_hash)
             {
@@ -915,8 +1006,18 @@ impl AssetsInner {
         }
     }
 
-    fn spawn_load_record(&mut self, id: AssetId) -> Result<bool, AssetError> {
+    fn resolve_record_source(&self, id: AssetId) -> Result<ResolvedAssetSource, AssetError> {
         let entry = self.entry_for_record(id)?;
+        let raw_source_path = self
+            .records
+            .get(&id)
+            .and_then(|record| record.raw_source_path.clone());
+        self.provider.resolve(id, entry, raw_source_path)
+    }
+
+    fn spawn_load_record(&mut self, id: AssetId) -> Result<bool, AssetError> {
+        let source = self.resolve_record_source(id)?;
+        let entry = source.entry().clone();
         let generation = self
             .records
             .get(&id)
@@ -927,11 +1028,6 @@ impl AssetsInner {
             return Ok(false);
         }
 
-        let raw_source_path = self
-            .records
-            .get(&id)
-            .and_then(|record| record.raw_source_path.clone());
-        let cooked_path = self.config.cooked_root().join(&entry.cooked_path);
         let asset_root = self.config.asset_root.clone();
         let cooked_root = self.config.cooked_root();
         let factory = self
@@ -943,27 +1039,9 @@ impl AssetsInner {
             })?;
         let tx = self.load_tx.clone();
 
-        std::thread::spawn(move || {
-            let result = (|| {
-                if let Some(raw_source_path) = raw_source_path {
-                    let bytes = std::fs::read(&raw_source_path)
-                        .map_err(|error| map_raw_source_read_error(&raw_source_path, error))?;
-                    let loaded = load_raw_source_asset(&entry, &raw_source_path, &bytes)?;
-                    Ok((loaded, hash_bytes(&bytes)))
-                } else {
-                    let bytes = std::fs::read(&cooked_path)
-                        .map_err(|error| map_read_error(id, &cooked_path, error))?;
-                    let cooked_hash = hash_bytes(&bytes);
-                    let loaded = factory.load(AssetLoadContext {
-                        asset_id: id,
-                        entry: &entry,
-                        bytes: &bytes,
-                        asset_root: &asset_root,
-                        cooked_root: &cooked_root,
-                    })?;
-                    Ok((loaded, cooked_hash))
-                }
-            })();
+        match self.io.submit(move || {
+            let result =
+                load_resolved_source_asset(id, &source, factory.as_ref(), &asset_root, &cooked_root);
 
             let completion = match result {
                 Ok((loaded, cooked_hash)) => CompletedLoad {
@@ -983,9 +1061,19 @@ impl AssetsInner {
             };
 
             let _ = tx.send(completion);
-        });
-
-        Ok(true)
+        }) {
+            Ok(()) => Ok(true),
+            Err(AssetIoSubmitError::QueueFull) => {
+                self.inflight_loads.remove(&(id, generation));
+                Ok(false)
+            }
+            Err(AssetIoSubmitError::Closed) => {
+                self.inflight_loads.remove(&(id, generation));
+                Err(AssetError::Internal {
+                    message: "asset io service is closed".to_string(),
+                })
+            }
+        }
     }
 
     fn finish_load_completion(&mut self, completion: CompletedLoad) -> Result<bool, AssetError> {
@@ -1016,7 +1104,7 @@ impl AssetsInner {
                     .expect("record should exist");
                 record.loaded = Some(loaded.loaded);
                 record.dependencies = dependencies;
-                record.error = None;
+                record.clear_error();
                 record.loaded_entry_fingerprint = Some(entry_fingerprint);
                 record.loaded_cooked_hash = completion.cooked_hash;
                 record.state = AssetState::Loaded;
@@ -1030,7 +1118,8 @@ impl AssetsInner {
                     .expect("record should exist");
                 record.loaded = None;
                 record.installed = None;
-                record.error = Some(error.clone());
+                record.install_task = None;
+                record.set_error(error.clone(), AssetFailurePhase::from_error(&error));
                 record.loaded_entry_fingerprint = None;
                 record.loaded_cooked_hash = None;
                 record.reload_pending = false;
@@ -1058,19 +1147,60 @@ impl AssetsInner {
         Ok(completed)
     }
 
-    fn apply_update(&mut self) -> Result<(), AssetError> {
-        self.drain_handle_releases();
-
+    fn activate_queued_requests(&mut self) -> Result<(), AssetError> {
         while let Some(request) = self.requests.pop_front() {
+            debug_assert_eq!(request.phase, AssetRequestPhase::Queued);
             let record = self
                 .records
                 .get_mut(&request.id)
                 .ok_or(AssetError::AssetNotFound { id: request.id })?;
             Self::activate_record_for_load(record, request.requested_type);
+            debug_assert_ne!(
+                AssetRequestPhase::from_state(record.state),
+                AssetRequestPhase::Queued
+            );
+        }
+        Ok(())
+    }
+
+    fn should_load_in_background(&self, id: AssetId) -> bool {
+        let texture_asset = self.records.get(&id).is_some_and(|record| {
+            record.raw_source_path.is_some() || record.asset_type == TextureAsset::TYPE
+        });
+        self.config.background_loading || texture_asset
+    }
+
+    fn has_current_inflight_load(&self, id: AssetId) -> bool {
+        self.records
+            .get(&id)
+            .is_some_and(|record| self.inflight_loads.contains(&(id, record.load_generation)))
+    }
+
+    fn blocking_relevant_ids(&self, target_id: AssetId) -> Vec<AssetId> {
+        let mut ids = Vec::new();
+        let mut seen = HashSet::new();
+        let mut stack = vec![target_id];
+
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            ids.push(id);
+
+            let mut dependencies = self.dependency_links(id);
+            dependencies.reverse();
+            stack.extend(dependencies);
         }
 
+        ids
+    }
+
+    fn apply_update(&mut self) -> Result<(), AssetError> {
+        self.drain_handle_releases();
+        self.activate_queued_requests()?;
         let _ = self.drain_load_completions()?;
         let mut installs_remaining = self.config.install_budget_per_update.unwrap_or(usize::MAX);
+        let mut polled_installs = HashSet::new();
 
         let mut iterations = 0usize;
         loop {
@@ -1090,11 +1220,7 @@ impl AssetsInner {
 
                 match state {
                     AssetState::Loading => {
-                        let texture_asset = self.records.get(&id).is_some_and(|record| {
-                            record.raw_source_path.is_some()
-                                || record.asset_type == TextureAsset::TYPE
-                        });
-                        if self.config.background_loading || texture_asset {
+                        if self.should_load_in_background(id) {
                             if self.spawn_load_record(id)? {
                                 progressed = true;
                             }
@@ -1113,15 +1239,17 @@ impl AssetsInner {
                         }
                     }
                     AssetState::Installing => {
-                        if installs_remaining > 0 {
-                            self.install_record(id)?;
+                        if installs_remaining > 0 && polled_installs.insert(id) {
+                            if self.install_record(id)? {
+                                progressed = true;
+                            }
                             installs_remaining -= 1;
-                            progressed = true;
                         }
                     }
                     AssetState::Uninstalling => {
                         let record = self.records.get_mut(&id).expect("record should exist");
                         record.installed = None;
+                        record.install_task = None;
                         record.state = AssetState::Unloading;
                         progressed = true;
                     }
@@ -1129,8 +1257,105 @@ impl AssetsInner {
                         let record = self.records.get_mut(&id).expect("record should exist");
                         record.loaded = None;
                         record.installed = None;
+                        record.install_task = None;
                         record.dependencies.clear();
-                        record.error = None;
+                        record.clear_error();
+                        record.loaded_entry_fingerprint = None;
+                        record.loaded_cooked_hash = None;
+                        record.reload_pending = false;
+                        record.state = AssetState::Unloaded;
+                        self.push_event(id, AssetEventKind::Unloaded, AssetState::Unloaded);
+                        progressed = true;
+                    }
+                    AssetState::Unloaded | AssetState::Installed | AssetState::Failed => {}
+                }
+            }
+
+            if self.drain_load_completions()? > 0 {
+                progressed = true;
+            }
+
+            if !progressed {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn apply_blocking_update(
+        &mut self,
+        target_id: AssetId,
+        force_synchronous_load: bool,
+    ) -> Result<(), AssetError> {
+        self.drain_handle_releases();
+        self.activate_queued_requests()?;
+        let _ = self.drain_load_completions()?;
+
+        if !self.records.contains_key(&target_id) {
+            return Err(AssetError::AssetNotFound { id: target_id });
+        }
+
+        let mut polled_installs = HashSet::new();
+        let mut iterations = 0usize;
+        loop {
+            let ids = self.blocking_relevant_ids(target_id);
+            iterations += 1;
+            if iterations > ids.len().saturating_mul(4).max(8) {
+                break;
+            }
+
+            let mut progressed = false;
+
+            for id in ids {
+                let state = match self.records.get(&id) {
+                    Some(record) => record.state,
+                    None => continue,
+                };
+
+                match state {
+                    AssetState::Loading => {
+                        if self.has_current_inflight_load(id) {
+                            continue;
+                        }
+
+                        if !force_synchronous_load && self.should_load_in_background(id) {
+                            if self.spawn_load_record(id)? {
+                                progressed = true;
+                            }
+                        } else {
+                            self.load_record(id)?;
+                            progressed = true;
+                        }
+                    }
+                    AssetState::Loaded | AssetState::WaitingDependencies => {
+                        if let Some(next_state) = self.evaluate_dependencies(id)? {
+                            self.records
+                                .get_mut(&id)
+                                .expect("record should exist")
+                                .state = next_state;
+                            progressed = true;
+                        }
+                    }
+                    AssetState::Installing => {
+                        if polled_installs.insert(id) && self.install_record(id)? {
+                            progressed = true;
+                        }
+                    }
+                    AssetState::Uninstalling => {
+                        let record = self.records.get_mut(&id).expect("record should exist");
+                        record.installed = None;
+                        record.install_task = None;
+                        record.state = AssetState::Unloading;
+                        progressed = true;
+                    }
+                    AssetState::Unloading => {
+                        let record = self.records.get_mut(&id).expect("record should exist");
+                        record.loaded = None;
+                        record.installed = None;
+                        record.install_task = None;
+                        record.dependencies.clear();
+                        record.clear_error();
                         record.loaded_entry_fingerprint = None;
                         record.loaded_cooked_hash = None;
                         record.reload_pending = false;
@@ -1186,7 +1411,8 @@ impl AssetsInner {
                 record.held_dependencies.clear();
                 record.loaded = Some(installed.clone());
                 record.installed = Some(installed);
-                record.error = None;
+                record.install_task = None;
+                record.clear_error();
                 record.loaded_entry_fingerprint = None;
                 record.loaded_cooked_hash = None;
                 record.reload_pending = false;
@@ -1206,53 +1432,9 @@ impl AssetsInner {
     }
 
     fn load_record(&mut self, id: AssetId) -> Result<(), AssetError> {
-        let entry = self.entry_for_record(id)?;
-        let raw_source_path = self
-            .records
-            .get(&id)
-            .and_then(|record| record.raw_source_path.clone());
-
-        if let Some(raw_source_path) = raw_source_path {
-            let bytes = std::fs::read(&raw_source_path)
-                .map_err(|error| map_raw_source_read_error(&raw_source_path, error))?;
-            let result = load_raw_source_asset(&entry, &raw_source_path, &bytes);
-
-            match result {
-                Ok(loaded) => {
-                    let entry_fingerprint = manifest_entry_fingerprint(&entry)?;
-                    let source_hash = hash_bytes(&bytes);
-                    self.replace_held_dependencies(id, Vec::new());
-
-                    let record = self.records.get_mut(&id).expect("record should exist");
-                    record.loaded = Some(loaded.loaded);
-                    record.dependencies.clear();
-                    record.error = None;
-                    record.loaded_entry_fingerprint = Some(entry_fingerprint);
-                    record.loaded_cooked_hash = Some(source_hash);
-                    record.state = AssetState::Loaded;
-                    return Ok(());
-                }
-                Err(error) => {
-                    self.release_held_dependencies(id);
-                    let record = self.records.get_mut(&id).expect("record should exist");
-                    record.loaded = None;
-                    record.installed = None;
-                    record.error = Some(error.clone());
-                    record.loaded_entry_fingerprint = None;
-                    record.loaded_cooked_hash = None;
-                    record.reload_pending = false;
-                    record.state = AssetState::Failed;
-                    self.push_event(id, AssetEventKind::Failed, AssetState::Failed);
-                    self.schedule_release_if_unused(id);
-                    return Err(error);
-                }
-            }
-        }
-
-        let cooked_path = self.config.cooked_root().join(&entry.cooked_path);
+        let source = self.resolve_record_source(id)?;
+        let entry = source.entry().clone();
         let cooked_root = self.config.cooked_root();
-        let bytes =
-            std::fs::read(&cooked_path).map_err(|error| map_read_error(id, &cooked_path, error))?;
         let factory = self
             .factories
             .get(&entry.asset_type)
@@ -1261,16 +1443,16 @@ impl AssetsInner {
                 asset_type: entry.asset_type.clone(),
             })?;
 
-        let result = factory.load(AssetLoadContext {
-            asset_id: id,
-            entry: &entry,
-            bytes: &bytes,
-            asset_root: &self.config.asset_root,
-            cooked_root: &cooked_root,
-        });
+        let result = load_resolved_source_asset(
+            id,
+            &source,
+            factory.as_ref(),
+            &self.config.asset_root,
+            &cooked_root,
+        );
 
         match result {
-            Ok(loaded) => {
+            Ok((loaded, content_hash)) => {
                 let dependencies =
                     Self::normalize_dependencies(if loaded.dependencies.is_empty() {
                         entry.dependencies.clone()
@@ -1278,15 +1460,14 @@ impl AssetsInner {
                         loaded.dependencies
                     });
                 let entry_fingerprint = manifest_entry_fingerprint(&entry)?;
-                let cooked_hash = hash_bytes(&bytes);
                 self.replace_held_dependencies(id, dependencies.clone());
 
                 let record = self.records.get_mut(&id).expect("record should exist");
                 record.loaded = Some(loaded.loaded);
                 record.dependencies = dependencies;
-                record.error = None;
+                record.clear_error();
                 record.loaded_entry_fingerprint = Some(entry_fingerprint);
-                record.loaded_cooked_hash = Some(cooked_hash);
+                record.loaded_cooked_hash = Some(content_hash);
                 record.state = AssetState::Loaded;
                 Ok(())
             }
@@ -1295,7 +1476,8 @@ impl AssetsInner {
                 let record = self.records.get_mut(&id).expect("record should exist");
                 record.loaded = None;
                 record.installed = None;
-                record.error = Some(error.clone());
+                record.install_task = None;
+                record.set_error(error.clone(), AssetFailurePhase::from_error(&error));
                 record.loaded_entry_fingerprint = None;
                 record.loaded_cooked_hash = None;
                 record.reload_pending = false;
@@ -1326,7 +1508,8 @@ impl AssetsInner {
                 let record = self.records.get_mut(&id).expect("record should exist");
                 record.loaded = None;
                 record.installed = None;
-                record.error = Some(error.clone());
+                record.install_task = None;
+                record.set_error(error.clone(), AssetFailurePhase::Dependency);
                 record.state = AssetState::Failed;
                 self.push_event(id, AssetEventKind::Failed, AssetState::Failed);
                 return Err(error);
@@ -1354,7 +1537,8 @@ impl AssetsInner {
                     let record = self.records.get_mut(&id).expect("record should exist");
                     record.loaded = None;
                     record.installed = None;
-                    record.error = Some(error.clone());
+                    record.install_task = None;
+                    record.set_error(error.clone(), AssetFailurePhase::Dependency);
                     record.state = AssetState::Failed;
                     self.push_event(id, AssetEventKind::Failed, AssetState::Failed);
                     return Err(error);
@@ -1369,7 +1553,8 @@ impl AssetsInner {
             let record = self.records.get_mut(&id).expect("record should exist");
             record.loaded = None;
             record.installed = None;
-            record.error = Some(error.clone());
+            record.install_task = None;
+            record.set_error(error.clone(), AssetFailurePhase::Dependency);
             record.state = AssetState::Failed;
             self.push_event(id, AssetEventKind::Failed, AssetState::Failed);
             return Err(error);
@@ -1382,7 +1567,7 @@ impl AssetsInner {
         }))
     }
 
-    fn install_record(&mut self, id: AssetId) -> Result<(), AssetError> {
+    fn install_record(&mut self, id: AssetId) -> Result<bool, AssetError> {
         let entry = self.entry_for_record(id)?;
         let factory = self
             .factories
@@ -1401,31 +1586,52 @@ impl AssetsInner {
                 message: "missing loaded payload".to_string(),
             })?;
 
-        let result = factory.install(
-            &loaded,
-            AssetInstallContext {
-                asset_id: id,
-                entry: &entry,
-            },
-        );
+        let context = AssetInstallContext {
+            asset_id: id,
+            entry: &entry,
+        };
+
+        let result = if let Some(mut task) = self
+            .records
+            .get_mut(&id)
+            .expect("record should exist")
+            .install_task
+            .take()
+        {
+            match task.poll_install(context) {
+                Ok(AssetInstallPoll::Ready(installed)) => Ok(AssetInstallResult::Ready(installed)),
+                Ok(AssetInstallPoll::Pending) => Ok(AssetInstallResult::Pending(task)),
+                Err(error) => Err(error),
+            }
+        } else {
+            factory.begin_install(&loaded, context)
+        };
 
         match result {
-            Ok(installed) => {
+            Ok(AssetInstallResult::Ready(installed)) => {
                 let record = self.records.get_mut(&id).expect("record should exist");
                 record.installed = Some(installed);
-                record.error = None;
+                record.install_task = None;
+                record.clear_error();
                 record.reload_pending = false;
                 record.state = AssetState::Installed;
                 self.push_event(id, AssetEventKind::Installed, AssetState::Installed);
                 self.schedule_release_if_unused(id);
-                Ok(())
+                Ok(true)
+            }
+            Ok(AssetInstallResult::Pending(task)) => {
+                let record = self.records.get_mut(&id).expect("record should exist");
+                record.install_task = Some(task);
+                record.state = AssetState::Installing;
+                Ok(false)
             }
             Err(error) => {
                 self.release_held_dependencies(id);
                 let record = self.records.get_mut(&id).expect("record should exist");
                 record.loaded = None;
                 record.installed = None;
-                record.error = Some(error.clone());
+                record.install_task = None;
+                record.set_error(error.clone(), AssetFailurePhase::Install);
                 record.loaded_entry_fingerprint = None;
                 record.loaded_cooked_hash = None;
                 record.reload_pending = false;
@@ -1436,12 +1642,6 @@ impl AssetsInner {
             }
         }
     }
-}
-
-#[derive(Clone, Debug)]
-struct AssetRequest {
-    id: AssetId,
-    requested_type: Option<TypeId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1467,7 +1667,6 @@ impl RawTextureRequest {
     }
 }
 
-#[derive(Clone)]
 struct AssetRecord {
     asset_type: String,
     state: AssetState,
@@ -1478,7 +1677,9 @@ struct AssetRecord {
     held_dependencies: Vec<AssetId>,
     loaded: Option<Arc<dyn Any + Send + Sync>>,
     installed: Option<Arc<dyn Any + Send + Sync>>,
+    install_task: Option<Box<dyn AssetInstallTask<Output = Arc<dyn Any + Send + Sync>>>>,
     error: Option<AssetError>,
+    failure_phase: Option<AssetFailurePhase>,
     loaded_entry_fingerprint: Option<String>,
     loaded_cooked_hash: Option<String>,
     reload_pending: bool,
@@ -1499,7 +1700,9 @@ impl AssetRecord {
             held_dependencies: Vec::new(),
             loaded: None,
             installed: None,
+            install_task: None,
             error: None,
+            failure_phase: None,
             loaded_entry_fingerprint: None,
             loaded_cooked_hash: None,
             reload_pending: false,
@@ -1520,7 +1723,9 @@ impl AssetRecord {
             held_dependencies: Vec::new(),
             loaded: None,
             installed: None,
+            install_task: None,
             error: None,
+            failure_phase: None,
             loaded_entry_fingerprint: None,
             loaded_cooked_hash: None,
             reload_pending: false,
@@ -1541,7 +1746,9 @@ impl AssetRecord {
             held_dependencies: Vec::new(),
             loaded: None,
             installed: None,
+            install_task: None,
             error: None,
+            failure_phase: None,
             loaded_entry_fingerprint: None,
             loaded_cooked_hash: None,
             reload_pending: false,
@@ -1566,7 +1773,9 @@ impl AssetRecord {
             held_dependencies: Vec::new(),
             loaded: Some(installed.clone()),
             installed: Some(installed),
+            install_task: None,
             error: None,
+            failure_phase: None,
             loaded_entry_fingerprint: None,
             loaded_cooked_hash: None,
             reload_pending: false,
@@ -1574,6 +1783,16 @@ impl AssetRecord {
             runtime: true,
             raw_source_path: None,
         }
+    }
+
+    fn clear_error(&mut self) {
+        self.error = None;
+        self.failure_phase = None;
+    }
+
+    fn set_error(&mut self, error: AssetError, phase: AssetFailurePhase) {
+        self.error = Some(error);
+        self.failure_phase = Some(phase);
     }
 }
 
@@ -1776,12 +1995,12 @@ mod tests {
                 .with_dependencies(ctx.entry.dependencies.clone()))
         }
 
-        fn install(
+        fn begin_install(
             &self,
             loaded: &Self::Loaded,
             _ctx: AssetInstallContext<'_>,
-        ) -> Result<Self::Asset, AssetError> {
-            Ok(DummyAsset(loaded.0.clone()))
+        ) -> Result<AssetInstallResult<Self::Asset>, AssetError> {
+            Ok(AssetInstallResult::Ready(DummyAsset(loaded.0.clone())))
         }
     }
 
@@ -1805,12 +2024,89 @@ mod tests {
                 .with_dependencies(ctx.entry.dependencies.clone()))
         }
 
-        fn install(
+        fn begin_install(
             &self,
             loaded: &Self::Loaded,
             _ctx: AssetInstallContext<'_>,
-        ) -> Result<Self::Asset, AssetError> {
-            Ok(DummyAsset(loaded.0.clone()))
+        ) -> Result<AssetInstallResult<Self::Asset>, AssetError> {
+            Ok(AssetInstallResult::Ready(DummyAsset(loaded.0.clone())))
+        }
+    }
+
+    struct FailingInstallFactory;
+
+    impl AssetRuntimeFactory for FailingInstallFactory {
+        type Asset = DummyAsset;
+        type Loaded = LoadedDummy;
+
+        fn load(&self, ctx: AssetLoadContext<'_>) -> Result<LoadedAsset<Self::Loaded>, AssetError> {
+            let text =
+                std::str::from_utf8(ctx.bytes).map_err(|error| AssetError::InvalidCookedAsset {
+                    id: Some(ctx.asset_id),
+                    message: error.to_string(),
+                })?;
+            Ok(LoadedAsset::new(LoadedDummy(text.to_string())))
+        }
+
+        fn begin_install(
+            &self,
+            _loaded: &Self::Loaded,
+            _ctx: AssetInstallContext<'_>,
+        ) -> Result<AssetInstallResult<Self::Asset>, AssetError> {
+            Err(AssetError::Unsupported {
+                message: "install failed intentionally".to_string(),
+            })
+        }
+    }
+
+    #[derive(Clone)]
+    struct DeferredInstallFactory {
+        pending_polls: usize,
+    }
+
+    impl AssetRuntimeFactory for DeferredInstallFactory {
+        type Asset = DummyAsset;
+        type Loaded = LoadedDummy;
+
+        fn load(&self, ctx: AssetLoadContext<'_>) -> Result<LoadedAsset<Self::Loaded>, AssetError> {
+            let text =
+                std::str::from_utf8(ctx.bytes).map_err(|error| AssetError::InvalidCookedAsset {
+                    id: Some(ctx.asset_id),
+                    message: error.to_string(),
+                })?;
+            Ok(LoadedAsset::new(LoadedDummy(text.to_string())))
+        }
+
+        fn begin_install(
+            &self,
+            loaded: &Self::Loaded,
+            _ctx: AssetInstallContext<'_>,
+        ) -> Result<AssetInstallResult<Self::Asset>, AssetError> {
+            Ok(AssetInstallResult::Pending(Box::new(DeferredInstallTask {
+                value: loaded.0.clone(),
+                pending_polls: self.pending_polls,
+            })))
+        }
+    }
+
+    struct DeferredInstallTask {
+        value: String,
+        pending_polls: usize,
+    }
+
+    impl AssetInstallTask for DeferredInstallTask {
+        type Output = DummyAsset;
+
+        fn poll_install(
+            &mut self,
+            _ctx: AssetInstallContext<'_>,
+        ) -> Result<AssetInstallPoll<Self::Output>, AssetError> {
+            if self.pending_polls > 0 {
+                self.pending_polls -= 1;
+                return Ok(AssetInstallPoll::Pending);
+            }
+
+            Ok(AssetInstallPoll::Ready(DummyAsset(self.value.clone())))
         }
     }
 
@@ -1865,17 +2161,17 @@ mod tests {
                 .with_dependencies(ctx.entry.dependencies.clone()))
         }
 
-        fn install(
+        fn begin_install(
             &self,
             loaded: &Self::Loaded,
             ctx: AssetInstallContext<'_>,
-        ) -> Result<Self::Asset, AssetError> {
+        ) -> Result<AssetInstallResult<Self::Asset>, AssetError> {
             let mut installs = self
                 .installs
                 .lock()
                 .expect("counting installs mutex poisoned");
             *installs.entry(ctx.asset_id).or_insert(0) += 1;
-            Ok(DummyAsset(loaded.0.clone()))
+            Ok(AssetInstallResult::Ready(DummyAsset(loaded.0.clone())))
         }
     }
 
@@ -1934,6 +2230,19 @@ mod tests {
             .any(|event| { event.id == handle_id && event.kind == AssetEventKind::Unloaded }));
         assert_eq!(server.state_untyped(handle_id), AssetState::Unloaded);
         Ok(())
+    }
+
+    #[test]
+    fn asset_io_config_controls_worker_pool() {
+        let dir = tempdir().expect("temporary asset root");
+        let config = AssetConfig::new(dir.path(), "native")
+            .with_io_worker_threads(1)
+            .with_io_queue_capacity(3);
+        let server = Assets::with_empty_manifest(config);
+        let inner = server.inner.lock().expect("assets mutex poisoned");
+
+        assert_eq!(inner.io.worker_count(), 1);
+        assert_eq!(inner.io.queue_capacity(), 3);
     }
 
     #[test]
@@ -2018,6 +2327,112 @@ mod tests {
             Err(AssetError::MissingDependency { id, dependency: dep }) if id == asset_id && dep == dependency
         ));
         assert_eq!(server.state(&handle), AssetState::Failed);
+        assert_eq!(
+            server.failure_phase(&handle),
+            Some(AssetFailurePhase::Dependency)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn install_failure_records_install_phase() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let asset_id = AssetId::new();
+        let config = write_manifest(
+            dir.path(),
+            AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "clip.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            },
+        )?;
+        std::fs::write(config.cooked_root().join("clip.dummyc"), b"ready")?;
+
+        let server = Assets::new(config)?;
+        server.register_factory(FailingInstallFactory);
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
+        let result = server.update();
+
+        assert!(matches!(result, Err(AssetError::Unsupported { .. })));
+        assert_eq!(server.state(&handle), AssetState::Failed);
+        assert_eq!(
+            server.failure_phase(&handle),
+            Some(AssetFailurePhase::Install)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn deferred_install_task_advances_across_updates() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let asset_id = AssetId::new();
+        let config = write_manifest(
+            dir.path(),
+            AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "clip.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            },
+        )?;
+        std::fs::write(config.cooked_root().join("clip.dummyc"), b"ready")?;
+
+        let server = Assets::new(config)?;
+        server.register_factory(DeferredInstallFactory { pending_polls: 1 });
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
+
+        server.update()?;
+        assert_eq!(server.state(&handle), AssetState::Installing);
+        assert!(server.try_get(&handle).is_none());
+
+        server.update()?;
+        assert_eq!(server.state(&handle), AssetState::Installing);
+        assert!(server.try_get(&handle).is_none());
+
+        server.update()?;
+        assert_eq!(server.state(&handle), AssetState::Installed);
+        assert_eq!(server.get(&handle)?.0, "ready");
+        Ok(())
+    }
+
+    #[test]
+    fn load_blocking_waits_for_deferred_install_task() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let asset_id = AssetId::new();
+        let config = write_manifest(
+            dir.path(),
+            AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "clip.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            },
+        )?;
+        std::fs::write(config.cooked_root().join("clip.dummyc"), b"ready")?;
+
+        let server = Assets::new(config)?;
+        server.register_factory(DeferredInstallFactory { pending_polls: 2 });
+
+        let asset = server.load_blocking::<DummyAsset>(asset_id)?;
+
+        assert_eq!(asset.0, "ready");
+        assert_eq!(server.state_untyped(asset_id), AssetState::Installed);
         Ok(())
     }
 
@@ -2366,6 +2781,7 @@ mod tests {
         wait_for_terminal_texture(&server, &handle)?;
         assert_eq!(server.state(&handle), AssetState::Failed);
         assert!(matches!(server.error(&handle), Some(AssetError::Io { .. })));
+        assert_eq!(server.failure_phase(&handle), Some(AssetFailurePhase::Read));
         Ok(())
     }
 
@@ -2407,6 +2823,7 @@ mod tests {
         wait_for_terminal_texture(&server, &retry)?;
 
         assert_eq!(server.state(&retry), AssetState::Installed);
+        assert_eq!(server.failure_phase(&retry), None);
         assert_eq!(server.get(&retry)?.size(), [1, 1]);
         Ok(())
     }
@@ -2499,6 +2916,24 @@ mod tests {
         })
     }
 
+    fn wait_for_terminal_dummy(
+        server: &Assets,
+        handle: &Handle<DummyAsset>,
+    ) -> Result<(), AssetError> {
+        for _ in 0..64 {
+            let _ = server.update();
+            match server.state(handle) {
+                AssetState::Installed | AssetState::Failed => return Ok(()),
+                _ => std::thread::sleep(Duration::from_millis(5)),
+            }
+        }
+        Err(AssetError::InvalidState {
+            id: handle.id(),
+            state: server.state(handle),
+            message: "dummy asset did not reach a terminal state".to_string(),
+        })
+    }
+
     #[test]
     fn dependency_cycle_marks_asset_failed() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempdir()?;
@@ -2578,6 +3013,225 @@ mod tests {
         server.update()?;
         assert_eq!(server.state(&handle), AssetState::Installed);
         assert_eq!(server.get(&handle)?.0, "ready");
+        Ok(())
+    }
+
+    #[test]
+    fn background_completion_after_release_is_discarded() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempdir()?;
+        let asset_id = AssetId::new();
+        let config = write_manifest(
+            dir.path(),
+            AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "clip.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            },
+        )?
+        .with_background_loading(true);
+        std::fs::write(config.cooked_root().join("clip.dummyc"), b"ready")?;
+
+        let server = Assets::new(config)?;
+        server.register_factory(SlowFactory {
+            delay: Duration::from_millis(60),
+        });
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
+
+        server.update()?;
+        assert_eq!(server.state(&handle), AssetState::Loading);
+        assert_eq!(server.stats().inflight_loads, 1);
+
+        drop(handle);
+        server.update()?;
+        assert_eq!(server.state_untyped(asset_id), AssetState::Unloaded);
+
+        std::thread::sleep(Duration::from_millis(90));
+        server.update()?;
+
+        let stats = server.stats();
+        assert_eq!(server.state_untyped(asset_id), AssetState::Unloaded);
+        assert_eq!(stats.inflight_loads, 0);
+        assert_eq!(stats.states.installed, 0);
+        assert_eq!(stats.states.unloaded, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn asset_stats_report_queue_inflight_and_state_counts() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempdir()?;
+        let asset_id = AssetId::new();
+        let config = write_manifest(
+            dir.path(),
+            AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "clip.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            },
+        )?
+        .with_background_loading(true);
+        std::fs::write(config.cooked_root().join("clip.dummyc"), b"ready")?;
+
+        let server = Assets::new(config)?;
+        server.register_factory(SlowFactory {
+            delay: Duration::from_millis(60),
+        });
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
+
+        let queued = server.stats();
+        assert_eq!(queued.records, 1);
+        assert_eq!(queued.queued_requests, 1);
+        assert_eq!(queued.strong_references, 1);
+        assert_eq!(queued.states.unloaded, 1);
+
+        server.update()?;
+        let loading = server.stats();
+        assert_eq!(loading.queued_requests, 0);
+        assert_eq!(loading.inflight_loads, 1);
+        assert_eq!(loading.states.loading, 1);
+
+        wait_for_terminal_dummy(&server, &handle)?;
+        let installed = server.stats();
+        assert_eq!(installed.inflight_loads, 0);
+        assert_eq!(installed.states.installed, 1);
+        assert!(installed.retained_events > 0);
+        Ok(())
+    }
+
+    #[test]
+    fn load_blocking_completes_slow_asset_without_fixed_poll_limit(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let asset_id = AssetId::new();
+        let config = write_manifest(
+            dir.path(),
+            AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "clip.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            },
+        )?
+        .with_background_loading(true);
+        std::fs::write(config.cooked_root().join("clip.dummyc"), b"ready")?;
+
+        let server = Assets::new(config)?;
+        server.register_factory(SlowFactory {
+            delay: Duration::from_millis(60),
+        });
+
+        let started = std::time::Instant::now();
+        let asset = server.load_blocking::<DummyAsset>(asset_id)?;
+
+        assert!(started.elapsed() >= Duration::from_millis(50));
+        assert_eq!(asset.0, "ready");
+        Ok(())
+    }
+
+    #[test]
+    fn load_blocking_timeout_reports_current_state() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let asset_id = AssetId::new();
+        let config = write_manifest(
+            dir.path(),
+            AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "clip.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            },
+        )?
+        .with_background_loading(true);
+        std::fs::write(config.cooked_root().join("clip.dummyc"), b"ready")?;
+
+        let server = Assets::new(config)?;
+        server.register_factory(SlowFactory {
+            delay: Duration::from_millis(80),
+        });
+
+        let result =
+            server.load_blocking_with_timeout::<DummyAsset>(asset_id, Duration::from_millis(5));
+
+        assert!(matches!(
+            result,
+            Err(AssetError::InvalidState {
+                id,
+                state: AssetState::Loading,
+                ..
+            }) if id == asset_id
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn load_blocking_installs_dependency_chain() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let parent_id = AssetId::new();
+        let dependency_id = AssetId::new();
+        let config = write_manifest_entries(
+            dir.path(),
+            vec![
+                AssetManifestEntry {
+                    asset_id: parent_id,
+                    asset_type: "dummy".to_string(),
+                    importer: "dummy".to_string(),
+                    cooker: "dummy".to_string(),
+                    version: 1,
+                    source_path: "parent.dummy".to_string(),
+                    cooked_path: "parent.dummyc".to_string(),
+                    dependencies: vec![dependency_id],
+                    import_settings: serde_json::Value::Null,
+                },
+                AssetManifestEntry {
+                    asset_id: dependency_id,
+                    asset_type: "dummy".to_string(),
+                    importer: "dummy".to_string(),
+                    cooker: "dummy".to_string(),
+                    version: 1,
+                    source_path: "dependency.dummy".to_string(),
+                    cooked_path: "dependency.dummyc".to_string(),
+                    dependencies: Vec::new(),
+                    import_settings: serde_json::Value::Null,
+                },
+            ],
+        )?;
+        std::fs::write(config.cooked_root().join("parent.dummyc"), b"parent")?;
+        std::fs::write(
+            config.cooked_root().join("dependency.dummyc"),
+            b"dependency",
+        )?;
+
+        let server = Assets::new(config)?;
+        server.register_factory(DummyFactory);
+
+        let asset = server.load_blocking::<DummyAsset>(parent_id)?;
+
+        assert_eq!(asset.0, "parent");
+        assert_eq!(server.state_untyped(parent_id), AssetState::Installed);
+        assert_eq!(server.state_untyped(dependency_id), AssetState::Installed);
         Ok(())
     }
 
