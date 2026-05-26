@@ -22,7 +22,7 @@ pub fn recovery_system(world: &mut World) {
 
     let mut healed = medicine_used;
     let mut adventurers = world.query_filtered::<&mut Condition, With<Adventurer>>();
-    adventurers.for_each(world, |condition| {
+    adventurers.for_each(&mut *world, |condition| {
         if fed {
             condition.fatigue -= 2;
             condition.stress -= 1;

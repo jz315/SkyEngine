@@ -6,7 +6,7 @@ use crate::layout::room_slots;
 pub fn placement_system(world: &mut World) {
     let mut states = Vec::new();
     let mut adventurers = world.query_filtered::<&Condition, With<Adventurer>>();
-    adventurers.for_each_with_entity(world, |entity, condition| {
+    adventurers.for_each_with_entity(&mut *world, |entity, condition| {
         states.push((entity, *condition));
     });
 

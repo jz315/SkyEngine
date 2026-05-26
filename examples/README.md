@@ -11,15 +11,16 @@ If you're new to the project, read and run examples in this order:
 3. `commands` — deferred structural changes via `Commands`
 4. `systems` — grouped scheduling and frame updates
 5. `tiny_defense` — a complete ECS-only game loop
-6. `scene_basic` — optional scene/prefab entity-tree spawning
+6. `scene_basic` — optional persistence and prefab saving
 7. `clear_screen` → `sprite_demo` → `textured_demo` → `lighting_demo`
 8. `render_graph_showcase` → `perf_test` → `renderer_probe`
 9. `custom_feature_demo` — a public zero-engine-modification `RenderFeature` extension example
 10. `custom_material_demo` — a public user-defined `Material` + `MeshRenderer` example
-11. `hud_menu` — native retained UI for HUD/menu/buttons/text/progress
+11. `ui_legacy_hud_menu` — legacy retained UI for HUD/menu/buttons/text/progress
 12. `last_light_guild` — an 8-bit-style rendered RPG-sim prototype
-13. `physics_arcade_demo` / `tiled_physics_demo` — optional `app + physics` demos
-14. `boids` / `boids_classic` / `cosmic_jellyfish` / `neon_galaxy`
+13. `fog_lantern_station` — Neo UI narrative adventure with saves and multiple endings
+14. `physics_arcade_demo` / `tiled_physics_demo` — optional `app + physics` demos
+15. `boids` / `boids_classic` / `cosmic_jellyfish` / `neon_galaxy`
 
 ## Render Learning Path
 
@@ -89,7 +90,7 @@ cargo run --example tiny_defense
 
 ### `examples/scene/`
 
-Optional scene/prefab tutorial. No GPU feature flags required.
+Optional persistence/prefab tutorial. No GPU feature flags required.
 
 ```bash
 cargo run --example scene_basic --features scene
@@ -134,7 +135,7 @@ cargo run --example live2d_demo --features "live2d egui" --release -- --no-ui <p
 
 ### `examples/physics/`
 
-Optional 2D physics demos. See [`docs/physics.md`](../docs/physics.md) for the API guide.
+Optional 2D physics demos. See [`docs/reference/physics.md`](../docs/reference/physics.md) for the API reference.
 
 ```bash
 cargo run --example physics_arcade_demo --features "app physics" --release
@@ -146,13 +147,19 @@ cargo run --example tiled_physics_demo --features "app physics" --release
 
 ### `examples/ui/`
 
-Native retained game UI demos. See [`docs/ui.md`](../docs/ui.md) for the API guide.
+UI examples grouped by backend. See [`docs/reference/ui.md`](../docs/reference/ui.md) for the legacy retained UI API reference.
 
 ```bash
-cargo run --example hud_menu --features ui --release
+cargo run --example ui_legacy_hud_menu --features ui-legacy --release
+cargo run --example ui_legacy_stress_lab --features ui-legacy --release
+cargo run --example ui_neo_eui_gallery --features ui-neo --release
+cargo run --example ui_neo_control_center --features ui-neo --release
+cargo run --example ui_yakui_demo --features yakui-ui --release
 ```
 
-- `hud_menu` — screen-space overlay UI with a title/menu panel, clickable buttons, HUD text, progress bars, hover/press/click events, and glyphon text.
+- `legacy/` — retained ECS UI examples: `ui_legacy_hud_menu` and `ui_legacy_stress_lab`.
+- `neo/` — EUI-NEO-style examples, gallery parity, layout primitives, HUD mockups, asset-skin showcase, and the multi-file `ui_neo_control_center`.
+- `yakui/` — experimental yakui backend demo and stress lab.
 
 ### `examples/game/`
 
@@ -160,13 +167,15 @@ Playable vertical slices that combine multiple engine modules into a small game 
 
 ```bash
 cargo run --example neon_dungeon_game --features "app physics" --release
-cargo run --example lawn_defense_game --features ui --release
-cargo run --example last_light_guild --features ui --release
+cargo run --example lawn_defense_game --features ui-legacy --release
+cargo run --example last_light_guild --features ui-legacy --release
+cargo run --example fog_lantern_station --features ui-neo --release
 ```
 
 - `neon_dungeon_game` — top-down arena action game with menu/gameover/victory states, player movement, auto-fire, enemies, pickups, a locked exit portal, physics walls, and event-driven hits.
 - `lawn_defense_game` — lane-defense garden game with plant cards, sun economy, rows, projectiles, blockers, advancing enemies, mowers, waves, victory/game-over states, and native UI HUD/menu.
 - `last_light_guild` — tilemap-based 8-bit guild simulation with rooms, pawns, contracts, injuries, and relationships.
+- `fog_lantern_station` — Neo UI text adventure with location navigation, timed investigation, inventory, event log, JSON save/load, and six endings.
 
 ### `examples/demo/`
 
@@ -189,19 +198,9 @@ cargo run --example boids_bevy --features compare --release
 cargo run --example boids_bevy_gpu --features compare-bevy --release
 ```
 
-### `examples/legacy/`
-
-Historical CPU-rendered demos kept for reference.
-
-```bash
-cargo run --example particles --features demo-legacy
-cargo run --example asteroids --features demo-legacy
-cargo run --example snake --features demo-legacy
-```
-
 ## Notes
 
 - The source of truth for runnable examples is `Cargo.toml`.
 - `examples/ecs` is the best entry point for API learning.
 - `examples/demo` is optimized for showcasing the engine, not for teaching individual APIs step by step.
-- `examples/compare` is for cross-engine reference material; `examples/legacy` is for older SkyEngine-only CPU demos.
+- `examples/compare` is for cross-engine reference material.

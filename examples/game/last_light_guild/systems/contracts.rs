@@ -113,7 +113,7 @@ pub fn sync_contract_visuals(world: &mut World) {
 fn clear_contracts(world: &mut World) {
     let mut commands = Commands::new();
     let mut contracts = world.query_filtered::<&ContractMarker, With<ContractMarker>>();
-    contracts.for_each_with_entity(world, |entity, _| {
+    contracts.for_each_with_entity(&mut *world, |entity, _| {
         commands.despawn(entity);
     });
     commands.apply(world);

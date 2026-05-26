@@ -1,74 +1,65 @@
-//! Minimal AI-first scene/save example.
+//! Minimal persistence example.
 //!
 //! ```bash
 //! cargo run --example scene_basic --features scene
 //! ```
 
-use serde::{Deserialize, Serialize};
-
 use sky_engine::ecs::World;
 use sky_engine::math::Transform;
-use sky_engine::scene::{despawn_scene_instance, Name, SceneDocument, SceneRuntime};
+use sky_engine::scene::{persist, Name, Persistence};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default)]
+#[allow(dead_code)]
+struct RuntimeCache {
+    last_hit_frame: u64,
+}
+
+#[persist(component)]
+#[derive(Debug)]
+#[allow(dead_code)]
 struct Stats {
     hp: u32,
     speed: f32,
+    #[persist(default)]
+    mana: u32,
+    #[persist(skip)]
+    cache: RuntimeCache,
 }
 
 fn main() {
+    let persistence = Persistence::auto("game").expect("persistent component registry");
+
     let mut world = World::new();
-    let mut scenes = SceneRuntime::new();
-    scenes
-        .component_as::<Stats>("game.Stats")
-        .expect("component type should register");
+    world.spawn((
+        Name::new("Player"),
+        Transform::from_xy(2.0, 3.0),
+        Stats {
+            hp: 100,
+            speed: 3.5,
+            mana: 12,
+            cache: RuntimeCache { last_hit_frame: 42 },
+        },
+    ));
 
-    let room = scenes
-        .spawn_root(
-            &mut world,
-            "room_root",
-            (Name::new("Room"), Transform::from_xy(0.0, 0.0)),
-        )
-        .expect("root should spawn");
-    let lamp = scenes
-        .spawn_child(
-            &mut world,
-            room,
-            "lamp",
-            (
-                Name::new("Lamp"),
-                Transform::from_xy(32.0, 16.0),
-                Stats { hp: 25, speed: 0.0 },
-            ),
-        )
-        .expect("child should spawn");
+    let document = persistence
+        .capture_world(&mut world)
+        .expect("world should capture");
+    println!("{}", document.to_json_string_pretty().unwrap());
 
-    world.get_mut::<Stats>(lamp).unwrap().hp = 10;
+    persistence
+        .save_world(&mut world, "save.sky")
+        .expect("world should save");
 
-    let scene = scenes
-        .capture_scene(&world, [room])
-        .expect("scene should capture");
-    let json = scene
-        .to_json_string_pretty()
-        .expect("scene should serialize");
-    println!("{json}");
-
-    let roundtrip = SceneDocument::from_json_str(&json).expect("scene JSON should parse");
     let mut loaded_world = World::new();
-    let loaded = scenes
-        .spawn_scene(&mut loaded_world, &roundtrip)
-        .expect("scene should load");
-    let loaded_lamp = loaded
-        .entity_by_str("lamp")
-        .expect("lamp node should map to an entity");
+    let loaded = persistence
+        .load_world(&mut loaded_world, "save.sky")
+        .expect("world should load");
+    let loaded_player = loaded.roots[0];
 
     println!(
-        "loaded lamp {:?}: name={:?}, stats={:?}",
-        loaded_lamp,
-        loaded_world.get::<Name>(loaded_lamp).map(Name::as_str),
-        loaded_world.get::<Stats>(loaded_lamp)
+        "loaded {:?}: name={:?}, stats={:?}",
+        loaded_player,
+        loaded_world.get::<Name>(loaded_player).map(Name::as_str),
+        loaded_world.get::<Stats>(loaded_player)
     );
-
-    despawn_scene_instance(&mut loaded_world, loaded);
-    println!("remaining loaded entities: {}", loaded_world.entity_count());
 }

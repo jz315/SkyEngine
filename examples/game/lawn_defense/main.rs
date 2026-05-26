@@ -3,7 +3,7 @@
 //! This uses original procedural visuals and engine-owned gameplay code.
 //!
 //! ```bash
-//! cargo run --example lawn_defense_game --features ui --release
+//! cargo run --example lawn_defense_game --features ui-legacy --release
 //! ```
 
 use sky_engine::app::{

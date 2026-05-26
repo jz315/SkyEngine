@@ -1,7 +1,7 @@
 //! A complete small platformer built with Kenney's New Platformer Pack.
 //!
 //! ```bash
-//! cargo run --example kenney_platformer_game --features ui --release
+//! cargo run --example kenney_platformer_game --features ui-legacy --release
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -255,7 +255,7 @@ struct PlatformerAssets {
     handles: Vec<Handle<TextureAsset>>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct TextureSet {
     bg_clouds: Handle<TextureAsset>,
     bg_color_hills: Handle<TextureAsset>,
@@ -306,7 +306,7 @@ impl PlatformerAssets {
         let root = kenney_asset_root();
         let mut load = |relative: &str| {
             let handle = load_png_texture(&server, root.join(relative));
-            self.handles.push(handle);
+            self.handles.push(handle.clone());
             handle
         };
 
@@ -352,8 +352,9 @@ impl PlatformerAssets {
         });
     }
 
-    fn textures(&self) -> TextureSet {
+    fn textures(&self) -> &TextureSet {
         self.textures
+            .as_ref()
             .expect("platformer textures should be loaded before use")
     }
 
@@ -396,7 +397,7 @@ impl KenneyPlatformerGame {
         self.run = RunState::fresh();
         spawn_run(
             world,
-            &self.assets.textures(),
+            self.assets.textures(),
             &mut self.level,
             &mut self.run,
         );
@@ -408,7 +409,7 @@ impl KenneyPlatformerGame {
         if ctx.input.key_pressed(KeyCode::Space) || ctx.input.key_pressed(KeyCode::Enter) {
             self.start();
         }
-        animate_idle_world(ctx.world, &self.assets.textures(), &mut self.level, ctx.dt);
+        animate_idle_world(ctx.world, self.assets.textures(), &mut self.level, ctx.dt);
         self.update_camera(ctx);
         ctx.render();
     }
@@ -428,24 +429,24 @@ impl KenneyPlatformerGame {
         }
 
         self.run.elapsed += ctx.dt;
-        update_player(ctx, &self.assets.textures(), &mut self.level, &mut self.run);
+        update_player(ctx, self.assets.textures(), &mut self.level, &mut self.run);
         if self.run.lives <= 0 {
             self.mode = GameMode::GameOver;
             set_clear_color(ctx.world, Color::rgb(0.40, 0.16, 0.20));
         }
-        update_enemies(ctx.world, &self.assets.textures(), &mut self.level, ctx.dt);
-        animate_static_interactives(ctx.world, &self.assets.textures(), &mut self.level, ctx.dt);
+        update_enemies(ctx.world, self.assets.textures(), &mut self.level, ctx.dt);
+        animate_static_interactives(ctx.world, self.assets.textures(), &mut self.level, ctx.dt);
         update_collectibles(ctx.world, &mut self.level, &mut self.run, ctx.dt);
         resolve_player_contacts(
             ctx.world,
-            &self.assets.textures(),
+            self.assets.textures(),
             &mut self.level,
             &mut self.run,
             &mut self.mode,
         );
         update_door(
             ctx.world,
-            &self.assets.textures(),
+            self.assets.textures(),
             &mut self.level,
             &self.run,
         );
@@ -465,7 +466,7 @@ impl KenneyPlatformerGame {
             ctx.request_exit();
             return;
         }
-        animate_idle_world(ctx.world, &self.assets.textures(), &mut self.level, ctx.dt);
+        animate_idle_world(ctx.world, self.assets.textures(), &mut self.level, ctx.dt);
         self.update_camera(ctx);
         ctx.render();
     }
@@ -481,7 +482,7 @@ impl KenneyPlatformerGame {
             ctx.request_exit();
             return;
         }
-        animate_idle_world(ctx.world, &self.assets.textures(), &mut self.level, ctx.dt);
+        animate_idle_world(ctx.world, self.assets.textures(), &mut self.level, ctx.dt);
         self.update_camera(ctx);
         ctx.render();
     }
@@ -647,10 +648,10 @@ impl AppState for KenneyPlatformerGame {
             ..Default::default()
         });
         spawn_camera(world, &mut self.level);
-        spawn_static_level(world, &self.assets.textures(), &mut self.level);
+        spawn_static_level(world, self.assets.textures(), &mut self.level);
         spawn_run(
             world,
-            &self.assets.textures(),
+            self.assets.textures(),
             &mut self.level,
             &mut self.run,
         );
@@ -724,7 +725,8 @@ fn spawn_run(world: &mut World, textures: &TextureSet, level: &mut LevelState, r
     run.checkpoint = player_spawn();
     let player = world.spawn((
         Transform::from_xyz(run.checkpoint.x(), run.checkpoint.y(), 0.42),
-        SpriteRenderer::new(PLAYER_DRAW_SIZE, PLAYER_DRAW_SIZE).texture(textures.player_idle),
+        SpriteRenderer::new(PLAYER_DRAW_SIZE, PLAYER_DRAW_SIZE)
+            .texture(textures.player_idle.clone()),
         SortingLayer(90),
         Player {
             velocity: Vec2::ZERO,
@@ -748,7 +750,7 @@ fn spawn_run(world: &mut World, textures: &TextureSet, level: &mut LevelState, r
     let door_pos = Vec2::new((LEVEL_COLS as f32 - 2.1) * TILE, TILE + 34.0);
     let door = world.spawn((
         Transform::from_xyz(door_pos.x(), door_pos.y(), 0.36),
-        SpriteRenderer::new(72.0, 84.0).texture(textures.door_closed),
+        SpriteRenderer::new(72.0, 84.0).texture(textures.door_closed.clone()),
         SortingLayer(60),
         Door,
     ));
@@ -757,7 +759,7 @@ fn spawn_run(world: &mut World, textures: &TextureSet, level: &mut LevelState, r
 
     let flag = world.spawn((
         Transform::from_xyz(door_pos.x() - 62.0, door_pos.y() + 7.0, 0.38),
-        SpriteRenderer::new(64.0, 64.0).texture(textures.flag_a),
+        SpriteRenderer::new(64.0, 64.0).texture(textures.flag_a.clone()),
         SortingLayer(62),
         Flag { phase: 0.0 },
     ));
@@ -826,7 +828,7 @@ fn spawn_backgrounds(world: &mut World, textures: &TextureSet, level: &mut Level
     spawn_parallax_layer(
         world,
         level,
-        textures.bg_color_hills,
+        textures.bg_color_hills.clone(),
         1120.0,
         700.0,
         0.18,
@@ -837,7 +839,7 @@ fn spawn_backgrounds(world: &mut World, textures: &TextureSet, level: &mut Level
     spawn_parallax_layer(
         world,
         level,
-        textures.bg_fade_hills,
+        textures.bg_fade_hills.clone(),
         1080.0,
         540.0,
         0.34,
@@ -848,7 +850,7 @@ fn spawn_backgrounds(world: &mut World, textures: &TextureSet, level: &mut Level
     spawn_parallax_layer(
         world,
         level,
-        textures.bg_clouds,
+        textures.bg_clouds.clone(),
         980.0,
         490.0,
         0.08,
@@ -873,7 +875,7 @@ fn spawn_parallax_layer(
         let entity = world.spawn((
             Transform::from_xyz(slot as f32 * width, y, -0.8),
             SpriteRenderer::new(width, height)
-                .texture(texture)
+                .texture(texture.clone())
                 .color(color),
             SortingLayer(layer),
         ));
@@ -904,12 +906,12 @@ fn spawn_solid_run(
 ) {
     for col in start..end {
         let texture = match style {
-            TileStyle::Bridge => textures.bridge,
-            TileStyle::Stone => textures.stone,
-            TileStyle::Grass if col == start && row > 0 => textures.grass_left,
-            TileStyle::Grass if col + 1 == end && row > 0 => textures.grass_right,
-            TileStyle::Grass if row > 0 => textures.grass_top,
-            TileStyle::Grass => textures.grass,
+            TileStyle::Bridge => textures.bridge.clone(),
+            TileStyle::Stone => textures.stone.clone(),
+            TileStyle::Grass if col == start && row > 0 => textures.grass_left.clone(),
+            TileStyle::Grass if col + 1 == end && row > 0 => textures.grass_right.clone(),
+            TileStyle::Grass if row > 0 => textures.grass_top.clone(),
+            TileStyle::Grass => textures.grass.clone(),
         };
         let center = grid_pos(col, row);
         world.spawn((
@@ -924,7 +926,7 @@ fn spawn_solid_run(
             let fill = grid_pos(col, row - 1);
             world.spawn((
                 Transform::from_xyz(fill.x(), fill.y(), 0.09),
-                SpriteRenderer::new(TILE, TILE).texture(textures.dirt),
+                SpriteRenderer::new(TILE, TILE).texture(textures.dirt.clone()),
                 SortingLayer(8 + row as i32),
                 Tile,
             ));
@@ -944,13 +946,13 @@ fn spawn_hazard_tile(
     let texture = match kind {
         HazardKind::Lava => {
             if row == 0 {
-                textures.lava_top
+                textures.lava_top.clone()
             } else {
-                textures.lava
+                textures.lava.clone()
             }
         }
-        HazardKind::Spikes => textures.spikes,
-        HazardKind::Saw => textures.saw_a,
+        HazardKind::Spikes => textures.spikes.clone(),
+        HazardKind::Saw => textures.saw_a.clone(),
     };
     let entity = world.spawn((
         Transform::from_xyz(center.x(), center.y(), 0.32),
@@ -974,7 +976,7 @@ fn spawn_hazard_tile(
 fn spawn_saw(world: &mut World, textures: &TextureSet, level: &mut LevelState, center: Vec2) {
     let entity = world.spawn((
         Transform::from_xyz(center.x(), center.y(), 0.5),
-        SpriteRenderer::new(56.0, 56.0).texture(textures.saw_a),
+        SpriteRenderer::new(56.0, 56.0).texture(textures.saw_a.clone()),
         SortingLayer(72),
         HazardMarker,
     ));
@@ -996,7 +998,7 @@ fn spawn_spring(
     let center = grid_pos(col, row);
     let entity = world.spawn((
         Transform::from_xyz(center.x(), center.y() - 8.0, 0.34),
-        SpriteRenderer::new(54.0, 54.0).texture(textures.spring),
+        SpriteRenderer::new(54.0, 54.0).texture(textures.spring.clone()),
         SortingLayer(52),
         SpringMarker,
     ));
@@ -1009,11 +1011,11 @@ fn spawn_spring(
 
 fn spawn_decor(world: &mut World, textures: &TextureSet) {
     for (texture, col, row, size) in [
-        (textures.bush, 3, 1, 54.0),
-        (textures.rock, 15, 1, 42.0),
-        (textures.mushroom, 25, 1, 40.0),
-        (textures.bush, 41, 1, 54.0),
-        (textures.rock, 71, 1, 42.0),
+        (textures.bush.clone(), 3, 1, 54.0),
+        (textures.rock.clone(), 15, 1, 42.0),
+        (textures.mushroom.clone(), 25, 1, 40.0),
+        (textures.bush.clone(), 41, 1, 54.0),
+        (textures.rock.clone(), 71, 1, 42.0),
     ] {
         let pos = grid_pos(col, row);
         world.spawn((
@@ -1026,7 +1028,7 @@ fn spawn_decor(world: &mut World, textures: &TextureSet) {
         let pos = grid_pos(col, row);
         world.spawn((
             Transform::from_xyz(pos.x(), pos.y(), 0.31),
-            SpriteRenderer::new(48.0, 48.0).texture(textures.torch_a),
+            SpriteRenderer::new(48.0, 48.0).texture(textures.torch_a.clone()),
             SortingLayer(40),
         ));
     }
@@ -1041,11 +1043,11 @@ fn spawn_collectible(
     phase: f32,
 ) {
     let (texture, size, layer) = match kind {
-        CollectibleKind::Coin => (textures.coin, 34.0, 68),
-        CollectibleKind::GemBlue => (textures.gem_blue, 38.0, 69),
-        CollectibleKind::GemYellow => (textures.gem_yellow, 38.0, 69),
-        CollectibleKind::Key => (textures.key, 44.0, 70),
-        CollectibleKind::Heart => (textures.heart, 42.0, 70),
+        CollectibleKind::Coin => (textures.coin.clone(), 34.0, 68),
+        CollectibleKind::GemBlue => (textures.gem_blue.clone(), 38.0, 69),
+        CollectibleKind::GemYellow => (textures.gem_yellow.clone(), 38.0, 69),
+        CollectibleKind::Key => (textures.key.clone(), 44.0, 70),
+        CollectibleKind::Heart => (textures.heart.clone(), 42.0, 70),
     };
     let entity = world.spawn((
         Transform::from_xyz(position.x(), position.y(), 0.48),
@@ -1073,7 +1075,7 @@ fn spawn_enemy(
 ) {
     let entity = world.spawn((
         Transform::from_xyz(position.x(), position.y() + 4.0, 0.44),
-        SpriteRenderer::new(58.0, 58.0).texture(textures.slime_a),
+        SpriteRenderer::new(58.0, 58.0).texture(textures.slime_a.clone()),
         SortingLayer(64),
         Enemy {
             left: left_col as f32 * TILE + TILE * 0.5,
@@ -1239,19 +1241,19 @@ fn update_player_sprite(
         return;
     };
     let texture = if player.hurt_timer > 0.0 {
-        textures.player_hit
+        textures.player_hit.clone()
     } else if !player.grounded {
-        textures.player_jump
+        textures.player_jump.clone()
     } else if ducking {
-        textures.player_duck
+        textures.player_duck.clone()
     } else if player.velocity[0].abs() > 18.0 {
         if (player.walk_cycle * 5.0) as i32 % 2 == 0 {
-            textures.player_walk_a
+            textures.player_walk_a.clone()
         } else {
-            textures.player_walk_b
+            textures.player_walk_b.clone()
         }
     } else {
-        textures.player_idle
+        textures.player_idle.clone()
     };
     sprite.texture = Some(texture);
     sprite.color = if player.hurt_timer > 0.0 && (player.hurt_timer * 18.0) as i32 % 2 == 0 {
@@ -1287,9 +1289,9 @@ fn update_enemies(world: &mut World, textures: &TextureSet, level: &mut LevelSta
         enemy.walk_cycle += dt * 9.0;
         if let Some(sprite) = world.get_mut::<SpriteRenderer>(entity) {
             sprite.texture = Some(if (enemy.walk_cycle as i32) % 2 == 0 {
-                textures.slime_a
+                textures.slime_a.clone()
             } else {
-                textures.slime_b
+                textures.slime_b.clone()
             });
         }
         if let Some(enemy_mut) = world.get_mut::<Enemy>(entity) {
@@ -1440,7 +1442,7 @@ fn resolve_player_contacts(
         run.score += (run.lives.max(0) as u32) * 250;
         set_clear_color(world, Color::rgb(0.28, 0.66, 0.76));
         if let Some(sprite) = world.get_mut::<SpriteRenderer>(door) {
-            sprite.texture = Some(textures.door_open);
+            sprite.texture = Some(textures.door_open.clone());
         }
     }
 }
@@ -1449,9 +1451,9 @@ fn update_door(world: &mut World, textures: &TextureSet, level: &mut LevelState,
     if let Some(door) = level.door {
         if let Some(sprite) = world.get_mut::<SpriteRenderer>(door) {
             sprite.texture = Some(if run.has_key {
-                textures.door_open
+                textures.door_open.clone()
             } else {
-                textures.door_closed
+                textures.door_closed.clone()
             });
         }
     }
@@ -1463,9 +1465,9 @@ fn update_door(world: &mut World, textures: &TextureSet, level: &mut LevelState,
         phase += 0.08;
         if let Some(sprite) = world.get_mut::<SpriteRenderer>(flag) {
             sprite.texture = Some(if (phase * 8.0) as i32 % 2 == 0 {
-                textures.flag_a
+                textures.flag_a.clone()
             } else {
-                textures.flag_b
+                textures.flag_b.clone()
             });
         }
         if let Some(flag_data) = world.get_mut::<Flag>(flag) {
@@ -1484,9 +1486,9 @@ fn animate_static_interactives(
         spring.timer = (spring.timer - dt).max(0.0);
         if let Some(sprite) = world.get_mut::<SpriteRenderer>(spring.entity) {
             sprite.texture = Some(if spring.timer > 0.0 {
-                textures.spring_out
+                textures.spring_out.clone()
             } else {
-                textures.spring
+                textures.spring.clone()
             });
         }
     }
@@ -1500,9 +1502,9 @@ fn animate_static_interactives(
         }
         if let Some(sprite) = world.get_mut::<SpriteRenderer>(hazard.entity) {
             sprite.texture = Some(if (hazard.phase * 12.0) as i32 % 2 == 0 {
-                textures.saw_a
+                textures.saw_a.clone()
             } else {
-                textures.saw_b
+                textures.saw_b.clone()
             });
         }
     }

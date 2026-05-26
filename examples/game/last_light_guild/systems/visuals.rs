@@ -8,7 +8,7 @@ use crate::palette;
 pub fn animate_adventurers(world: &mut World, dt: f32) {
     let mut query = world
         .query_filtered::<(&Condition, &mut PixelVisual, &mut SpriteRenderer), With<Adventurer>>();
-    query.for_each(world, |(condition, visual, sprite)| {
+    query.for_each(&mut *world, |(condition, visual, sprite)| {
         visual.pulse += dt * (2.5 + condition.stress as f32 * 0.25);
         let blink = (visual.pulse.sin() * 0.5 + 0.5) * 0.12;
         sprite.color = if condition.health <= 5 {
@@ -20,13 +20,18 @@ pub fn animate_adventurers(world: &mut World, dt: f32) {
         };
     });
 
-    let mut pips = world.query_filtered::<(&Follow, &mut SpriteRenderer), With<StatusPip>>();
+    let mut pips = world.query_filtered::<&Follow, With<StatusPip>>();
+    let mut follows = Vec::new();
+    pips.for_each_with_entity(&mut *world, |entity, follow| {
+        follows.push((entity, *follow));
+    });
+
     let mut updates = Vec::new();
-    pips.for_each_with_entity(world, |entity, (follow, _)| {
+    for (entity, follow) in follows {
         if let Some(condition) = world.get::<Condition>(follow.target) {
             updates.push((entity, *condition));
         }
-    });
+    }
 
     for (entity, condition) in updates {
         if let Some(sprite) = world.get_mut::<SpriteRenderer>(entity) {
@@ -78,7 +83,7 @@ pub fn entities_settled(world: &World, entities: &[EntityId]) -> bool {
 pub fn sync_followers(world: &mut World) {
     let mut followers = Vec::new();
     let mut query = world.query::<&Follow>();
-    query.for_each_with_entity(world, |entity, follow| {
+    query.for_each_with_entity(&mut *world, |entity, follow| {
         followers.push((entity, *follow));
     });
 

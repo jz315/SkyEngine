@@ -13,6 +13,7 @@ use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use bevy::window::{PresentMode, WindowResolution};
+use bevy_full as bevy;
 
 const WINDOW_TITLE: &str = "Bevy GPU — Boids";
 const WIDTH: f32 = 1280.0;
