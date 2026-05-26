@@ -17,6 +17,7 @@ Implemented so far:
 - Phase 4 partial: runtime factories now use `begin_install -> AssetInstallResult`, with `Ready` for immediate installs and `Pending(AssetInstallTask)` for cross-frame installs. The old erased synchronous install path has been removed.
 - Phase 2/3 partial: background load completions for released assets are now covered by an explicit regression test; stale completion discard is enforced through generation mismatch.
 - Phase 7 initial slice: `Assets::stats()` now exposes queue depth, in-flight loads, retained events, reference counts, and per-state record counts.
+- Phase 5 initial slice: `src/asset/provider.rs` now owns local source resolution. Cooked and raw runtime loads resolve a `ResolvedAssetSource` before reading bytes, giving future package/memory providers a real integration point.
 
 Verified:
 
