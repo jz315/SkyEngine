@@ -35,7 +35,7 @@ pub use dsl::{Screen, Ui};
 pub use element::{
     Align, Border, CenterMode, CursorShape, EdgeInsets, EdgeMode, Element, ElementKind, Gradient,
     GradientDirection, HorizontalAlign, ImageFit, ImageRef, ImageRefKind, Insets,
-    IntoPolygonPoints, LayoutRect, Shadow, Size, Slice, Transform, Vec2, VerticalAlign,
+    IntoPolygonPoints, LayoutRect, Shadow, Size, Slice, Transform, UiClip, Vec2, VerticalAlign,
 };
 pub use event::{DragEvent, KeyboardEvent, PointerEvent, ScrollEvent};
 pub use fonts::FontRef;
@@ -45,6 +45,7 @@ pub use text_measure::{DefaultTextSystem, TextMeasure, TextMeasureRequest, TextS
 
 /// Common imports for application code using `eui-neo`.
 pub mod prelude {
+    pub use crate::widgets::PopoverPlacement;
     pub use crate::{
         bind, bind_array, bind_clamped, bind_clone, bind_eq, bind_max, widgets, Align,
         AnimProperty, Binding, Border, ButtonSkin, CenterMode, CheckboxSkin, Color, CursorShape,
@@ -53,7 +54,7 @@ pub mod prelude {
         ImageRefKind, Insets, IntoPolygonPoints, KeyboardEvent, LayoutRect, Lerp, Motion,
         MotionPreset, NeoSkin, NeoState, PanelSkin, PointerEvent, Response, Runtime, Screen,
         ScrollEvent, Shadow, Size, SkinRegistry, Slice, SliderSkin, SmoothedValue, SpringMotion,
-        TextMeasure, TextMeasureRequest, TextSystem, Transform, Transition, Ui, Vec2,
+        TextMeasure, TextMeasureRequest, TextSystem, Transform, Transition, Ui, UiClip, Vec2,
         VerticalAlign,
     };
 }

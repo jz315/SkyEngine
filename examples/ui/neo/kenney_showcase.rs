@@ -1,7 +1,7 @@
 //! Kenney UI pack showcase built with `ui-neo`.
 //!
 //! ```bash
-//! cargo run --example kenney_neo_ui_showcase --features ui-neo --release
+//! cargo run --example ui_neo_kenney_showcase --features ui-neo --release
 //! ```
 
 use sky_engine::app::{

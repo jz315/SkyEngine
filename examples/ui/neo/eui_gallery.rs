@@ -269,7 +269,6 @@ struct GallerySnapshot {
     sample_color: Color,
     sample_feedback: String,
     bing_api_text: String,
-    page_scroll: [f32; 6],
 }
 
 impl GallerySnapshot {
@@ -302,7 +301,6 @@ impl GallerySnapshot {
             sample_color: value.sample_color,
             sample_feedback: value.sample_feedback.clone(),
             bing_api_text: value.bing_api_text.clone(),
-            page_scroll: value.page_scroll,
         }
     }
 }
@@ -629,7 +627,6 @@ fn draw_content(
     let page_index = state.selected_page.clamp(0, 5) as usize;
     let page_scroll = bind_page_scroll(state_store, page_index);
     let max_scroll = (content_height - body_height).max(0.0);
-    let scroll_offset = state.page_scroll[page_index].clamp(0.0, max_scroll);
     let scrollable = max_scroll > 0.0;
     let scroll_width = if scrollable { 8.0 } else { 0.0 };
     let scroll_gap = if scrollable { 16.0 } else { 0.0 };
@@ -674,88 +671,62 @@ fn draw_content(
                     .transition(motion)
                     .build();
 
-                let body = ui
-                    .stack("page.body.viewport")
+                ui.scroll_y("page.body")
                     .size(inner_width, body_height)
-                    .clip();
-                let body = if scrollable {
-                    let scroll_action = page_scroll.clone();
-                    body.on_scroll(move |event| {
-                        let next = (scroll_offset - event.y * 48.0).clamp(0.0, max_scroll);
-                        scroll_action.set(next);
-                    })
-                } else {
-                    body
-                };
-                body.content(|ui| {
-                    ui.column("page.body.content")
-                        .y(-scroll_offset)
-                        .size(body_content_width, content_height)
-                        .gap(header_gap)
-                        .content(|ui| match state.selected_page {
-                            0 => draw_controls_page(
-                                ui,
-                                body_content_width,
-                                state_store,
-                                state,
-                                tokens,
-                                page,
-                                motion,
-                            ),
-                            1 => draw_style_page(
-                                ui,
-                                body_content_width,
-                                content_height,
-                                tokens,
-                                page,
-                                motion,
-                            ),
-                            2 => draw_animation_page(
-                                ui,
-                                body_content_width,
-                                state_store,
-                                state,
-                                tokens,
-                            ),
-                            3 => draw_settings_page(
-                                ui,
-                                body_content_width,
-                                state_store,
-                                state,
-                                tokens,
-                                page,
-                            ),
-                            4 => draw_bing_page(
-                                ui,
-                                body_content_width,
-                                content_height,
-                                state,
-                                tokens,
-                                page,
-                                motion,
-                            ),
-                            _ => draw_about_page(
-                                ui,
-                                body_content_width,
-                                content_height,
-                                tokens,
-                                page,
-                                motion,
-                            ),
-                        });
-
-                    if scrollable {
-                        widgets::scrollbar(ui, "page.scrollbar")
-                            .x((inner_width - scroll_width).max(0.0))
-                            .size(scroll_width, body_height)
-                            .viewport(body_height)
-                            .content(content_height)
-                            .offset_bind(page_scroll.clone())
-                            .theme(tokens)
-                            .z_index(10)
-                            .build();
-                    }
-                });
+                    .content_height(content_height)
+                    .gap(header_gap)
+                    .step(48.0)
+                    .scrollbar_width(scroll_width)
+                    .scrollbar_gap(scroll_gap)
+                    .theme(tokens)
+                    .offset_bind(page_scroll.clone())
+                    .content(|ui| match state.selected_page {
+                        0 => draw_controls_page(
+                            ui,
+                            body_content_width,
+                            state_store,
+                            state,
+                            tokens,
+                            page,
+                            motion,
+                        ),
+                        1 => draw_style_page(
+                            ui,
+                            body_content_width,
+                            content_height,
+                            tokens,
+                            page,
+                            motion,
+                        ),
+                        2 => {
+                            draw_animation_page(ui, body_content_width, state_store, state, tokens)
+                        }
+                        3 => draw_settings_page(
+                            ui,
+                            body_content_width,
+                            state_store,
+                            state,
+                            tokens,
+                            page,
+                        ),
+                        4 => draw_bing_page(
+                            ui,
+                            body_content_width,
+                            content_height,
+                            state,
+                            tokens,
+                            page,
+                            motion,
+                        ),
+                        _ => draw_about_page(
+                            ui,
+                            body_content_width,
+                            content_height,
+                            tokens,
+                            page,
+                            motion,
+                        ),
+                    });
             });
     });
 }
@@ -1189,7 +1160,7 @@ fn draw_controls_page_originalish(
         .size(chart_row_width, chart_height)
         .gap(chart_gap)
         .content(|ui| {
-            widgets::linechart(ui, "control.chart.line")
+            widgets::line_chart(ui, "control.chart.line")
                 .size(chart_width, chart_height)
                 .title("LineChart")
                 .values([0.22, 0.30, 0.20, 0.55, 0.42, 0.86])
@@ -1198,7 +1169,7 @@ fn draw_controls_page_originalish(
                 .transition(motion)
                 .build();
 
-            widgets::barchart(ui, "control.chart.bar")
+            widgets::bar_chart(ui, "control.chart.bar")
                 .size(chart_width, chart_height)
                 .title("BarChart")
                 .values([0.92, 0.36, 0.68, 0.52])
@@ -1207,7 +1178,7 @@ fn draw_controls_page_originalish(
                 .transition(motion)
                 .build();
 
-            widgets::piechart(ui, "control.chart.pie")
+            widgets::pie_chart(ui, "control.chart.pie")
                 .size(chart_width, chart_height)
                 .title("PieChart")
                 .values([0.42, 0.24, 0.18, 0.16])

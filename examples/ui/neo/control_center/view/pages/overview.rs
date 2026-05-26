@@ -1,5 +1,5 @@
 use sky_engine::ui::neo::widgets;
-use sky_engine::ui::neo::{Align, NeoState, Ui};
+use sky_engine::ui::neo::{Align, NeoState, Size, Ui};
 
 use crate::actions;
 use crate::locale;
@@ -20,7 +20,7 @@ pub fn render(
     let gap = 18.0;
     let stats_h = 128.0;
     let hero_h = 262.0;
-    let signals_h = 162.0;
+    let signals_h = 188.0;
     let content_h = stats_h + hero_h + signals_h + gap * 2.0 + 20.0;
     scroll_panel::scroll_panel(
         ui,
@@ -97,7 +97,7 @@ fn draw_launchpad(
     width: f32,
     state_store: &NeoState<AppModel>,
     model: &AppModel,
-    runtime: RuntimeInfo,
+    _runtime: RuntimeInfo,
     app_theme: AppTheme,
 ) {
     components::section_frame(
@@ -123,11 +123,12 @@ fn draw_launchpad(
                         .color(app_theme.tokens.text)
                         .build();
 
-                    widgets::progress(ui, "overview.launchpad.progress")
-                        .size(body_w, 14.0)
-                        .value(model.completion_ratio())
-                        .theme(app_theme.tokens)
-                        .build();
+                    components::progress_bar(
+                        ui,
+                        "overview.launchpad.progress",
+                        model.completion_ratio(),
+                        app_theme,
+                    );
 
                     ui.text("overview.launchpad.progress.label")
                         .size(body_w, 18.0)
@@ -185,15 +186,6 @@ fn draw_launchpad(
                                 .on_click(move || actions::open_ship_dialog(&ship_state))
                                 .build();
                         });
-
-                    components::badge(
-                        ui,
-                        "overview.launchpad.runtime",
-                        182.0,
-                        &locale::frames_rendered(model.locale, runtime.frame_count),
-                        app_theme.success,
-                        app_theme,
-                    );
                 });
         },
     );
@@ -208,7 +200,7 @@ fn draw_side_panels(ui: &mut Ui, width: f32, model: &AppModel, app_theme: AppThe
                 ui,
                 "overview.side.next",
                 width,
-                112.0,
+                110.0,
                 locale::next_up_title(model.locale),
                 "",
                 app_theme,
@@ -233,7 +225,7 @@ fn draw_side_panels(ui: &mut Ui, width: f32, model: &AppModel, app_theme: AppThe
                 ui,
                 "overview.side.notes",
                 width,
-                112.0,
+                134.0,
                 locale::atmosphere_title(model.locale),
                 "",
                 app_theme,
@@ -262,8 +254,7 @@ fn draw_side_panels(ui: &mut Ui, width: f32, model: &AppModel, app_theme: AppThe
                         });
 
                     ui.text("overview.side.notes.summary")
-                        .y(44.0)
-                        .size(body_w, 18.0)
+                        .size(Size::fill(), 18.0)
                         .text(locale::atmosphere_summary(model.locale))
                         .font_size(13.0)
                         .line_height(18.0)
@@ -303,8 +294,7 @@ fn draw_signal_strip(ui: &mut Ui, width: f32, model: &AppModel, app_theme: AppTh
                         })
                         .build();
                     ui.text("overview.signals.queue.meta")
-                        .y(34.0)
-                        .size(body_w, 36.0)
+                        .size(Size::fill(), 36.0)
                         .text(locale::queue_texture_meta(model.locale))
                         .font_size(14.0)
                         .line_height(20.0)
@@ -354,8 +344,7 @@ fn draw_signal_strip(ui: &mut Ui, width: f32, model: &AppModel, app_theme: AppTh
                         });
 
                     ui.text("overview.signals.preferences.meta")
-                        .y(42.0)
-                        .size(body_w, 40.0)
+                        .size(Size::fill(), 40.0)
                         .text(locale::preferences_meta(model.locale))
                         .font_size(14.0)
                         .line_height(20.0)

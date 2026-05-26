@@ -1,3 +1,6 @@
+use std::borrow::Cow;
+use std::hash::{Hash, Hasher};
+
 use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 
 use super::dsl::UiCallbacks;
@@ -10,10 +13,8 @@ use super::Color;
 use super::{
     AnimProperty, AnimatedValue, Border, DragEvent, Element, ElementKind, KeyboardEvent,
     LayoutRect, Lerp, Motion, PointerEvent, Response, Screen, ScrollEvent, Shadow, SmoothedValue,
-    Transform, Transition, Ui,
+    Transform, Transition, Ui, UiClip,
 };
-use std::hash::{Hash, Hasher};
-
 /// Compact structure snapshot used to detect tree-level changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ElementSnapshot {
@@ -21,6 +22,7 @@ pub struct ElementSnapshot {
     pub kind: ElementKind,
     pub z_index: i32,
     pub clip: bool,
+    pub clip_radius_bits: u32,
     pub child_count: usize,
     pub signature: u64,
 }
@@ -278,6 +280,10 @@ impl Runtime {
         &self.roots
     }
 
+    pub(crate) fn element_count_hint(&self) -> usize {
+        self.structure.len().max(self.roots.len())
+    }
+
     pub fn draw_list(&self) -> super::draw::UiDrawList {
         super::draw::build_draw_list(self)
     }
@@ -331,6 +337,7 @@ impl Runtime {
         let mut ui = Ui::new(self.page_id.clone());
         ui.set_skins(self.skins.clone());
         ui.set_focused_id(self.focused_id.clone());
+        ui.set_previous_frames(collect_frames(&self.roots));
         for (id, response) in &self.responses {
             ui.set_response(id.clone(), *response);
         }
@@ -382,20 +389,20 @@ impl Runtime {
     }
 
     pub fn find(&self, id: &str) -> Option<&Element> {
-        let id = self.resolve_id(id);
-        self.roots.iter().find_map(|root| find_element(root, &id))
+        let id = self.resolve_id_ref(id);
+        self.find_resolved(id.as_ref())
     }
 
     pub fn response(&self, id: &str) -> Response {
         self.responses
-            .get(&self.resolve_id(id))
+            .get(self.resolve_id_ref(id).as_ref())
             .copied()
             .unwrap_or_default()
     }
 
     pub fn interaction(&self, id: &str) -> InteractionState {
         self.interactions
-            .get(&self.resolve_id(id))
+            .get(self.resolve_id_ref(id).as_ref())
             .copied()
             .unwrap_or_default()
     }
@@ -473,8 +480,8 @@ impl Runtime {
     }
 
     pub(crate) fn hover_blend_for_source(&self, id: &str) -> Option<f32> {
-        let id = self.resolve_id(id);
-        let element = self.find(&id)?;
+        let id = self.resolve_id_ref(id);
+        let element = self.find_resolved(id.as_ref())?;
         if !matches!(
             element.kind,
             ElementKind::Rect | ElementKind::Polygon | ElementKind::Image | ElementKind::NineSlice
@@ -482,20 +489,20 @@ impl Runtime {
             return None;
         }
         self.animations
-            .get(&id)
+            .get(id.as_ref())
             .map(|animation| animation.hover_blend.current())
     }
 
     pub(crate) fn press_blend_for_source(&self, id: &str) -> Option<(f32, LayoutRect)> {
-        let id = self.resolve_id(id);
-        let element = self.find(&id)?;
+        let id = self.resolve_id_ref(id);
+        let element = self.find_resolved(id.as_ref())?;
         if !matches!(
             element.kind,
             ElementKind::Rect | ElementKind::Polygon | ElementKind::Image | ElementKind::NineSlice
         ) {
             return None;
         }
-        let animation = self.animations.get(&id)?;
+        let animation = self.animations.get(id.as_ref())?;
         let frame = animation
             .frame
             .as_ref()
@@ -727,10 +734,17 @@ impl Runtime {
         }
 
         let mut changed = false;
-        let roots = self.roots.clone();
-        for root in ordered_element_clones(&roots) {
-            changed |= self.tick_element_animation_tree(&root, delta_seconds, false);
+        let roots = std::mem::take(&mut self.roots);
+        if z_order_is_stable(&roots) {
+            for root in &roots {
+                changed |= self.tick_element_animation_tree(root, delta_seconds, false);
+            }
+        } else {
+            for index in sorted_z_indices(&roots) {
+                changed |= self.tick_element_animation_tree(&roots[index], delta_seconds, false);
+            }
         }
+        self.roots = roots;
         self.animations.retain(|_, animation| animation.seen);
         self.frame_targets.retain(|_, target| target.seen);
 
@@ -777,12 +791,22 @@ impl Runtime {
         let mut changed =
             self.tick_element_animation(element, delta_seconds, ancestor_frame_changed);
         let child_ancestor_frame_changed = ancestor_frame_changed || frame_target_changed;
-        for child in ordered_element_clones(&element.children) {
-            changed |= self.tick_element_animation_tree(
-                &child,
-                delta_seconds,
-                child_ancestor_frame_changed,
-            );
+        if z_order_is_stable(&element.children) {
+            for child in &element.children {
+                changed |= self.tick_element_animation_tree(
+                    child,
+                    delta_seconds,
+                    child_ancestor_frame_changed,
+                );
+            }
+        } else {
+            for index in sorted_z_indices(&element.children) {
+                changed |= self.tick_element_animation_tree(
+                    &element.children[index],
+                    delta_seconds,
+                    child_ancestor_frame_changed,
+                );
+            }
         }
         changed
     }
@@ -1058,19 +1082,23 @@ impl Runtime {
         self.needs_render = true;
     }
 
-    fn resolve_id(&self, id: &str) -> String {
+    fn resolve_id_ref<'a>(&self, id: &'a str) -> Cow<'a, str> {
         if id.is_empty() || self.page_id.is_empty() {
-            return id.to_string();
+            return Cow::Borrowed(id);
         }
         if is_resolved_id(id, &self.page_id) {
-            id.to_string()
+            Cow::Borrowed(id)
         } else {
             let mut resolved = String::with_capacity(self.page_id.len() + 1 + id.len());
             resolved.push_str(&self.page_id);
             resolved.push('.');
             resolved.push_str(id);
-            resolved
+            Cow::Owned(resolved)
         }
+    }
+
+    fn find_resolved(&self, id: &str) -> Option<&Element> {
+        self.roots.iter().find_map(|root| find_element(root, id))
     }
 }
 
@@ -1080,10 +1108,10 @@ fn is_resolved_id(id: &str, page_id: &str) -> bool {
         && id.as_bytes().starts_with(page_id.as_bytes())
 }
 
-fn ordered_element_clones(elements: &[Element]) -> Vec<Element> {
-    let mut ordered: Vec<_> = elements.iter().cloned().enumerate().collect();
-    ordered.sort_by_key(|(index, element)| (element.z_index, *index));
-    ordered.into_iter().map(|(_, element)| element).collect()
+fn sorted_z_indices(elements: &[Element]) -> Vec<usize> {
+    let mut order: Vec<_> = (0..elements.len()).collect();
+    order.sort_by_key(|&index| (elements[index].z_index, index));
+    order
 }
 
 fn sync_animated<T>(
@@ -1191,12 +1219,28 @@ fn collect_structure(roots: &[Element], previous_len: usize) -> Vec<ElementSnaps
     snapshots
 }
 
+fn collect_frames(roots: &[Element]) -> FxHashMap<String, LayoutRect> {
+    let mut frames = FxHashMap::default();
+    for root in roots {
+        collect_element_frames(root, &mut frames);
+    }
+    frames
+}
+
+fn collect_element_frames(element: &Element, frames: &mut FxHashMap<String, LayoutRect>) {
+    frames.insert(element.id.clone(), element.frame);
+    for child in &element.children {
+        collect_element_frames(child, frames);
+    }
+}
+
 fn collect_element_structure(element: &Element, snapshots: &mut Vec<ElementSnapshot>) {
     snapshots.push(ElementSnapshot {
         id: element.id.clone(),
         kind: element.kind,
         z_index: element.z_index,
         clip: element.clip,
+        clip_radius_bits: element.clip_radius.to_bits(),
         child_count: element.children.len(),
         signature: element_signature(element),
     });
@@ -1239,7 +1283,7 @@ fn hit_test(
 fn hit_test_elements<'a>(
     elements: &'a [Element],
     position: [f32; 2],
-    clip: Option<LayoutRect>,
+    clip: Option<UiClip>,
     predicate: &impl Fn(&Element) -> bool,
 ) -> Option<&'a Element> {
     if elements.len() <= 1 {
@@ -1279,16 +1323,18 @@ fn z_order_is_stable(elements: &[Element]) -> bool {
 fn hit_test_element<'a>(
     element: &'a Element,
     position: [f32; 2],
-    clip: Option<LayoutRect>,
+    clip: Option<UiClip>,
     predicate: &impl Fn(&Element) -> bool,
 ) -> Option<&'a Element> {
     if clip.is_some_and(|clip| !clip.contains(position)) {
         return None;
     }
     let next_clip = if element.clip {
+        let radius = element.clip_radius;
+        let current = UiClip::new(element.frame, radius);
         let clip = match clip {
-            Some(parent) => intersect_rect(parent, element.frame)?,
-            None => element.frame,
+            Some(parent) => intersect_clip(parent, current)?,
+            None => current,
         };
         if !clip.contains(position) {
             return None;
@@ -1347,6 +1393,25 @@ fn intersect_rect(left: LayoutRect, right: LayoutRect) -> Option<LayoutRect> {
     (x1 > x0 && y1 > y0).then(|| LayoutRect::new(x0, y0, x1 - x0, y1 - y0))
 }
 
+fn intersect_clip(left: UiClip, right: UiClip) -> Option<UiClip> {
+    let rect = intersect_rect(left.rect, right.rect)?;
+    let radius = if same_rect(rect, right.rect) {
+        right.radius
+    } else if same_rect(rect, left.rect) {
+        left.radius
+    } else {
+        left.radius.min(right.radius)
+    };
+    Some(UiClip::new(rect, radius))
+}
+
+fn same_rect(left: LayoutRect, right: LayoutRect) -> bool {
+    (left.x - right.x).abs() <= 0.001
+        && (left.y - right.y).abs() <= 0.001
+        && (left.width - right.width).abs() <= 0.001
+        && (left.height - right.height).abs() <= 0.001
+}
+
 fn state_without_changed(mut state: InteractionState) -> InteractionState {
     state.changed = false;
     state
@@ -1380,6 +1445,7 @@ fn element_signature(element: &Element) -> u64 {
     element.cross_align.hash(&mut hasher);
     element.z_index.hash(&mut hasher);
     element.clip.hash(&mut hasher);
+    hash_f32(element.clip_radius, &mut hasher);
     hash_color(element.color, &mut hasher);
     hash_color(element.text_color, &mut hasher);
     hash_f32(element.radius, &mut hasher);
@@ -1764,7 +1830,7 @@ mod tests {
         runtime.compose(200.0, 100.0, |ui, _| {
             ui.stack("viewport").size(100.0, 80.0).clip().content(|ui| {
                 ui.stack("content")
-                    .y(-40.0)
+                    .y(-4.0)
                     .size(100.0, 160.0)
                     .content(|ui| {
                         ui.rect("indicator")
@@ -1786,7 +1852,7 @@ mod tests {
             .find(|draw| draw.id == "demo.indicator")
             .unwrap();
 
-        assert_frame(indicator.frame, 0.0, -40.0, 20.0, 10.0);
+        assert_frame(indicator.frame, 0.0, -4.0, 20.0, 10.0);
     }
 
     #[test]
@@ -1983,6 +2049,33 @@ mod tests {
         runtime.update_scroll(ScrollEvent { x: 0.0, y: 3.0 });
 
         assert_eq!(amount.get(), 3.0);
+    }
+
+    #[test]
+    fn rounded_clip_excludes_corner_hits() {
+        let clicks = Rc::new(Cell::new(0));
+        let callback_clicks = clicks.clone();
+        let mut runtime = Runtime::new("demo");
+        runtime.compose(120.0, 120.0, move |ui, _| {
+            let callback_clicks = callback_clicks.clone();
+            ui.stack("viewport")
+                .size(100.0, 100.0)
+                .rounded_clip(20.0)
+                .content(|ui| {
+                    ui.rect("child")
+                        .size(100.0, 100.0)
+                        .on_click(move || callback_clicks.set(callback_clicks.get() + 1))
+                        .build();
+                });
+        });
+
+        runtime.update_pointer(PointerEvent::pressed_at(1.0, 1.0));
+        runtime.update_pointer(PointerEvent::released_at(1.0, 1.0));
+        assert_eq!(clicks.get(), 0);
+
+        runtime.update_pointer(PointerEvent::pressed_at(20.0, 20.0));
+        runtime.update_pointer(PointerEvent::released_at(20.0, 20.0));
+        assert_eq!(clicks.get(), 1);
     }
 
     #[test]

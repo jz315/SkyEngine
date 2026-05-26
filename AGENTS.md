@@ -20,7 +20,7 @@
 - **App** entry points: `sky_engine::app` (behind `features = ["app"]`) - `App`, `AppConfig`, `FrameContext`, `SetupContext`, `AppState`.
 - **Asset** entry points: `sky_engine::asset` (behind `features = ["asset"]`) - `AssetServer`, handles, texture assets, cooked asset support.
 - **UI** entry points: `sky_engine::ui` (behind UI features) - `UiHost`, `UiBackend`, `UiCaptureState`, `UiPlugin` (`ui-legacy`), `neo::{NeoUiPlugin, NeoUiBackend, NeoRuntime}` (`ui-neo`), `YakuiUiPlugin` (`yakui-ui`).
-- **Tile scene** entry points: `sky_engine::tile` - `TileMap`, `TileMapDocument`, `TileMapDocumentBuilder`, `TileMapInstance`, `TileMapEditSession`, `TileMapEditSummary`, `TilePalette`, `TileLayer`, `SceneTile`, `TileRef`, `TiledImporter`, `TiledExporter`.
+- **Tile scene** entry points: `sky_engine::tile` - `Tiles`, `Map`, `MapBuilder`, `MapEditor`, `TilePalette`, `TileLayer`, `CollisionLayer`, `MetadataLayer`, `ObjectLayer`, `TileCell`, `TileRef`, `MapData`, and related grid/palette/object model types.
 - **Scene/VN/audio/video** entry points are feature-gated under `sky_engine::scene`, `sky_engine::vn`, `sky_engine::audio`, and `sky_engine::video`.
 - Preferred entity construction is bundle-based: `world.spawn((A, B, ...))` and `world.spawn_batch(...)`.
 - Preferred query construction is typed: `world.query::<Q>()` or `world.query_filtered::<Q, Flt>()`.
@@ -49,7 +49,7 @@
 - `benches/common.rs`: shared components, constants, and helpers for all benchmarks.
 - `benches/fair/main.rs`: canonical apples-to-apples comparison entry point against `hecs` and `bevy_ecs`.
 - `benches/fair/sky.rs`, `benches/fair/hecs.rs`, `benches/fair/bevy.rs`: engine-specific fair benchmark implementations.
-- `examples/`: feature-focused examples split into `ecs`, `render`, `ui`, `vn`, `scene`, `physics`, `live2d`, `demo`, `game`, `compare`, and `legacy`.
+- `examples/`: feature-focused examples split into `ecs`, `render`, `ui`, `vn`, `scene`, `physics`, `live2d`, `demo`, `game`, and `compare`.
 - `docs/`: current user/developer docs. Planning or future architecture notes belong under `docs/plan/`, not in `AGENTS.md`.
 - `README.md`, `README_zh.md`: user-facing overview and quick-start docs.
 - `benches/BENCHMARKS.md`, `benches/BENCHMARKS_CN.md`: benchmark policy, history, and recorded local results.
@@ -92,18 +92,18 @@
 - `FrameContext` is the app-facing per-frame access point for rendering, backend-neutral render assets, texture readiness, screenshots, UI facade methods, egui overlays, and wgpu escape hatches.
 
 ## Current Tile Scene Model
-- `src/tile/` is the high-level tile scene and authoring layer. It owns `TileMap`, `TileMapDocument`, palettes, layers, tile references, objects, edit summaries/history, persistence, and format import/export.
+- `src/tile/` is the high-level tile scene and authoring layer. It owns the `Tiles -> Map` facade, `MapData`, palettes, layers, tile references, objects, edit history, persistence, and format import/export.
 - `src/render/tilemap/` is the low-level render implementation. It owns `TilemapStorage`, `TilemapRenderer`, extraction, chunk/GPU caches, draw logic, and the quick render-only Tiled path.
-- Prefer `tile::TileMapDocument` or `tile::TileMap` for game/editor maps that need editing, persistence, palettes, objects, collision, metadata, or format round-tripping.
+- Prefer `tile::Tiles::open_tiled`, `tile::Tiles::create`, and the returned `tile::Map` facade for game/editor maps that need editing, persistence, palettes, objects, collision, metadata, or format round-tripping.
 - Use `render::TilemapStorage` / `render::TilemapRenderer` directly only for render demos, low-level renderer tests, or code that intentionally bypasses the tile scene model.
-- `TileMapRenderSync` is the bridge from `tile::TileMap` into `render::TilemapStorage` plus `TilemapRenderer` components.
-- Tiled authoring import/export uses `tile::adapters::tiled::TiledImporter` and `TiledExporter`. Do not reintroduce the old `TiledAdapter` / `TmjExporter` names.
+- Tiled authoring import/export is exposed through `Tiles::open_tiled`, `Map::save`, `Map::save_as`, and `Map::save_as_tiled`; the internal format facade lives under `src/tile/io/tiled`.
 - `render::TiledImport` / `render::TiledMapInstance` remain the render-only fast path for loading Tiled data directly into render entities. Do not use them as the general game/editor tile scene model.
 
 ## Current UI Model
 - `ui-core` owns the backend-neutral UI host contract: `UiHost`, `UiBackend`, `UiBackendId`, `UiCaptureState`, event handling, begin-frame updates, and overlay rendering.
 - `ui-legacy` is the current retained ECS UI path. It owns UI components, layout, input, state, text, and direct overlay rendering.
-- `ui-neo` is the experimental EUI-NEO-style declarative UI path. It owns a Rust port of EUI-NEO's DSL, layout, runtime, animation, widgets, binding helpers, and wgpu overlay renderer under `src/ui/neo/`.
+- `ui-neo` is the experimental EUI-NEO-style declarative UI path. The host-agnostic DSL/runtime/widgets live in `crates/eui-neo`, the wgpu overlay renderer lives in `crates/eui-neo-wgpu`, and `src/ui/neo/` adapts them into SkyEngine's `UiHost`.
+- `ui-neo` exposes layout-safe helper APIs for common failure-prone surfaces: `Ui::scroll_y` / `widgets::scroll_y` for vertical scroll regions, `Ui::popover` / `widgets::popover` for root-layer anchored floating content, and `.rounded_clip(...)` / `.clip_to_radius()` for rounded clipped containers.
 - `yakui-ui` installs `YakuiBackend` into `UiHost`. It handles winit events, updates yakui state, reports capture, and renders through `yakui_wgpu`.
 - `egui` is independent of `UiHost`; it lives in `src/app/egui_integration.rs` and renders at the end of the app frame.
 - Current UI overlays are rendered after the scene by `FrameContext::render_ui_overlays()`, `FrameContext::render_ui()`, or egui end-frame integration. There is no canonical `UiPhase` in the render pipeline today.
@@ -113,7 +113,10 @@
 - Local source reference: `C:\Coding\EUI-NEO`. Check it before changing `ui-neo` APIs, widget behavior, layout, event ordering, animation, renderer behavior, or gallery parity.
 - Keep `src/ui/neo/` behavior mechanically traceable to EUI-NEO sources: `core/dsl*.h`, `core/layout.h`, `core/event.h`, `core/animation.h`, `core/image.*`, and `components/*.h`.
 - Preserve EUI-NEO defaults, clamp rules, callback ordering, transition masks, z-index/layering, modal input blocking, focus, clipboard, IME rect, and dirty/redraw behavior unless SkyEngine platform seams require a documented adaptation.
-- Keep reusable widget behavior in `src/ui/neo/widgets/` or shared neo runtime modules. `examples/ui/eui_neo_gallery.rs` is a parity pressure test, not a place to hide missing component behavior.
+- Keep reusable widget behavior in `crates/eui-neo/src/widgets/` or shared neo runtime modules; `src/ui/neo/` should stay a SkyEngine adapter. `examples/ui/neo/eui_gallery.rs` is a parity pressure test, not a place to hide missing component behavior.
+- Prefer `scroll_y` for vertically scrollable UI panels instead of hand-composing a clipped viewport, translated content, scrollbar, and manual content height. Use `.inset(...)` to keep the viewport and scrollbar inside rounded outer shells, `.offset_bind(...)` for state, and auto content-height measurement unless an explicit height is required.
+- Prefer `popover` for dropdowns, menus, pickers, and other floating UI that should not affect parent layout. Popovers are root-layer content anchored from the previous resolved frame, so call `.anchor(...)` with a stable element id and provide `.fallback_anchor(...)` when first-frame placement matters.
+- Use `.rounded_clip(radius)` or `.clip_to_radius()` when the visual shell is rounded and its children must be clipped to the same shape. `UiClip` carries the clip rect and radius through draw-list generation, hit testing, and `eui-neo-wgpu` primitive rendering.
 - Validate visible UI with SkyEngine's built-in screenshot path (`FrameContext::request_screenshot`) rather than browser screenshots.
 - Keep the EUI-NEO port plan consolidated in `docs/plan/eui_neo_rust_ui_port_plan.md`; remove completed execution plans from that file instead of creating more plan files.
 
@@ -135,13 +138,13 @@
 - Run all tests with app/render enabled: `cargo test --features app`
 - Run render graph tests: `cargo test --features app graph`
 - Run runtime tests: `cargo test --features app render::runtime::tests`
-- Run UI tests: `cargo test --features ui`
+- Run legacy UI tests: `cargo test --features ui-legacy`
 - Run tile scene tests: `cargo test --features app tile::`
-- Run EUI-NEO-style UI tests/builds: `cargo test --features ui-neo ui::neo` and `cargo check --examples --features ui-neo`
+- Run EUI-NEO-style UI tests/builds: `cargo test --manifest-path crates/eui-neo/Cargo.toml`, `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`, `cargo test --features ui-neo ui::neo`, and `cargo check --examples --features ui-neo`
 - Run yakui UI tests/builds: `cargo test --features yakui-ui`
 - Run VN tests: `cargo test --features vn`
 - Run render/example compile check after render/app API changes: `cargo check --examples --features app`
-- Run UI example compile check after UI changes: `cargo check --examples --features ui`
+- Run legacy UI example compile check after retained UI changes: `cargo check --examples --features ui-legacy`
 - Run canonical fair comparison: `cargo bench --bench fair`
 - Run all benches: `cargo bench`
 - Run one engine slice: `cargo bench --bench fair -- sky`

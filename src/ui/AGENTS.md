@@ -11,7 +11,6 @@
 ## Feature Flags
 - `ui-core`: compiles `UiHost`, `UiBackend`, event/capture/render contexts, and `FrameContext::ui()` facade methods.
 - `ui-legacy`: enables retained ECS UI components, layout, input, state, text, renderer, and `LegacyUiBackend`.
-- `ui`: compatibility alias for the current retained ECS UI (`ui-legacy`).
 - `ui-neo`: enables `sky_engine::ui::neo`, `NeoUiBackend`, `NeoUiPlugin`, `eui-neo` widgets, glyphon text, and SkyEngine-backed HTTP/Bing image loading.
 - `yakui-ui`: enables `YakuiBackend` and `YakuiUiPlugin`.
 
@@ -49,6 +48,7 @@
   - `neo::Ui`, `neo::NeoState`, `neo::Binding`, and `neo::widgets`
   - `neo::compose`
   - `neo::open_window`
+  - Common layout-safe widget helpers live in `eui_neo::widgets`: `scroll_y`, `popover`, and rounded clipping through `.rounded_clip(...)` / `.clip_to_radius()`.
 
 ## File Map
 - `mod.rs`: module wiring and feature-gated re-exports.
@@ -86,6 +86,7 @@
 - The retained UI renderer in `legacy/render.rs` owns its own wgpu pipelines and glyphon renderer.
 - `YakuiBackend` renders through `yakui_wgpu`.
 - `NeoUiBackend` renders through an internal renderer backed by `eui-neo-wgpu`; text uses glyphon and image resources are resolved through SkyEngine asset/render caches.
+- `eui-neo-wgpu` receives `UiClip` rect/radius data from `eui-neo`; primitive shaders apply rounded clipping, while text remains bounded through glyphon text bounds.
 - There is currently no canonical render-pipeline `UiPhase` or `UiFeature`.
 - Do not document a future UI phase/feature as current behavior. If planning that migration, put it under `docs/plan/`.
 
@@ -94,6 +95,9 @@
 - Keep widget behavior traceable to EUI-NEO `components/*.h` and runtime/layout/animation behavior traceable to `core/*.h`.
 - Preserve EUI-NEO callback ordering, clamp rules, z-index/layering, modal hit blocking, focus, keyboard, clipboard, IME rect, dirty/redraw, and animation semantics unless there is a documented SkyEngine platform adaptation.
 - Keep reusable behavior in `crates/eui-neo`; `src/ui/neo/` should remain a SkyEngine adapter, and examples should demonstrate parity rather than hide widget implementations.
+- Prefer `Ui::scroll_y` / `widgets::scroll_y` for vertical scrollable panels instead of manual viewport + content translation + scrollbar composition. Use `.inset(...)` when the scroll area lives inside a rounded panel so the scrollbar and clipped viewport do not occupy the outer rounded edge.
+- Prefer `Ui::popover` / `widgets::popover` for dropdowns, context menus, pickers, and other floating UI that should sit on a root layer instead of resizing the parent layout. Anchor popovers to stable element ids and provide a fallback rect when first-frame placement matters.
+- Use `.rounded_clip(radius)` or `.clip_to_radius()` for rounded shells whose children should be clipped to the same visible shape; this affects draw-list clips and hit testing, not only styling.
 - Use engine screenshots through `FrameContext::request_screenshot` for visual checks. The neo examples expose `SKY_NEO_SCREENSHOT_PATH`, `SKY_NEO_SCREENSHOT_FRAME`, and `SKY_NEO_EXIT_AFTER_SCREENSHOT`.
 - Keep active EUI-NEO port tracking in `docs/plan/eui_neo_rust_ui_port_plan.md` only; do not create scattered parity TODO files.
 
@@ -108,9 +112,11 @@
 
 ## Validation
 - Run legacy UI tests/builds after retained UI changes:
-  - `cargo test --features ui`
-  - `cargo check --examples --features ui`
+  - `cargo test --features ui-legacy`
+  - `cargo check --examples --features ui-legacy`
 - Run neo UI tests/builds after EUI-NEO-style UI changes:
+  - `cargo test --manifest-path crates/eui-neo/Cargo.toml`
+  - `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`
   - `cargo test --features ui-neo ui::neo`
   - `cargo check --examples --features ui-neo`
 - Run yakui checks after yakui backend changes:

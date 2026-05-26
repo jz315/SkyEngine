@@ -9,7 +9,7 @@ use super::Color;
 
 use super::{
     Border, CenterMode, EdgeMode, Element, ElementKind, FontRef, Gradient, HorizontalAlign,
-    ImageFit, ImageRef, LayoutRect, Runtime, Shadow, Slice, Transform, VerticalAlign,
+    ImageFit, ImageRef, LayoutRect, Runtime, Shadow, Slice, Transform, UiClip, VerticalAlign,
 };
 
 /// Backend-neutral command stream emitted by the neo runtime.
@@ -41,7 +41,7 @@ pub enum UiDrawCommand {
     Image(UiImageDraw),
     NineSlice(UiNineSliceDraw),
     Polygon(UiPolygonDraw),
-    PushClip(LayoutRect),
+    PushClip(UiClip),
     PopClip,
 }
 
@@ -134,7 +134,7 @@ impl Default for RenderTransform {
 }
 
 pub(crate) fn build_draw_list(runtime: &Runtime) -> UiDrawList {
-    let mut commands = Vec::new();
+    let mut commands = Vec::with_capacity(runtime.element_count_hint());
     let transform = RenderTransform::default();
     draw_elements(runtime.roots(), runtime, transform, None, &mut commands);
     UiDrawList::new(commands)
@@ -144,7 +144,7 @@ fn draw_element(
     element: &Element,
     runtime: &Runtime,
     inherited: RenderTransform,
-    inherited_clip: Option<LayoutRect>,
+    inherited_clip: Option<UiClip>,
     commands: &mut Vec<UiDrawCommand>,
 ) {
     let render_transform = resolve_render_transform(element, runtime, inherited);
@@ -159,15 +159,29 @@ fn draw_element(
     let mut pushed_clip = false;
     if element.clip {
         let clip_frame = apply_render_transform(frame, render_transform);
+        let clip_radius = if element.clip_radius > 0.0 {
+            element.clip_radius
+        } else {
+            0.0
+        };
+        let next = UiClip::new(clip_frame, clip_radius);
         let Some(next_clip) = inherited_clip
-            .and_then(|clip| intersect_rect(clip, clip_frame))
-            .or_else(|| inherited_clip.is_none().then_some(clip_frame))
+            .and_then(|clip| intersect_clip(clip, next))
+            .or_else(|| inherited_clip.is_none().then_some(next))
         else {
             return;
         };
         active_clip = Some(next_clip);
         commands.push(UiDrawCommand::PushClip(next_clip));
         pushed_clip = true;
+    }
+
+    let transformed_frame = apply_render_transform(frame, render_transform);
+    if active_clip.is_some_and(|clip| !rects_intersect(transformed_frame, clip.rect)) {
+        if pushed_clip {
+            commands.push(UiDrawCommand::PopClip);
+        }
+        return;
     }
 
     match element.kind {
@@ -248,7 +262,7 @@ fn draw_elements(
     elements: &[Element],
     runtime: &Runtime,
     inherited: RenderTransform,
-    inherited_clip: Option<LayoutRect>,
+    inherited_clip: Option<UiClip>,
     commands: &mut Vec<UiDrawCommand>,
 ) {
     if elements.len() <= 1 {
@@ -394,6 +408,32 @@ fn intersect_rect(left: LayoutRect, right: LayoutRect) -> Option<LayoutRect> {
     (x1 > x0 && y1 > y0).then(|| LayoutRect::new(x0, y0, x1 - x0, y1 - y0))
 }
 
+fn rects_intersect(left: LayoutRect, right: LayoutRect) -> bool {
+    left.right() > right.x
+        && left.x < right.right()
+        && left.bottom() > right.y
+        && left.y < right.bottom()
+}
+
+fn intersect_clip(left: UiClip, right: UiClip) -> Option<UiClip> {
+    let rect = intersect_rect(left.rect, right.rect)?;
+    let radius = if same_rect(rect, right.rect) {
+        right.radius
+    } else if same_rect(rect, left.rect) {
+        left.radius
+    } else {
+        left.radius.min(right.radius)
+    };
+    Some(UiClip::new(rect, radius))
+}
+
+fn same_rect(left: LayoutRect, right: LayoutRect) -> bool {
+    close_enough(left.x, right.x)
+        && close_enough(left.y, right.y)
+        && close_enough(left.width, right.width)
+        && close_enough(left.height, right.height)
+}
+
 fn lerp(from: f32, to: f32, amount: f32) -> f32 {
     from + (to - from) * amount.clamp(0.0, 1.0)
 }
@@ -446,13 +486,19 @@ mod tests {
     fn clipped_element_emits_push_and_pop_clip() {
         let mut runtime = Runtime::new("page");
         runtime.compose(100.0, 100.0, |ui, _| {
-            ui.stack("root").size(50.0, 50.0).clip().content(|ui| {
-                ui.rect("child").size(10.0, 10.0).build();
-            });
+            ui.stack("root")
+                .size(50.0, 50.0)
+                .rounded_clip(12.0)
+                .content(|ui| {
+                    ui.rect("child").size(10.0, 10.0).build();
+                });
         });
 
         let draw = runtime.draw_list();
-        assert!(matches!(draw.commands()[0], UiDrawCommand::PushClip(_)));
+        match draw.commands()[0] {
+            UiDrawCommand::PushClip(clip) => assert_eq!(clip.radius, 12.0),
+            _ => panic!("expected push clip"),
+        }
         assert!(matches!(
             draw.commands().last(),
             Some(UiDrawCommand::PopClip)

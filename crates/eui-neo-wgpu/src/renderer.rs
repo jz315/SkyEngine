@@ -5,12 +5,11 @@ use crate::{
     ScreenUniform,
 };
 use eui_neo::expert::{
-    UiDrawCommand, UiDrawList, UiImageDraw, UiNineSliceDraw, UiPolygonDraw, UiRectDraw,
-    UiTextDraw,
+    UiDrawCommand, UiDrawList, UiImageDraw, UiNineSliceDraw, UiPolygonDraw, UiRectDraw, UiTextDraw,
 };
 use eui_neo::{
     Color, FontRef, Frame, GradientDirection, HorizontalAlign, ImageFit, ImageRef, LayoutRect,
-    Screen, Transform, VerticalAlign,
+    Screen, Transform, UiClip, VerticalAlign,
 };
 use glyphon::cosmic_text::Align as TextAlign;
 use glyphon::{
@@ -20,9 +19,11 @@ use glyphon::{
 use rustc_hash::FxHashMap;
 
 use crate::fonts::{
-    clear_registered_font, is_icon_font, register_font_bytes, resolve_family,
-    resolved_font_weight, RegisteredFont, DEFAULT_TEXT_FONT_PIXEL_HEIGHT_SCALE,
+    clear_registered_font, is_icon_font, register_font_bytes, resolve_family, resolved_font_weight,
+    RegisteredFont, DEFAULT_TEXT_FONT_PIXEL_HEIGHT_SCALE,
 };
+
+const ATLAS_TRIM_INTERVAL_FRAMES: u32 = 120;
 
 /// Current wgpu render target supplied by the host application.
 pub struct Target<'a> {
@@ -43,33 +44,58 @@ pub struct TargetTexture<'a> {
 
 struct WgpuVertexBuffer {
     buffer: wgpu::Buffer,
-    size: u64,
+    used: u64,
+    capacity: u64,
 }
 
 impl WgpuVertexBuffer {
-    fn new<T: bytemuck::Pod>(
+    fn upload<T: bytemuck::Pod>(
+        slot: &mut Option<Self>,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         label: &str,
         data: &[T],
-    ) -> Option<Self> {
+    ) {
         if data.is_empty() {
-            return None;
+            if let Some(buffer) = slot {
+                buffer.used = 0;
+            }
+            return;
         }
-        let size = std::mem::size_of_val(data) as u64;
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some(label),
-            size,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        queue.write_buffer(&buffer, 0, bytemuck::cast_slice(data));
-        Some(Self { buffer, size })
+
+        let used = std::mem::size_of_val(data) as u64;
+        let needs_buffer = slot.as_ref().is_none_or(|buffer| buffer.capacity < used);
+        if needs_buffer {
+            let capacity = used.next_power_of_two().max(256);
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: capacity,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            *slot = Some(Self {
+                buffer,
+                used,
+                capacity,
+            });
+        } else if let Some(buffer) = slot {
+            buffer.used = used;
+        }
+
+        let Some(buffer) = slot.as_ref() else {
+            return;
+        };
+        queue.write_buffer(&buffer.buffer, 0, bytemuck::cast_slice(data));
     }
 
     #[inline]
     fn slice(&self) -> wgpu::BufferSlice<'_> {
-        self.buffer.slice(0..self.size)
+        self.buffer.slice(0..self.used)
+    }
+
+    #[inline]
+    fn ready(&self) -> Option<&Self> {
+        (self.used > 0).then_some(self)
     }
 }
 
@@ -104,12 +130,6 @@ struct TextItem {
 #[derive(Clone)]
 struct ImageItem {
     image: ImageRef,
-}
-
-#[derive(Clone, Copy)]
-struct PreparedImageInfo {
-    size: [u32; 2],
-    uv_rect: [f32; 4],
 }
 
 struct CachedNeoImage {
@@ -173,6 +193,7 @@ struct CachedBackdrop {
 struct TextLayer {
     renderer: TextRenderer,
     buffers: Vec<Buffer>,
+    buffer_keys: Vec<TextBufferKey>,
 }
 
 impl TextLayer {
@@ -180,8 +201,30 @@ impl TextLayer {
         Self {
             renderer: TextRenderer::new(atlas, device, wgpu::MultisampleState::default(), None),
             buffers: Vec::new(),
+            buffer_keys: Vec::new(),
         }
     }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct TextBufferKey {
+    text: String,
+    font: FontRef,
+    font_size: u32,
+    font_weight: i32,
+    line_height: u32,
+    width: u32,
+    height: u32,
+    wrap: bool,
+    horizontal_align: HorizontalAlign,
+}
+
+struct TextBufferMetrics {
+    font_size: f32,
+    line_height: f32,
+    width: f32,
+    height: f32,
+    align: TextAlign,
 }
 
 #[derive(Clone, Copy)]
@@ -207,6 +250,29 @@ struct PrimitiveOp {
     backdrop_blur: f32,
 }
 
+#[derive(Default)]
+struct RenderScratch {
+    rect_vertices: Vec<NeoRectVertex>,
+    polygon_vertices: Vec<NeoPolygonVertex>,
+    image_vertices: Vec<NeoImageVertex>,
+    primitive_ops: Vec<PrimitiveOp>,
+    text_items: Vec<TextItem>,
+    image_items: Vec<ImageItem>,
+    render_ops: Vec<RenderOp>,
+}
+
+impl RenderScratch {
+    fn clear(&mut self) {
+        self.rect_vertices.clear();
+        self.polygon_vertices.clear();
+        self.image_vertices.clear();
+        self.primitive_ops.clear();
+        self.text_items.clear();
+        self.image_items.clear();
+        self.render_ops.clear();
+    }
+}
+
 /// Renderer for `eui_neo` draw lists.
 pub struct WgpuRenderer {
     format: wgpu::TextureFormat,
@@ -222,6 +288,11 @@ pub struct WgpuRenderer {
     viewport: Viewport,
     atlas: TextAtlas,
     text_layers: Vec<TextLayer>,
+    rect_vertex_buffer: Option<WgpuVertexBuffer>,
+    polygon_vertex_buffer: Option<WgpuVertexBuffer>,
+    image_vertex_buffer: Option<WgpuVertexBuffer>,
+    scratch: RenderScratch,
+    frames_since_atlas_trim: u32,
     default_text_family: Option<String>,
     default_icon_family: Option<String>,
 }
@@ -272,6 +343,11 @@ impl WgpuRenderer {
             viewport,
             atlas,
             text_layers: Vec::new(),
+            rect_vertex_buffer: None,
+            polygon_vertex_buffer: None,
+            image_vertex_buffer: None,
+            scratch: RenderScratch::default(),
+            frames_since_atlas_trim: 0,
             default_text_family: None,
             default_icon_family: None,
         }
@@ -294,6 +370,7 @@ impl WgpuRenderer {
             bytes,
         ) {
             self.font_revisions.insert(font.clone(), revision);
+            self.invalidate_text_buffers();
         }
     }
 
@@ -305,10 +382,18 @@ impl WgpuRenderer {
             &mut self.default_icon_family,
             font,
         );
+        self.invalidate_text_buffers();
     }
 
     pub fn matches_format(&self, format: wgpu::TextureFormat) -> bool {
         self.format == format
+    }
+
+    fn invalidate_text_buffers(&mut self) {
+        for layer in &mut self.text_layers {
+            layer.buffers.clear();
+            layer.buffer_keys.clear();
+        }
     }
 
     pub fn render(
@@ -347,46 +432,29 @@ impl WgpuRenderer {
         pending_images: bool,
     ) -> RenderStatus {
         let logical_rect = LayoutRect::new(0.0, 0.0, screen.width, screen.height);
-        let image_sizes: FxHashMap<_, _> = self
-            .image_cache
-            .iter()
-            .map(|(key, image)| {
-                (
-                    key.clone(),
-                    PreparedImageInfo {
-                        size: image.size,
-                        uv_rect: image.uv_rect,
-                    },
-                )
-            })
-            .collect();
-        let mut rect_vertices = Vec::new();
-        let mut polygon_vertices = Vec::new();
-        let mut image_vertices = Vec::new();
-        let mut primitive_ops = Vec::new();
-        let mut text_items = Vec::new();
-        let mut image_items = Vec::new();
-        let mut render_ops = Vec::new();
+        let mut scratch = std::mem::take(&mut self.scratch);
+        scratch.clear();
         let surface_is_srgb = self.format.is_srgb();
         collect_draw_items(
             draw_list,
             logical_rect,
             surface_is_srgb,
-            &image_sizes,
-            &mut rect_vertices,
-            &mut polygon_vertices,
-            &mut image_vertices,
-            &mut primitive_ops,
-            &mut text_items,
-            &mut image_items,
-            &mut render_ops,
+            &self.image_cache,
+            &mut scratch.rect_vertices,
+            &mut scratch.polygon_vertices,
+            &mut scratch.image_vertices,
+            &mut scratch.primitive_ops,
+            &mut scratch.text_items,
+            &mut scratch.image_items,
+            &mut scratch.render_ops,
         );
 
-        if rect_vertices.is_empty()
-            && polygon_vertices.is_empty()
-            && image_vertices.is_empty()
-            && text_items.is_empty()
+        if scratch.rect_vertices.is_empty()
+            && scratch.polygon_vertices.is_empty()
+            && scratch.image_vertices.is_empty()
+            && scratch.text_items.is_empty()
         {
+            self.scratch = scratch;
             return RenderStatus {
                 pending_images,
                 ..RenderStatus::default()
@@ -408,67 +476,65 @@ impl WgpuRenderer {
             0,
             bytemuck::bytes_of(&screen_uniform),
         );
-        let rect_upload = WgpuVertexBuffer::new(
+        WgpuVertexBuffer::upload(
+            &mut self.rect_vertex_buffer,
             ctx.device,
             ctx.queue,
             "eui_neo_rect_vertices",
-            &rect_vertices,
+            &scratch.rect_vertices,
         );
-        let polygon_upload = WgpuVertexBuffer::new(
+        WgpuVertexBuffer::upload(
+            &mut self.polygon_vertex_buffer,
             ctx.device,
             ctx.queue,
             "eui_neo_polygon_vertices",
-            &polygon_vertices,
+            &scratch.polygon_vertices,
         );
-        let image_upload = WgpuVertexBuffer::new(
+        WgpuVertexBuffer::upload(
+            &mut self.image_vertex_buffer,
             ctx.device,
             ctx.queue,
             "eui_neo_image_vertices",
-            &image_vertices,
+            &scratch.image_vertices,
         );
 
-        self.prepare_text_layers(ctx, &render_ops, &text_items, [screen.width, screen.height]);
+        self.prepare_text_layers(
+            ctx,
+            &scratch.render_ops,
+            &scratch.text_items,
+            [screen.width, screen.height],
+        );
 
-        let mut pending_primitives = Vec::new();
-        let mut text_layer_index = 0usize;
-        for op in &render_ops {
-            match *op {
-                RenderOp::Primitive(_) => pending_primitives.push(*op),
-                RenderOp::Text { .. } => {
-                    if !pending_primitives.is_empty() {
-                        render_primitive_ops(
-                            self,
-                            ctx,
-                            &primitive_ops,
-                            &pending_primitives,
-                            rect_upload.as_ref(),
-                            polygon_upload.as_ref(),
-                            image_upload.as_ref(),
-                            &image_items,
-                            [screen.width, screen.height],
-                        );
-                        pending_primitives.clear();
-                    }
-                    render_text_layer(self, ctx, text_layer_index);
-                    text_layer_index += 1;
-                }
-            }
-        }
-        if !pending_primitives.is_empty() {
-            render_primitive_ops(
-                self,
-                ctx,
-                &primitive_ops,
-                &pending_primitives,
-                rect_upload.as_ref(),
-                polygon_upload.as_ref(),
-                image_upload.as_ref(),
-                &image_items,
-                [screen.width, screen.height],
-            );
-        }
+        let rect_upload = self
+            .rect_vertex_buffer
+            .as_ref()
+            .and_then(WgpuVertexBuffer::ready);
+        let polygon_upload = self
+            .polygon_vertex_buffer
+            .as_ref()
+            .and_then(WgpuVertexBuffer::ready);
+        let image_upload = self
+            .image_vertex_buffer
+            .as_ref()
+            .and_then(WgpuVertexBuffer::ready);
+        render_ordered_ops(
+            self,
+            ctx,
+            &scratch.primitive_ops,
+            &scratch.render_ops,
+            rect_upload,
+            polygon_upload,
+            image_upload,
+            &scratch.image_items,
+            [screen.width, screen.height],
+        );
 
-        self.atlas.trim();
+        self.frames_since_atlas_trim = self.frames_since_atlas_trim.saturating_add(1);
+        if self.frames_since_atlas_trim >= ATLAS_TRIM_INTERVAL_FRAMES {
+            self.atlas.trim();
+            self.frames_since_atlas_trim = 0;
+        }
+        self.scratch = scratch;
         RenderStatus {
             pending_images,
             ..RenderStatus::default()
@@ -633,75 +699,31 @@ impl WgpuRenderer {
         let default_icon_family = self.default_icon_family.clone();
         let layer = &mut self.text_layers[layer_index];
 
-        layer.buffers.clear();
-        for item in text_items {
-            let icon_font = is_icon_font(&item.font);
-            let authored_font_size = (item.font_size * text_scale).max(1.0);
-            let font_size = if icon_font {
-                authored_font_size
-            } else {
-                authored_font_size * DEFAULT_TEXT_FONT_PIXEL_HEIGHT_SCALE
+        for (index, item) in text_items.iter().enumerate() {
+            let metrics = text_buffer_metrics(item, logical_size, text_scale, scale_x, scale_y);
+            let key = text_buffer_key(item, &metrics);
+            if layer.buffer_keys.get(index) == Some(&key) {
+                continue;
             }
-            .max(1.0);
-            let metrics_scale = if icon_font {
-                1.0
-            } else {
-                DEFAULT_TEXT_FONT_PIXEL_HEIGHT_SCALE
-            };
-            let line_height = if item.line_height > 0.0 {
-                item.line_height * text_scale * metrics_scale
-            } else {
-                authored_font_size * 1.2 * metrics_scale
-            };
-            let mut buffer =
-                Buffer::new(&mut self.font_system, Metrics::new(font_size, line_height));
-            let width = if item.frame.width > 0.0 {
-                if item.wrap && item.max_width > 0.0 {
-                    item.max_width.min(item.frame.width)
-                } else {
-                    item.frame.width
-                }
-            } else {
-                logical_size[0]
-            };
-            buffer.set_size(
+
+            let buffer = create_text_buffer(
                 &mut self.font_system,
-                Some((width * scale_x).max(1.0)),
-                Some((item.frame.height * scale_y).max(1.0)),
+                &self.registered_fonts,
+                default_text_family.as_deref(),
+                default_icon_family.as_deref(),
+                item,
+                &metrics,
             );
-            buffer.set_wrap(
-                &mut self.font_system,
-                if item.wrap {
-                    Wrap::WordOrGlyph
-                } else {
-                    Wrap::None
-                },
-            );
-            let align = text_align(item.horizontal_align);
-            let attrs = Attrs::new()
-                .family(resolve_family(
-                    &item.font,
-                    &self.registered_fonts,
-                    default_text_family.as_deref(),
-                    default_icon_family.as_deref(),
-                ))
-                .weight(Weight(resolved_font_weight(
-                    &item.font,
-                    item.font_weight,
-                )));
-            buffer.set_text(
-                &mut self.font_system,
-                &item.text,
-                &attrs,
-                Shaping::Advanced,
-                Some(align),
-            );
-            for line in &mut buffer.lines {
-                line.set_align(Some(align));
+            if index < layer.buffers.len() {
+                layer.buffers[index] = buffer;
+                layer.buffer_keys[index] = key;
+            } else {
+                layer.buffers.push(buffer);
+                layer.buffer_keys.push(key);
             }
-            buffer.shape_until_scroll(&mut self.font_system, false);
-            layer.buffers.push(buffer);
         }
+        layer.buffers.truncate(text_items.len());
+        layer.buffer_keys.truncate(text_items.len());
 
         let areas: Vec<_> = layer
             .buffers
@@ -751,9 +773,110 @@ impl WgpuRenderer {
     }
 }
 
+fn text_buffer_metrics(
+    item: &TextItem,
+    logical_size: [f32; 2],
+    text_scale: f32,
+    scale_x: f32,
+    scale_y: f32,
+) -> TextBufferMetrics {
+    let icon_font = is_icon_font(&item.font);
+    let authored_font_size = (item.font_size * text_scale).max(1.0);
+    let font_size = if icon_font {
+        authored_font_size
+    } else {
+        authored_font_size * DEFAULT_TEXT_FONT_PIXEL_HEIGHT_SCALE
+    }
+    .max(1.0);
+    let metrics_scale = if icon_font {
+        1.0
+    } else {
+        DEFAULT_TEXT_FONT_PIXEL_HEIGHT_SCALE
+    };
+    let line_height = if item.line_height > 0.0 {
+        item.line_height * text_scale * metrics_scale
+    } else {
+        authored_font_size * 1.2 * metrics_scale
+    };
+    let width = if item.frame.width > 0.0 {
+        if item.wrap && item.max_width > 0.0 {
+            item.max_width.min(item.frame.width)
+        } else {
+            item.frame.width
+        }
+    } else {
+        logical_size[0]
+    };
+
+    TextBufferMetrics {
+        font_size,
+        line_height,
+        width: (width * scale_x).max(1.0),
+        height: (item.frame.height * scale_y).max(1.0),
+        align: text_align(item.horizontal_align),
+    }
+}
+
+fn text_buffer_key(item: &TextItem, metrics: &TextBufferMetrics) -> TextBufferKey {
+    TextBufferKey {
+        text: item.text.clone(),
+        font: item.font.clone(),
+        font_size: metrics.font_size.to_bits(),
+        font_weight: item.font_weight,
+        line_height: metrics.line_height.to_bits(),
+        width: metrics.width.to_bits(),
+        height: metrics.height.to_bits(),
+        wrap: item.wrap,
+        horizontal_align: item.horizontal_align,
+    }
+}
+
+fn create_text_buffer(
+    font_system: &mut FontSystem,
+    registered_fonts: &FxHashMap<FontRef, RegisteredFont>,
+    default_text_family: Option<&str>,
+    default_icon_family: Option<&str>,
+    item: &TextItem,
+    metrics: &TextBufferMetrics,
+) -> Buffer {
+    let mut buffer = Buffer::new(
+        font_system,
+        Metrics::new(metrics.font_size, metrics.line_height),
+    );
+    buffer.set_size(font_system, Some(metrics.width), Some(metrics.height));
+    buffer.set_wrap(
+        font_system,
+        if item.wrap {
+            Wrap::WordOrGlyph
+        } else {
+            Wrap::None
+        },
+    );
+    let attrs = Attrs::new()
+        .family(resolve_family(
+            &item.font,
+            registered_fonts,
+            default_text_family,
+            default_icon_family,
+        ))
+        .weight(Weight(resolved_font_weight(&item.font, item.font_weight)));
+    buffer.set_text(
+        font_system,
+        &item.text,
+        &attrs,
+        Shaping::Advanced,
+        Some(metrics.align),
+    );
+    for line in &mut buffer.lines {
+        line.set_align(Some(metrics.align));
+    }
+    buffer.shape_until_scroll(font_system, false);
+    buffer
+}
+
 #[allow(clippy::too_many_arguments)]
-fn render_primitive_ops(
-    renderer: &mut WgpuRenderer,
+fn render_ordered_ops(
+    renderer: &WgpuRenderer,
     ctx: &mut Target<'_>,
     primitive_ops: &[PrimitiveOp],
     render_ops: &[RenderOp],
@@ -763,46 +886,33 @@ fn render_primitive_ops(
     image_items: &[ImageItem],
     logical_size: [f32; 2],
 ) {
-    let mut batch_start = 0usize;
-    for (index, render_op) in render_ops.iter().enumerate() {
-        if !render_op_uses_backdrop_blur(primitive_ops, *render_op) {
-            continue;
-        }
+    let mut text_layer_index = 0usize;
+    let mut segment_start = 0usize;
 
-        if batch_start < index {
-            render_primitive_ops_batch(
-                &*renderer,
-                ctx,
-                primitive_ops,
-                &render_ops[batch_start..index],
-                rect_upload,
-                polygon_upload,
-                image_upload,
-                image_items,
-                logical_size,
-                None,
-            );
-        }
-
-        let Some(backdrop) = capture_backdrop(renderer, ctx, primitive_ops[index], logical_size)
-        else {
-            render_primitive_ops_batch(
-                &*renderer,
-                ctx,
-                primitive_ops,
-                &render_ops[index..index + 1],
-                rect_upload,
-                polygon_upload,
-                image_upload,
-                image_items,
-                logical_size,
-                None,
-            );
-            batch_start = index + 1;
+    for (index, render_op) in render_ops.iter().copied().enumerate() {
+        let Some(primitive_index) = backdrop_blur_primitive_index(primitive_ops, render_op) else {
             continue;
         };
+
+        if segment_start < index {
+            render_mixed_ops(
+                renderer,
+                ctx,
+                primitive_ops,
+                &render_ops[segment_start..index],
+                rect_upload,
+                polygon_upload,
+                image_upload,
+                image_items,
+                logical_size,
+                &mut text_layer_index,
+            );
+        }
+
+        let op = primitive_ops[primitive_index];
+        let backdrop = capture_backdrop(renderer, ctx, op, logical_size);
         render_primitive_ops_batch(
-            &*renderer,
+            renderer,
             ctx,
             primitive_ops,
             &render_ops[index..index + 1],
@@ -811,34 +921,149 @@ fn render_primitive_ops(
             image_upload,
             image_items,
             logical_size,
-            Some(&backdrop.bind_group),
+            backdrop.as_ref().map(|backdrop| &backdrop.bind_group),
         );
-        batch_start = index + 1;
+        segment_start = index + 1;
     }
 
-    if batch_start < render_ops.len() {
-        render_primitive_ops_batch(
-            &*renderer,
+    if segment_start < render_ops.len() {
+        render_mixed_ops(
+            renderer,
             ctx,
             primitive_ops,
-            &render_ops[batch_start..],
+            &render_ops[segment_start..],
             rect_upload,
             polygon_upload,
             image_upload,
             image_items,
             logical_size,
-            None,
+            &mut text_layer_index,
         );
     }
 }
 
-fn render_op_uses_backdrop_blur(primitive_ops: &[PrimitiveOp], render_op: RenderOp) -> bool {
+#[allow(clippy::too_many_arguments)]
+fn render_mixed_ops(
+    renderer: &WgpuRenderer,
+    ctx: &mut Target<'_>,
+    primitive_ops: &[PrimitiveOp],
+    render_ops: &[RenderOp],
+    rect_upload: Option<&WgpuVertexBuffer>,
+    polygon_upload: Option<&WgpuVertexBuffer>,
+    image_upload: Option<&WgpuVertexBuffer>,
+    image_items: &[ImageItem],
+    logical_size: [f32; 2],
+    text_layer_index: &mut usize,
+) {
+    if render_ops.is_empty() {
+        return;
+    }
+
+    let physical_size = ctx.physical_size;
+    let color_attachment = Some(wgpu::RenderPassColorAttachment {
+        view: ctx.view,
+        depth_slice: None,
+        resolve_target: None,
+        ops: wgpu::Operations {
+            load: wgpu::LoadOp::Load,
+            store: wgpu::StoreOp::Store,
+        },
+    });
+    let color_attachments = [color_attachment];
+    let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("eui_neo_overlay_mixed"),
+        color_attachments: &color_attachments,
+        depth_stencil_attachment: None,
+        ..Default::default()
+    });
+    let mut active_kind: Option<PrimitiveKind> = None;
+    let rect_backdrop_bind_group = &renderer.dummy_backdrop.bind_group;
+
+    for render_op in render_ops {
+        match *render_op {
+            RenderOp::Primitive(index) => {
+                let Some(op) = primitive_ops.get(index) else {
+                    continue;
+                };
+                let Some((x, y, width, height)) =
+                    scissor_rect(op.clip, logical_size, physical_size)
+                else {
+                    continue;
+                };
+                pass.set_scissor_rect(x, y, width, height);
+                match op.kind {
+                    PrimitiveKind::Rect => {
+                        let Some(upload) = rect_upload else {
+                            continue;
+                        };
+                        if !matches!(active_kind, Some(PrimitiveKind::Rect)) {
+                            pass.set_pipeline(&renderer.wgpu_resources.rect_pipeline);
+                            pass.set_bind_group(0, &renderer.wgpu_resources.screen_bind_group, &[]);
+                            pass.set_bind_group(1, rect_backdrop_bind_group, &[]);
+                            pass.set_vertex_buffer(0, upload.slice());
+                            active_kind = Some(op.kind);
+                        }
+                    }
+                    PrimitiveKind::Polygon => {
+                        let Some(upload) = polygon_upload else {
+                            continue;
+                        };
+                        if !matches!(active_kind, Some(PrimitiveKind::Polygon)) {
+                            pass.set_pipeline(&renderer.wgpu_resources.polygon_pipeline);
+                            pass.set_bind_group(0, &renderer.wgpu_resources.screen_bind_group, &[]);
+                            pass.set_vertex_buffer(0, upload.slice());
+                            active_kind = Some(PrimitiveKind::Polygon);
+                        }
+                    }
+                    PrimitiveKind::Image { image_index } => {
+                        let (Some(upload), Some(image_item)) =
+                            (image_upload, image_items.get(image_index))
+                        else {
+                            continue;
+                        };
+                        let Some(cached) = renderer.image_cache.get(&image_item.image) else {
+                            continue;
+                        };
+                        if !matches!(active_kind, Some(PrimitiveKind::Image { .. })) {
+                            pass.set_pipeline(&renderer.wgpu_resources.image_pipeline);
+                            pass.set_bind_group(0, &renderer.wgpu_resources.screen_bind_group, &[]);
+                            pass.set_vertex_buffer(0, upload.slice());
+                            active_kind = Some(PrimitiveKind::Image { image_index });
+                        }
+                        pass.set_bind_group(1, &cached.bind_group, &[]);
+                    }
+                }
+                pass.draw(op.start..op.start + op.count, 0..1);
+            }
+            RenderOp::Text { .. } => {
+                active_kind = None;
+                pass.set_scissor_rect(0, 0, physical_size[0].max(1), physical_size[1].max(1));
+                if let Some(layer) = renderer.text_layers.get(*text_layer_index) {
+                    if let Err(error) =
+                        layer
+                            .renderer
+                            .render(&renderer.atlas, &renderer.viewport, &mut pass)
+                    {
+                        eprintln!("[eui-neo-wgpu] text render failed: {error}");
+                    }
+                }
+                *text_layer_index += 1;
+            }
+        }
+    }
+}
+
+fn backdrop_blur_primitive_index(
+    primitive_ops: &[PrimitiveOp],
+    render_op: RenderOp,
+) -> Option<usize> {
     let RenderOp::Primitive(index) = render_op else {
-        return false;
+        return None;
     };
     primitive_ops
         .get(index)
         .is_some_and(|op| matches!(op.kind, PrimitiveKind::Rect) && op.backdrop_blur > 0.0)
+        .then_some(index)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -930,36 +1155,6 @@ fn render_primitive_ops_batch(
             }
         }
         pass.draw(op.start..op.start + op.count, 0..1);
-    }
-}
-
-fn render_text_layer(renderer: &WgpuRenderer, ctx: &mut Target<'_>, layer_index: usize) {
-    let Some(layer) = renderer.text_layers.get(layer_index) else {
-        return;
-    };
-    let physical_size = ctx.physical_size;
-    let color_attachment = Some(wgpu::RenderPassColorAttachment {
-        view: ctx.view,
-        depth_slice: None,
-        resolve_target: None,
-        ops: wgpu::Operations {
-            load: wgpu::LoadOp::Load,
-            store: wgpu::StoreOp::Store,
-        },
-    });
-    let color_attachments = [color_attachment];
-    let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("eui_neo_text_overlay"),
-        color_attachments: &color_attachments,
-        depth_stencil_attachment: None,
-        ..Default::default()
-    });
-    pass.set_scissor_rect(0, 0, physical_size[0].max(1), physical_size[1].max(1));
-    if let Err(error) = layer
-        .renderer
-        .render(&renderer.atlas, &renderer.viewport, &mut pass)
-    {
-        eprintln!("[eui-neo-wgpu] text render failed: {error}");
     }
 }
 
@@ -1091,7 +1286,7 @@ fn create_dummy_backdrop(
 }
 
 fn capture_backdrop(
-    renderer: &mut WgpuRenderer,
+    renderer: &WgpuRenderer,
     ctx: &mut Target<'_>,
     op: PrimitiveOp,
     logical_size: [f32; 2],
@@ -1277,7 +1472,7 @@ fn collect_draw_items(
     draw_list: &UiDrawList,
     full_clip: LayoutRect,
     surface_is_srgb: bool,
-    image_sizes: &FxHashMap<ImageRef, PreparedImageInfo>,
+    image_cache: &FxHashMap<ImageRef, CachedNeoImage>,
     rect_vertices: &mut Vec<NeoRectVertex>,
     polygon_vertices: &mut Vec<NeoPolygonVertex>,
     image_vertices: &mut Vec<NeoImageVertex>,
@@ -1286,17 +1481,18 @@ fn collect_draw_items(
     image_items: &mut Vec<ImageItem>,
     render_ops: &mut Vec<RenderOp>,
 ) {
-    let mut clip = full_clip;
+    let mut clip = UiClip::rect(full_clip);
     let mut stack = Vec::new();
 
     for command in draw_list.commands() {
         match command {
             UiDrawCommand::PushClip(next) => {
                 stack.push(clip);
-                clip = intersect_rect(clip, *next).unwrap_or(LayoutRect::ZERO);
+                clip =
+                    intersect_clip(clip, *next).unwrap_or_else(|| UiClip::rect(LayoutRect::ZERO));
             }
             UiDrawCommand::PopClip => {
-                clip = stack.pop().unwrap_or(full_clip);
+                clip = stack.pop().unwrap_or_else(|| UiClip::rect(full_clip));
             }
             UiDrawCommand::Rect(draw) => {
                 if push_rect(rect_vertices, primitive_ops, draw, clip, surface_is_srgb) {
@@ -1310,7 +1506,7 @@ fn collect_draw_items(
             }
             UiDrawCommand::Text(draw) => {
                 let start = text_items.len();
-                if push_text(text_items, draw, clip, surface_is_srgb) {
+                if push_text(text_items, draw, clip.rect, surface_is_srgb) {
                     match render_ops.last_mut() {
                         Some(RenderOp::Text { start: _, count })
                             if start == text_items.len() - 1 =>
@@ -1328,7 +1524,7 @@ fn collect_draw_items(
                     image_items,
                     draw,
                     clip,
-                    image_sizes,
+                    image_cache,
                     surface_is_srgb,
                 ) {
                     render_ops.push(RenderOp::Primitive(primitive_ops.len() - 1));
@@ -1341,7 +1537,7 @@ fn collect_draw_items(
                     image_items,
                     draw,
                     clip,
-                    image_sizes,
+                    image_cache,
                     surface_is_srgb,
                 ) {
                     render_ops.push(RenderOp::Primitive(primitive_ops.len() - 1));
@@ -1355,24 +1551,24 @@ fn push_rect(
     vertices: &mut Vec<NeoRectVertex>,
     ops: &mut Vec<PrimitiveOp>,
     draw: &UiRectDraw,
-    clip: LayoutRect,
+    clip: UiClip,
     surface_is_srgb: bool,
 ) -> bool {
     if draw.frame.width <= 0.0
         || draw.frame.height <= 0.0
         || draw.opacity <= 0.0
-        || clip.width <= 0.0
-        || clip.height <= 0.0
+        || clip.rect.width <= 0.0
+        || clip.rect.height <= 0.0
     {
         return false;
     }
 
     let start = vertices.len() as u32;
     if shadow_visible(draw) {
-        push_rect_shadow_vertices(vertices, draw, surface_is_srgb);
+        push_rect_shadow_vertices(vertices, draw, clip, surface_is_srgb);
     }
     if draw.color.a > 0.0 {
-        push_rect_fill_vertices(vertices, draw, surface_is_srgb);
+        push_rect_fill_vertices(vertices, draw, clip, surface_is_srgb);
     }
     let count = vertices.len() as u32 - start;
     if count == 0 {
@@ -1382,7 +1578,7 @@ fn push_rect(
         kind: PrimitiveKind::Rect,
         start,
         count,
-        clip,
+        clip: clip.rect,
         backdrop_frame: draw.frame,
         backdrop_blur: draw.blur.max(0.0),
     });
@@ -1392,6 +1588,7 @@ fn push_rect(
 fn push_rect_fill_vertices(
     vertices: &mut Vec<NeoRectVertex>,
     draw: &UiRectDraw,
+    clip: UiClip,
     surface_is_srgb: bool,
 ) {
     let gradient_direction = match draw.gradient.direction {
@@ -1407,6 +1604,7 @@ fn push_rect_fill_vertices(
         output_color(draw.gradient.start, surface_is_srgb),
         output_color(draw.gradient.end, surface_is_srgb),
         output_color(draw.border.color, surface_is_srgb),
+        clip,
         [
             draw.radius.max(0.0),
             draw.border.width.max(0.0),
@@ -1420,6 +1618,7 @@ fn push_rect_fill_vertices(
 fn push_rect_shadow_vertices(
     vertices: &mut Vec<NeoRectVertex>,
     draw: &UiRectDraw,
+    clip: UiClip,
     surface_is_srgb: bool,
 ) {
     let blur = draw.shadow.blur.max(1.0);
@@ -1442,6 +1641,7 @@ fn push_rect_shadow_vertices(
         ambient_shape,
         blur * 1.4,
         0.22,
+        clip,
         surface_is_srgb,
     );
 
@@ -1456,6 +1656,7 @@ fn push_rect_shadow_vertices(
         mid_shape,
         blur * 0.85,
         0.34,
+        clip,
         surface_is_srgb,
     );
 
@@ -1465,6 +1666,7 @@ fn push_rect_shadow_vertices(
         base_shape,
         blur * 0.38,
         0.26,
+        clip,
         surface_is_srgb,
     );
 }
@@ -1475,6 +1677,7 @@ fn push_rect_shadow_layer_vertices(
     shape: LayoutRect,
     blur: f32,
     alpha_scale: f32,
+    clip: UiClip,
     surface_is_srgb: bool,
 ) {
     let geometry = expand_rect(shape, blur);
@@ -1491,6 +1694,7 @@ fn push_rect_shadow_layer_vertices(
         color,
         color,
         output_color(Color::new(0.0, 0.0, 0.0, 0.0), surface_is_srgb),
+        clip,
         [
             draw.radius.max(0.0),
             blur,
@@ -1524,6 +1728,7 @@ fn push_rect_vertices(
     gradient_start: Color,
     gradient_end: Color,
     border: Color,
+    clip: UiClip,
     params: [f32; 4],
     flags: [f32; 4],
 ) {
@@ -1536,6 +1741,8 @@ fn push_rect_vertices(
     let gradient_start = gradient_start.to_array();
     let gradient_end = gradient_end.to_array();
     let border = border.to_array();
+    let clip_rect = clip_rect_array(clip);
+    let clip_params = clip_params_array(clip);
     let points = [[x0, y0], [x1, y0], [x1, y1], [x0, y0], [x1, y1], [x0, y1]];
     for local in points {
         vertices.push(NeoRectVertex {
@@ -1548,6 +1755,8 @@ fn push_rect_vertices(
             border,
             params,
             flags,
+            clip_rect,
+            clip_params,
         });
     }
 }
@@ -1565,13 +1774,13 @@ fn push_polygon(
     vertices: &mut Vec<NeoPolygonVertex>,
     ops: &mut Vec<PrimitiveOp>,
     draw: &UiPolygonDraw,
-    clip: LayoutRect,
+    clip: UiClip,
     surface_is_srgb: bool,
 ) -> bool {
     if draw.points.len() < 3 || draw.opacity <= 0.0 || draw.color.a <= 0.0 {
         return false;
     }
-    if clip.width <= 0.0 || clip.height <= 0.0 {
+    if clip.rect.width <= 0.0 || clip.rect.height <= 0.0 {
         return false;
     }
 
@@ -1579,6 +1788,8 @@ fn push_polygon(
     let mut color = draw.color;
     color.a *= draw.opacity.clamp(0.0, 1.0);
     let color = output_color(color, surface_is_srgb).to_array();
+    let clip_rect = clip_rect_array(clip);
+    let clip_params = clip_params_array(clip);
     let origin = draw.points[0];
     for index in 1..draw.points.len() - 1 {
         for point in [origin, draw.points[index], draw.points[index + 1]] {
@@ -1586,6 +1797,8 @@ fn push_polygon(
             vertices.push(NeoPolygonVertex {
                 position: transform_point(absolute, draw.frame, draw.transform),
                 color,
+                clip_rect,
+                clip_params,
             });
         }
     }
@@ -1593,7 +1806,7 @@ fn push_polygon(
         kind: PrimitiveKind::Polygon,
         start,
         count: (vertices.len() as u32) - start,
-        clip,
+        clip: clip.rect,
         backdrop_frame: LayoutRect::ZERO,
         backdrop_blur: 0.0,
     });
@@ -1605,8 +1818,8 @@ fn push_image(
     ops: &mut Vec<PrimitiveOp>,
     images: &mut Vec<ImageItem>,
     draw: &UiImageDraw,
-    clip: LayoutRect,
-    image_sizes: &FxHashMap<ImageRef, PreparedImageInfo>,
+    clip: UiClip,
+    image_cache: &FxHashMap<ImageRef, CachedNeoImage>,
     surface_is_srgb: bool,
 ) -> bool {
     if draw.image.is_empty()
@@ -1614,13 +1827,13 @@ fn push_image(
         || draw.frame.height <= 0.0
         || draw.opacity <= 0.0
         || draw.tint.a <= 0.0
-        || clip.width <= 0.0
-        || clip.height <= 0.0
+        || clip.rect.width <= 0.0
+        || clip.rect.height <= 0.0
     {
         return false;
     }
 
-    let Some(image_info) = image_sizes.get(&draw.image).copied() else {
+    let Some(image_info) = image_cache.get(&draw.image) else {
         return false;
     };
     let Some((draw_rect, uv_rect)) = image_rect_and_uv(draw.frame, draw.fit, image_info.size)
@@ -1641,6 +1854,8 @@ fn push_image(
     tint.a *= draw.opacity.clamp(0.0, 1.0);
     let tint = output_color(tint, surface_is_srgb).to_array();
     let params = [draw.radius, draw.opacity.clamp(0.0, 1.0), 0.0, 0.0];
+    let clip_rect = clip_rect_array(clip);
+    let clip_params = clip_params_array(clip);
     let x0 = draw_rect.x;
     let y0 = draw_rect.y;
     let x1 = draw_rect.right();
@@ -1662,6 +1877,8 @@ fn push_image(
             uv,
             tint,
             params,
+            clip_rect,
+            clip_params,
         });
     }
     images.push(ImageItem {
@@ -1671,7 +1888,7 @@ fn push_image(
         kind: PrimitiveKind::Image { image_index },
         start,
         count: 6,
-        clip,
+        clip: clip.rect,
         backdrop_frame: LayoutRect::ZERO,
         backdrop_blur: 0.0,
     });
@@ -1683,8 +1900,8 @@ fn push_nine_slice(
     ops: &mut Vec<PrimitiveOp>,
     images: &mut Vec<ImageItem>,
     draw: &UiNineSliceDraw,
-    clip: LayoutRect,
-    image_sizes: &FxHashMap<ImageRef, PreparedImageInfo>,
+    clip: UiClip,
+    image_cache: &FxHashMap<ImageRef, CachedNeoImage>,
     surface_is_srgb: bool,
 ) -> bool {
     if draw.image.is_empty()
@@ -1692,13 +1909,13 @@ fn push_nine_slice(
         || draw.frame.height <= 0.0
         || draw.opacity <= 0.0
         || draw.tint.a <= 0.0
-        || clip.width <= 0.0
-        || clip.height <= 0.0
+        || clip.rect.width <= 0.0
+        || clip.rect.height <= 0.0
     {
         return false;
     }
 
-    let Some(image_info) = image_sizes.get(&draw.image).copied() else {
+    let Some(image_info) = image_cache.get(&draw.image) else {
         return false;
     };
     if image_info.size[0] == 0 || image_info.size[1] == 0 {
@@ -1708,7 +1925,11 @@ fn push_nine_slice(
     let source_w = image_info.size[0] as f32;
     let source_h = image_info.size[1] as f32;
     let left_src = draw.slice.left.min(source_w).max(0.0);
-    let right_src = draw.slice.right.min((source_w - left_src).max(0.0)).max(0.0);
+    let right_src = draw
+        .slice
+        .right
+        .min((source_w - left_src).max(0.0))
+        .max(0.0);
     let top_src = draw.slice.top.min(source_h).max(0.0);
     let bottom_src = draw
         .slice
@@ -1758,10 +1979,17 @@ fn push_nine_slice(
     tint.a *= draw.opacity.clamp(0.0, 1.0);
     let tint = output_color(tint, surface_is_srgb).to_array();
     let params = [0.0, draw.opacity.clamp(0.0, 1.0), 0.0, 0.0];
+    let clip_rect = clip_rect_array(clip);
+    let clip_params = clip_params_array(clip);
 
     for row in 0..3 {
         for column in 0..3 {
-            let quad = LayoutRect::new(x[column], y[row], x[column + 1] - x[column], y[row + 1] - y[row]);
+            let quad = LayoutRect::new(
+                x[column],
+                y[row],
+                x[column + 1] - x[column],
+                y[row + 1] - y[row],
+            );
             if quad.width <= 0.0 || quad.height <= 0.0 {
                 continue;
             }
@@ -1769,7 +1997,18 @@ fn push_nine_slice(
                 [u[column], v[row], u[column + 1], v[row + 1]],
                 image_info.uv_rect,
             );
-            push_image_quad_vertices(vertices, draw.frame, draw.transform, quad, rect, uv_rect, tint, params);
+            push_image_quad_vertices(
+                vertices,
+                draw.frame,
+                draw.transform,
+                quad,
+                rect,
+                uv_rect,
+                tint,
+                params,
+                clip_rect,
+                clip_params,
+            );
         }
     }
 
@@ -1784,7 +2023,7 @@ fn push_nine_slice(
         kind: PrimitiveKind::Image { image_index },
         start,
         count,
-        clip,
+        clip: clip.rect,
         backdrop_frame: LayoutRect::ZERO,
         backdrop_blur: 0.0,
     });
@@ -1801,6 +2040,8 @@ fn push_image_quad_vertices(
     uv_rect: [f32; 4],
     tint: [f32; 4],
     params: [f32; 4],
+    clip_rect: [f32; 4],
+    clip_params: [f32; 4],
 ) {
     let x0 = quad.x;
     let y0 = quad.y;
@@ -1823,8 +2064,18 @@ fn push_image_quad_vertices(
             uv,
             tint,
             params,
+            clip_rect,
+            clip_params,
         });
     }
+}
+
+fn clip_rect_array(clip: UiClip) -> [f32; 4] {
+    [clip.rect.x, clip.rect.y, clip.rect.width, clip.rect.height]
+}
+
+fn clip_params_array(clip: UiClip) -> [f32; 4] {
+    [clip.radius.max(0.0), 0.0, 0.0, 0.0]
 }
 
 fn remap_uv_rect(local: [f32; 4], visible: [f32; 4]) -> [f32; 4] {
@@ -1988,6 +2239,25 @@ fn intersect_rect(left: LayoutRect, right: LayoutRect) -> Option<LayoutRect> {
     (x1 > x0 && y1 > y0).then(|| LayoutRect::new(x0, y0, x1 - x0, y1 - y0))
 }
 
+fn intersect_clip(left: UiClip, right: UiClip) -> Option<UiClip> {
+    let rect = intersect_rect(left.rect, right.rect)?;
+    let radius = if same_rect(rect, right.rect) {
+        right.radius
+    } else if same_rect(rect, left.rect) {
+        left.radius
+    } else {
+        left.radius.min(right.radius)
+    };
+    Some(UiClip::new(rect, radius))
+}
+
+fn same_rect(left: LayoutRect, right: LayoutRect) -> bool {
+    (left.x - right.x).abs() <= 0.001
+        && (left.y - right.y).abs() <= 0.001
+        && (left.width - right.width).abs() <= 0.001
+        && (left.height - right.height).abs() <= 0.001
+}
+
 fn multiply_alpha(mut color: Color, opacity: f32) -> Color {
     color.a *= opacity.clamp(0.0, 1.0);
     color
@@ -2046,8 +2316,8 @@ fn laid_out_text_height(buffer: &Buffer) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::{
-        backdrop_capture_rect, collect_draw_items, image_rect_and_uv, output_color, srgb_to_linear,
-        PrimitiveKind, PrimitiveOp, RenderOp,
+        backdrop_blur_primitive_index, backdrop_capture_rect, collect_draw_items,
+        image_rect_and_uv, output_color, srgb_to_linear, PrimitiveKind, PrimitiveOp, RenderOp,
     };
     use eui_neo::expert::{UiDrawCommand, UiDrawList, UiRectDraw, UiTextDraw};
     use eui_neo::{
@@ -2208,6 +2478,37 @@ mod tests {
         assert_eq!(primitive_ops[0].backdrop_frame, frame);
         assert_eq!(primitive_ops[0].backdrop_blur, 18.0);
         assert!(rect_vertices.iter().all(|vertex| vertex.flags[2] == 18.0));
+    }
+
+    #[test]
+    fn backdrop_blur_lookup_uses_primitive_index_after_text_ops() {
+        let normal = PrimitiveOp {
+            kind: PrimitiveKind::Rect,
+            start: 0,
+            count: 6,
+            clip: LayoutRect::new(0.0, 0.0, 320.0, 200.0),
+            backdrop_frame: LayoutRect::new(0.0, 0.0, 100.0, 40.0),
+            backdrop_blur: 0.0,
+        };
+        let blurred = PrimitiveOp {
+            backdrop_blur: 18.0,
+            ..normal
+        };
+        let primitive_ops = [normal, blurred];
+        let render_ops = [
+            RenderOp::Primitive(0),
+            RenderOp::Text { start: 0, count: 1 },
+            RenderOp::Primitive(1),
+        ];
+
+        assert_eq!(
+            backdrop_blur_primitive_index(&primitive_ops, render_ops[2]),
+            Some(1)
+        );
+        assert_eq!(
+            backdrop_blur_primitive_index(&primitive_ops, render_ops[1]),
+            None
+        );
     }
 
     #[test]

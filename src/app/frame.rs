@@ -312,9 +312,9 @@ impl<'a> FrameContext<'a> {
         UiFrame { ctx: self }
     }
 
-    /// Update native retained UI layout and interaction state.
+    /// Update legacy retained UI layout and interaction state.
     ///
-    /// Requires `--features ui`.
+    /// Requires `--features ui-legacy`.
     #[cfg(feature = "ui-legacy")]
     pub fn update_ui(&mut self) {
         crate::ui::update_ui(self.world, self.input, self.logical_view_size().to_array());
@@ -322,7 +322,7 @@ impl<'a> FrameContext<'a> {
 
     /// Update all installed game UI backends.
     ///
-    /// Requires `--features ui`.
+    /// Requires `--features ui-core`.
     #[cfg(feature = "ui-core")]
     pub fn update_ui_backends(&mut self) {
         let physical_size = self.physical_surface_size();
@@ -335,10 +335,10 @@ impl<'a> FrameContext<'a> {
         );
     }
 
-    /// Render native retained UI on top of the current surface frame.
+    /// Render legacy retained UI on top of the current surface frame.
     ///
     /// Call this after `ctx.render()` for the common scene + overlay order.
-    /// Requires `--features ui`.
+    /// Requires `--features ui-legacy`.
     #[cfg(feature = "ui-legacy")]
     pub fn render_ui(&mut self) {
         let Some((gpu, render_assets)) = self.renderer.wgpu_overlay_parts_mut() else {
@@ -350,7 +350,7 @@ impl<'a> FrameContext<'a> {
     /// Render all installed game UI backend overlays on top of the current surface frame.
     ///
     /// Call this after `ctx.render()` for the common scene + overlay order.
-    /// Requires `--features ui`.
+    /// Requires `--features ui-core`.
     #[cfg(feature = "ui-core")]
     pub fn render_ui_overlays(&mut self) {
         let Some((gpu, render_assets)) = self.renderer.wgpu_overlay_parts_mut() else {
@@ -365,7 +365,7 @@ impl<'a> FrameContext<'a> {
 
     /// Access native UI state if it has been installed.
     ///
-    /// Requires `--features ui`.
+    /// Requires `--features ui-legacy`.
     #[cfg(feature = "ui-legacy")]
     pub fn ui_state(&self) -> Option<&crate::ui::UiState> {
         self.world.get_resource::<crate::ui::UiState>()
@@ -373,7 +373,7 @@ impl<'a> FrameContext<'a> {
 
     /// Returns true when any installed game UI backend wants pointer input.
     ///
-    /// Requires `--features ui`.
+    /// Requires `--features ui-core`.
     #[cfg(feature = "ui-core")]
     pub fn ui_wants_pointer(&self) -> bool {
         #[cfg(feature = "ui-legacy")]
@@ -391,7 +391,7 @@ impl<'a> FrameContext<'a> {
 
     /// Returns true when any installed game UI backend wants keyboard input.
     ///
-    /// Requires `--features ui`.
+    /// Requires `--features ui-core`.
     #[cfg(feature = "ui-core")]
     pub fn ui_wants_keyboard(&self) -> bool {
         crate::ui::ui_wants_keyboard(self.world)

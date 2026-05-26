@@ -1,10 +1,10 @@
-//! Small `scroll_column` validation demo.
+//! Small `scroll_y` validation demo.
 //!
 //! This keeps the scroll pattern explicit and thin: a fixed viewport, a known
 //! content height, a little padding, and no page-specific helper wrapper.
 //!
 //! ```bash
-//! cargo run --example neo_scroll_column_demo --features ui-neo --release
+//! cargo run --example ui_neo_scroll_y --features ui-neo --release
 //! ```
 
 use sky_engine::app::{
@@ -94,7 +94,7 @@ impl AppState for NeoScrollColumnDemo {
                                 .content(|ui| {
                                     ui.text("title")
                                         .size(Size::fill(), 34.0)
-                                        .text("scroll_column")
+                                        .text("scroll_y")
                                         .font_size(28.0)
                                         .line_height(34.0)
                                         .color(c(0.945, 0.970, 1.0, 1.0))
@@ -103,7 +103,7 @@ impl AppState for NeoScrollColumnDemo {
                                     ui.text("subtitle")
                                         .size(Size::fill(), 20.0)
                                         .text(
-                                            "A thin scroll template with explicit viewport and content height.",
+                                            "A panel-safe vertical scroll area with explicit state and automatic clipping.",
                                         )
                                         .font_size(15.0)
                                         .line_height(20.0)
@@ -113,10 +113,10 @@ impl AppState for NeoScrollColumnDemo {
                                         .build();
                                 });
 
-                            widgets::scroll_column(ui, "activity")
+                            ui.scroll_y("activity")
                                 .size(Size::fill(), 318.0)
                                 .content_height(612.0)
-                                .padding_xy(16.0, 16.0)
+                                .content_padding_xy(16.0, 16.0)
                                 .gap(10.0)
                                 .scrollbar_gap(10.0)
                                 .offset_bind(activity_scroll)
@@ -208,7 +208,7 @@ impl AppState for NeoScrollColumnDemo {
                                 });
 
                             widgets::badge(ui, "footer.badge")
-                                .text("scroll_column")
+                                .text("scroll_y")
                                 .accent(c(0.280, 0.640, 0.960, 1.0))
                                 .min_width(138.0)
                                 .build();

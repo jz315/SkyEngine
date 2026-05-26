@@ -5,7 +5,7 @@ use sky_engine::render::{CameraMarker, MainCamera, Projection, RenderSettings, T
 use sky_engine::ui::neo::NeoState;
 
 use crate::locale;
-use crate::model::AppModel;
+use crate::model::{AppModel, Page};
 use crate::theme;
 use crate::view::{self, RuntimeInfo};
 
@@ -19,11 +19,48 @@ pub struct NeoControlCenter {
 
 impl Default for NeoControlCenter {
     fn default() -> Self {
+        let mut model = AppModel::default();
+        apply_screenshot_overrides(&mut model);
         Self {
-            state: NeoState::new(AppModel::default()),
+            state: NeoState::new(model),
             uptime_seconds: 0.0,
             frame_count: 0,
             screenshot: ScreenshotProbe::default(),
+        }
+    }
+}
+
+fn apply_screenshot_overrides(model: &mut AppModel) {
+    if let Ok(page) = std::env::var("SKY_NEO_CONTROL_CENTER_PAGE") {
+        model.page = match page.to_ascii_lowercase().as_str() {
+            "tasks" | "task" => Page::Tasks,
+            "settings" | "setting" => Page::Settings,
+            _ => Page::Overview,
+        };
+    }
+
+    if env_flag("SKY_NEO_CONTROL_CENTER_QUALITY_OPEN") {
+        model.page = Page::Settings;
+        model.quality_preset_open = true;
+    }
+
+    if let Ok(overlay) = std::env::var("SKY_NEO_CONTROL_CENTER_OVERLAY") {
+        match overlay.to_ascii_lowercase().as_str() {
+            "new-task" | "task-sheet" => {
+                model.page = Page::Tasks;
+                model.new_task_sheet_open = true;
+                model.draft.title = "Check screenshot spacing".to_string();
+            }
+            "ship" | "ship-dialog" => {
+                model.ship_dialog_open = true;
+            }
+            "toast" => {
+                model.toast.visible = true;
+                let (title, message) = locale::build_queued_toast(model.locale);
+                model.toast.title = title.to_string();
+                model.toast.message = message.to_string();
+            }
+            _ => {}
         }
     }
 }

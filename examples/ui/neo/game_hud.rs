@@ -5,7 +5,7 @@
 //! buttons, status bars, and an inventory sheet.
 //!
 //! ```bash
-//! cargo run --example neo_game_hud_demo --features ui-neo --release
+//! cargo run --example ui_neo_game_hud --features ui-neo --release
 //! ```
 
 use sky_engine::app::{

@@ -58,6 +58,9 @@ pub mod platform;
 #[cfg(feature = "scene")]
 pub mod scene;
 
+#[cfg(feature = "scene")]
+pub use sky_engine_reflect_derive::persist;
+
 #[cfg(feature = "physics")]
 pub mod physics;
 

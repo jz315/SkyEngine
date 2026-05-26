@@ -1,7 +1,7 @@
-//! Visual stress lab for the native retained UI.
+//! Visual stress lab for the legacy retained UI.
 //!
 //! ```bash
-//! cargo run --example weird_ui_lab --features ui --release
+//! cargo run --example ui_legacy_stress_lab --features ui-legacy --release
 //! ```
 
 use sky_engine::app::{

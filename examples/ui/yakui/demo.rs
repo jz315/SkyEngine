@@ -1,7 +1,7 @@
 //! Experimental yakui backend demo.
 //!
 //! ```bash
-//! cargo run --example yakui_demo --features yakui-ui --release
+//! cargo run --example ui_yakui_demo --features yakui-ui --release
 //! ```
 
 use sky_engine::app::{

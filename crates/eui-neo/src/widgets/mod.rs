@@ -16,6 +16,7 @@ pub(crate) mod layout;
 pub mod line_chart;
 pub mod panel;
 pub mod pie_chart;
+pub mod popover;
 pub mod progress;
 pub mod radio;
 mod scroll;
@@ -45,9 +46,10 @@ pub use input::{input, InputBuilder, InputStyle};
 pub use line_chart::{line_chart, LineChartBuilder, LineChartStyle};
 pub use panel::{panel, panel_with_style, panel_with_theme, PanelStyle};
 pub use pie_chart::{pie_chart, PieChartBuilder, PieChartStyle};
+pub use popover::{popover, PopoverBuilder, PopoverPlacement};
 pub use progress::{progress, ProgressBuilder, ProgressStyle};
 pub use radio::{radio, RadioBuilder, RadioStyle};
-pub use scroll::{scroll_column, scrollbar, ScrollColumnBuilder, ScrollbarBuilder, ScrollbarStyle};
+pub use scroll::{scroll_x, scroll_y, ScrollXBuilder, ScrollYBuilder, ScrollbarStyle};
 pub use segmented::{segmented, SegmentedBuilder, SegmentedStyle};
 pub use skin::{
     skin_button, skin_checkbox, skin_icon_button, skin_panel, skin_slider, skin_status_bar,
@@ -68,10 +70,11 @@ pub use virtual_list::{virtual_list, VirtualListBuilder, VirtualListItem, Virtua
 
 #[cfg(test)]
 mod tests {
+    use super::scroll::scrollbar;
     use super::{
         badge, button, checkbox, context_menu, date_picker, dialog, dropdown, image_with_style,
-        input, progress, radio, scroll_column, scrollbar, segmented, skin_button, slider, switch,
-        tabs, time_picker, toast,
+        input, popover, progress, radio, segmented, skin_button, slider, switch, tabs, time_picker,
+        toast, PopoverPlacement,
     };
     use crate::expert::UiDrawCommand;
     use crate::Color;
@@ -329,13 +332,13 @@ mod tests {
     }
 
     #[test]
-    fn scroll_column_composes_viewport_content_and_scrollbar() {
+    fn scroll_y_explicit_content_height_composes_viewport_content_and_scrollbar() {
         let offset = Rc::new(Cell::new(-1.0));
         let callback_offset = offset.clone();
         let mut runtime = Runtime::new("page");
         runtime.compose(160.0, 120.0, move |ui, _| {
             let callback_offset = callback_offset.clone();
-            scroll_column(ui, "list")
+            ui.scroll_y("list")
                 .size(120.0, 80.0)
                 .content_height(200.0)
                 .offset(24.0)
@@ -360,7 +363,7 @@ mod tests {
     }
 
     #[test]
-    fn scroll_column_binding_writes_wheel_offset_to_state() {
+    fn scroll_y_binding_writes_wheel_offset_to_state() {
         let state = NeoState::new(BoundWidgetState {
             offset: 24.0,
             ..BoundWidgetState::default()
@@ -370,7 +373,7 @@ mod tests {
         runtime.compose(160.0, 120.0, move |ui, _| {
             let offset =
                 compose_state.bind(|state| state.offset, |state, value| state.offset = value);
-            scroll_column(ui, "list")
+            ui.scroll_y("list")
                 .size(120.0, 80.0)
                 .content_height(200.0)
                 .offset_bind(offset)
@@ -385,6 +388,152 @@ mod tests {
         runtime.update_scroll(ScrollEvent { x: 0.0, y: -2.0 });
 
         assert_eq!(state.read(|state| state.offset), 44.0);
+    }
+
+    #[test]
+    fn scroll_y_uses_resolved_fill_viewport_and_auto_content_height() {
+        let offset = Rc::new(Cell::new(-1.0));
+        let mut runtime = Runtime::new("page");
+
+        for _ in 0..2 {
+            let callback_offset = offset.clone();
+            runtime.compose(160.0, 120.0, move |ui, _| {
+                ui.stack("root").size(120.0, 80.0).content(|ui| {
+                    ui.scroll_y("list")
+                        .size(Size::fill(), Size::fill())
+                        .offset(24.0)
+                        .step(10.0)
+                        .on_change(move |next| callback_offset.set(next))
+                        .content(|ui| {
+                            ui.rect("row.a").size(Size::fill(), 50.0).build();
+                            ui.rect("row.b").size(Size::fill(), 50.0).build();
+                            ui.rect("row.c").size(Size::fill(), 50.0).build();
+                        });
+                });
+            });
+        }
+
+        assert_eq!(runtime.find("list.viewport").unwrap().frame.height, 80.0);
+        assert_eq!(runtime.find("list.content").unwrap().frame.height, 150.0);
+        assert_eq!(runtime.find("list.content").unwrap().frame.y, -24.0);
+        assert!(runtime.find("list.scrollbar").is_some());
+
+        runtime.update_pointer(PointerEvent::at(10.0, 10.0));
+        runtime.update_scroll(ScrollEvent { x: 0.0, y: -2.0 });
+
+        assert_eq!(offset.get(), 44.0);
+    }
+
+    #[test]
+    fn scroll_y_inset_keeps_viewport_and_scrollbar_inside_outer_shell() {
+        let mut runtime = Runtime::new("page");
+        runtime.compose(160.0, 120.0, |ui, _| {
+            ui.scroll_y("panel")
+                .size(120.0, 80.0)
+                .inset(10.0)
+                .content_height(200.0)
+                .content(|ui| {
+                    ui.rect("row").size(Size::fill(), 200.0).build();
+                });
+        });
+
+        let viewport = runtime.find("panel.viewport").unwrap().frame;
+        let scrollbar = runtime.find("panel.scrollbar").unwrap().frame;
+
+        assert_eq!(viewport.x, 10.0);
+        assert_eq!(viewport.y, 10.0);
+        assert_eq!(viewport.width, 100.0);
+        assert_eq!(viewport.height, 60.0);
+        assert_eq!(scrollbar.x, 102.0);
+        assert_eq!(scrollbar.y, 10.0);
+        assert_eq!(scrollbar.height, 60.0);
+    }
+
+    #[test]
+    fn scroll_x_explicit_content_width_composes_viewport_content_and_scrollbar() {
+        let offset = Rc::new(Cell::new(-1.0));
+        let callback_offset = offset.clone();
+        let mut runtime = Runtime::new("page");
+        runtime.compose(180.0, 120.0, move |ui, _| {
+            let callback_offset = callback_offset.clone();
+            ui.scroll_x("strip")
+                .size(140.0, 80.0)
+                .content_width(260.0)
+                .offset(30.0)
+                .step(10.0)
+                .padding(8.0)
+                .gap(6.0)
+                .on_change(move |next| callback_offset.set(next))
+                .content(|ui| {
+                    ui.rect("card.a").size(80.0, Size::fill()).build();
+                    ui.rect("card.b").size(80.0, Size::fill()).build();
+                });
+        });
+
+        assert_eq!(runtime.find("strip").unwrap().frame.width, 140.0);
+        assert_eq!(runtime.find("strip.viewport").unwrap().frame.width, 140.0);
+        assert_eq!(runtime.find("strip.content").unwrap().frame.x, -30.0);
+        assert_eq!(runtime.find("strip.content").unwrap().frame.width, 260.0);
+        assert!(runtime.find("strip.scrollbar").is_some());
+
+        runtime.update_pointer(PointerEvent::at(10.0, 70.0));
+        runtime.update_scroll(ScrollEvent { x: -2.0, y: 0.0 });
+
+        assert_eq!(offset.get(), 50.0);
+    }
+
+    #[test]
+    fn scroll_x_inset_keeps_viewport_and_scrollbar_inside_outer_shell() {
+        let mut runtime = Runtime::new("page");
+        runtime.compose(180.0, 120.0, |ui, _| {
+            ui.scroll_x("panel")
+                .size(140.0, 80.0)
+                .inset(10.0)
+                .content_width(260.0)
+                .content(|ui| {
+                    ui.rect("card").size(260.0, Size::fill()).build();
+                });
+        });
+
+        let viewport = runtime.find("panel.viewport").unwrap().frame;
+        let scrollbar = runtime.find("panel.scrollbar").unwrap().frame;
+
+        assert_eq!(viewport.x, 10.0);
+        assert_eq!(viewport.y, 10.0);
+        assert_eq!(viewport.width, 120.0);
+        assert_eq!(viewport.height, 60.0);
+        assert_eq!(scrollbar.x, 10.0);
+        assert_eq!(scrollbar.y, 62.0);
+        assert_eq!(scrollbar.width, 120.0);
+    }
+
+    #[test]
+    fn popover_composes_on_root_layer_from_previous_anchor_frame() {
+        let mut runtime = Runtime::new("page");
+        for _ in 0..2 {
+            runtime.compose(320.0, 180.0, |ui, _| {
+                ui.column("panel")
+                    .position(20.0, 30.0)
+                    .size(120.0, 80.0)
+                    .content(|ui| {
+                        ui.rect("anchor").size(50.0, 20.0).build();
+                        popover(ui, "menu")
+                            .anchor("anchor")
+                            .placement(PopoverPlacement::BottomStart)
+                            .gap(4.0)
+                            .size(80.0, 60.0)
+                            .content(|ui| {
+                                ui.rect("menu.bg").size(Size::fill(), Size::fill()).build();
+                            });
+                    });
+            });
+        }
+
+        assert_eq!(runtime.roots().len(), 2);
+        assert_eq!(runtime.roots()[0].id, "page.panel");
+        assert_eq!(runtime.roots()[1].id, "page.menu");
+        assert_eq!(runtime.find("menu").unwrap().frame.x, 20.0);
+        assert_eq!(runtime.find("menu").unwrap().frame.y, 54.0);
     }
 
     #[test]
@@ -553,32 +702,6 @@ mod tests {
 
         assert_eq!(state.read(|state| state.selected), 1);
         assert!(!state.read(|state| state.open));
-    }
-
-    #[test]
-    fn scrollbar_binding_writes_wheel_offset_to_state() {
-        let state = NeoState::new(BoundWidgetState {
-            offset: 20.0,
-            ..BoundWidgetState::default()
-        });
-        let compose_state = state.clone();
-        let mut runtime = Runtime::new("page");
-        runtime.compose(80.0, 240.0, move |ui, _| {
-            let offset =
-                compose_state.bind(|state| state.offset, |state, value| state.offset = value);
-            scrollbar(ui, "list.scrollbar")
-                .size(8.0, 100.0)
-                .offset_bind(offset)
-                .viewport(100.0)
-                .content(300.0)
-                .step(10.0)
-                .build();
-        });
-
-        runtime.update_pointer(PointerEvent::at(2.0, 2.0));
-        runtime.update_scroll(ScrollEvent { x: 0.0, y: -3.0 });
-
-        assert_eq!(state.read(|state| state.offset), 50.0);
     }
 
     #[test]

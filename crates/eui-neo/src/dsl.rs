@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use rustc_hash::FxHashMap;
 
 use super::{
@@ -25,6 +27,7 @@ pub struct Ui {
     roots: Vec<Element>,
     path: Vec<usize>,
     responses: FxHashMap<String, Response>,
+    previous_frames: FxHashMap<String, LayoutRect>,
     callbacks: UiCallbacks,
     skins: SkinRegistry,
     generated_id: usize,
@@ -65,6 +68,7 @@ impl Ui {
             roots: Vec::new(),
             path: Vec::new(),
             responses: FxHashMap::default(),
+            previous_frames: FxHashMap::default(),
             callbacks: UiCallbacks::default(),
             skins: SkinRegistry::default(),
             generated_id: 0,
@@ -122,13 +126,34 @@ impl Ui {
 
     pub fn response(&self, id: &str) -> Response {
         self.responses
-            .get(&self.resolve_id(id))
+            .get(self.resolve_id_ref(id).as_ref())
             .copied()
             .unwrap_or_default()
     }
 
+    /// Return the element frame from the previous composed layout pass.
+    ///
+    /// Immediate-mode helpers can use this for APIs whose behavior depends on
+    /// resolved layout, such as scroll containers with `Size::Fill` viewports.
+    pub fn previous_frame(&self, id: &str) -> Option<LayoutRect> {
+        self.previous_frames
+            .get(self.resolve_id_ref(id).as_ref())
+            .copied()
+    }
+
     pub fn is_focused(&self, id: &str) -> bool {
-        self.focused_id.as_deref() == Some(self.resolve_id(id).as_str())
+        self.focused_id.as_deref() == Some(self.resolve_id_ref(id).as_ref())
+    }
+
+    pub(crate) fn set_previous_frames(&mut self, frames: FxHashMap<String, LayoutRect>) {
+        self.previous_frames = frames;
+    }
+
+    pub(crate) fn with_root_layer<R>(&mut self, build: impl FnOnce(&mut Ui) -> R) -> R {
+        let saved_path = std::mem::take(&mut self.path);
+        let result = build(self);
+        self.path = saved_path;
+        result
     }
 
     pub(crate) fn set_focused_id(&mut self, id: Option<String>) {
@@ -171,6 +196,18 @@ impl Ui {
         self.element(ElementKind::NineSlice, id)
     }
 
+    pub fn scroll_y(&mut self, id: impl Into<String>) -> crate::widgets::ScrollYBuilder<'_> {
+        crate::widgets::scroll_y(self, id)
+    }
+
+    pub fn scroll_x(&mut self, id: impl Into<String>) -> crate::widgets::ScrollXBuilder<'_> {
+        crate::widgets::scroll_x(self, id)
+    }
+
+    pub fn popover(&mut self, id: impl Into<String>) -> crate::widgets::PopoverBuilder<'_> {
+        crate::widgets::popover(self, id)
+    }
+
     pub fn polygon(&mut self, id: impl Into<String>) -> ElementBuilder<'_> {
         self.element(ElementKind::Polygon, id)
     }
@@ -201,17 +238,21 @@ impl Ui {
     }
 
     pub(crate) fn resolve_id(&self, id: &str) -> String {
+        self.resolve_id_ref(id).into_owned()
+    }
+
+    fn resolve_id_ref<'a>(&self, id: &'a str) -> Cow<'a, str> {
         if id.is_empty() || self.page_id.is_empty() {
-            return id.to_string();
+            return Cow::Borrowed(id);
         }
         if is_resolved_id(id, &self.page_id) {
-            id.to_string()
+            Cow::Borrowed(id)
         } else {
             let mut resolved = String::with_capacity(self.page_id.len() + 1 + id.len());
             resolved.push_str(&self.page_id);
             resolved.push('.');
             resolved.push_str(id);
-            resolved
+            Cow::Owned(resolved)
         }
     }
 

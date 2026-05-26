@@ -166,13 +166,6 @@ pub fn header_frames(locale: Locale, frames: u64) -> String {
     }
 }
 
-pub fn frames_rendered(locale: Locale, frames: u64) -> String {
-    match locale {
-        Locale::EnUs => format!("{frames} frames rendered"),
-        Locale::ZhCn => format!("已渲染 {frames} 帧"),
-    }
-}
-
 pub fn tasks_active_badge(locale: Locale, count: usize) -> String {
     match locale {
         Locale::EnUs => format!("{count} active"),

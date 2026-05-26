@@ -1,5 +1,5 @@
 use sky_engine::ui::neo::widgets;
-use sky_engine::ui::neo::{NeoState, Ui};
+use sky_engine::ui::neo::{NeoState, Size, Ui};
 
 use crate::actions;
 use crate::locale;
@@ -15,9 +15,13 @@ pub fn render(
     model: &AppModel,
     app_theme: AppTheme,
 ) {
-    let top_h = 216.0;
+    let top_h = if model.quality_preset_open {
+        420.0
+    } else {
+        292.0
+    };
     let middle_h = 232.0;
-    let bottom_h = 210.0;
+    let bottom_h = 238.0;
     let gap = 18.0;
     let content_h = top_h + middle_h + bottom_h + gap * 2.0;
 
@@ -74,10 +78,10 @@ fn workspace_section(
         locale::workspace_title(locale_id),
         locale::workspace_subtitle(locale_id),
         app_theme,
-        |ui, body_w, _| {
+        |ui, body_w, body_h| {
             ui.column("settings.workspace.column")
-                .size(body_w, 190.0)
-                .gap(12.0)
+                .size(body_w, body_h)
+                .gap(8.0)
                 .content(|ui| {
                     widgets::input(ui, "settings.workspace.name")
                         .size(body_w, 42.0)
@@ -137,10 +141,10 @@ fn sound_section(
         locale::sound_scale_title(model.locale),
         locale::sound_scale_subtitle(model.locale),
         app_theme,
-        |ui, body_w, _| {
+        |ui, body_w, body_h| {
             ui.column("settings.sound.column")
-                .size(body_w, 150.0)
-                .gap(12.0)
+                .size(body_w, body_h)
+                .gap(8.0)
                 .content(|ui| {
                     ui.text("settings.sound.scale")
                         .size(body_w, 18.0)
@@ -202,21 +206,15 @@ fn preference_section(
                 .theme(app_theme.tokens)
                 .build();
 
-            ui.stack("settings.preferences.autosave.wrap")
-                .y(46.0)
-                .size(body_w, 34.0)
-                .content(|ui| {
-                    widgets::checkbox(ui, "settings.preferences.autosave")
-                        .size(body_w, 30.0)
-                        .checked_bind(actions::bind_auto_save(state_store))
-                        .text(locale::auto_save_label(model.locale))
-                        .theme(app_theme.tokens)
-                        .build();
-                });
+            widgets::checkbox(ui, "settings.preferences.autosave")
+                .size(body_w, 30.0)
+                .checked_bind(actions::bind_auto_save(state_store))
+                .text(locale::auto_save_label(model.locale))
+                .theme(app_theme.tokens)
+                .build();
 
             ui.text("settings.preferences.meta")
-                .y(94.0)
-                .size(body_w, 38.0)
+                .size(Size::fill(), 38.0)
                 .text(locale::preferences_settings_meta(
                     model.locale,
                     model.notifications_enabled,
@@ -256,21 +254,15 @@ fn appearance_section(
                 .theme(app_theme.tokens)
                 .build();
 
-            ui.stack("settings.appearance.focus.wrap")
-                .y(56.0)
+            widgets::segmented(ui, "settings.appearance.focus")
                 .size(body_w, 38.0)
-                .content(|ui| {
-                    widgets::segmented(ui, "settings.appearance.focus")
-                        .size(body_w, 38.0)
-                        .items(locale::focus_mode_items(model.locale))
-                        .selected_bind(actions::bind_focus_mode(state_store))
-                        .theme(app_theme.tokens)
-                        .build();
-                });
+                .items(locale::focus_mode_items(model.locale))
+                .selected_bind(actions::bind_focus_mode(state_store))
+                .theme(app_theme.tokens)
+                .build();
 
             ui.text("settings.appearance.caption")
-                .y(112.0)
-                .size(body_w, 40.0)
+                .size(Size::fill(), 40.0)
                 .text(locale::appearance_caption(model.locale))
                 .font_size(14.0)
                 .line_height(20.0)

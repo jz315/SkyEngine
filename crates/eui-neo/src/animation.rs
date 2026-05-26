@@ -745,28 +745,53 @@ where
 }
 
 fn spring_step_f32(
-    mut current: f32,
-    mut velocity: f32,
+    current: f32,
+    velocity: f32,
     target: f32,
     spring: SpringMotion,
     dt: f32,
 ) -> (f32, f32) {
+    if dt <= 0.0 || !dt.is_finite() {
+        return (current, velocity);
+    }
+
     let response = spring.response_seconds.max(0.001);
     let damping_ratio = spring.damping_ratio.max(0.001);
     let omega = std::f32::consts::TAU / response;
-    let stiffness = omega * omega;
-    let damping = 2.0 * damping_ratio * omega;
-    let mut remaining = dt.clamp(0.0, 0.25);
+    let step = dt.clamp(0.0, 0.25);
+    let displacement = current - target;
 
-    while remaining > 0.0 {
-        let step = remaining.min(1.0 / 120.0);
-        let acceleration = stiffness * (target - current) - damping * velocity;
-        velocity += acceleration * step;
-        current += velocity * step;
-        remaining -= step;
-    }
+    let (next_displacement, next_velocity) = if damping_ratio < 1.0 - 0.0001 {
+        let damped = omega * (1.0 - damping_ratio * damping_ratio).sqrt();
+        let envelope = (-damping_ratio * omega * step).exp();
+        let cos = (damped * step).cos();
+        let sin = (damped * step).sin();
+        let c1 = displacement;
+        let c2 = (velocity + damping_ratio * omega * displacement) / damped;
+        let value = envelope * (c1 * cos + c2 * sin);
+        let velocity = envelope
+            * (-damping_ratio * omega * (c1 * cos + c2 * sin)
+                + (-c1 * damped * sin + c2 * damped * cos));
+        (value, velocity)
+    } else if damping_ratio > 1.0 + 0.0001 {
+        let root = (damping_ratio * damping_ratio - 1.0).sqrt();
+        let r1 = -omega * (damping_ratio - root);
+        let r2 = -omega * (damping_ratio + root);
+        let c2 = (velocity - r1 * displacement) / (r2 - r1);
+        let c1 = displacement - c2;
+        let e1 = (r1 * step).exp();
+        let e2 = (r2 * step).exp();
+        (c1 * e1 + c2 * e2, c1 * r1 * e1 + c2 * r2 * e2)
+    } else {
+        let envelope = (-omega * step).exp();
+        let c2 = velocity + omega * displacement;
+        (
+            (displacement + c2 * step) * envelope,
+            (velocity - omega * c2 * step) * envelope,
+        )
+    };
 
-    (current, velocity)
+    (target + next_displacement, next_velocity)
 }
 
 /// Smoothly approaches a target value, useful for hover/press blends.
@@ -844,7 +869,10 @@ impl Default for SmoothedValue {
 
 #[cfg(test)]
 mod tests {
-    use super::{AnimatedValue, Ease, Motion, MotionPreset, SmoothedValue, Transition};
+    use super::{
+        spring_step_f32, AnimatedValue, Ease, Motion, MotionPreset, SmoothedValue, SpringMotion,
+        Transition,
+    };
 
     #[test]
     fn easing_curves_stay_in_expected_range() {
@@ -892,6 +920,30 @@ mod tests {
 
         assert_eq!(value.velocity, velocity_before);
         assert!(value.is_animating());
+    }
+
+    #[test]
+    fn spring_step_is_frame_rate_independent() {
+        let spring = SpringMotion::new(0.32, 0.88);
+        let one_step = spring_step_f32(0.0, 240.0, 100.0, spring, 1.0 / 30.0);
+        let mut split = (0.0, 240.0);
+        for _ in 0..4 {
+            split = spring_step_f32(split.0, split.1, 100.0, spring, 1.0 / 120.0);
+        }
+
+        assert!((one_step.0 - split.0).abs() < 0.001);
+        assert!((one_step.1 - split.1).abs() < 0.001);
+    }
+
+    #[test]
+    fn smooth_spring_does_not_overshoot_target() {
+        let mut value = AnimatedValue::new(0.0);
+        value.set_target(10.0, Transition::smooth());
+
+        for _ in 0..40 {
+            value.update(1.0 / 60.0);
+            assert!(value.current() <= 10.001);
+        }
     }
 
     #[test]

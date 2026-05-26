@@ -306,68 +306,78 @@ path = "examples/render/egui_demo.rs"
 required-features = ["egui"]
 
 [[example]]
-name = "hud_menu"
-path = "examples/ui/hud_menu.rs"
-required-features = ["ui"]
+name = "ui_legacy_hud_menu"
+path = "examples/ui/legacy/hud_menu.rs"
+required-features = ["ui-legacy"]
 
 [[example]]
-name = "weird_ui_lab"
-path = "examples/ui/weird_ui_lab.rs"
-required-features = ["ui"]
+name = "ui_legacy_stress_lab"
+path = "examples/ui/legacy/stress_lab.rs"
+required-features = ["ui-legacy"]
 
 [[example]]
-name = "weird_neo_lab"
-path = "examples/ui/weird_neo_lab.rs"
+name = "ui_neo_stress_lab"
+path = "examples/ui/neo/stress_lab.rs"
 required-features = ["ui-neo"]
 
 [[example]]
-name = "eui_neo_demo"
-path = "examples/ui/eui_neo_demo.rs"
+name = "ui_neo_eui_demo"
+path = "examples/ui/neo/eui_demo.rs"
 required-features = ["ui-neo"]
 
 [[example]]
-name = "eui_neo_gallery"
-path = "examples/ui/eui_neo_gallery.rs"
+name = "ui_neo_eui_gallery"
+path = "examples/ui/neo/eui_gallery.rs"
 required-features = ["ui-neo"]
 
 [[example]]
-name = "neo_layout_primitives"
-path = "examples/ui/neo_layout_primitives.rs"
+name = "ui_neo_layout_primitives"
+path = "examples/ui/neo/layout_primitives.rs"
 required-features = ["ui-neo"]
 
 [[example]]
-name = "neo_scroll_column_demo"
-path = "examples/ui/neo_scroll_column_demo.rs"
+name = "ui_neo_scroll_y"
+path = "examples/ui/neo/scroll_y.rs"
 required-features = ["ui-neo"]
 
 [[example]]
-name = "neo_calculator_demo"
-path = "examples/ui/neo_calculator_demo.rs"
+name = "ui_neo_scroll_x"
+path = "examples/ui/neo/scroll_x.rs"
 required-features = ["ui-neo"]
 
 [[example]]
-name = "neo_game_hud_demo"
-path = "examples/ui/neo_game_hud_demo.rs"
+name = "ui_neo_calculator"
+path = "examples/ui/neo/calculator.rs"
 required-features = ["ui-neo"]
 
 [[example]]
-name = "kenney_neo_ui_showcase"
-path = "examples/ui/kenney_neo_ui_showcase.rs"
+name = "ui_neo_ai_chat"
+path = "examples/ui/neo/ai_chat.rs"
 required-features = ["ui-neo"]
 
 [[example]]
-name = "neo_control_center"
-path = "examples/ui/neo_control_center/main.rs"
+name = "ui_neo_game_hud"
+path = "examples/ui/neo/game_hud.rs"
 required-features = ["ui-neo"]
 
 [[example]]
-name = "yakui_demo"
-path = "examples/ui/yakui_demo.rs"
+name = "ui_neo_kenney_showcase"
+path = "examples/ui/neo/kenney_showcase.rs"
+required-features = ["ui-neo"]
+
+[[example]]
+name = "ui_neo_control_center"
+path = "examples/ui/neo/control_center/main.rs"
+required-features = ["ui-neo"]
+
+[[example]]
+name = "ui_yakui_demo"
+path = "examples/ui/yakui/demo.rs"
 required-features = ["yakui-ui"]
 
 [[example]]
-name = "weird_yakui_lab"
-path = "examples/ui/weird_yakui_lab.rs"
+name = "ui_yakui_stress_lab"
+path = "examples/ui/yakui/stress_lab.rs"
 required-features = ["yakui-ui"]
 
 [[example]]

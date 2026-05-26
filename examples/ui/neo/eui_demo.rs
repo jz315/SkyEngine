@@ -1,7 +1,7 @@
 //! Rust port of EUI-NEO's `app/demo.cpp`.
 //!
 //! ```bash
-//! cargo run --example eui_neo_demo --features ui-neo --release
+//! cargo run --example ui_neo_eui_demo --features ui-neo --release
 //! ```
 
 use sky_engine::app::{

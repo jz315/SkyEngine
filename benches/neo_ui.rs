@@ -7,16 +7,16 @@ use sky_engine::ui::neo::{
     Runtime, Size, VerticalAlign,
 };
 
-#[path = "../examples/ui/neo_control_center/actions.rs"]
+#[path = "../examples/ui/neo/control_center/actions.rs"]
 mod actions;
 #[allow(dead_code)]
-#[path = "../examples/ui/neo_control_center/locale.rs"]
+#[path = "../examples/ui/neo/control_center/locale.rs"]
 mod locale;
-#[path = "../examples/ui/neo_control_center/model.rs"]
+#[path = "../examples/ui/neo/control_center/model.rs"]
 mod model;
-#[path = "../examples/ui/neo_control_center/theme.rs"]
+#[path = "../examples/ui/neo/control_center/theme.rs"]
 mod theme;
-#[path = "../examples/ui/neo_control_center/view/mod.rs"]
+#[path = "../examples/ui/neo/control_center/view/mod.rs"]
 mod view;
 
 const ITEM_COUNT: usize = 10_000;
@@ -33,9 +33,9 @@ fn list_content_height() -> f32 {
     ITEM_COUNT as f32 * ITEM_HEIGHT + ITEM_COUNT.saturating_sub(1) as f32 * GAP
 }
 
-fn compose_scroll_column(runtime: &mut Runtime) {
+fn compose_scroll_y(runtime: &mut Runtime) {
     runtime.compose(WIDTH, HEIGHT, |ui, _| {
-        widgets::scroll_column(ui, "list")
+        ui.scroll_y("list")
             .size(WIDTH, HEIGHT)
             .content_height(list_content_height())
             .offset(OFFSET)
@@ -240,10 +240,10 @@ fn bench_neo_ui_lists(c: &mut Criterion) {
     group.warm_up_time(Duration::from_millis(500));
     group.measurement_time(Duration::from_secs(2));
 
-    group.bench_function("compose_scroll_column_10k_full_tree", |b| {
+    group.bench_function("compose_scroll_y_10k_full_tree", |b| {
         let mut runtime = Runtime::new("bench");
         b.iter(|| {
-            compose_scroll_column(&mut runtime);
+            compose_scroll_y(&mut runtime);
             black_box(runtime.roots().len());
         });
     });

@@ -17,7 +17,7 @@ impl UiPlugin {
 
 impl Plugin for UiPlugin {
     fn name(&self) -> &'static str {
-        "ui"
+        "ui-legacy"
     }
 
     fn install(self, world: &mut World) -> PluginResult {

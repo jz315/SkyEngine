@@ -4,6 +4,8 @@
 //! cargo run --example ui_neo_stress_lab --features ui-neo --release
 //! ```
 
+use std::time::Instant;
+
 use sky_engine::app::{
     App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, SetupContext, WindowPlugin,
 };
@@ -29,11 +31,17 @@ const SCROLLBAR_RESERVE: f32 = 18.0;
 const CONTROL_FIELD_W: f32 =
     SIDE_W - PANEL_SCROLL_INSET * 2.0 - PANEL_PAD * 2.0 - SCROLLBAR_RESERVE;
 const RIGHT_FIELD_W: f32 = RIGHT_W - PANEL_SCROLL_INSET * 2.0 - PANEL_PAD * 2.0 - SCROLLBAR_RESERVE;
+const PERF_SAMPLE_COUNT: usize = 120;
+const PERF_WARMUP_FRAMES: u64 = 30;
+const FRAME_BUDGET_MS: f32 = 16.7;
+const STUTTER_MS: f32 = 33.3;
 
 #[derive(Debug)]
 struct NeoUiStressLab {
     time: f32,
+    title_timer: f32,
     state: NeoState<LabState>,
+    frame_monitor: FrameMonitor,
     screenshot: ScreenshotProbe,
 }
 
@@ -66,7 +74,9 @@ impl Default for NeoUiStressLab {
     fn default() -> Self {
         Self {
             time: 0.0,
+            title_timer: 1.0,
             state: NeoState::new(LabState::default()),
+            frame_monitor: FrameMonitor::default(),
             screenshot: ScreenshotProbe::default(),
         }
     }
@@ -115,24 +125,43 @@ impl AppState for NeoUiStressLab {
     }
 
     fn update(&mut self, ctx: &mut FrameContext<'_>) {
+        let perf = self.frame_monitor.update(ctx.dt());
         self.time += ctx.dt();
-        self.draw_ui(ctx);
-        let (mode, clicks) = self.state.read(|state| (state.mode, state.clicks));
-        ctx.set_title(&format!(
-            "SkyEngine - Neo UI Stress Lab | mode {mode} | clicks {clicks}"
-        ));
 
-        ctx.render();
-        ctx.ui().render_overlays();
-        self.screenshot.update(ctx);
-        if self.screenshot.active() {
-            ctx.request_redraw();
+        let compose_start = Instant::now();
+        self.draw_ui(ctx, &perf);
+        let compose_ms = elapsed_ms(compose_start);
+
+        let (mode, clicks) = self.state.read(|state| (state.mode, state.clicks));
+        self.title_timer += ctx.dt();
+        if self.title_timer >= 0.25 || perf.trigger_active {
+            ctx.set_title(&format!(
+                "SkyEngine - Neo UI Stress Lab | mode {mode} | clicks {clicks} | {:.0} FPS | {:.1} ms",
+                perf.fps, perf.frame_ms
+            ));
+            self.title_timer = 0.0;
         }
+
+        // The lab is a fullscreen UI workload. The UI background is opaque and
+        // covers the whole surface, so running an empty scene render first only
+        // measures app overhead rather than Neo UI throughput.
+        let render_ms = 0.0;
+
+        let overlay_start = Instant::now();
+        ctx.ui().render_overlays();
+        let overlay_ms = elapsed_ms(overlay_start);
+
+        self.frame_monitor
+            .record_phases(compose_ms, render_ms, overlay_ms);
+        self.screenshot.update(ctx);
+        let signature = self.state.read(LabSignature::from_state);
+        self.frame_monitor.observe_signature(signature);
+        ctx.request_redraw();
     }
 }
 
 impl NeoUiStressLab {
-    fn draw_ui(&mut self, ctx: &mut FrameContext<'_>) {
+    fn draw_ui(&mut self, ctx: &mut FrameContext<'_>, perf: &PerfSnapshot) {
         let time = self.time;
         let state_store = self.state.clone();
         let snapshot = self.state.read(LabSnapshot::from_state);
@@ -147,6 +176,7 @@ impl NeoUiStressLab {
                 time,
                 &state_store,
                 &snapshot,
+                perf,
                 pointer_owned,
                 keyboard_owned,
             );
@@ -168,6 +198,217 @@ struct LabSnapshot {
     segment: i32,
     dropdown_selected: i32,
     context_menu_position: [f32; 2],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LabSignature {
+    clicks: u32,
+    mode: i32,
+    glass: bool,
+    lock: bool,
+    reveal: bool,
+    tab: i32,
+    segment: i32,
+    radio: i32,
+    dropdown_open: bool,
+    dropdown_selected: i32,
+    dialog_open: bool,
+    toast_visible: bool,
+    context_menu_open: bool,
+    alarm_bucket: i32,
+}
+
+impl LabSignature {
+    fn from_state(value: &LabState) -> Self {
+        Self {
+            clicks: value.clicks,
+            mode: value.mode,
+            glass: value.glass,
+            lock: value.lock,
+            reveal: value.reveal,
+            tab: value.tab,
+            segment: value.segment,
+            radio: value.radio,
+            dropdown_open: value.dropdown_open,
+            dropdown_selected: value.dropdown_selected,
+            dialog_open: value.dialog_open,
+            toast_visible: value.toast_visible,
+            context_menu_open: value.context_menu_open,
+            alarm_bucket: (value.alarm * 100.0).round() as i32,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PerfSnapshot {
+    frame: u64,
+    fps: f32,
+    frame_ms: f32,
+    avg_ms: f32,
+    lifetime_worst_ms: f32,
+    compose_ms: f32,
+    render_ms: f32,
+    overlay_ms: f32,
+    rest_ms: f32,
+    stutter_count: u32,
+    trigger_stutter_count: u32,
+    trigger_active: bool,
+    trigger_label: String,
+    trigger_age_ms: f32,
+}
+
+#[derive(Debug)]
+struct FrameMonitor {
+    last_instant: Option<Instant>,
+    frame: u64,
+    samples: [f32; PERF_SAMPLE_COUNT],
+    sample_count: usize,
+    sample_index: usize,
+    sample_sum_ms: f32,
+    lifetime_worst_ms: f32,
+    compose_ms: f32,
+    render_ms: f32,
+    overlay_ms: f32,
+    stutter_count: u32,
+    trigger_stutter_count: u32,
+    trigger_timer: f32,
+    trigger_age: f32,
+    trigger_label: String,
+    signature: Option<LabSignature>,
+}
+
+impl Default for FrameMonitor {
+    fn default() -> Self {
+        Self {
+            last_instant: None,
+            frame: 0,
+            samples: [0.0; PERF_SAMPLE_COUNT],
+            sample_count: 0,
+            sample_index: 0,
+            sample_sum_ms: 0.0,
+            lifetime_worst_ms: 0.0,
+            compose_ms: 0.0,
+            render_ms: 0.0,
+            overlay_ms: 0.0,
+            stutter_count: 0,
+            trigger_stutter_count: 0,
+            trigger_timer: 0.0,
+            trigger_age: 999.0,
+            trigger_label: "idle".to_string(),
+            signature: None,
+        }
+    }
+}
+
+impl FrameMonitor {
+    fn update(&mut self, app_dt: f32) -> PerfSnapshot {
+        let now = Instant::now();
+        let wall_dt = self
+            .last_instant
+            .map(|last| now.saturating_duration_since(last).as_secs_f32())
+            .unwrap_or(app_dt.max(1.0 / 60.0));
+        self.last_instant = Some(now);
+        self.frame = self.frame.saturating_add(1);
+        let warming_up = self.frame <= PERF_WARMUP_FRAMES;
+
+        if self.trigger_timer > 0.0 {
+            self.trigger_timer = (self.trigger_timer - wall_dt).max(0.0);
+            self.trigger_age += wall_dt;
+        }
+
+        let frame_ms = if warming_up {
+            (app_dt.max(1.0 / 60.0) * 1000.0).clamp(0.0, 250.0)
+        } else {
+            (wall_dt * 1000.0).clamp(0.0, 250.0)
+        };
+        if self.sample_count < PERF_SAMPLE_COUNT {
+            self.sample_count += 1;
+        } else {
+            self.sample_sum_ms -= self.samples[self.sample_index];
+        }
+        self.samples[self.sample_index] = frame_ms;
+        self.sample_sum_ms += frame_ms;
+        self.sample_index = (self.sample_index + 1) % PERF_SAMPLE_COUNT;
+        if !warming_up {
+            self.lifetime_worst_ms = self.lifetime_worst_ms.max(frame_ms);
+        }
+
+        if !warming_up && frame_ms >= STUTTER_MS {
+            self.stutter_count = self.stutter_count.saturating_add(1);
+            if self.trigger_timer > 0.0 {
+                self.trigger_stutter_count = self.trigger_stutter_count.saturating_add(1);
+            }
+        }
+
+        let avg_ms = if self.sample_count > 0 {
+            self.sample_sum_ms / self.sample_count as f32
+        } else {
+            frame_ms
+        };
+        let fps = if avg_ms > 0.0 { 1000.0 / avg_ms } else { 0.0 };
+        let measured_ms = self.compose_ms + self.render_ms + self.overlay_ms;
+        let rest_ms = (frame_ms - measured_ms).max(0.0);
+
+        PerfSnapshot {
+            frame: self.frame,
+            fps,
+            frame_ms,
+            avg_ms,
+            lifetime_worst_ms: self.lifetime_worst_ms,
+            compose_ms: self.compose_ms,
+            render_ms: self.render_ms,
+            overlay_ms: self.overlay_ms,
+            rest_ms,
+            stutter_count: self.stutter_count,
+            trigger_stutter_count: self.trigger_stutter_count,
+            trigger_active: self.trigger_timer > 0.0,
+            trigger_label: self.trigger_label.clone(),
+            trigger_age_ms: self.trigger_age * 1000.0,
+        }
+    }
+
+    fn record_phases(&mut self, compose_ms: f32, render_ms: f32, overlay_ms: f32) {
+        self.compose_ms = compose_ms.clamp(0.0, 250.0);
+        self.render_ms = render_ms.clamp(0.0, 250.0);
+        self.overlay_ms = overlay_ms.clamp(0.0, 250.0);
+    }
+
+    fn observe_signature(&mut self, next: LabSignature) {
+        let Some(previous) = self.signature.replace(next) else {
+            return;
+        };
+        if previous == next {
+            return;
+        }
+
+        self.trigger_label = trigger_label(previous, next).to_string();
+        self.trigger_timer = 0.75;
+        self.trigger_age = 0.0;
+    }
+}
+
+fn trigger_label(previous: LabSignature, next: LabSignature) -> &'static str {
+    if previous.mode != next.mode {
+        "mode animation"
+    } else if previous.tab != next.tab {
+        "tab switch"
+    } else if previous.segment != next.segment {
+        "segment switch"
+    } else if previous.reveal != next.reveal {
+        "reveal layout"
+    } else if previous.dropdown_open != next.dropdown_open
+        || previous.dropdown_selected != next.dropdown_selected
+    {
+        "dropdown"
+    } else if previous.dialog_open != next.dialog_open {
+        "dialog"
+    } else if previous.toast_visible != next.toast_visible {
+        "toast"
+    } else if previous.clicks != next.clicks {
+        "button"
+    } else {
+        "state change"
+    }
 }
 
 impl LabSnapshot {
@@ -282,21 +523,21 @@ fn bind_context_menu_open(state: &NeoState<LabState>) -> Binding<LabState, bool>
 fn bind_control_scroll(state: &NeoState<LabState>) -> Binding<LabState, f32> {
     state.bind(
         |state| state.control_scroll,
-        |state, value| state.control_scroll = value.clamp(0.0, 420.0),
+        |state, value| state.control_scroll = value.max(0.0),
     )
 }
 
 fn bind_signal_scroll(state: &NeoState<LabState>) -> Binding<LabState, f32> {
     state.bind(
         |state| state.signal_scroll,
-        |state, value| state.signal_scroll = value.clamp(0.0, 180.0),
+        |state, value| state.signal_scroll = value.max(0.0),
     )
 }
 
 fn bind_interaction_scroll(state: &NeoState<LabState>) -> Binding<LabState, f32> {
     state.bind(
         |state| state.interaction_scroll,
-        |state, value| state.interaction_scroll = value.clamp(0.0, 520.0),
+        |state, value| state.interaction_scroll = value.max(0.0),
     )
 }
 
@@ -314,6 +555,7 @@ fn draw_lab(
     time: f32,
     state_store: &NeoState<LabState>,
     state: &LabSnapshot,
+    perf: &PerfSnapshot,
     pointer_owned: bool,
     keyboard_owned: bool,
 ) {
@@ -329,7 +571,15 @@ fn draw_lab(
         .padding(OUTER_PAD)
         .gap(18.0)
         .content(|ui| {
-            draw_header(ui, state_store, state, scan, pointer_owned, keyboard_owned);
+            draw_header(
+                ui,
+                state_store,
+                state,
+                perf,
+                scan,
+                pointer_owned,
+                keyboard_owned,
+            );
 
             ui.row("lab.body")
                 .size(Size::fill(), body_height)
@@ -383,6 +633,7 @@ fn draw_header(
     ui: &mut Ui,
     state_store: &NeoState<LabState>,
     state: &LabSnapshot,
+    perf: &PerfSnapshot,
     scan: f32,
     pointer_owned: bool,
     keyboard_owned: bool,
@@ -458,6 +709,8 @@ fn draw_header(
                             );
                         });
 
+                    draw_perf_monitor(ui, perf);
+
                     ui.row("header.actions")
                         .size(188.0, 44.0)
                         .gap(10.0)
@@ -522,88 +775,83 @@ fn draw_control_panel(
             c(0.030, 0.038, 0.055, 0.98),
         );
 
-        ui.stack("controls.viewport")
+        ui.scroll_y("controls.scroll")
             .fill()
-            .padding(PANEL_SCROLL_INSET)
+            .inset(PANEL_SCROLL_INSET)
+            .padding(PANEL_PAD)
+            .gap(12.0)
+            .scrollbar_gap(8.0)
+            .offset_bind(bind_control_scroll(state_store))
             .content(|ui| {
-                widgets::scroll_column(ui, "controls.scroll")
-                    .size(Size::fill(), Size::fill())
-                    .content_height(780.0)
-                    .padding(PANEL_PAD)
-                    .gap(12.0)
-                    .scrollbar_gap(8.0)
-                    .offset_bind(bind_control_scroll(state_store))
+                section_title(
+                    ui,
+                    "controls.title",
+                    "Control Cabinet",
+                    "Bindings and capture",
+                );
+
+                slider_row(
+                    ui,
+                    "controls.wobble",
+                    "Wobble",
+                    state.wobble,
+                    c(0.340, 0.580, 0.980, 1.0),
+                    bind_wobble(state_store),
+                );
+                slider_row(
+                    ui,
+                    "controls.density",
+                    "Density",
+                    state.density,
+                    c(0.280, 0.850, 0.580, 1.0),
+                    bind_density(state_store),
+                );
+                slider_row(
+                    ui,
+                    "controls.alarm",
+                    "Alarm",
+                    state.alarm,
+                    c(1.000, 0.620, 0.300, 1.0),
+                    bind_alarm(state_store),
+                );
+
+                ui.column("controls.toggles")
+                    .size(Size::fill(), 104.0)
+                    .gap(6.0)
                     .content(|ui| {
-                        section_title(
-                            ui,
-                            "controls.title",
-                            "Control Cabinet",
-                            "Bindings and capture",
-                        );
+                        widgets::switch(ui, "controls.glass")
+                            .size(230.0, 30.0)
+                            .checked_bind(bind_glass(state_store))
+                            .text("Glass Tint")
+                            .build();
+                        widgets::checkbox(ui, "controls.lock")
+                            .size(230.0, 30.0)
+                            .checked_bind(bind_lock(state_store))
+                            .text("Disable Right Card")
+                            .build();
+                        widgets::checkbox(ui, "controls.reveal")
+                            .size(230.0, 30.0)
+                            .checked_bind(bind_reveal(state_store))
+                            .text("Reveal Extra Card")
+                            .build();
+                    });
 
-                        slider_row(
-                            ui,
-                            "controls.wobble",
-                            "Wobble",
-                            state.wobble,
-                            c(0.340, 0.580, 0.980, 1.0),
-                            bind_wobble(state_store),
-                        );
-                        slider_row(
-                            ui,
-                            "controls.density",
-                            "Density",
-                            state.density,
-                            c(0.280, 0.850, 0.580, 1.0),
-                            bind_density(state_store),
-                        );
-                        slider_row(
-                            ui,
-                            "controls.alarm",
-                            "Alarm",
-                            state.alarm,
-                            c(1.000, 0.620, 0.300, 1.0),
-                            bind_alarm(state_store),
-                        );
+                ui.row("controls.radios")
+                    .size(Size::fill(), 32.0)
+                    .gap(10.0)
+                    .content(|ui| {
+                        radio_item(ui, state_store, "controls.radio.a", "A", 0);
+                        radio_item(ui, state_store, "controls.radio.b", "B", 1);
+                        radio_item(ui, state_store, "controls.radio.c", "C", 2);
+                    });
 
-                        ui.column("controls.toggles")
-                            .size(Size::fill(), 104.0)
-                            .gap(6.0)
-                            .content(|ui| {
-                                widgets::switch(ui, "controls.glass")
-                                    .size(230.0, 30.0)
-                                    .checked_bind(bind_glass(state_store))
-                                    .text("Glass Tint")
-                                    .build();
-                                widgets::checkbox(ui, "controls.lock")
-                                    .size(230.0, 30.0)
-                                    .checked_bind(bind_lock(state_store))
-                                    .text("Disable Right Card")
-                                    .build();
-                                widgets::checkbox(ui, "controls.reveal")
-                                    .size(230.0, 30.0)
-                                    .checked_bind(bind_reveal(state_store))
-                                    .text("Reveal Extra Card")
-                                    .build();
-                            });
-
-                        ui.row("controls.radios")
-                            .size(Size::fill(), 32.0)
-                            .gap(10.0)
-                            .content(|ui| {
-                                radio_item(ui, state_store, "controls.radio.a", "A", 0);
-                                radio_item(ui, state_store, "controls.radio.b", "B", 1);
-                                radio_item(ui, state_store, "controls.radio.c", "C", 2);
-                            });
-
-                        ui.column("controls.log")
-                            .size(Size::fill(), 312.0)
-                            .gap(8.0)
-                            .content(|ui| {
-                                for index in 0..10 {
-                                    dense_row(ui, index, state.alarm, state.density, motion);
-                                }
-                            });
+                ui.column("controls.log")
+                    .size(Size::fill(), 312.0)
+                    .gap(8.0)
+                    .content(|ui| {
+                        for index in 0..10 {
+                            dense_row(ui, index, state.alarm, state.density, motion);
+                        }
                     });
             });
     });
@@ -631,65 +879,55 @@ fn draw_signal_panel(
                 c(0.028, 0.040, 0.052, 0.98),
             );
 
-            ui.stack("signals.viewport")
+            ui.scroll_y("signals.scroll")
                 .fill()
-                .padding(PANEL_SCROLL_INSET)
+                .inset(PANEL_SCROLL_INSET)
+                .padding(PANEL_PAD)
+                .gap(10.0)
+                .scrollbar_gap(8.0)
+                .offset_bind(bind_signal_scroll(state_store))
                 .content(|ui| {
-                    widgets::scroll_column(ui, "signals.scroll")
-                        .size(Size::fill(), Size::fill())
-                        .content_height(620.0)
-                        .padding(PANEL_PAD)
-                        .gap(10.0)
-                        .scrollbar_gap(8.0)
-                        .offset_bind(bind_signal_scroll(state_store))
-                        .content(|ui| {
-                            section_title(
-                                ui,
-                                "signals.title",
-                                "Signal Board",
-                                "Growth, fill, stacks",
-                            );
+                    section_title(ui, "signals.title", "Signal Board", "Growth, fill, stacks");
 
-                            widgets::tabs(ui, "signals.tabs")
-                                .size(360.0, 38.0)
-                                .items(["Signals", "Charts", "Motion"])
-                                .selected_bind(bind_tab(state_store))
-                                .build();
+                    widgets::tabs(ui, "signals.tabs")
+                        .size(360.0, 38.0)
+                        .items(["Signals", "Charts", "Motion"])
+                        .selected_bind(bind_tab(state_store))
+                        .build();
 
-                            draw_stage(ui, state, time, pulse, scan, motion);
-                            draw_metric_strip(ui, state, pulse, scan);
-                            draw_tab_body(ui, state_store, state, pulse, scan);
+                    draw_stage(ui, state, time, pulse, scan, motion);
+                    draw_metric_strip(ui, state, pulse, scan);
+                    draw_tab_body(ui, state_store, state, pulse, scan);
 
-                            widgets::button(ui, "signals.context.button")
-                                .height(40.0)
-                                .min_width(210.0)
-                                .text("Context Menu")
-                                .font_size(15.0)
-                                .secondary_theme(widgets::theme::dark_theme_colors())
-                                .radius(13.0)
-                                .on_context_menu({
-                                    let state = state_store.clone();
-                                    move |event, bounds| {
-                                        let point = event
-                                            .position()
-                                            .unwrap_or([bounds.x + bounds.width, bounds.y]);
-                                        state.update(|state| {
-                                            state.context_menu_open = true;
-                                            state.context_menu_position = point;
-                                        });
-                                    }
-                                })
-                                .on_click({
-                                    let state = state_store.clone();
-                                    move || {
-                                        state.update(|state| {
-                                            state.context_menu_open = true;
-                                            state.context_menu_position = [760.0, 310.0];
-                                        });
-                                    }
-                                })
-                                .build();
-                        });
+                    widgets::button(ui, "signals.context.button")
+                        .height(40.0)
+                        .min_width(210.0)
+                        .text("Context Menu")
+                        .font_size(15.0)
+                        .secondary_theme(widgets::theme::dark_theme_colors())
+                        .radius(13.0)
+                        .on_context_menu({
+                            let state = state_store.clone();
+                            move |event, bounds| {
+                                let point = event
+                                    .position()
+                                    .unwrap_or([bounds.x + bounds.width, bounds.y]);
+                                state.update(|state| {
+                                    state.context_menu_open = true;
+                                    state.context_menu_position = point;
+                                });
+                            }
+                        })
+                        .on_click({
+                            let state = state_store.clone();
+                            move || {
+                                state.update(|state| {
+                                    state.context_menu_open = true;
+                                    state.context_menu_position = [760.0, 310.0];
+                                });
+                            }
+                        })
+                        .build();
                 });
         });
 }
@@ -983,111 +1221,102 @@ fn draw_interaction_panel(
                 c(0.038, 0.034, 0.056, 0.98),
             );
 
-            ui.stack("interactions.viewport")
+            ui.scroll_y("interactions.scroll")
                 .fill()
-                .padding(PANEL_SCROLL_INSET)
+                .inset(PANEL_SCROLL_INSET)
+                .padding(PANEL_PAD)
+                .gap(10.0)
+                .scrollbar_gap(8.0)
+                .offset_bind(bind_interaction_scroll(state_store))
                 .content(|ui| {
-                    widgets::scroll_column(ui, "interactions.scroll")
-                        .size(Size::fill(), Size::fill())
-                        .content_height(930.0)
-                        .padding(PANEL_PAD)
+                    section_title(
+                        ui,
+                        "interactions.title",
+                        "Interaction Bay",
+                        "Forms and popups",
+                    );
+
+                    widgets::segmented(ui, "interactions.segment")
+                        .size(RIGHT_FIELD_W, 36.0)
+                        .items(["mild", "odd", "loud"])
+                        .selected_bind(bind_segment(state_store))
+                        .build();
+
+                    widgets::input(ui, "interactions.input")
+                        .size(Size::fill(), 42.0)
+                        .text_bind(bind_input_text(state_store))
+                        .placeholder("type a strange word")
+                        .build();
+
+                    widgets::dropdown(ui, "interactions.dropdown")
+                        .size(RIGHT_FIELD_W, 42.0)
+                        .items(["Low hum", "Signal", "Unstable"])
+                        .selected_bind(bind_dropdown_selected(state_store))
+                        .open_bind(bind_dropdown_open(state_store))
+                        .build();
+
+                    ui.row("interactions.actions")
+                        .size(Size::fill(), 42.0)
                         .gap(10.0)
-                        .scrollbar_gap(8.0)
-                        .offset_bind(bind_interaction_scroll(state_store))
                         .content(|ui| {
-                            section_title(
-                                ui,
-                                "interactions.title",
-                                "Interaction Bay",
-                                "Forms and popups",
-                            );
-
-                            widgets::segmented(ui, "interactions.segment")
-                                .size(RIGHT_FIELD_W, 36.0)
-                                .items(["mild", "odd", "loud"])
-                                .selected_bind(bind_segment(state_store))
+                            widgets::button(ui, "interactions.dialog")
+                                .height(38.0)
+                                .min_width(120.0)
+                                .grow(1.0)
+                                .text("Dialog")
+                                .font_size(14.0)
+                                .on_click({
+                                    let dialog = bind_dialog_open(state_store);
+                                    move || dialog.set(true)
+                                })
                                 .build();
-
-                            widgets::input(ui, "interactions.input")
-                                .size(Size::fill(), 42.0)
-                                .text_bind(bind_input_text(state_store))
-                                .placeholder("type a strange word")
+                            widgets::button(ui, "interactions.toast")
+                                .height(38.0)
+                                .min_width(120.0)
+                                .grow(1.0)
+                                .text("Toast")
+                                .font_size(14.0)
+                                .secondary_theme(widgets::theme::dark_theme_colors())
+                                .on_click({
+                                    let toast = bind_toast_visible(state_store);
+                                    move || toast.set(true)
+                                })
                                 .build();
+                        });
 
-                            ui.stack("interactions.dropdown.slot")
-                                .size(Size::fill(), 42.0)
-                                .content(|ui| {
-                                    widgets::dropdown(ui, "interactions.dropdown")
-                                        .size(RIGHT_FIELD_W, 42.0)
-                                        .items(["Low hum", "Signal", "Unstable"])
-                                        .selected_bind(bind_dropdown_selected(state_store))
-                                        .open_bind(bind_dropdown_open(state_store))
-                                        .build();
-                                });
+                    ui.row("interactions.cards")
+                        .size(Size::fill(), 96.0)
+                        .gap(12.0)
+                        .content(|ui| {
+                            action_card(ui, "interactions.locked", state_store, state.lock);
+                            if state.reveal {
+                                secret_card(ui, "interactions.secret", state_store, time);
+                            }
+                        });
 
-                            ui.row("interactions.actions")
-                                .size(Size::fill(), 42.0)
-                                .gap(10.0)
-                                .content(|ui| {
-                                    widgets::button(ui, "interactions.dialog")
-                                        .height(38.0)
-                                        .min_width(120.0)
-                                        .grow(1.0)
-                                        .text("Dialog")
-                                        .font_size(14.0)
-                                        .on_click({
-                                            let dialog = bind_dialog_open(state_store);
-                                            move || dialog.set(true)
-                                        })
-                                        .build();
-                                    widgets::button(ui, "interactions.toast")
-                                        .height(38.0)
-                                        .min_width(120.0)
-                                        .grow(1.0)
-                                        .text("Toast")
-                                        .font_size(14.0)
-                                        .secondary_theme(widgets::theme::dark_theme_colors())
-                                        .on_click({
-                                            let toast = bind_toast_visible(state_store);
-                                            move || toast.set(true)
-                                        })
-                                        .build();
-                                });
+                    ui.column("interactions.feed")
+                        .size(Size::fill(), 459.0)
+                        .gap(9.0)
+                        .content(|ui| {
+                            for index in 0..12 {
+                                feed_row(ui, index, state.segment, state.dropdown_selected);
+                            }
+                        });
 
-                            ui.row("interactions.cards")
-                                .size(Size::fill(), 96.0)
-                                .gap(12.0)
-                                .content(|ui| {
-                                    action_card(ui, "interactions.locked", state_store, state.lock);
-                                    if state.reveal {
-                                        secret_card(ui, "interactions.secret", state_store, time);
-                                    }
-                                });
-
-                            ui.column("interactions.feed")
-                                .size(Size::fill(), 459.0)
-                                .gap(9.0)
-                                .content(|ui| {
-                                    for index in 0..12 {
-                                        feed_row(ui, index, state.segment, state.dropdown_selected);
-                                    }
-                                });
-
-                            ui.row("interactions.capture")
-                                .size(Size::fill(), 34.0)
-                                .gap(10.0)
-                                .content(|ui| {
-                                    widgets::badge(ui, "interactions.pointer")
-                                        .text(format!("pointer {}", on_off(pointer_owned)))
-                                        .accent(c(0.300, 0.620, 0.980, 1.0))
-                                        .grow(1.0)
-                                        .build();
-                                    widgets::badge(ui, "interactions.keyboard")
-                                        .text(format!("keyboard {}", on_off(keyboard_owned)))
-                                        .accent(c(0.440, 0.820, 0.640, 1.0))
-                                        .grow(1.0)
-                                        .build();
-                                });
+                    ui.row("interactions.capture")
+                        .size(Size::fill(), 34.0)
+                        .gap(10.0)
+                        .content(|ui| {
+                            widgets::badge(ui, "interactions.pointer")
+                                .text(format!("pointer {}", on_off(pointer_owned)))
+                                .accent(c(0.300, 0.620, 0.980, 1.0))
+                                .grow(1.0)
+                                .build();
+                            widgets::badge(ui, "interactions.keyboard")
+                                .text(format!("keyboard {}", on_off(keyboard_owned)))
+                                .accent(c(0.440, 0.820, 0.640, 1.0))
+                                .grow(1.0)
+                                .build();
                         });
                 });
         });
@@ -1317,6 +1546,148 @@ fn compact_meter(ui: &mut Ui, id: &str, label: &str, value: f32, color: Color) {
                 .style(style)
                 .build();
         });
+}
+
+fn draw_perf_monitor(ui: &mut Ui, perf: &PerfSnapshot) {
+    let severity = perf_severity(perf.frame_ms);
+    let budget = (perf.frame_ms / FRAME_BUDGET_MS).clamp(0.0, 1.0);
+    let trigger_text = if perf.trigger_active {
+        format!("{} +{:.0}ms", perf.trigger_label, perf.trigger_age_ms)
+    } else {
+        format!("last {}", perf.trigger_label)
+    };
+
+    ui.stack("header.perf").size(232.0, 62.0).content(|ui| {
+        ui.rect("header.perf.bg")
+            .fill()
+            .radius(14.0)
+            .color(c(0.034, 0.046, 0.060, 0.82))
+            .border(
+                1.0,
+                widgets::theme::with_alpha(severity, if perf.trigger_active { 0.58 } else { 0.28 }),
+            )
+            .build();
+
+        ui.column("header.perf.content")
+            .fill()
+            .padding_xy(10.0, 5.0)
+            .gap(1.0)
+            .content(|ui| {
+                ui.row("header.perf.top")
+                    .size(Size::fill(), 16.0)
+                    .gap(8.0)
+                    .align_items(Align::Center)
+                    .content(|ui| {
+                        ui.text("header.perf.fps")
+                            .size(62.0, 16.0)
+                            .text(format!("{:>3.0} FPS", perf.fps))
+                            .font_size(12.0)
+                            .font_weight(740)
+                            .line_height(16.0)
+                            .color(severity)
+                            .build();
+
+                        ui.text("header.perf.ms")
+                            .size(78.0, 16.0)
+                            .text(format!("{:>4.1} ms", perf.frame_ms))
+                            .font_size(12.0)
+                            .line_height(16.0)
+                            .color(c(0.820, 0.900, 0.930, 0.92))
+                            .build();
+
+                        ui.text("header.perf.frame")
+                            .size(52.0, 16.0)
+                            .text(format!("#{}", perf.frame))
+                            .font_size(11.0)
+                            .line_height(16.0)
+                            .horizontal_align(HorizontalAlign::Right)
+                            .color(c(0.560, 0.650, 0.720, 0.82))
+                            .build();
+                    });
+
+                ui.stack("header.perf.budget")
+                    .size(Size::fill(), 5.0)
+                    .content(|ui| {
+                        ui.rect("header.perf.budget.track")
+                            .fill()
+                            .radius(999.0)
+                            .color(c(0.070, 0.095, 0.120, 0.96))
+                            .build();
+                        ui.rect("header.perf.budget.fill")
+                            .size(198.0 * budget, 5.0)
+                            .radius(999.0)
+                            .color(severity)
+                            .build();
+                    });
+
+                ui.row("header.perf.bottom")
+                    .size(Size::fill(), 16.0)
+                    .gap(8.0)
+                    .align_items(Align::Center)
+                    .content(|ui| {
+                        ui.text("header.perf.compose")
+                            .size(62.0, 16.0)
+                            .text(format!("ui {:>4.1}", perf.compose_ms))
+                            .font_size(11.0)
+                            .line_height(16.0)
+                            .color(phase_color(perf.compose_ms))
+                            .build();
+
+                        ui.text("header.perf.render")
+                            .size(62.0, 16.0)
+                            .text(format!("ren {:>4.1}", perf.render_ms))
+                            .font_size(11.0)
+                            .line_height(16.0)
+                            .color(phase_color(perf.render_ms))
+                            .build();
+
+                        ui.text("header.perf.overlay")
+                            .size(58.0, 16.0)
+                            .text(format!("ov {:>4.1}", perf.overlay_ms))
+                            .font_size(11.0)
+                            .line_height(16.0)
+                            .horizontal_align(HorizontalAlign::Right)
+                            .color(phase_color(perf.overlay_ms))
+                            .build();
+                    });
+
+                ui.text("header.perf.event")
+                    .size(Size::fill(), 10.0)
+                    .text(format!(
+                        "{}  rest {:.1} avg {:.1} p{:.0} d{} t{}",
+                        trigger_text,
+                        perf.rest_ms,
+                        perf.avg_ms,
+                        perf.lifetime_worst_ms,
+                        perf.stutter_count,
+                        perf.trigger_stutter_count
+                    ))
+                    .font_size(9.0)
+                    .line_height(10.0)
+                    .color(c(0.540, 0.650, 0.710, 0.78))
+                    .build();
+            });
+    });
+}
+
+fn perf_severity(frame_ms: f32) -> Color {
+    if frame_ms >= STUTTER_MS {
+        c(0.980, 0.350, 0.300, 1.0)
+    } else if frame_ms > FRAME_BUDGET_MS {
+        c(0.980, 0.700, 0.320, 1.0)
+    } else {
+        c(0.320, 0.860, 0.660, 1.0)
+    }
+}
+
+fn phase_color(phase_ms: f32) -> Color {
+    if phase_ms >= STUTTER_MS {
+        c(0.980, 0.350, 0.300, 0.96)
+    } else if phase_ms > FRAME_BUDGET_MS {
+        c(0.980, 0.700, 0.320, 0.94)
+    } else {
+        c(0.600, 0.740, 0.800, 0.86)
+    }
 }
 
 fn stage_tile(ui: &mut Ui, id: &str, label: &str, value: f32, color: Color, motion: Transition) {
@@ -1639,10 +2010,6 @@ impl Default for ScreenshotProbe {
 }
 
 impl ScreenshotProbe {
-    fn active(&self) -> bool {
-        self.path.is_some() && !self.taken
-    }
-
     fn update(&mut self, ctx: &mut FrameContext<'_>) {
         if !self.taken && self.frame_count >= self.frame {
             if let Some(path) = self.path.as_ref() {
@@ -1665,6 +2032,10 @@ fn env_flag(key: &str) -> bool {
 
 fn env_u32(key: &str) -> Option<u32> {
     std::env::var(key).ok()?.parse().ok()
+}
+
+fn elapsed_ms(start: Instant) -> f32 {
+    start.elapsed().as_secs_f32() * 1000.0
 }
 
 fn mix(a: Color, b: Color, t: f32) -> Color {

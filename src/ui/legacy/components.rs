@@ -311,7 +311,7 @@ impl UiPanel {
 }
 
 /// Textured rectangular UI surface.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct UiImage {
     pub texture: Handle<TextureAsset>,
     pub color: Color,

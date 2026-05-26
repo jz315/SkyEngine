@@ -25,6 +25,8 @@ struct VsIn {
     @location(6) border: vec4<f32>,
     @location(7) params: vec4<f32>,
     @location(8) flags: vec4<f32>,
+    @location(9) clip_rect: vec4<f32>,
+    @location(10) clip_params: vec4<f32>,
 };
 
 struct VsOut {
@@ -37,6 +39,9 @@ struct VsOut {
     @location(5) border: vec4<f32>,
     @location(6) params: vec4<f32>,
     @location(7) flags: vec4<f32>,
+    @location(8) world_pos: vec2<f32>,
+    @location(9) clip_rect: vec4<f32>,
+    @location(10) clip_params: vec4<f32>,
 };
 
 @vertex
@@ -53,12 +58,23 @@ fn vs_main(input: VsIn) -> VsOut {
     out.border = input.border;
     out.params = input.params;
     out.flags = input.flags;
+    out.world_pos = input.position;
+    out.clip_rect = input.clip_rect;
+    out.clip_params = input.clip_params;
     return out;
 }
 
 fn rounded_box_distance(point: vec2<f32>, half_size: vec2<f32>, radius: f32) -> f32 {
     let corner = abs(point) - half_size + vec2<f32>(radius, radius);
     return length(max(corner, vec2<f32>(0.0, 0.0))) + min(max(corner.x, corner.y), 0.0) - radius;
+}
+
+fn rounded_rect_alpha(point: vec2<f32>, rect: vec4<f32>, radius: f32) -> f32 {
+    let clamped_radius = clamp(radius, 0.0, min(rect.z, rect.w) * 0.5);
+    let center = rect.xy + rect.zw * 0.5;
+    let distance_to_edge = rounded_box_distance(point - center, rect.zw * 0.5, clamped_radius);
+    let edge_width = max(fwidth(distance_to_edge), 0.75);
+    return 1.0 - smoothstep(-edge_width, edge_width, distance_to_edge);
 }
 
 fn rand(co: vec2<f32>) -> f32 {
@@ -108,13 +124,17 @@ fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
     let center = input.rect.xy + input.rect.zw * 0.5;
     let distance_to_edge = rounded_box_distance(input.local_pos - center, input.rect.zw * 0.5, radius);
     let edge_width = max(fwidth(distance_to_edge), 0.75);
+    let clip_alpha = rounded_rect_alpha(input.world_pos, input.clip_rect, input.clip_params.x);
+    if (clip_alpha <= 0.0) {
+        discard;
+    }
     if (is_shadow) {
         let blur = max(input.params.y, edge_width);
         let shadow_alpha = 1.0 - smoothstep(-blur, blur, distance_to_edge);
         if (shadow_alpha <= 0.0 || opacity <= 0.0) {
             discard;
         }
-        return vec4<f32>(input.fill.rgb, input.fill.a * shadow_alpha * opacity);
+        return vec4<f32>(input.fill.rgb, input.fill.a * shadow_alpha * opacity * clip_alpha);
     }
     let shape_alpha = 1.0 - smoothstep(-edge_width, edge_width, distance_to_edge);
     if (shape_alpha <= 0.0 || opacity <= 0.0) {
@@ -147,7 +167,7 @@ fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
         border_width > 0.0
     );
     let color = mix(fill, input.border, border_alpha);
-    return vec4<f32>(color.rgb, color.a * shape_alpha * opacity);
+    return vec4<f32>(color.rgb, color.a * shape_alpha * opacity * clip_alpha);
 }
 "#;
 
@@ -189,11 +209,16 @@ var<uniform> screen: Screen;
 struct VsIn {
     @location(0) position: vec2<f32>,
     @location(1) color: vec4<f32>,
+    @location(2) clip_rect: vec4<f32>,
+    @location(3) clip_params: vec4<f32>,
 };
 
 struct VsOut {
     @builtin(position) position: vec4<f32>,
     @location(0) color: vec4<f32>,
+    @location(1) world_pos: vec2<f32>,
+    @location(2) clip_rect: vec4<f32>,
+    @location(3) clip_params: vec4<f32>,
 };
 
 @vertex
@@ -203,12 +228,32 @@ fn vs_main(input: VsIn) -> VsOut {
     let y = 1.0 - (input.position.y / max(screen.size.y, 1.0) * 2.0);
     out.position = vec4<f32>(x, y, 0.0, 1.0);
     out.color = input.color;
+    out.world_pos = input.position;
+    out.clip_rect = input.clip_rect;
+    out.clip_params = input.clip_params;
     return out;
+}
+
+fn rounded_box_distance(point: vec2<f32>, half_size: vec2<f32>, radius: f32) -> f32 {
+    let corner = abs(point) - half_size + vec2<f32>(radius, radius);
+    return length(max(corner, vec2<f32>(0.0, 0.0))) + min(max(corner.x, corner.y), 0.0) - radius;
+}
+
+fn rounded_rect_alpha(point: vec2<f32>, rect: vec4<f32>, radius: f32) -> f32 {
+    let clamped_radius = clamp(radius, 0.0, min(rect.z, rect.w) * 0.5);
+    let center = rect.xy + rect.zw * 0.5;
+    let distance_to_edge = rounded_box_distance(point - center, rect.zw * 0.5, clamped_radius);
+    let edge_width = max(fwidth(distance_to_edge), 0.75);
+    return 1.0 - smoothstep(-edge_width, edge_width, distance_to_edge);
 }
 
 @fragment
 fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
-    return input.color;
+    let clip_alpha = rounded_rect_alpha(input.world_pos, input.clip_rect, input.clip_params.x);
+    if (clip_alpha <= 0.0) {
+        discard;
+    }
+    return vec4<f32>(input.color.rgb, input.color.a * clip_alpha);
 }
 "#;
 
@@ -233,6 +278,8 @@ struct VsIn {
     @location(3) uv: vec2<f32>,
     @location(4) tint: vec4<f32>,
     @location(5) params: vec4<f32>,
+    @location(6) clip_rect: vec4<f32>,
+    @location(7) clip_params: vec4<f32>,
 };
 
 struct VsOut {
@@ -242,6 +289,9 @@ struct VsOut {
     @location(2) uv: vec2<f32>,
     @location(3) tint: vec4<f32>,
     @location(4) params: vec4<f32>,
+    @location(5) world_pos: vec2<f32>,
+    @location(6) clip_rect: vec4<f32>,
+    @location(7) clip_params: vec4<f32>,
 };
 
 @vertex
@@ -255,12 +305,23 @@ fn vs_main(input: VsIn) -> VsOut {
     out.uv = input.uv;
     out.tint = input.tint;
     out.params = input.params;
+    out.world_pos = input.position;
+    out.clip_rect = input.clip_rect;
+    out.clip_params = input.clip_params;
     return out;
 }
 
 fn rounded_box_distance(point: vec2<f32>, half_size: vec2<f32>, radius: f32) -> f32 {
     let corner = abs(point) - half_size + vec2<f32>(radius, radius);
     return length(max(corner, vec2<f32>(0.0, 0.0))) + min(max(corner.x, corner.y), 0.0) - radius;
+}
+
+fn rounded_rect_alpha(point: vec2<f32>, rect: vec4<f32>, radius: f32) -> f32 {
+    let clamped_radius = clamp(radius, 0.0, min(rect.z, rect.w) * 0.5);
+    let center = rect.xy + rect.zw * 0.5;
+    let distance_to_edge = rounded_box_distance(point - center, rect.zw * 0.5, clamped_radius);
+    let edge_width = max(fwidth(distance_to_edge), 0.75);
+    return 1.0 - smoothstep(-edge_width, edge_width, distance_to_edge);
 }
 
 @fragment
@@ -274,10 +335,14 @@ fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
     if (shape_alpha <= 0.0 || opacity <= 0.0) {
         discard;
     }
+    let clip_alpha = rounded_rect_alpha(input.world_pos, input.clip_rect, input.clip_params.x);
+    if (clip_alpha <= 0.0) {
+        discard;
+    }
 
     let sampled = textureSample(t_image, s_image, input.uv);
     let tint = vec4<f32>(input.tint.rgb, input.tint.a * opacity);
-    return vec4<f32>(sampled.rgb * tint.rgb, sampled.a * tint.a * shape_alpha);
+    return vec4<f32>(sampled.rgb * tint.rgb, sampled.a * tint.a * shape_alpha * clip_alpha);
 }
 "#;
 

@@ -1,6 +1,6 @@
 use sky_engine::ui::neo::widgets;
 use sky_engine::ui::neo::Color;
-use sky_engine::ui::neo::{Align, NeoState, Screen, Ui};
+use sky_engine::ui::neo::{Align, NeoState, Screen, Size, Ui};
 
 use crate::actions;
 use crate::locale;
@@ -13,7 +13,7 @@ use crate::view::RuntimeInfo;
 const OUTER_PAD: f32 = 24.0;
 const SHELL_GAP: f32 = 20.0;
 const SIDEBAR_W: f32 = 246.0;
-const HEADER_H: f32 = 116.0;
+const HEADER_H: f32 = 146.0;
 
 pub fn render_shell(
     ui: &mut Ui,
@@ -25,20 +25,19 @@ pub fn render_shell(
     let app_theme = theme::resolve(model.theme_mode);
     let root_w = (screen.width - OUTER_PAD * 2.0).max(0.0);
     let root_h = (screen.height - OUTER_PAD * 2.0).max(0.0);
+    let workspace_w = (root_w - SIDEBAR_W - SHELL_GAP).max(0.0);
 
     draw_background(ui, screen.width, screen.height, app_theme);
 
     ui.row("control-center.root")
-        .x(OUTER_PAD)
-        .y(OUTER_PAD)
-        .size(root_w, root_h)
+        .size(screen.width, screen.height)
+        .padding(OUTER_PAD)
         .gap(SHELL_GAP)
         .content(|ui| {
-            draw_sidebar(ui, SIDEBAR_W, root_h, state_store, model, app_theme);
-            let content_w = (root_w - SIDEBAR_W - SHELL_GAP).max(0.0);
+            draw_sidebar(ui, state_store, model, app_theme);
             draw_workspace(
                 ui,
-                content_w,
+                workspace_w,
                 root_h,
                 state_store,
                 model,
@@ -53,93 +52,74 @@ fn draw_background(ui: &mut Ui, width: f32, height: f32, app_theme: AppTheme) {
         .size(width, height)
         .gradient(app_theme.background_top, app_theme.background_bottom)
         .build();
-
-    ui.rect("control-center.glow.a")
-        .x(width - 390.0)
-        .y(80.0)
-        .size(290.0, 290.0)
-        .color(theme::alpha(app_theme.tokens.primary, 0.10))
-        .radius(145.0)
-        .build();
-
-    ui.rect("control-center.glow.b")
-        .x(90.0)
-        .y(height - 280.0)
-        .size(250.0, 250.0)
-        .color(theme::alpha(app_theme.success, 0.08))
-        .radius(125.0)
-        .build();
 }
 
 fn draw_sidebar(
     ui: &mut Ui,
-    width: f32,
-    height: f32,
     state_store: &NeoState<AppModel>,
     model: &AppModel,
     app_theme: AppTheme,
 ) {
     ui.stack("control-center.sidebar")
-        .size(width, height)
+        .size(SIDEBAR_W, Size::fill())
         .content(|ui| {
             widgets::panel(ui, "control-center.sidebar.bg")
-                .size(width, height)
+                .fill()
                 .color(app_theme.shell)
                 .border(1.0, app_theme.shell_edge)
                 .shadow(28.0, 0.0, 8.0, theme::alpha(Color::BLACK, 0.15))
                 .radius(28.0)
                 .build();
 
-            ui.text("control-center.brand.kicker")
-                .x(24.0)
-                .y(24.0)
-                .size(width - 48.0, 18.0)
-                .text(locale::app_kicker(model.locale))
-                .font_size(12.0)
-                .line_height(16.0)
-                .color(app_theme.text_muted)
-                .build();
-
-            ui.text("control-center.brand.title")
-                .x(24.0)
-                .y(48.0)
-                .size(width - 48.0, 38.0)
-                .text(locale::app_title(model.locale))
-                .font_size(30.0)
-                .line_height(34.0)
-                .color(app_theme.tokens.text)
-                .build();
-
-            ui.text("control-center.brand.project")
-                .x(24.0)
-                .y(90.0)
-                .size(width - 48.0, 20.0)
-                .text(&model.project_name)
-                .font_size(14.0)
-                .line_height(18.0)
-                .color(app_theme.text_soft)
-                .build();
-
-            ui.column("control-center.nav")
-                .x(18.0)
-                .y(148.0)
-                .size(width - 36.0, 210.0)
-                .gap(12.0)
+            ui.column("control-center.sidebar.content")
+                .fill()
+                .padding_each(18.0, 24.0, 18.0, 18.0)
+                .gap(24.0)
                 .content(|ui| {
-                    for page in Page::ALL {
-                        nav_button(ui, page, width - 36.0, state_store, model, app_theme);
-                    }
-                });
+                    ui.column("control-center.brand")
+                        .size(Size::fill(), 96.0)
+                        .gap(6.0)
+                        .content(|ui| {
+                            ui.text("control-center.brand.kicker")
+                                .size(Size::fill(), 18.0)
+                                .text(locale::app_kicker(model.locale))
+                                .font_size(12.0)
+                                .line_height(16.0)
+                                .color(app_theme.text_muted)
+                                .build();
 
-            ui.stack("control-center.sidebar.status.wrap")
-                .x(18.0)
-                .y((height - 246.0).max(0.0))
-                .size(width - 36.0, 228.0)
-                .content(|ui| {
+                            ui.text("control-center.brand.title")
+                                .size(Size::fill(), 38.0)
+                                .text(locale::app_title(model.locale))
+                                .font_size(30.0)
+                                .line_height(34.0)
+                                .color(app_theme.tokens.text)
+                                .build();
+
+                            ui.text("control-center.brand.project")
+                                .size(Size::fill(), 20.0)
+                                .text(&model.project_name)
+                                .font_size(14.0)
+                                .line_height(18.0)
+                                .color(app_theme.text_soft)
+                                .build();
+                        });
+
+                    ui.column("control-center.nav")
+                        .size(Size::fill(), 210.0)
+                        .gap(12.0)
+                        .content(|ui| {
+                            for page in Page::ALL {
+                                nav_button(ui, page, state_store, model, app_theme);
+                            }
+                        });
+
+                    components::spacer(ui, "control-center.sidebar.flex");
+
                     components::section_frame(
                         ui,
                         "control-center.sidebar.status",
-                        width - 36.0,
+                        SIDEBAR_W - 36.0,
                         228.0,
                         locale::session_title(model.locale),
                         "",
@@ -208,7 +188,6 @@ fn draw_sidebar(
 fn nav_button(
     ui: &mut Ui,
     page: Page,
-    width: f32,
     state_store: &NeoState<AppModel>,
     model: &AppModel,
     app_theme: AppTheme,
@@ -237,7 +216,7 @@ fn nav_button(
     let page_state = state_store.clone();
 
     widgets::button(ui, format!("control-center.nav.{}", page.index()))
-        .size(width, 58.0)
+        .size(Size::fill(), 58.0)
         .icon_codepoint(page.icon())
         .icon_size(16.0)
         .text(locale::page_label(model.locale, page))
@@ -270,17 +249,18 @@ fn draw_workspace(
 ) {
     let body_h = (height - HEADER_H - 18.0).max(0.0);
     ui.column("control-center.workspace")
-        .size(width, height)
+        .size(320.0, Size::fill())
+        .grow(1.0)
+        .min_width(420.0)
         .gap(18.0)
         .content(|ui| {
-            draw_header(ui, width, state_store, model, runtime, app_theme);
+            draw_header(ui, state_store, model, runtime, app_theme);
             pages::render(ui, width, body_h, state_store, model, runtime, app_theme);
         });
 }
 
 fn draw_header(
     ui: &mut Ui,
-    width: f32,
     state_store: &NeoState<AppModel>,
     model: &AppModel,
     runtime: RuntimeInfo,
@@ -289,14 +269,14 @@ fn draw_header(
     components::section_frame(
         ui,
         "control-center.header",
-        width,
-        HEADER_H + 30.0,
+        Size::fill(),
+        HEADER_H,
         locale::page_label(model.locale, model.page),
         locale::page_subtitle(model.locale, model.page),
         app_theme,
-        |ui, body_w, _| {
+        |ui, _, _| {
             ui.row("control-center.header.meta")
-                .size(body_w, 34.0)
+                .size(Size::fill(), 34.0)
                 .gap(12.0)
                 .align_items(Align::Center)
                 .content(|ui| {
@@ -327,6 +307,7 @@ fn draw_header(
                         app_theme.success,
                         app_theme,
                     );
+                    components::spacer(ui, "control-center.header.meta.flex");
                     let add_state = state_store.clone();
                     widgets::button(ui, "control-center.header.action")
                         .size(150.0, 40.0)

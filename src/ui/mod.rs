@@ -1,7 +1,7 @@
-//! Native retained-mode UI for game HUDs and menus.
+//! Backend-neutral UI host plus legacy retained UI exports.
 //!
-//! The v1 UI path is ECS-first and screen-space only: every panel, label,
-//! button, and progress bar is a normal entity with UI components.
+//! The legacy retained path is ECS-first and screen-space only: every panel,
+//! label, button, and progress bar is a normal entity with UI components.
 
 mod core;
 #[cfg(feature = "ui-legacy")]

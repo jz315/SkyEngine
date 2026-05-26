@@ -4,7 +4,7 @@
 //! helpers, so it is easy to inspect `padding`, `max_width`, and `grow`.
 //!
 //! ```bash
-//! cargo run --example neo_layout_primitives --features ui-neo --release
+//! cargo run --example ui_neo_layout_primitives --features ui-neo --release
 //! ```
 
 use sky_engine::app::{

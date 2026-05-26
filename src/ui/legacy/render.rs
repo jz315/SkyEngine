@@ -128,7 +128,7 @@ struct TextItem {
     align: UiAlign,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct ImageItem {
     texture: Handle<TextureAsset>,
     vertices: [UiImageVertex; 6],
@@ -484,7 +484,7 @@ impl UiRenderer {
         gpu: &GpuContext,
         assets: Option<&Assets>,
         render_assets: Option<&SharedRenderAssetCache>,
-        handle: Handle<TextureAsset>,
+        handle: &Handle<TextureAsset>,
     ) -> Option<wgpu::BindGroup> {
         let id = handle.id();
         let texture = match (assets, render_assets) {
@@ -574,7 +574,7 @@ pub fn render_ui(
                 panel.color,
             );
         }
-        if let Some(image) = widget.image {
+        if let Some(image) = widget.image.clone() {
             push_image_item(&mut images, &mut draw_ops, node.rect, node.clip_rect, image);
         }
         if let Some(button) = widget.button.as_ref() {
@@ -705,7 +705,7 @@ pub fn render_ui(
         let bind_groups: Vec<_> = images
             .iter()
             .map(|image| {
-                renderer.image_bind_group(gpu, asset_server.as_ref(), render_assets, image.texture)
+                renderer.image_bind_group(gpu, asset_server.as_ref(), render_assets, &image.texture)
             })
             .collect();
         if let Some(cache) = render_assets {
@@ -786,7 +786,7 @@ fn collect_widgets(world: &World) -> FxHashMap<EntityId, WidgetSnapshot> {
                 entity,
                 WidgetSnapshot {
                     panel: panel.copied(),
-                    image: image.copied(),
+                    image: image.cloned(),
                     button: button.cloned(),
                     progress: progress.copied(),
                     slider: slider.copied(),

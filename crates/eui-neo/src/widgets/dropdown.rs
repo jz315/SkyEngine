@@ -6,8 +6,10 @@ use std::rc::Rc;
 use crate::Color;
 
 use super::super::{
-    AnimProperty, Binding, HorizontalAlign, Response, Shadow, Transition, Ui, VerticalAlign,
+    AnimProperty, Binding, HorizontalAlign, LayoutRect, Response, Shadow, Transition, Ui,
+    VerticalAlign,
 };
+use super::popover::{popover, PopoverPlacement};
 use super::theme::{self, ThemeColorTokens};
 
 type ChangeCallback = Rc<RefCell<Box<dyn FnMut(i32)>>>;
@@ -216,7 +218,6 @@ impl<'ui> DropdownBuilder<'ui> {
         let popup_gap = 8.0;
         let popup_padding = 6.0;
         let popup_height = self.item_height * 1_i32.max(count) as f32 + popup_padding * 2.0;
-        let root_height = self.height + popup_gap + popup_height;
         let visible = if self.open { 1.0 } else { 0.0 };
         let popup_offset_y = if self.open { 0.0 } else { -6.0 };
         let popup_scale = if self.open { 1.0 } else { 0.96 };
@@ -225,7 +226,7 @@ impl<'ui> DropdownBuilder<'ui> {
 
         self.ui
             .stack(id.clone())
-            .size(self.width, root_height)
+            .size(self.width, self.height)
             .z_index(self.z_index)
             .content(|ui| {
                 let open_change = on_open_change.clone();
@@ -273,9 +274,18 @@ impl<'ui> DropdownBuilder<'ui> {
                     .transition(self.transition)
                     .animate(AnimProperty::TEXT_COLOR)
                     .build();
+            });
 
-                ui.stack(format!("{id}.popup"))
-                    .y(self.height + popup_gap)
+        popover(self.ui, format!("{id}.popup"))
+            .open(self.open)
+            .anchor(format!("{id}.field"))
+            .fallback_anchor(LayoutRect::new(0.0, 0.0, self.width, self.height))
+            .placement(PopoverPlacement::BottomStart)
+            .gap(popup_gap)
+            .size(self.width, popup_height)
+            .z_index(self.z_index + 1)
+            .content(|ui| {
+                ui.stack(format!("{id}.popup.surface"))
                     .size(self.width, popup_height)
                     .opacity(visible)
                     .translate_y(popup_offset_y)
@@ -299,7 +309,6 @@ impl<'ui> DropdownBuilder<'ui> {
                                 theme::color(0.0, 0.0, 0.0, 0.0),
                                 theme::color(0.0, 0.0, 0.0, 0.0),
                             )
-                            .disabled(!self.open)
                             .on_click(|| {})
                             .build();
 
@@ -323,7 +332,6 @@ impl<'ui> DropdownBuilder<'ui> {
                                 )
                                 .radius(4.0_f32.max(self.style.radius - 4.0))
                                 .instant_states()
-                                .disabled(!self.open)
                                 .on_click(move || {
                                     if let Some(callback) = &change {
                                         (callback.borrow_mut())(index_i32);

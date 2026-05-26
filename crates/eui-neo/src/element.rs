@@ -200,6 +200,61 @@ pub struct LayoutRect {
     pub height: f32,
 }
 
+/// Clip shape used by runtime hit-testing and backend draw-list commands.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct UiClip {
+    pub rect: LayoutRect,
+    pub radius: f32,
+}
+
+impl UiClip {
+    pub const fn new(rect: LayoutRect, radius: f32) -> Self {
+        Self { rect, radius }
+    }
+
+    pub const fn rect(rect: LayoutRect) -> Self {
+        Self { rect, radius: 0.0 }
+    }
+
+    pub fn contains(self, point: [f32; 2]) -> bool {
+        if !self.rect.contains(point) {
+            return false;
+        }
+        rounded_rect_contains(self.rect, self.radius, point)
+    }
+}
+
+fn rounded_rect_contains(rect: LayoutRect, radius: f32, point: [f32; 2]) -> bool {
+    let radius = radius.clamp(0.0, rect.width.min(rect.height) * 0.5);
+    if radius <= 0.0 {
+        return true;
+    }
+
+    let inner_left = rect.x + radius;
+    let inner_right = rect.right() - radius;
+    let inner_top = rect.y + radius;
+    let inner_bottom = rect.bottom() - radius;
+    if (point[0] >= inner_left && point[0] <= inner_right)
+        || (point[1] >= inner_top && point[1] <= inner_bottom)
+    {
+        return true;
+    }
+
+    let cx = if point[0] < inner_left {
+        inner_left
+    } else {
+        inner_right
+    };
+    let cy = if point[1] < inner_top {
+        inner_top
+    } else {
+        inner_bottom
+    };
+    let dx = point[0] - cx;
+    let dy = point[1] - cy;
+    dx * dx + dy * dy <= radius * radius
+}
+
 impl LayoutRect {
     pub const ZERO: Self = Self {
         x: 0.0,
@@ -585,6 +640,7 @@ pub struct Element {
     pub frame: LayoutRect,
     pub z_index: i32,
     pub clip: bool,
+    pub clip_radius: f32,
 
     pub color: Color,
     pub gradient: Gradient,
@@ -661,6 +717,7 @@ impl Element {
             frame: LayoutRect::ZERO,
             z_index: 0,
             clip: false,
+            clip_radius: 0.0,
             color: Color::WHITE,
             gradient: Gradient::default(),
             border: Border::default(),

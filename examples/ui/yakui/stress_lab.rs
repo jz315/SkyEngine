@@ -1,7 +1,7 @@
 //! Visual stress lab for yakui.
 //!
 //! ```bash
-//! cargo run --example weird_yakui_lab --features yakui-ui --release
+//! cargo run --example ui_yakui_stress_lab --features yakui-ui --release
 //! ```
 
 use sky_engine::app::{

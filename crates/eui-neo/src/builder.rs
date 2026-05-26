@@ -197,6 +197,22 @@ impl<'ui> ElementBuilder<'ui> {
         self
     }
 
+    pub fn rounded_clip(mut self, radius: f32) -> Self {
+        self.element.clip = true;
+        self.element.clip_radius = radius.max(0.0);
+        self
+    }
+
+    pub fn clip_radius(self, radius: f32) -> Self {
+        self.rounded_clip(radius)
+    }
+
+    pub fn clip_to_radius(mut self) -> Self {
+        self.element.clip = true;
+        self.element.clip_radius = self.element.radius;
+        self
+    }
+
     pub fn clip_value(mut self, value: bool) -> Self {
         self.element.clip = value;
         self
@@ -745,18 +761,18 @@ impl<'ui> ElementBuilder<'ui> {
     }
 
     pub fn build(self) -> Response {
-        let id = self.element.id.clone();
+        let response = self.ui.response(&self.element.id);
         self.ui.push_element(self.element);
-        self.ui.response(&id)
+        response
     }
 
     pub fn content(self, content: impl FnOnce(&mut Ui)) -> Response {
-        let id = self.element.id.clone();
+        let response = self.ui.response(&self.element.id);
         let index = self.ui.push_element(self.element);
         self.ui.push_path(index);
         content(self.ui);
         self.ui.pop_path();
-        self.ui.response(&id)
+        response
     }
 }
 

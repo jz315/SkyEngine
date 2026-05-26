@@ -1,7 +1,7 @@
-//! Native retained UI demo: menu, HUD, buttons, progress bars, and text.
+//! Legacy retained UI demo: menu, HUD, buttons, progress bars, and text.
 //!
 //! ```bash
-//! cargo run --example hud_menu --features ui --release
+//! cargo run --example ui_legacy_hud_menu --features ui-legacy --release
 //! ```
 
 use sky_engine::app::{

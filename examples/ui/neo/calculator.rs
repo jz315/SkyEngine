@@ -1,7 +1,7 @@
 //! Calculator demo built with `ui-neo`.
 //!
 //! ```bash
-//! cargo run --example neo_calculator_demo --features ui-neo --release
+//! cargo run --example ui_neo_calculator --features ui-neo --release
 //! ```
 
 use sky_engine::app::{

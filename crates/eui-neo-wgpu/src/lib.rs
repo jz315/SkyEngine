@@ -45,6 +45,8 @@ pub struct NeoRectVertex {
     pub border: [f32; 4],
     pub params: [f32; 4],
     pub flags: [f32; 4],
+    pub clip_rect: [f32; 4],
+    pub clip_params: [f32; 4],
 }
 
 /// Polygon vertex ABI consumed by the Neo polygon WGSL shader.
@@ -53,6 +55,8 @@ pub struct NeoRectVertex {
 pub struct NeoPolygonVertex {
     pub position: [f32; 2],
     pub color: [f32; 4],
+    pub clip_rect: [f32; 4],
+    pub clip_params: [f32; 4],
 }
 
 /// Image vertex ABI consumed by the Neo image WGSL shader.
@@ -65,6 +69,8 @@ pub struct NeoImageVertex {
     pub uv: [f32; 2],
     pub tint: [f32; 4],
     pub params: [f32; 4],
+    pub clip_rect: [f32; 4],
+    pub clip_params: [f32; 4],
 }
 
 /// Shared screen uniform used by Neo wgpu pipelines.
@@ -445,6 +451,9 @@ fn create_single_screen_pipeline_layout(
 }
 
 pub fn rect_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
+    const V2: u64 = std::mem::size_of::<[f32; 2]>() as u64;
+    const V4: u64 = std::mem::size_of::<[f32; 4]>() as u64;
+
     wgpu::VertexBufferLayout {
         array_stride: std::mem::size_of::<NeoRectVertex>() as u64,
         step_mode: wgpu::VertexStepMode::Vertex,
@@ -456,55 +465,62 @@ pub fn rect_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
             },
             wgpu::VertexAttribute {
                 format: wgpu::VertexFormat::Float32x2,
-                offset: std::mem::size_of::<[f32; 2]>() as u64,
+                offset: V2,
                 shader_location: 1,
             },
             wgpu::VertexAttribute {
                 format: wgpu::VertexFormat::Float32x4,
-                offset: (std::mem::size_of::<[f32; 2]>() * 2) as u64,
+                offset: V2 * 2,
                 shader_location: 2,
             },
             wgpu::VertexAttribute {
                 format: wgpu::VertexFormat::Float32x4,
-                offset: (std::mem::size_of::<[f32; 2]>() * 2 + std::mem::size_of::<[f32; 4]>())
-                    as u64,
+                offset: V2 * 2 + V4,
                 shader_location: 3,
             },
             wgpu::VertexAttribute {
                 format: wgpu::VertexFormat::Float32x4,
-                offset: (std::mem::size_of::<[f32; 2]>() * 2 + std::mem::size_of::<[f32; 4]>() * 2)
-                    as u64,
+                offset: V2 * 2 + V4 * 2,
                 shader_location: 4,
             },
             wgpu::VertexAttribute {
                 format: wgpu::VertexFormat::Float32x4,
-                offset: (std::mem::size_of::<[f32; 2]>() * 2 + std::mem::size_of::<[f32; 4]>() * 3)
-                    as u64,
+                offset: V2 * 2 + V4 * 3,
                 shader_location: 5,
             },
             wgpu::VertexAttribute {
                 format: wgpu::VertexFormat::Float32x4,
-                offset: (std::mem::size_of::<[f32; 2]>() * 2 + std::mem::size_of::<[f32; 4]>() * 4)
-                    as u64,
+                offset: V2 * 2 + V4 * 4,
                 shader_location: 6,
             },
             wgpu::VertexAttribute {
                 format: wgpu::VertexFormat::Float32x4,
-                offset: (std::mem::size_of::<[f32; 2]>() * 2 + std::mem::size_of::<[f32; 4]>() * 5)
-                    as u64,
+                offset: V2 * 2 + V4 * 5,
                 shader_location: 7,
             },
             wgpu::VertexAttribute {
                 format: wgpu::VertexFormat::Float32x4,
-                offset: (std::mem::size_of::<[f32; 2]>() * 2 + std::mem::size_of::<[f32; 4]>() * 6)
-                    as u64,
+                offset: V2 * 2 + V4 * 6,
                 shader_location: 8,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: V2 * 2 + V4 * 7,
+                shader_location: 9,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: V2 * 2 + V4 * 8,
+                shader_location: 10,
             },
         ],
     }
 }
 
 pub fn polygon_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
+    const V2: u64 = std::mem::size_of::<[f32; 2]>() as u64;
+    const V4: u64 = std::mem::size_of::<[f32; 4]>() as u64;
+
     wgpu::VertexBufferLayout {
         array_stride: std::mem::size_of::<NeoPolygonVertex>() as u64,
         step_mode: wgpu::VertexStepMode::Vertex,
@@ -516,14 +532,27 @@ pub fn polygon_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
             },
             wgpu::VertexAttribute {
                 format: wgpu::VertexFormat::Float32x4,
-                offset: std::mem::size_of::<[f32; 2]>() as u64,
+                offset: V2,
                 shader_location: 1,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: V2 + V4,
+                shader_location: 2,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: V2 + V4 * 2,
+                shader_location: 3,
             },
         ],
     }
 }
 
 pub fn image_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
+    const V2: u64 = std::mem::size_of::<[f32; 2]>() as u64;
+    const V4: u64 = std::mem::size_of::<[f32; 4]>() as u64;
+
     wgpu::VertexBufferLayout {
         array_stride: std::mem::size_of::<NeoImageVertex>() as u64,
         step_mode: wgpu::VertexStepMode::Vertex,
@@ -535,31 +564,38 @@ pub fn image_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
             },
             wgpu::VertexAttribute {
                 format: wgpu::VertexFormat::Float32x2,
-                offset: std::mem::size_of::<[f32; 2]>() as u64,
+                offset: V2,
                 shader_location: 1,
             },
             wgpu::VertexAttribute {
                 format: wgpu::VertexFormat::Float32x4,
-                offset: (std::mem::size_of::<[f32; 2]>() * 2) as u64,
+                offset: V2 * 2,
                 shader_location: 2,
             },
             wgpu::VertexAttribute {
                 format: wgpu::VertexFormat::Float32x2,
-                offset: (std::mem::size_of::<[f32; 2]>() * 2 + std::mem::size_of::<[f32; 4]>())
-                    as u64,
+                offset: V2 * 2 + V4,
                 shader_location: 3,
             },
             wgpu::VertexAttribute {
                 format: wgpu::VertexFormat::Float32x4,
-                offset: (std::mem::size_of::<[f32; 2]>() * 3 + std::mem::size_of::<[f32; 4]>())
-                    as u64,
+                offset: V2 * 3 + V4,
                 shader_location: 4,
             },
             wgpu::VertexAttribute {
                 format: wgpu::VertexFormat::Float32x4,
-                offset: (std::mem::size_of::<[f32; 2]>() * 3 + std::mem::size_of::<[f32; 4]>() * 2)
-                    as u64,
+                offset: V2 * 3 + V4 * 2,
                 shader_location: 5,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: V2 * 3 + V4 * 3,
+                shader_location: 6,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: V2 * 3 + V4 * 4,
+                shader_location: 7,
             },
         ],
     }

@@ -1,5 +1,5 @@
 use sky_engine::ui::neo::widgets;
-use sky_engine::ui::neo::{Align, NeoState, Ui};
+use sky_engine::ui::neo::{Align, NeoState, Size, Ui};
 
 use crate::actions;
 use crate::locale;
@@ -15,8 +15,11 @@ pub fn render(
     model: &AppModel,
     app_theme: AppTheme,
 ) {
-    let top_h = 108.0;
-    let list_h = (model.tasks.len() as f32 * (92.0 + 14.0) + 90.0).max(220.0);
+    let top_h = 144.0;
+    let row_h = 92.0;
+    let row_gap = 14.0;
+    let list_content_h = (row_h + row_gap) * model.tasks.len() as f32;
+    let list_h = (list_content_h + 108.0).max(220.0);
     let content_h = top_h + list_h + 18.0;
 
     scroll_panel::scroll_panel(
@@ -91,12 +94,9 @@ pub fn render(
                         locale::live_queue_subtitle(model.locale),
                         app_theme,
                         |ui, section_w, body_h| {
-                            let row_h = 92.0;
-                            let gap = 14.0;
-                            let list_content_h = (row_h + gap) * model.tasks.len() as f32;
                             ui.column("tasks.list.column")
                                 .size(section_w, body_h.max(list_content_h))
-                                .gap(gap)
+                                .gap(row_gap)
                                 .content(|ui| {
                                     for task in &model.tasks {
                                         task_card(
@@ -134,7 +134,7 @@ fn task_card(
         .size(width, height)
         .content(|ui| {
             widgets::panel(ui, format!("tasks.card.{task_id}.bg"))
-                .size(width, height)
+                .fill()
                 .color(if task.done {
                     app_theme.panel_alt
                 } else {
@@ -150,68 +150,68 @@ fn task_card(
                 .radius(20.0)
                 .build();
 
-            ui.rect(format!("tasks.card.{task_id}.accent"))
-                .x(18.0)
-                .y(18.0)
-                .size(10.0, height - 36.0)
-                .color(accent)
-                .radius(5.0)
-                .build();
-
-            ui.text(format!("tasks.card.{task_id}.title"))
-                .x(42.0)
-                .y(18.0)
-                .size(width - 230.0, 26.0)
-                .text(&task.title)
-                .font_size(22.0)
-                .line_height(26.0)
-                .color(app_theme.tokens.text)
-                .build();
-
-            ui.text(format!("tasks.card.{task_id}.meta"))
-                .x(42.0)
-                .y(50.0)
-                .size(width - 230.0, 18.0)
-                .text(locale::task_meta(locale_id, task.urgent))
-                .font_size(13.0)
-                .line_height(18.0)
-                .color(app_theme.text_muted)
-                .build();
-
-            ui.row(format!("tasks.card.{task_id}.badges"))
-                .x(width - 320.0)
-                .y(18.0)
-                .size(138.0, 34.0)
-                .gap(10.0)
+            ui.row(format!("tasks.card.{task_id}.content"))
+                .fill()
+                .padding(18.0)
+                .gap(14.0)
                 .align_items(Align::Center)
                 .content(|ui| {
-                    components::badge(
-                        ui,
-                        &format!("tasks.card.{task_id}.priority"),
-                        72.0,
-                        locale::priority_label(locale_id, task.priority),
-                        accent,
-                        app_theme,
-                    );
-                    components::badge(
-                        ui,
-                        &format!("tasks.card.{task_id}.status"),
-                        88.0,
-                        locale::task_status_label(locale_id, task.done),
-                        if task.done {
-                            app_theme.success
-                        } else {
-                            app_theme.tokens.primary
-                        },
-                        app_theme,
-                    );
-                });
+                    ui.rect(format!("tasks.card.{task_id}.accent"))
+                        .size(10.0, Size::fill())
+                        .color(accent)
+                        .radius(5.0)
+                        .build();
 
-            ui.stack(format!("tasks.card.{task_id}.action.wrap"))
-                .x(width - 164.0)
-                .y(22.0)
-                .size(126.0, 46.0)
-                .content(|ui| {
+                    ui.column(format!("tasks.card.{task_id}.copy"))
+                        .size(180.0, Size::fill())
+                        .grow(1.0)
+                        .justify_content(Align::Center)
+                        .gap(6.0)
+                        .content(|ui| {
+                            ui.text(format!("tasks.card.{task_id}.title"))
+                                .size(Size::fill(), 26.0)
+                                .text(&task.title)
+                                .font_size(22.0)
+                                .line_height(26.0)
+                                .color(app_theme.tokens.text)
+                                .build();
+
+                            ui.text(format!("tasks.card.{task_id}.meta"))
+                                .size(Size::fill(), 18.0)
+                                .text(locale::task_meta(locale_id, task.urgent))
+                                .font_size(13.0)
+                                .line_height(18.0)
+                                .color(app_theme.text_muted)
+                                .build();
+                        });
+
+                    ui.row(format!("tasks.card.{task_id}.badges"))
+                        .size(176.0, 34.0)
+                        .gap(10.0)
+                        .align_items(Align::Center)
+                        .content(|ui| {
+                            components::badge(
+                                ui,
+                                &format!("tasks.card.{task_id}.priority"),
+                                72.0,
+                                locale::priority_label(locale_id, task.priority),
+                                accent,
+                                app_theme,
+                            );
+                            components::badge(
+                                ui,
+                                &format!("tasks.card.{task_id}.status"),
+                                88.0,
+                                locale::task_status_label(locale_id, task.done),
+                                if task.done {
+                                    app_theme.success
+                                } else {
+                                    app_theme.tokens.primary
+                                },
+                                app_theme,
+                            );
+                        });
+
                     widgets::button(ui, format!("tasks.card.{task_id}.action"))
                         .size(126.0, 46.0)
                         .icon_codepoint(if task.done { 0xF112 } else { 0xF00C })
