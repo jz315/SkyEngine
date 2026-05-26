@@ -12,8 +12,8 @@ use crate::input::raw::Input;
 use crate::logging::LogStore;
 use crate::math::{LogicalSize, PhysicalSize};
 use crate::render::{
-    RenderAssets, RenderRuntime, RenderStats, SceneFrame, SceneFrameClearReason,
-    SceneRenderOutcome, SceneRenderer, SharedRenderAssetCache, TextureReadiness,
+    RenderAssets, RenderRuntime, RenderStats, SceneFrame, SceneRenderOutcome, SceneRenderer,
+    SharedRenderAssetCache, TextureReadiness,
 };
 
 /// Per-frame context passed to [`crate::app::AppState::update`].
@@ -347,7 +347,7 @@ impl<'a> FrameContext<'a> {
             self.renderer.clear_frame(
                 self.frame,
                 self.world,
-                SceneFrameClearReason::OverlayWithoutScene,
+                crate::render::SceneFrameClearReason::OverlayWithoutScene,
             );
         }
         let Some((gpu, render_assets)) = self.renderer.wgpu_overlay_parts_mut() else {
@@ -366,7 +366,7 @@ impl<'a> FrameContext<'a> {
             self.renderer.clear_frame(
                 self.frame,
                 self.world,
-                SceneFrameClearReason::OverlayWithoutScene,
+                crate::render::SceneFrameClearReason::OverlayWithoutScene,
             );
         }
         let Some((gpu, render_assets)) = self.renderer.wgpu_overlay_parts_mut() else {
