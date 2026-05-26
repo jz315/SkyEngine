@@ -2,10 +2,24 @@
 
 use std::path::PathBuf;
 
-use crate::render::SceneRenderer;
+use crate::render::{SceneFrame, SceneRenderer};
 
-pub(crate) fn save_requested(renderer: &mut dyn SceneRenderer, requests: &mut Vec<PathBuf>) {
+pub(crate) fn save_requested(
+    renderer: &mut dyn SceneRenderer,
+    frame: &SceneFrame,
+    requests: &mut Vec<PathBuf>,
+) {
     if requests.is_empty() {
+        return;
+    }
+
+    if !frame.is_presentable() {
+        for path in requests.drain(..) {
+            eprintln!(
+                "[SkyEngine] Screenshot request ignored for {}: current frame was not rendered or cleared",
+                path.display()
+            );
+        }
         return;
     }
 

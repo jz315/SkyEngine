@@ -19,7 +19,7 @@ use crate::ecs::World;
 use crate::input::raw::{Input, KeyCode};
 use crate::logging::{self, LogOptions, LogStore};
 use crate::render::backend::{create_scene_renderer, SceneRendererError};
-use crate::render::{RenderBackendKind, RenderPipelineAsset, SceneRenderer};
+use crate::render::{RenderBackendKind, RenderPipelineAsset, SceneFrameClearReason, SceneRenderer};
 
 struct RuntimeState {
     window: Arc<Window>,
@@ -222,7 +222,7 @@ impl RunnerHandler {
                 let begin_frame_result = rt.renderer.begin_frame();
                 app_profile_samples.begin_frame_ms = app_profile.mark();
                 match begin_frame_result {
-                    Ok(()) => {
+                    Ok(mut renderer_frame) => {
                         let mut exit_requested = false;
                         let mut redraw_requested = false;
                         let mut screenshot_requests = Vec::new();
@@ -232,6 +232,7 @@ impl RunnerHandler {
                                 world,
                                 input: &input_snapshot,
                                 dt: frame_dt,
+                                frame: &mut renderer_frame,
                                 renderer: rt.renderer.as_mut(),
                                 window: &rt.window,
                                 exit_requested: &mut exit_requested,
@@ -249,6 +250,14 @@ impl RunnerHandler {
 
                         crate::app::services::update_audio_after_frame(world);
                         app_profile_samples.audio_ms = app_profile.mark();
+
+                        if !renderer_frame.is_presentable() {
+                            rt.renderer.clear_frame(
+                                &mut renderer_frame,
+                                world,
+                                SceneFrameClearReason::NoRenderCall,
+                            );
+                        }
 
                         #[cfg(feature = "egui")]
                         {
@@ -271,12 +280,14 @@ impl RunnerHandler {
 
                         crate::app::screenshots::save_requested(
                             rt.renderer.as_mut(),
+                            &renderer_frame,
                             &mut screenshot_requests,
                         );
                         app_profile_samples.screenshot_ms = app_profile.mark();
                         rt.window.pre_present_notify();
+                        renderer_frame.mark_pre_present_notified();
                         app_profile_samples.pre_present_ms = app_profile.mark();
-                        rt.renderer.end_frame();
+                        rt.renderer.end_frame(renderer_frame);
                         app_profile_samples.end_frame_ms = app_profile.mark();
                         rt.input.begin_frame();
                         app_profile_samples.input_reset_ms = app_profile.mark();

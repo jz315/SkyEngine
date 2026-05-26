@@ -9,7 +9,7 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::input::raw::Input;
 use crate::render::backend::{create_scene_renderer, SceneRendererError};
-use crate::render::SceneRenderer;
+use crate::render::{SceneFrame, SceneRenderer};
 
 /// Configuration for an auxiliary top-level application window.
 #[derive(Debug, Clone)]
@@ -72,6 +72,7 @@ pub trait WindowClient: 'static {
 /// Per-frame context for an auxiliary window client.
 pub struct WindowFrameContext<'a> {
     pub window: &'a Window,
+    pub frame: &'a mut SceneFrame,
     /// Active renderer for this auxiliary window.
     ///
     /// The frame is already open; draw into it but do not call
@@ -219,15 +220,17 @@ impl WindowRuntime {
         self.last_frame_time = Some(now);
 
         match self.renderer.begin_frame() {
-            Ok(()) => {
+            Ok(mut frame) => {
                 self.client.render(WindowFrameContext {
                     window: &self.window,
+                    frame: &mut frame,
                     renderer: self.renderer.as_mut(),
                     input: &self.input,
                     dt,
                 });
                 self.window.pre_present_notify();
-                self.renderer.end_frame();
+                frame.mark_pre_present_notified();
+                self.renderer.end_frame(frame);
             }
             Err(SceneRendererError::Wgpu(crate::gpu::GpuError::SurfaceLost)) => {
                 self.renderer.surface_lost();
