@@ -59,6 +59,17 @@ fn measure_node(
 ) -> MeasuredNode {
     let child_available_width = child_available_width(element, available_width);
     let child_available_height = child_available_height(element, available_height);
+    if element.children.is_empty() {
+        return measure_leaf_node(
+            element,
+            available_width,
+            available_height,
+            child_available_width,
+            child_available_height,
+            text_system,
+        );
+    }
+
     let children: Vec<_> = element
         .children
         .iter()
@@ -94,6 +105,93 @@ fn measure_node(
         child_available_width,
         child_available_height,
         children,
+    }
+}
+
+fn measure_leaf_node(
+    element: &Element,
+    available_width: f32,
+    available_height: f32,
+    child_available_width: f32,
+    child_available_height: f32,
+    text_system: &mut dyn TextSystem,
+) -> MeasuredNode {
+    if element.kind == ElementKind::Text {
+        return measure_text_node(
+            element,
+            available_width,
+            available_height,
+            child_available_width,
+            child_available_height,
+            text_system,
+        );
+    }
+
+    let content_width = if let Size::Fixed(value) = element.width {
+        value
+    } else {
+        available_width
+    };
+    let content_height = if let Size::Fixed(value) = element.height {
+        value
+    } else {
+        available_height
+    };
+    MeasuredNode {
+        width: resolve_width(
+            element,
+            content_width + element.padding.horizontal(),
+            available_width,
+        ),
+        height: resolve_height(
+            element,
+            content_height + element.padding.vertical(),
+            available_height,
+        ),
+        child_available_width,
+        child_available_height,
+        children: Vec::new(),
+    }
+}
+
+fn measure_text_node(
+    element: &Element,
+    available_width: f32,
+    available_height: f32,
+    child_available_width: f32,
+    child_available_height: f32,
+    text_system: &mut dyn TextSystem,
+) -> MeasuredNode {
+    let needs_text_measure =
+        matches!(element.width, Size::WrapContent) || matches!(element.height, Size::WrapContent);
+    let text_measure = needs_text_measure.then(|| {
+        measure_text_leaf(element, available_width, text_system)
+    });
+    let content_width = match element.width {
+        Size::Fixed(value) => value,
+        Size::Fill => available_width,
+        Size::WrapContent => text_measure.map_or(0.0, |measure| measure.width),
+    };
+    let content_height = match element.height {
+        Size::Fixed(value) => value,
+        Size::Fill => available_height,
+        Size::WrapContent => text_measure.map_or(0.0, |measure| measure.height),
+    };
+
+    MeasuredNode {
+        width: resolve_width(
+            element,
+            content_width + element.padding.horizontal(),
+            available_width,
+        ),
+        height: resolve_height(
+            element,
+            content_height + element.padding.vertical(),
+            available_height,
+        ),
+        child_available_width,
+        child_available_height,
+        children: Vec::new(),
     }
 }
 
@@ -632,8 +730,26 @@ fn positive_subtract(left: f32, right: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::layout_roots;
-    use crate::{Align, Size, Ui};
+    use super::{layout_roots, layout_roots_with_text_system};
+    use crate::text_measure::{TextMeasure, TextMeasureRequest, TextSystem};
+    use crate::{Align, FontRef, Size, Ui};
+
+    #[derive(Default)]
+    struct CountingTextSystem {
+        measures: usize,
+    }
+
+    impl TextSystem for CountingTextSystem {
+        fn register_font(&mut self, _font: &FontRef, _bytes: &[u8]) {}
+
+        fn measure(&mut self, _request: TextMeasureRequest<'_>) -> TextMeasure {
+            self.measures += 1;
+            TextMeasure {
+                width: 42.0,
+                height: 18.0,
+            }
+        }
+    }
 
     #[test]
     fn row_lays_out_children_with_gap() {
@@ -853,6 +969,35 @@ mod tests {
         assert!(roots[0].frame.width > 0.0);
         assert!(roots[0].frame.width <= 120.0);
         assert_eq!(roots[0].text_max_width, 120.0);
+    }
+
+    #[test]
+    fn fixed_text_leaf_skips_text_measurement() {
+        let mut ui = Ui::new("test");
+        ui.text("label")
+            .size(120.0, 24.0)
+            .text("Already sized")
+            .build();
+        let mut roots = ui.into_roots();
+        let mut text_system = CountingTextSystem::default();
+        layout_roots_with_text_system(&mut roots, 640.0, 480.0, &mut text_system);
+
+        assert_eq!(text_system.measures, 0);
+        assert_eq!(roots[0].frame.width, 120.0);
+        assert_eq!(roots[0].frame.height, 24.0);
+    }
+
+    #[test]
+    fn wrap_content_text_leaf_measures_once() {
+        let mut ui = Ui::new("test");
+        ui.text("label").text("Natural size").wrap_content().build();
+        let mut roots = ui.into_roots();
+        let mut text_system = CountingTextSystem::default();
+        layout_roots_with_text_system(&mut roots, 640.0, 480.0, &mut text_system);
+
+        assert_eq!(text_system.measures, 1);
+        assert_eq!(roots[0].frame.width, 42.0);
+        assert_eq!(roots[0].frame.height, 18.0);
     }
 
     #[test]

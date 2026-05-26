@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::cell::RefCell;
 
 use rustc_hash::FxHashMap;
 
@@ -25,9 +26,10 @@ impl Screen {
 pub struct Ui {
     page_id: String,
     roots: Vec<Element>,
+    previous_roots: Vec<Element>,
+    previous_frame_cache: RefCell<FxHashMap<String, Option<LayoutRect>>>,
     path: Vec<usize>,
     responses: FxHashMap<String, Response>,
-    previous_frames: FxHashMap<String, LayoutRect>,
     callbacks: UiCallbacks,
     skins: SkinRegistry,
     generated_id: usize,
@@ -66,9 +68,10 @@ impl Ui {
         Self {
             page_id: page_id.into(),
             roots: Vec::new(),
+            previous_roots: Vec::new(),
+            previous_frame_cache: RefCell::new(FxHashMap::default()),
             path: Vec::new(),
             responses: FxHashMap::default(),
-            previous_frames: FxHashMap::default(),
             callbacks: UiCallbacks::default(),
             skins: SkinRegistry::default(),
             generated_id: 0,
@@ -93,7 +96,7 @@ impl Ui {
     }
 
     pub fn into_roots(self) -> Vec<Element> {
-        self.into_parts().0
+        self.roots
     }
 
     pub(crate) fn set_skins(&mut self, skins: SkinRegistry) {
@@ -136,17 +139,24 @@ impl Ui {
     /// Immediate-mode helpers can use this for APIs whose behavior depends on
     /// resolved layout, such as scroll containers with `Size::Fill` viewports.
     pub fn previous_frame(&self, id: &str) -> Option<LayoutRect> {
-        self.previous_frames
-            .get(self.resolve_id_ref(id).as_ref())
-            .copied()
+        let id = self.resolve_id_ref(id);
+        if let Some(frame) = self.previous_frame_cache.borrow().get(id.as_ref()) {
+            return *frame;
+        }
+        let frame = find_frame(&self.previous_roots, id.as_ref());
+        self.previous_frame_cache
+            .borrow_mut()
+            .insert(id.into_owned(), frame);
+        frame
     }
 
     pub fn is_focused(&self, id: &str) -> bool {
         self.focused_id.as_deref() == Some(self.resolve_id_ref(id).as_ref())
     }
 
-    pub(crate) fn set_previous_frames(&mut self, frames: FxHashMap<String, LayoutRect>) {
-        self.previous_frames = frames;
+    pub(crate) fn set_previous_roots(&mut self, roots: Vec<Element>) {
+        self.previous_roots = roots;
+        self.previous_frame_cache.borrow_mut().clear();
     }
 
     pub(crate) fn with_root_layer<R>(&mut self, build: impl FnOnce(&mut Ui) -> R) -> R {
@@ -202,6 +212,10 @@ impl Ui {
 
     pub fn scroll_x(&mut self, id: impl Into<String>) -> crate::widgets::ScrollXBuilder<'_> {
         crate::widgets::scroll_x(self, id)
+    }
+
+    pub fn scroll_xy(&mut self, id: impl Into<String>) -> crate::widgets::ScrollXYBuilder<'_> {
+        crate::widgets::scroll_xy(self, id)
     }
 
     pub fn popover(&mut self, id: impl Into<String>) -> crate::widgets::PopoverBuilder<'_> {
@@ -334,6 +348,18 @@ fn children_at_path_mut<'a>(
     }
 }
 
+fn find_frame(elements: &[Element], id: &str) -> Option<LayoutRect> {
+    for element in elements {
+        if element.id == id {
+            return Some(element.frame);
+        }
+        if let Some(frame) = find_frame(&element.children, id) {
+            return Some(frame);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::Ui;
@@ -365,4 +391,5 @@ mod tests {
         assert_eq!(ui.roots()[1].id, "page.existing");
         assert_eq!(ui.roots()[2].id, "page.__rect.0");
     }
+
 }

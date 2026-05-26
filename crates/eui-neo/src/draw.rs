@@ -5,6 +5,10 @@
 //! visual transform semantics, then emits backend-neutral draw commands for
 //! host renderers.
 
+use std::sync::Arc;
+
+use smallvec::SmallVec;
+
 use super::Color;
 
 use super::{
@@ -13,22 +17,36 @@ use super::{
 };
 
 /// Backend-neutral command stream emitted by the neo runtime.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct UiDrawList {
-    commands: Vec<UiDrawCommand>,
+    commands: Arc<[UiDrawCommand]>,
 }
 
 impl UiDrawList {
     pub fn new(commands: Vec<UiDrawCommand>) -> Self {
-        Self { commands }
+        Self {
+            commands: commands.into(),
+        }
     }
 
     pub fn commands(&self) -> &[UiDrawCommand] {
-        &self.commands
+        self.commands.as_ref()
+    }
+
+    pub fn cache_key(&self) -> (usize, usize) {
+        (self.commands.as_ptr() as usize, self.commands.len())
     }
 
     pub fn is_empty(&self) -> bool {
         self.commands.is_empty()
+    }
+}
+
+impl Default for UiDrawList {
+    fn default() -> Self {
+        Self {
+            commands: Arc::from([]),
+        }
     }
 }
 
@@ -279,7 +297,7 @@ fn draw_elements(
         return;
     }
 
-    let mut order: Vec<usize> = (0..elements.len()).collect();
+    let mut order: SmallVec<[usize; 16]> = (0..elements.len()).collect();
     order.sort_by_key(|&index| (elements[index].z_index, index));
     for index in order {
         draw_element(

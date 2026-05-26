@@ -12,3 +12,4 @@ categories = ["gui", "game-development"]
 bitflags = "2"
 cosmic-text = "0.18"
 rustc-hash = "2.1.2"
+smallvec = "1.13.2"

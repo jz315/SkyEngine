@@ -1,5 +1,9 @@
 //! wgpu renderer for `eui_neo` draw commands.
 
+use std::hash::{Hash, Hasher};
+use std::sync::OnceLock;
+use std::time::Instant;
+
 use crate::{
     draw_fullscreen_triangle, NeoImageVertex, NeoPolygonVertex, NeoRectVertex, NeoWgpuResources,
     ScreenUniform,
@@ -16,7 +20,7 @@ use glyphon::{
     Attrs, Buffer, Cache, FontSystem, Metrics, Resolution, Shaping, SwashCache, TextArea,
     TextAtlas, TextBounds, TextRenderer, Viewport, Weight, Wrap,
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHasher};
 
 use crate::fonts::{
     clear_registered_font, is_icon_font, register_font_bytes, resolve_family, resolved_font_weight,
@@ -46,6 +50,7 @@ struct WgpuVertexBuffer {
     buffer: wgpu::Buffer,
     used: u64,
     capacity: u64,
+    content_hash: u64,
 }
 
 impl WgpuVertexBuffer {
@@ -64,6 +69,8 @@ impl WgpuVertexBuffer {
         }
 
         let used = std::mem::size_of_val(data) as u64;
+        let bytes = bytemuck::cast_slice(data);
+        let content_hash = hash_bytes(bytes);
         let needs_buffer = slot.as_ref().is_none_or(|buffer| buffer.capacity < used);
         if needs_buffer {
             let capacity = used.next_power_of_two().max(256);
@@ -77,15 +84,22 @@ impl WgpuVertexBuffer {
                 buffer,
                 used,
                 capacity,
+                content_hash: 0,
             });
         } else if let Some(buffer) = slot {
+            if buffer.used == used && buffer.content_hash == content_hash {
+                return;
+            }
             buffer.used = used;
         }
 
         let Some(buffer) = slot.as_ref() else {
             return;
         };
-        queue.write_buffer(&buffer.buffer, 0, bytemuck::cast_slice(data));
+        queue.write_buffer(&buffer.buffer, 0, bytes);
+        if let Some(buffer) = slot {
+            buffer.content_hash = content_hash;
+        }
     }
 
     #[inline]
@@ -109,6 +123,12 @@ fn create_linear_sampler(device: &wgpu::Device) -> wgpu::Sampler {
         mipmap_filter: wgpu::MipmapFilterMode::Linear,
         ..Default::default()
     })
+}
+
+fn hash_bytes(bytes: &[u8]) -> u64 {
+    let mut hasher = FxHasher::default();
+    bytes.hash(&mut hasher);
+    hasher.finish()
 }
 
 #[derive(Clone)]
@@ -194,6 +214,7 @@ struct TextLayer {
     renderer: TextRenderer,
     buffers: Vec<Buffer>,
     buffer_keys: Vec<TextBufferKey>,
+    area_keys: Vec<TextAreaKey>,
 }
 
 impl TextLayer {
@@ -202,6 +223,7 @@ impl TextLayer {
             renderer: TextRenderer::new(atlas, device, wgpu::MultisampleState::default(), None),
             buffers: Vec::new(),
             buffer_keys: Vec::new(),
+            area_keys: Vec::new(),
         }
     }
 }
@@ -225,6 +247,14 @@ struct TextBufferMetrics {
     width: f32,
     height: f32,
     align: TextAlign,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct TextAreaKey {
+    left_bits: u32,
+    top_bits: u32,
+    bounds: [i32; 4],
+    color_rgba: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -252,6 +282,7 @@ struct PrimitiveOp {
 
 #[derive(Default)]
 struct RenderScratch {
+    key: Option<DrawCollectKey>,
     rect_vertices: Vec<NeoRectVertex>,
     polygon_vertices: Vec<NeoPolygonVertex>,
     image_vertices: Vec<NeoImageVertex>,
@@ -261,8 +292,19 @@ struct RenderScratch {
     render_ops: Vec<RenderOp>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct DrawCollectKey {
+    draw_ptr: usize,
+    draw_len: usize,
+    logical_width_bits: u32,
+    logical_height_bits: u32,
+    surface_is_srgb: bool,
+    image_cache_revision: u64,
+}
+
 impl RenderScratch {
     fn clear(&mut self) {
+        self.key = None;
         self.rect_vertices.clear();
         self.polygon_vertices.clear();
         self.image_vertices.clear();
@@ -280,6 +322,7 @@ pub struct WgpuRenderer {
     dummy_backdrop: CachedBackdrop,
     sampler_linear: wgpu::Sampler,
     image_cache: FxHashMap<ImageRef, CachedNeoImage>,
+    image_cache_revision: u64,
     font_system: FontSystem,
     font_revisions: FxHashMap<FontRef, u64>,
     registered_fonts: FxHashMap<FontRef, RegisteredFont>,
@@ -335,6 +378,7 @@ impl WgpuRenderer {
             dummy_backdrop,
             sampler_linear,
             image_cache: FxHashMap::default(),
+            image_cache_revision: 0,
             font_system,
             font_revisions: FxHashMap::default(),
             registered_fonts: FxHashMap::default(),
@@ -393,6 +437,7 @@ impl WgpuRenderer {
         for layer in &mut self.text_layers {
             layer.buffers.clear();
             layer.buffer_keys.clear();
+            layer.area_keys.clear();
         }
     }
 
@@ -420,7 +465,16 @@ impl WgpuRenderer {
             return RenderStatus::default();
         }
 
+        let profile = neo_profile_enabled();
+        let image_start = profile.then(Instant::now);
         let pending_images = self.prepare_images(ctx.device, ctx.queue, draw_list, resources);
+        if profile {
+            eprintln!(
+                "[eui-neo-wgpu] image_prepare={:.3}ms commands={}",
+                elapsed_ms(image_start),
+                draw_list.commands().len()
+            );
+        }
         self.render_prepared(ctx, draw_list, screen, pending_images)
     }
 
@@ -431,23 +485,40 @@ impl WgpuRenderer {
         screen: Screen,
         pending_images: bool,
     ) -> RenderStatus {
+        let profile = neo_profile_enabled();
+        let total_start = profile.then(Instant::now);
         let logical_rect = LayoutRect::new(0.0, 0.0, screen.width, screen.height);
         let mut scratch = std::mem::take(&mut self.scratch);
-        scratch.clear();
         let surface_is_srgb = self.format.is_srgb();
-        collect_draw_items(
-            draw_list,
-            logical_rect,
+        let collect_start = profile.then(Instant::now);
+        let (draw_ptr, draw_len) = draw_list.cache_key();
+        let collect_key = DrawCollectKey {
+            draw_ptr,
+            draw_len,
+            logical_width_bits: screen.width.to_bits(),
+            logical_height_bits: screen.height.to_bits(),
             surface_is_srgb,
-            &self.image_cache,
-            &mut scratch.rect_vertices,
-            &mut scratch.polygon_vertices,
-            &mut scratch.image_vertices,
-            &mut scratch.primitive_ops,
-            &mut scratch.text_items,
-            &mut scratch.image_items,
-            &mut scratch.render_ops,
-        );
+            image_cache_revision: self.image_cache_revision,
+        };
+        let collect_hit = scratch.key == Some(collect_key);
+        if !collect_hit {
+            scratch.clear();
+            collect_draw_items(
+                draw_list,
+                logical_rect,
+                surface_is_srgb,
+                &self.image_cache,
+                &mut scratch.rect_vertices,
+                &mut scratch.polygon_vertices,
+                &mut scratch.image_vertices,
+                &mut scratch.primitive_ops,
+                &mut scratch.text_items,
+                &mut scratch.image_items,
+                &mut scratch.render_ops,
+            );
+            scratch.key = Some(collect_key);
+        }
+        let collect_ms = elapsed_ms(collect_start);
 
         if scratch.rect_vertices.is_empty()
             && scratch.polygon_vertices.is_empty()
@@ -476,6 +547,7 @@ impl WgpuRenderer {
             0,
             bytemuck::bytes_of(&screen_uniform),
         );
+        let upload_start = profile.then(Instant::now);
         WgpuVertexBuffer::upload(
             &mut self.rect_vertex_buffer,
             ctx.device,
@@ -497,13 +569,16 @@ impl WgpuRenderer {
             "eui_neo_image_vertices",
             &scratch.image_vertices,
         );
+        let upload_ms = elapsed_ms(upload_start);
 
+        let text_start = profile.then(Instant::now);
         self.prepare_text_layers(
             ctx,
             &scratch.render_ops,
             &scratch.text_items,
             [screen.width, screen.height],
         );
+        let text_ms = elapsed_ms(text_start);
 
         let rect_upload = self
             .rect_vertex_buffer
@@ -517,6 +592,7 @@ impl WgpuRenderer {
             .image_vertex_buffer
             .as_ref()
             .and_then(WgpuVertexBuffer::ready);
+        let render_start = profile.then(Instant::now);
         render_ordered_ops(
             self,
             ctx,
@@ -528,11 +604,31 @@ impl WgpuRenderer {
             &scratch.image_items,
             [screen.width, screen.height],
         );
+        let render_ms = elapsed_ms(render_start);
 
         self.frames_since_atlas_trim = self.frames_since_atlas_trim.saturating_add(1);
         if self.frames_since_atlas_trim >= ATLAS_TRIM_INTERVAL_FRAMES {
             self.atlas.trim();
             self.frames_since_atlas_trim = 0;
+            for layer in &mut self.text_layers {
+                layer.area_keys.clear();
+            }
+        }
+        if profile {
+            eprintln!(
+                "[eui-neo-wgpu] render total={:.3}ms collect={:.3}ms upload={:.3}ms text={:.3}ms render_ops={:.3}ms collect_hit={} rect_v={} poly_v={} image_v={} text_items={} ops={}",
+                elapsed_ms(total_start),
+                collect_ms,
+                upload_ms,
+                text_ms,
+                render_ms,
+                collect_hit,
+                scratch.rect_vertices.len(),
+                scratch.polygon_vertices.len(),
+                scratch.image_vertices.len(),
+                scratch.text_items.len(),
+                scratch.render_ops.len()
+            );
         }
         self.scratch = scratch;
         RenderStatus {
@@ -613,6 +709,7 @@ impl WgpuRenderer {
                 revision: image.revision,
             },
         );
+        self.image_cache_revision = self.image_cache_revision.wrapping_add(1);
     }
 
     fn cache_pixel_image(
@@ -646,6 +743,7 @@ impl WgpuRenderer {
             pixels,
         );
         self.image_cache.insert(key.clone(), cached);
+        self.image_cache_revision = self.image_cache_revision.wrapping_add(1);
     }
 
     fn prepare_text_layers(
@@ -698,6 +796,7 @@ impl WgpuRenderer {
         let default_text_family = self.default_text_family.clone();
         let default_icon_family = self.default_icon_family.clone();
         let layer = &mut self.text_layers[layer_index];
+        let mut buffers_changed = layer.buffer_keys.len() != text_items.len();
 
         for (index, item) in text_items.iter().enumerate() {
             let metrics = text_buffer_metrics(item, logical_size, text_scale, scale_x, scale_y);
@@ -705,6 +804,7 @@ impl WgpuRenderer {
             if layer.buffer_keys.get(index) == Some(&key) {
                 continue;
             }
+            buffers_changed = true;
 
             let buffer = create_text_buffer(
                 &mut self.font_system,
@@ -725,36 +825,46 @@ impl WgpuRenderer {
         layer.buffers.truncate(text_items.len());
         layer.buffer_keys.truncate(text_items.len());
 
-        let areas: Vec<_> = layer
-            .buffers
-            .iter()
-            .zip(text_items.iter())
-            .map(|(buffer, item)| {
-                let text_height =
-                    laid_out_text_height(buffer).unwrap_or(item.font_size * text_scale * 1.25);
-                let rect_height = item.frame.height * scale_y;
-                let y_offset = match item.vertical_align {
-                    VerticalAlign::Top => 0.0,
-                    VerticalAlign::Center => ((rect_height - text_height) * 0.5).max(0.0),
-                    VerticalAlign::Bottom => (rect_height - text_height).max(0.0),
-                };
-                let color = multiply_alpha(item.color, 1.0);
-                TextArea {
-                    buffer,
-                    left: item.frame.x * scale_x,
-                    top: item.frame.y * scale_y + y_offset,
-                    scale: 1.0,
-                    bounds: TextBounds {
-                        left: (item.clip.x * scale_x).round() as i32,
-                        top: (item.clip.y * scale_y).round() as i32,
-                        right: (item.clip.right() * scale_x).round() as i32,
-                        bottom: (item.clip.bottom() * scale_y).round() as i32,
-                    },
-                    default_color: glyph_color(color),
-                    custom_glyphs: &[],
-                }
-            })
-            .collect();
+        let mut area_keys = Vec::with_capacity(text_items.len());
+        let mut areas = Vec::with_capacity(text_items.len());
+        for (buffer, item) in layer.buffers.iter().zip(text_items.iter()) {
+            let text_height =
+                laid_out_text_height(buffer).unwrap_or(item.font_size * text_scale * 1.25);
+            let rect_height = item.frame.height * scale_y;
+            let y_offset = match item.vertical_align {
+                VerticalAlign::Top => 0.0,
+                VerticalAlign::Center => ((rect_height - text_height) * 0.5).max(0.0),
+                VerticalAlign::Bottom => (rect_height - text_height).max(0.0),
+            };
+            let left = item.frame.x * scale_x;
+            let top = item.frame.y * scale_y + y_offset;
+            let bounds = TextBounds {
+                left: (item.clip.x * scale_x).round() as i32,
+                top: (item.clip.y * scale_y).round() as i32,
+                right: (item.clip.right() * scale_x).round() as i32,
+                bottom: (item.clip.bottom() * scale_y).round() as i32,
+            };
+            let color = multiply_alpha(item.color, 1.0);
+            area_keys.push(TextAreaKey {
+                left_bits: left.to_bits(),
+                top_bits: top.to_bits(),
+                bounds: [bounds.left, bounds.top, bounds.right, bounds.bottom],
+                color_rgba: packed_color(color),
+            });
+            areas.push(TextArea {
+                buffer,
+                left,
+                top,
+                scale: 1.0,
+                bounds,
+                default_color: glyph_color(color),
+                custom_glyphs: &[],
+            });
+        }
+
+        if !buffers_changed && layer.area_keys == area_keys {
+            return;
+        }
 
         match layer.renderer.prepare(
             ctx.device,
@@ -765,8 +875,11 @@ impl WgpuRenderer {
             areas,
             &mut self.swash_cache,
         ) {
-            Ok(()) => {}
+            Ok(()) => {
+                layer.area_keys = area_keys;
+            }
             Err(error) => {
+                layer.area_keys.clear();
                 eprintln!("[eui-neo-wgpu] text prepare failed: {error}");
             }
         }
@@ -2206,6 +2319,17 @@ fn transform_point(point: [f32; 2], frame: LayoutRect, transform: Transform) -> 
     ]
 }
 
+fn neo_profile_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("SKY_NEO_PROFILE").is_some())
+}
+
+fn elapsed_ms(start: Option<Instant>) -> f32 {
+    start
+        .map(|start| start.elapsed().as_secs_f32() * 1000.0)
+        .unwrap_or(0.0)
+}
+
 fn scissor_rect(
     rect: LayoutRect,
     logical_size: [f32; 2],
@@ -2292,6 +2416,13 @@ fn glyph_color(color: Color) -> glyphon::Color {
         channel(color.b),
         channel(color.a),
     )
+}
+
+fn packed_color(color: Color) -> u32 {
+    u32::from(channel(color.r)) << 24
+        | u32::from(channel(color.g)) << 16
+        | u32::from(channel(color.b)) << 8
+        | u32::from(channel(color.a))
 }
 
 fn channel(value: f32) -> u8 {
@@ -2534,7 +2665,7 @@ mod tests {
 
     fn rect_draw(id: &str) -> UiRectDraw {
         UiRectDraw {
-            id: id.to_string(),
+            id: id.into(),
             frame: LayoutRect::new(0.0, 0.0, 100.0, 40.0),
             color: Color::WHITE,
             gradient: Gradient::default(),
@@ -2549,7 +2680,7 @@ mod tests {
 
     fn text_draw(id: &str) -> UiTextDraw {
         UiTextDraw {
-            id: id.to_string(),
+            id: id.into(),
             frame: LayoutRect::new(0.0, 0.0, 100.0, 24.0),
             text: "Text".to_string(),
             font: FontRef::DefaultText,

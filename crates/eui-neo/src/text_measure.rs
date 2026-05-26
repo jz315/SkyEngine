@@ -1,7 +1,10 @@
 use std::cell::RefCell;
 
+use std::hash::{Hash, Hasher};
+
 use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping, Weight, Wrap};
 use rustc_hash::FxHashMap;
+use rustc_hash::FxHasher;
 
 use super::fonts::{
     is_icon_font, load_font_bytes, resolve_family, resolved_font_weight, FontRef, RegisteredFont,
@@ -35,14 +38,21 @@ pub trait TextSystem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct MeasureKey {
-    value: String,
+struct MeasureKeyHeader {
+    text_hash: u64,
+    text_len: usize,
     font: FontRef,
     font_size_bits: u32,
     font_weight: i32,
     line_height_bits: u32,
     max_width_bits: u32,
     wrap: bool,
+}
+
+#[derive(Debug, Clone)]
+struct MeasureCacheEntry {
+    text: String,
+    measure: TextMeasure,
 }
 
 /// Default text system backed by `cosmic-text` and platform font discovery.
@@ -52,7 +62,8 @@ pub struct DefaultTextSystem {
     registered: FxHashMap<FontRef, RegisteredFont>,
     default_text_family: Option<String>,
     default_icon_family: Option<String>,
-    cache: FxHashMap<MeasureKey, TextMeasure>,
+    cache: FxHashMap<MeasureKeyHeader, Vec<MeasureCacheEntry>>,
+    cache_entries: usize,
 }
 
 impl Default for DefaultTextSystem {
@@ -69,6 +80,7 @@ impl DefaultTextSystem {
             default_text_family: None,
             default_icon_family: None,
             cache: FxHashMap::default(),
+            cache_entries: 0,
         }
     }
 }
@@ -98,7 +110,7 @@ impl TextSystem for DefaultTextSystem {
             | FontRef::Asset(_) => {}
         }
         self.registered.insert(font.clone(), loaded);
-        self.cache.clear();
+        self.clear_cache();
     }
 
     fn measure(&mut self, request: TextMeasureRequest<'_>) -> TextMeasure {
@@ -106,8 +118,9 @@ impl TextSystem for DefaultTextSystem {
             return TextMeasure::default();
         }
         let font_size = request.font_size.max(1.0);
-        let key = MeasureKey {
-            value: request.text.to_string(),
+        let key = MeasureKeyHeader {
+            text_hash: hash_text(request.text),
+            text_len: request.text.len(),
             font: request.font.clone(),
             font_size_bits: font_size.to_bits(),
             font_weight: request.font_weight,
@@ -115,8 +128,10 @@ impl TextSystem for DefaultTextSystem {
             max_width_bits: request.max_width.max(0.0).to_bits(),
             wrap: request.wrap,
         };
-        if let Some(measure) = self.cache.get(&key).copied() {
-            return measure;
+        if let Some(entries) = self.cache.get(&key) {
+            if let Some(entry) = entries.iter().find(|entry| entry.text == request.text) {
+                return entry.measure;
+            }
         }
         let registered = &self.registered;
         let measure = measure_shaped_text(
@@ -129,12 +144,29 @@ impl TextSystem for DefaultTextSystem {
                 ..request
             },
         );
-        if self.cache.len() > 4096 {
-            self.cache.clear();
+        if self.cache_entries > 4096 {
+            self.clear_cache();
         }
-        self.cache.insert(key, measure);
+        self.cache.entry(key).or_default().push(MeasureCacheEntry {
+            text: request.text.to_owned(),
+            measure,
+        });
+        self.cache_entries += 1;
         measure
     }
+}
+
+impl DefaultTextSystem {
+    fn clear_cache(&mut self) {
+        self.cache.clear();
+        self.cache_entries = 0;
+    }
+}
+
+fn hash_text(value: &str) -> u64 {
+    let mut hasher = FxHasher::default();
+    value.hash(&mut hasher);
+    hasher.finish()
 }
 
 thread_local! {
@@ -264,4 +296,51 @@ fn measurement_width_limit(value: &str, font_size: f32) -> f32 {
 
 fn fallback_text_width(value: &str, font_size: f32) -> f32 {
     value.chars().count() as f32 * font_size * 0.5
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn measure_cache_hit_does_not_insert_duplicate_text_entry() {
+        let mut system = DefaultTextSystem::new();
+        let request = TextMeasureRequest {
+            text: "Static label",
+            font: &FontRef::DefaultText,
+            font_size: 14.0,
+            font_weight: 400,
+            line_height: 0.0,
+            max_width: 0.0,
+            wrap: false,
+        };
+
+        let first = system.measure(request);
+        let entries_after_first = system.cache_entries;
+        let second = system.measure(request);
+
+        assert_eq!(first, second);
+        assert_eq!(entries_after_first, 1);
+        assert_eq!(system.cache_entries, entries_after_first);
+    }
+
+    #[test]
+    fn measure_cache_keeps_distinct_text_with_same_layout_options() {
+        let mut system = DefaultTextSystem::new();
+        let mut request = TextMeasureRequest {
+            text: "Alpha",
+            font: &FontRef::DefaultText,
+            font_size: 14.0,
+            font_weight: 400,
+            line_height: 0.0,
+            max_width: 0.0,
+            wrap: false,
+        };
+
+        let _ = system.measure(request);
+        request.text = "Beta";
+        let _ = system.measure(request);
+
+        assert_eq!(system.cache_entries, 2);
+    }
 }

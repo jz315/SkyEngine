@@ -1,6 +1,6 @@
 //! winit lifecycle integration for the app runner.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use winit::application::ApplicationHandler;
@@ -48,6 +48,7 @@ pub(in crate::app) struct RunnerHandler {
     runtime: Option<RuntimeState>,
     pending_redraw: bool,
     kajiya_debug_frames: u64,
+    app_profile_frames: u64,
     did_shutdown: bool,
 }
 
@@ -87,6 +88,7 @@ impl RunnerHandler {
             runtime: None,
             pending_redraw: false,
             kajiya_debug_frames: 0,
+            app_profile_frames: 0,
             did_shutdown: false,
         }
     }
@@ -153,6 +155,8 @@ impl RunnerHandler {
         }
 
         let now = Instant::now();
+        let mut app_profile = AppFrameProfile::new(self.app_profile_frames, now);
+        let mut app_profile_samples = AppFrameProfileSamples::default();
         let raw_dt = self
             .runtime
             .as_ref()
@@ -168,6 +172,7 @@ impl RunnerHandler {
         let mut should_exit = false;
         let mut aux_window_requests = Vec::new();
         let logs = Arc::clone(&self.logs);
+        app_profile_samples.frame_setup_ms = app_profile.mark();
 
         {
             let (world_slot, runtime_slot, app_state, frame_rate_limit) = (
@@ -183,17 +188,21 @@ impl RunnerHandler {
             if self.input_enabled {
                 Self::sync_input_resource(world, input_snapshot);
             }
+            app_profile_samples.input_sync_ms = app_profile.mark();
 
             // Update action-based input system (if registered).
             if let Some(actions) = world.get_resource_mut::<crate::input::InputActions>() {
                 actions.update(&input_snapshot);
             }
+            app_profile_samples.actions_ms = app_profile.mark();
 
             crate::app::services::update_assets(world);
+            app_profile_samples.assets_ms = app_profile.mark();
 
             if auto_tick {
                 world.tick_with_frame_delta(dt, raw_dt);
             }
+            app_profile_samples.tick_ms = app_profile.mark();
             let frame_dt = if auto_tick {
                 world.time.frame_delta
             } else {
@@ -203,12 +212,16 @@ impl RunnerHandler {
             logging::set_logger_frame(Some(world.time.frame_count));
 
             crate::app::services::update_video(world, frame_dt);
+            app_profile_samples.video_ms = app_profile.mark();
 
             if exit_on_escape && input_snapshot.key_pressed(KeyCode::Escape) {
                 rt.input.begin_frame();
+                app_profile_samples.input_reset_ms = app_profile.mark();
                 should_exit = true;
             } else {
-                match rt.renderer.begin_frame() {
+                let begin_frame_result = rt.renderer.begin_frame();
+                app_profile_samples.begin_frame_ms = app_profile.mark();
+                match begin_frame_result {
                     Ok(()) => {
                         let mut exit_requested = false;
                         let mut redraw_requested = false;
@@ -232,8 +245,10 @@ impl RunnerHandler {
                             };
                             app_state.update(ctx);
                         }
+                        app_profile_samples.update_ms = app_profile.mark();
 
                         crate::app::services::update_audio_after_frame(world);
+                        app_profile_samples.audio_ms = app_profile.mark();
 
                         #[cfg(feature = "egui")]
                         {
@@ -252,14 +267,19 @@ impl RunnerHandler {
                                 );
                             }
                         }
+                        app_profile_samples.egui_ms = app_profile.mark();
 
                         crate::app::screenshots::save_requested(
                             rt.renderer.as_mut(),
                             &mut screenshot_requests,
                         );
+                        app_profile_samples.screenshot_ms = app_profile.mark();
                         rt.window.pre_present_notify();
+                        app_profile_samples.pre_present_ms = app_profile.mark();
                         rt.renderer.end_frame();
+                        app_profile_samples.end_frame_ms = app_profile.mark();
                         rt.input.begin_frame();
+                        app_profile_samples.input_reset_ms = app_profile.mark();
 
                         request_redraw = redraw_requested;
                         should_exit = exit_requested;
@@ -287,12 +307,16 @@ impl RunnerHandler {
         }
 
         logging::drain_logger(logs.as_ref());
+        app_profile_samples.log_drain_ms = app_profile.mark();
 
         if request_redraw {
             self.request_redraw();
         }
+        app_profile_samples.redraw_request_ms = app_profile.mark();
         self.create_aux_windows(event_loop, aux_window_requests);
+        app_profile_samples.aux_windows_ms = app_profile.mark();
         self.prune_aux_windows();
+        app_profile_samples.prune_windows_ms = app_profile.mark();
         if trace_kajiya && should_trace_kajiya_runner_frame(trace_frame) {
             eprintln!(
                 "[SkyEngine][App] run_frame end frame={} request_redraw={} should_exit={}",
@@ -302,6 +326,9 @@ impl RunnerHandler {
         if trace_kajiya {
             self.kajiya_debug_frames = self.kajiya_debug_frames.wrapping_add(1);
         }
+        app_profile_samples.shutdown_ms = app_profile.mark();
+        app_profile.print(&app_profile_samples, request_redraw, should_exit);
+        self.app_profile_frames = self.app_profile_frames.wrapping_add(1);
         if should_exit {
             self.shutdown_and_exit(event_loop);
         }
@@ -663,9 +690,110 @@ fn should_trace_kajiya_runner_frame(frame_index: u64) -> bool {
     kajiya_trace_enabled() && (frame_index < 8 || frame_index % 120 == 0)
 }
 
+#[derive(Debug, Default)]
+struct AppFrameProfileSamples {
+    frame_setup_ms: f32,
+    input_sync_ms: f32,
+    actions_ms: f32,
+    assets_ms: f32,
+    tick_ms: f32,
+    video_ms: f32,
+    begin_frame_ms: f32,
+    update_ms: f32,
+    audio_ms: f32,
+    egui_ms: f32,
+    screenshot_ms: f32,
+    pre_present_ms: f32,
+    end_frame_ms: f32,
+    input_reset_ms: f32,
+    log_drain_ms: f32,
+    redraw_request_ms: f32,
+    aux_windows_ms: f32,
+    prune_windows_ms: f32,
+    shutdown_ms: f32,
+}
+
+struct AppFrameProfile {
+    enabled: bool,
+    frame: u64,
+    start: Instant,
+    last: Instant,
+}
+
+impl AppFrameProfile {
+    fn new(frame: u64, start: Instant) -> Self {
+        Self {
+            enabled: app_profile_enabled(),
+            frame,
+            start,
+            last: start,
+        }
+    }
+
+    fn mark(&mut self) -> f32 {
+        if !self.enabled {
+            return 0.0;
+        }
+        let now = Instant::now();
+        let elapsed_ms = now.duration_since(self.last).as_secs_f32() * 1000.0;
+        self.last = now;
+        elapsed_ms
+    }
+
+    fn print(&self, samples: &AppFrameProfileSamples, request_redraw: bool, should_exit: bool) {
+        if !self.enabled || !should_trace_app_profile_frame(self.frame) {
+            return;
+        }
+        let total_ms = self.start.elapsed().as_secs_f32() * 1000.0;
+        eprintln!(
+            concat!(
+                "[SkyEngine][AppProfile] frame={} total={:.3}ms ",
+                "setup={:.3} input={:.3} actions={:.3} assets={:.3} tick={:.3} video={:.3} ",
+                "surface_begin={:.3} update={:.3} audio={:.3} egui={:.3} screenshot={:.3} ",
+                "pre_present={:.3} end_submit_present={:.3} input_reset={:.3} log={:.3} ",
+                "redraw={:.3} aux={:.3} prune={:.3} shutdown={:.3} request_redraw={} should_exit={}"
+            ),
+            self.frame,
+            total_ms,
+            samples.frame_setup_ms,
+            samples.input_sync_ms,
+            samples.actions_ms,
+            samples.assets_ms,
+            samples.tick_ms,
+            samples.video_ms,
+            samples.begin_frame_ms,
+            samples.update_ms,
+            samples.audio_ms,
+            samples.egui_ms,
+            samples.screenshot_ms,
+            samples.pre_present_ms,
+            samples.end_frame_ms,
+            samples.input_reset_ms,
+            samples.log_drain_ms,
+            samples.redraw_request_ms,
+            samples.aux_windows_ms,
+            samples.prune_windows_ms,
+            samples.shutdown_ms,
+            request_redraw,
+            should_exit
+        );
+    }
+}
+
+fn should_trace_app_profile_frame(frame_index: u64) -> bool {
+    frame_index < 8 || frame_index % 120 == 0
+}
+
+fn app_profile_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("SKY_APP_PROFILE").is_some_and(env_flag_enabled))
+}
+
 fn kajiya_trace_enabled() -> bool {
-    std::env::var_os("SKY_KAJIYA_TRACE").is_some_and(|value| {
-        let value = value.to_string_lossy();
-        !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
-    })
+    std::env::var_os("SKY_KAJIYA_TRACE").is_some_and(env_flag_enabled)
+}
+
+fn env_flag_enabled(value: std::ffi::OsString) -> bool {
+    let value = value.to_string_lossy();
+    !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
 }

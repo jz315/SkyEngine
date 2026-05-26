@@ -1,7 +1,11 @@
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
+use std::sync::OnceLock;
+use std::time::Instant;
 
 use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
+use smallvec::SmallVec;
 
 use super::dsl::UiCallbacks;
 use super::event::InteractionState;
@@ -116,6 +120,7 @@ pub struct Runtime {
     needs_compose: bool,
     full_redraw: bool,
     text_system: Box<dyn TextSystem>,
+    draw_cache: RefCell<DrawListCache>,
 }
 
 impl std::fmt::Debug for Runtime {
@@ -166,6 +171,19 @@ struct ElementAnimation {
     border: Option<AnimatedValue<Border>>,
     shadow: Option<AnimatedValue<Shadow>>,
     transform: Option<AnimatedValue<Transform>>,
+}
+
+#[derive(Debug, Default)]
+struct DrawListCache {
+    valid: bool,
+    draw_list: super::draw::UiDrawList,
+}
+
+impl DrawListCache {
+    fn clear(&mut self) {
+        self.valid = false;
+        self.draw_list = super::draw::UiDrawList::default();
+    }
 }
 
 impl ElementAnimation {
@@ -231,6 +249,7 @@ impl Runtime {
             needs_compose: false,
             full_redraw: true,
             text_system: Box::new(text_system),
+            draw_cache: RefCell::new(DrawListCache::default()),
         }
     }
 
@@ -238,16 +257,37 @@ impl Runtime {
         self.text_system.as_mut()
     }
 
+    fn invalidate_draw_cache(&self) {
+        self.draw_cache.borrow_mut().clear();
+    }
+
+    fn request_render(&mut self) {
+        self.needs_render = true;
+    }
+
+    fn mark_render_dirty(&mut self) {
+        self.needs_render = true;
+        self.invalidate_draw_cache();
+    }
+
+    fn mark_compose_dirty(&mut self) {
+        self.needs_compose = true;
+        self.mark_render_dirty();
+    }
+
+    fn mark_full_redraw_dirty(&mut self) {
+        self.full_redraw = true;
+        self.mark_render_dirty();
+    }
+
     pub fn register_font(&mut self, font: &FontRef, bytes: &[u8]) {
         self.text_system.register_font(font, bytes);
-        self.needs_render = true;
-        self.needs_compose = true;
+        self.mark_compose_dirty();
     }
 
     pub fn register_skin(&mut self, skin: NeoSkin) {
         self.skins.register(skin);
-        self.needs_render = true;
-        self.needs_compose = true;
+        self.mark_compose_dirty();
     }
 
     pub fn skins(&self) -> &SkinRegistry {
@@ -255,8 +295,7 @@ impl Runtime {
     }
 
     pub fn skins_mut(&mut self) -> &mut SkinRegistry {
-        self.needs_render = true;
-        self.needs_compose = true;
+        self.mark_compose_dirty();
         &mut self.skins
     }
 
@@ -285,7 +324,18 @@ impl Runtime {
     }
 
     pub fn draw_list(&self) -> super::draw::UiDrawList {
-        super::draw::build_draw_list(self)
+        {
+            let cache = self.draw_cache.borrow();
+            if cache.valid {
+                return cache.draw_list.clone();
+            }
+        }
+
+        let draw_list = super::draw::build_draw_list(self);
+        let mut cache = self.draw_cache.borrow_mut();
+        cache.valid = true;
+        cache.draw_list = draw_list.clone();
+        draw_list
     }
 
     pub fn needs_render(&self) -> bool {
@@ -327,32 +377,51 @@ impl Runtime {
     }
 
     pub fn mark_full_redraw(&mut self) {
-        self.needs_render = true;
-        self.full_redraw = true;
+        self.mark_full_redraw_dirty();
     }
 
     pub fn compose(&mut self, width: f32, height: f32, compose: impl FnOnce(&mut Ui, Screen)) {
+        let profile = neo_profile_enabled();
+        let total_start = profile.then(Instant::now);
         self.needs_compose = false;
         let screen = Screen { width, height };
         let mut ui = Ui::new(self.page_id.clone());
         ui.set_skins(self.skins.clone());
         ui.set_focused_id(self.focused_id.clone());
-        ui.set_previous_frames(collect_frames(&self.roots));
+        let previous_roots_start = profile.then(Instant::now);
+        ui.set_previous_roots(std::mem::take(&mut self.roots));
+        let previous_roots_ms = elapsed_ms(previous_roots_start);
         for (id, response) in &self.responses {
             ui.set_response(id.clone(), *response);
         }
+        let build_start = profile.then(Instant::now);
         compose(&mut ui, screen);
+        let build_ms = elapsed_ms(build_start);
         let (mut roots, callbacks) = ui.into_parts();
+        let layout_start = profile.then(Instant::now);
         layout_roots_with_text_system(&mut roots, width, height, self.text_system.as_mut());
+        let layout_ms = elapsed_ms(layout_start);
+        let structure_start = profile.then(Instant::now);
         let next_structure = collect_structure(&roots, self.structure.len());
         if next_structure != self.structure || self.screen != screen {
-            self.needs_render = true;
-            self.full_redraw = true;
+            self.mark_full_redraw_dirty();
         }
+        let structure_ms = elapsed_ms(structure_start);
         self.structure = next_structure;
         self.screen = screen;
         self.roots = roots;
         self.callbacks = callbacks;
+        if profile {
+            eprintln!(
+                "[eui-neo] compose total={:.3}ms previous_roots={:.3}ms build={:.3}ms layout={:.3}ms structure={:.3}ms elements={}",
+                elapsed_ms(total_start),
+                previous_roots_ms,
+                build_ms,
+                layout_ms,
+                structure_ms,
+                self.structure.len()
+            );
+        }
     }
 
     pub fn current_frame(&self) -> Frame {
@@ -529,8 +598,7 @@ impl Runtime {
                     .unwrap_or_default();
                 if let Some(callback) = self.callbacks.on_context_menu.get_mut(target_id) {
                     callback(event, frame);
-                    self.needs_compose = true;
-                    self.needs_render = true;
+                    self.mark_compose_dirty();
                 }
             }
         }
@@ -555,12 +623,12 @@ impl Runtime {
         let mut responses = FxHashMap::default();
         for id in ids {
             let previous = self.interactions.get(&id).copied().unwrap_or_default();
-            let active = captured_id.as_deref() == Some(id.as_str());
-            let hovered = hover_id.as_deref() == Some(id.as_str());
+            let active = captured_id.as_deref() == Some(id.as_ref());
+            let hovered = hover_id.as_deref() == Some(id.as_ref());
             let pressed = active && event.down;
             let press_started = active && event.pressed_this_frame;
             let released = active && event.released_this_frame;
-            let clicked = released && hit_id.as_deref() == Some(id.as_str());
+            let clicked = released && hit_id.as_deref() == Some(id.as_ref());
             let drag_start = if press_started {
                 position.unwrap_or(previous.drag_start)
             } else {
@@ -600,15 +668,13 @@ impl Runtime {
                     .unwrap_or_default();
                 if let Some(callback) = self.callbacks.on_press.get_mut(&id) {
                     callback(event, frame);
-                    self.needs_compose = true;
-                    self.needs_render = true;
+                    self.mark_compose_dirty();
                 }
             }
             if clicked {
                 if let Some(callback) = self.callbacks.on_click.get_mut(&id) {
                     callback();
-                    self.needs_compose = true;
-                    self.needs_render = true;
+                    self.mark_compose_dirty();
                 }
             }
             if pressed
@@ -625,8 +691,7 @@ impl Runtime {
                         total_x: drag_total[0],
                         total_y: drag_total[1],
                     });
-                    self.needs_compose = true;
-                    self.needs_render = true;
+                    self.mark_compose_dirty();
                 }
             }
             if state != InteractionState::default() || state.changed {
@@ -651,7 +716,7 @@ impl Runtime {
             self.drag_origin = None;
         }
         if changed {
-            self.needs_render = true;
+            self.mark_render_dirty();
         }
         self.interactions = next;
         self.responses = responses;
@@ -672,8 +737,7 @@ impl Runtime {
             return false;
         };
         callback(event);
-        self.needs_compose = true;
-        self.needs_render = true;
+        self.mark_compose_dirty();
         true
     }
 
@@ -688,8 +752,7 @@ impl Runtime {
             return false;
         };
         callback(event);
-        self.needs_compose = true;
-        self.needs_render = true;
+        self.mark_compose_dirty();
         true
     }
 
@@ -713,12 +776,11 @@ impl Runtime {
                 state.active = false;
                 if let Some(callback) = self.callbacks.on_timer.get_mut(&id) {
                     callback();
-                    self.needs_compose = true;
-                    self.needs_render = true;
+                    self.mark_compose_dirty();
                     changed = true;
                 }
             } else if state.active {
-                self.needs_render = true;
+                self.request_render();
             }
         }
         self.timers.retain(|_, state| state.seen);
@@ -750,7 +812,7 @@ impl Runtime {
 
         let active = self.animations.values().any(ElementAnimation::is_active);
         if changed || active {
-            self.needs_render = true;
+            self.mark_render_dirty();
         }
         changed
     }
@@ -1078,8 +1140,7 @@ impl Runtime {
                 callback(true);
             }
         }
-        self.needs_compose = true;
-        self.needs_render = true;
+        self.mark_compose_dirty();
     }
 
     fn resolve_id_ref<'a>(&self, id: &'a str) -> Cow<'a, str> {
@@ -1108,8 +1169,19 @@ fn is_resolved_id(id: &str, page_id: &str) -> bool {
         && id.as_bytes().starts_with(page_id.as_bytes())
 }
 
-fn sorted_z_indices(elements: &[Element]) -> Vec<usize> {
-    let mut order: Vec<_> = (0..elements.len()).collect();
+fn neo_profile_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("SKY_NEO_PROFILE").is_some())
+}
+
+fn elapsed_ms(start: Option<Instant>) -> f32 {
+    start
+        .map(|start| start.elapsed().as_secs_f32() * 1000.0)
+        .unwrap_or(0.0)
+}
+
+fn sorted_z_indices(elements: &[Element]) -> SmallVec<[usize; 16]> {
+    let mut order: SmallVec<[usize; 16]> = (0..elements.len()).collect();
     order.sort_by_key(|&index| (elements[index].z_index, index));
     order
 }
@@ -1219,21 +1291,6 @@ fn collect_structure(roots: &[Element], previous_len: usize) -> Vec<ElementSnaps
     snapshots
 }
 
-fn collect_frames(roots: &[Element]) -> FxHashMap<String, LayoutRect> {
-    let mut frames = FxHashMap::default();
-    for root in roots {
-        collect_element_frames(root, &mut frames);
-    }
-    frames
-}
-
-fn collect_element_frames(element: &Element, frames: &mut FxHashMap<String, LayoutRect>) {
-    frames.insert(element.id.clone(), element.frame);
-    for child in &element.children {
-        collect_element_frames(child, frames);
-    }
-}
-
 fn collect_element_structure(element: &Element, snapshots: &mut Vec<ElementSnapshot>) {
     snapshots.push(ElementSnapshot {
         id: element.id.clone(),
@@ -1242,7 +1299,7 @@ fn collect_element_structure(element: &Element, snapshots: &mut Vec<ElementSnaps
         clip: element.clip,
         clip_radius_bits: element.clip_radius.to_bits(),
         child_count: element.children.len(),
-        signature: element_signature(element),
+        signature: element_structure_signature(element),
     });
     for child in &element.children {
         collect_element_structure(child, snapshots);
@@ -1304,7 +1361,7 @@ fn hit_test_elements<'a>(
         return None;
     }
 
-    let mut order: Vec<usize> = (0..elements.len()).collect();
+    let mut order: SmallVec<[usize; 16]> = (0..elements.len()).collect();
     order.sort_by_key(|&index| (elements[index].z_index, index));
     for index in order.into_iter().rev() {
         if let Some(target) = hit_test_element(&elements[index], position, clip, predicate) {
@@ -1426,49 +1483,77 @@ fn collect_timer_ids(elements: &[Element], timers: &mut Vec<(String, f32)>) {
     }
 }
 
-fn element_signature(element: &Element) -> u64 {
+fn element_structure_signature(element: &Element) -> u64 {
     let mut hasher = FxHasher::default();
-    element.kind.hash(&mut hasher);
-    element.id.hash(&mut hasher);
-    element.has_x.hash(&mut hasher);
-    element.has_y.hash(&mut hasher);
-    hash_f32(element.x, &mut hasher);
-    hash_f32(element.y, &mut hasher);
-    hash_size(element.width, &mut hasher);
-    hash_size(element.height, &mut hasher);
-    hash_f32(element.margin.left, &mut hasher);
-    hash_f32(element.margin.top, &mut hasher);
-    hash_f32(element.margin.right, &mut hasher);
-    hash_f32(element.margin.bottom, &mut hasher);
-    hash_f32(element.spacing, &mut hasher);
-    element.main_align.hash(&mut hasher);
-    element.cross_align.hash(&mut hasher);
-    element.z_index.hash(&mut hasher);
-    element.clip.hash(&mut hasher);
-    hash_f32(element.clip_radius, &mut hasher);
-    hash_color(element.color, &mut hasher);
-    hash_color(element.text_color, &mut hasher);
-    hash_f32(element.radius, &mut hasher);
-    hash_f32(element.opacity, &mut hasher);
-    element.text.hash(&mut hasher);
-    element.font.hash(&mut hasher);
-    hash_f32(element.font_size, &mut hasher);
-    hash_f32(element.line_height, &mut hasher);
-    element.image.hash(&mut hasher);
-    element.image_fit.hash(&mut hasher);
-    hash_f32(element.slice.left, &mut hasher);
-    hash_f32(element.slice.top, &mut hasher);
-    hash_f32(element.slice.right, &mut hasher);
-    hash_f32(element.slice.bottom, &mut hasher);
-    hash_f32(element.content_inset.left, &mut hasher);
-    hash_f32(element.content_inset.top, &mut hasher);
-    hash_f32(element.content_inset.right, &mut hasher);
-    hash_f32(element.content_inset.bottom, &mut hasher);
-    element.center_mode.hash(&mut hasher);
-    element.edge_mode.hash(&mut hasher);
+    hash_rect(element.frame, &mut hasher);
+
+    match element.kind {
+        ElementKind::Row | ElementKind::Column | ElementKind::Stack => {
+            hash_transform(element.transform, &mut hasher);
+            hash_f32(element.opacity, &mut hasher);
+        }
+        ElementKind::Rect => {
+            hash_color(element.color, &mut hasher);
+            hash_gradient(element.gradient, &mut hasher);
+            hash_border(element.border, &mut hasher);
+            hash_shadow(element.shadow, &mut hasher);
+            hash_transform(element.transform, &mut hasher);
+            hash_f32(element.radius, &mut hasher);
+            hash_f32(element.blur, &mut hasher);
+            hash_f32(element.opacity, &mut hasher);
+        }
+        ElementKind::Polygon => {
+            hash_color(element.color, &mut hasher);
+            hash_transform(element.transform, &mut hasher);
+            hash_f32(element.opacity, &mut hasher);
+            for point in &element.polygon_points {
+                hash_f32(point[0], &mut hasher);
+                hash_f32(point[1], &mut hasher);
+            }
+        }
+        ElementKind::Text => {
+            element.text.hash(&mut hasher);
+            element.font.hash(&mut hasher);
+            hash_f32(element.font_size, &mut hasher);
+            element.font_weight.hash(&mut hasher);
+            hash_color(element.text_color, &mut hasher);
+            hash_f32(element.text_max_width, &mut hasher);
+            element.wrap.hash(&mut hasher);
+            element.horizontal_align.hash(&mut hasher);
+            element.vertical_align.hash(&mut hasher);
+            hash_f32(element.line_height, &mut hasher);
+            hash_transform(element.transform, &mut hasher);
+            hash_f32(element.opacity, &mut hasher);
+        }
+        ElementKind::Image => {
+            element.image.hash(&mut hasher);
+            element.image_fit.hash(&mut hasher);
+            hash_color(element.tint, &mut hasher);
+            hash_transform(element.transform, &mut hasher);
+            hash_f32(element.radius, &mut hasher);
+            hash_f32(element.opacity, &mut hasher);
+        }
+        ElementKind::NineSlice => {
+            element.image.hash(&mut hasher);
+            hash_slice(element.slice, &mut hasher);
+            element.center_mode.hash(&mut hasher);
+            element.edge_mode.hash(&mut hasher);
+            hash_color(element.tint, &mut hasher);
+            hash_transform(element.transform, &mut hasher);
+            hash_f32(element.opacity, &mut hasher);
+        }
+    }
+
     element.interactive.hash(&mut hasher);
     element.focusable.hash(&mut hasher);
     element.disabled.hash(&mut hasher);
+    element.cursor.hash(&mut hasher);
+    element.has_ime_rect.hash(&mut hasher);
+    hash_rect(element.ime_rect, &mut hasher);
+    hash_color(element.hover_color, &mut hasher);
+    hash_color(element.pressed_color, &mut hasher);
+    element.has_state_colors.hash(&mut hasher);
+    element.smooth_state_colors.hash(&mut hasher);
     element.visual_state_source_id.hash(&mut hasher);
     element.hover_opacity_source_id.hash(&mut hasher);
     hash_f32(element.pressed_scale, &mut hasher);
@@ -1486,21 +1571,55 @@ fn element_signature(element: &Element) -> u64 {
     hasher.finish()
 }
 
+fn hash_rect(rect: LayoutRect, hasher: &mut impl Hasher) {
+    hash_f32(rect.x, hasher);
+    hash_f32(rect.y, hasher);
+    hash_f32(rect.width, hasher);
+    hash_f32(rect.height, hasher);
+}
+
+fn hash_gradient(gradient: super::Gradient, hasher: &mut impl Hasher) {
+    gradient.enabled.hash(hasher);
+    hash_color(gradient.start, hasher);
+    hash_color(gradient.end, hasher);
+    gradient.direction.hash(hasher);
+}
+
+fn hash_border(border: Border, hasher: &mut impl Hasher) {
+    hash_f32(border.width, hasher);
+    hash_color(border.color, hasher);
+}
+
+fn hash_shadow(shadow: Shadow, hasher: &mut impl Hasher) {
+    shadow.enabled.hash(hasher);
+    hash_f32(shadow.offset[0], hasher);
+    hash_f32(shadow.offset[1], hasher);
+    hash_f32(shadow.blur, hasher);
+    hash_f32(shadow.spread, hasher);
+    hash_color(shadow.color, hasher);
+}
+
+fn hash_transform(transform: Transform, hasher: &mut impl Hasher) {
+    hash_f32(transform.translate[0], hasher);
+    hash_f32(transform.translate[1], hasher);
+    hash_f32(transform.scale[0], hasher);
+    hash_f32(transform.scale[1], hasher);
+    hash_f32(transform.rotation, hasher);
+    hash_f32(transform.origin[0], hasher);
+    hash_f32(transform.origin[1], hasher);
+}
+
+fn hash_slice(slice: super::Slice, hasher: &mut impl Hasher) {
+    hash_f32(slice.left, hasher);
+    hash_f32(slice.top, hasher);
+    hash_f32(slice.right, hasher);
+    hash_f32(slice.bottom, hasher);
+}
+
 fn hash_motion(motion: Motion, hasher: &mut impl Hasher) {
     match motion {
         Motion::Ease => 0_u8.hash(hasher),
         Motion::Spring => 1_u8.hash(hasher),
-    }
-}
-
-fn hash_size(size: super::Size, hasher: &mut impl Hasher) {
-    match size {
-        super::Size::Fixed(value) => {
-            0_u8.hash(hasher);
-            hash_f32(value, hasher);
-        }
-        super::Size::WrapContent => 1_u8.hash(hasher),
-        super::Size::Fill => 2_u8.hash(hasher),
     }
 }
 
@@ -1774,6 +1893,43 @@ mod tests {
 
         assert!(runtime.needs_render());
         assert!(runtime.full_redraw());
+    }
+
+    #[test]
+    fn cached_draw_list_invalidates_when_visuals_change() {
+        let mut runtime = Runtime::new("demo");
+        runtime.compose(100.0, 100.0, |ui, _| {
+            ui.rect("panel")
+                .size(40.0, 20.0)
+                .color(Color::RED)
+                .build();
+        });
+        let first = runtime.draw_list();
+        let first_color = first
+            .commands()
+            .iter()
+            .filter_map(rect_draw)
+            .find(|draw| draw.id == "demo.panel")
+            .map(|draw| draw.color)
+            .expect("panel rect should draw");
+        assert_eq!(first_color, Color::RED);
+
+        runtime.compose(100.0, 100.0, |ui, _| {
+            ui.rect("panel")
+                .size(40.0, 20.0)
+                .color(Color::BLUE)
+                .build();
+        });
+        let second = runtime.draw_list();
+        let second_color = second
+            .commands()
+            .iter()
+            .filter_map(rect_draw)
+            .find(|draw| draw.id == "demo.panel")
+            .map(|draw| draw.color)
+            .expect("panel rect should draw");
+
+        assert_eq!(second_color, Color::BLUE);
     }
 
     #[test]
