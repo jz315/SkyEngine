@@ -1,5 +1,8 @@
+#[cfg(feature = "ui-neo-net")]
 use std::collections::hash_map::DefaultHasher;
+#[cfg(feature = "ui-neo-net")]
 use std::hash::{Hash, Hasher};
+#[cfg(feature = "ui-neo-net")]
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -334,26 +337,36 @@ fn visible_uv_rect(asset: &TextureAsset, flip_vertically: bool) -> [f32; 4] {
 }
 
 fn load_remote_texture_asset(key: &ImageRef) -> Result<TextureAsset, String> {
-    let bytes = if key.source().starts_with("bing://daily") {
-        load_bing_daily_bytes(key.source())?
-    } else {
-        load_url_bytes(key.source())?
-    };
-    let mut image = image::load_from_memory(&bytes)
-        .map_err(|error| format!("image decode failed: {error}"))?
-        .to_rgba8();
-    if key.flip_vertically() {
-        image::imageops::flip_vertical_in_place(&mut image);
+    #[cfg(not(feature = "ui-neo-net"))]
+    {
+        let _ = key;
+        return Err("remote neo image loading requires the `ui-neo-net` feature".to_string());
     }
-    let (width, height) = image.dimensions();
-    Ok(TextureAsset::new(
-        width,
-        height,
-        TextureColorSpace::Srgb,
-        image.into_raw(),
-    ))
+
+    #[cfg(feature = "ui-neo-net")]
+    {
+        let bytes = if key.source().starts_with("bing://daily") {
+            load_bing_daily_bytes(key.source())?
+        } else {
+            load_url_bytes(key.source())?
+        };
+        let mut image = image::load_from_memory(&bytes)
+            .map_err(|error| format!("image decode failed: {error}"))?
+            .to_rgba8();
+        if key.flip_vertically() {
+            image::imageops::flip_vertical_in_place(&mut image);
+        }
+        let (width, height) = image.dimensions();
+        Ok(TextureAsset::new(
+            width,
+            height,
+            TextureColorSpace::Srgb,
+            image.into_raw(),
+        ))
+    }
 }
 
+#[cfg(feature = "ui-neo-net")]
 fn load_bing_daily_bytes(source: &str) -> Result<Vec<u8>, String> {
     let query = source.strip_prefix("bing://daily").unwrap_or_default();
     let idx = query_param(query, "idx").unwrap_or_else(|| "0".to_string());
@@ -379,6 +392,7 @@ fn load_bing_daily_bytes(source: &str) -> Result<Vec<u8>, String> {
     load_url_bytes_cached(&image_url)
 }
 
+#[cfg(feature = "ui-neo-net")]
 fn query_param(query: &str, key: &str) -> Option<String> {
     let query = query.strip_prefix('?').unwrap_or(query);
     query.split('&').find_map(|pair| {
@@ -387,6 +401,7 @@ fn query_param(query: &str, key: &str) -> Option<String> {
     })
 }
 
+#[cfg(feature = "ui-neo-net")]
 fn load_url_bytes(url: &str) -> Result<Vec<u8>, String> {
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(12))
@@ -403,6 +418,7 @@ fn load_url_bytes(url: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+#[cfg(feature = "ui-neo-net")]
 fn load_url_bytes_cached(url: &str) -> Result<Vec<u8>, String> {
     let Some(path) = remote_image_cache_path(url) else {
         return load_url_bytes(url);
@@ -423,6 +439,7 @@ fn load_url_bytes_cached(url: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+#[cfg(feature = "ui-neo-net")]
 fn remote_image_cache_path(url: &str) -> Option<PathBuf> {
     if !is_remote_image_source(url) {
         return None;
@@ -431,12 +448,14 @@ fn remote_image_cache_path(url: &str) -> Option<PathBuf> {
     Some(image_cache_path_for_key(url, extension))
 }
 
+#[cfg(feature = "ui-neo-net")]
 fn image_cache_path_for_key(key: &str, extension: &str) -> PathBuf {
     std::env::temp_dir()
         .join("sky_neo_image_cache")
         .join(format!("{:016x}{extension}", stable_hash(key)))
 }
 
+#[cfg(feature = "ui-neo-net")]
 fn remote_image_extension(url: &str) -> &'static str {
     let path = url.split(['?', '#']).next().unwrap_or(url);
     let extension = std::path::Path::new(path)
@@ -456,6 +475,7 @@ fn is_remote_image_source(source: &str) -> bool {
     source.starts_with("http://") || source.starts_with("https://")
 }
 
+#[cfg(feature = "ui-neo-net")]
 fn stable_hash(value: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     value.hash(&mut hasher);

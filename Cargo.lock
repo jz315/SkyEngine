@@ -2839,6 +2839,7 @@ dependencies = [
  "bitflags 2.11.1",
  "cosmic-text 0.18.2",
  "rustc-hash 2.1.2",
+ "smallvec",
 ]
 
 [[package]]
@@ -6899,7 +6900,6 @@ dependencies = [
  "eui-neo",
  "eui-neo-wgpu",
  "eui-neo-winit",
- "exr",
  "ffmpeg-next",
  "flate2",
  "flecs_ecs",
@@ -6907,35 +6907,30 @@ dependencies = [
  "gltf",
  "glyphon",
  "gpu-profiler",
- "half",
  "hecs",
  "image 0.25.10",
- "intel_tex_2",
+ "inventory",
  "kajiya",
  "kira",
- "lazy_static",
  "live2d-cubism-core-sys",
  "log",
  "mimalloc",
  "minifb",
  "mint",
  "pollster",
- "puffin",
  "rand 0.8.6",
  "rapier2d",
  "raw-window-handle 0.3.4",
- "rayon",
  "renderling",
  "roxmltree",
  "rust-shaders-shared",
  "rustc-hash 2.1.2",
  "serde",
  "serde_json",
- "shader-prepper",
  "sky_ecs",
  "sky_engine_reflect_derive",
- "sky_type",
- "smallvec",
+ "sky_math",
+ "sky_reflect",
  "tempfile",
  "toml",
  "turbosloth",
@@ -6947,7 +6942,6 @@ dependencies = [
  "yakui",
  "yakui-core",
  "yakui-wgpu",
- "yakui-widgets",
  "yakui-winit",
  "yarnspinner",
 ]
@@ -6956,9 +6950,29 @@ dependencies = [
 name = "sky_engine_reflect_derive"
 version = "0.1.0"
 dependencies = [
+ "proc-macro-crate",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "sky_math"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "sky_reflect",
+ "wgpu 29.0.3",
+]
+
+[[package]]
+name = "sky_reflect"
+version = "0.1.0"
+dependencies = [
+ "rustc-hash 2.1.2",
+ "serde",
+ "sky_engine_reflect_derive",
+ "sky_type",
 ]
 
 [[package]]

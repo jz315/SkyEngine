@@ -4,7 +4,7 @@ use crate::render::view::ViewUniform;
 use crate::render::ViewportRect;
 
 use super::frustum::Frustum;
-use super::Projection;
+use super::{Projection, ProjectionViewUniformExt};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SceneViewKind {

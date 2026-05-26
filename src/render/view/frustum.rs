@@ -89,7 +89,7 @@ fn sub_vec4(lhs: [f32; 4], rhs: [f32; 4]) -> [f32; 4] {
 #[cfg(test)]
 mod tests {
     use super::Frustum;
-    use crate::render::view::Projection;
+    use crate::render::view::{Projection, ProjectionViewUniformExt};
     use crate::render::Transform;
 
     #[test]

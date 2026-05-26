@@ -1,7 +1,7 @@
 //! Neo-owned RGBA color type.
 //!
 //! Keeping this type inside Neo UI keeps the runtime usable without depending
-//! on a host renderer's color type.
+//! on a host renderer or engine math crate.
 
 /// RGBA color with 0.0-1.0 linear channels.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -107,5 +107,22 @@ impl From<Color> for [f32; 4] {
     #[inline]
     fn from(value: Color) -> Self {
         value.to_array()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Color;
+
+    fn assert_close(left: Color, right: Color) {
+        for (left, right) in left.to_array().into_iter().zip(right.to_array()) {
+            assert!((left - right).abs() < 1.0e-6, "{left} != {right}");
+        }
+    }
+
+    #[test]
+    fn hsl_wraps_hue_degrees() {
+        assert_close(Color::hsl(420.0, 1.0, 0.5), Color::hsl(60.0, 1.0, 0.5));
+        assert_close(Color::hsl(-60.0, 1.0, 0.5), Color::hsl(300.0, 1.0, 0.5));
     }
 }

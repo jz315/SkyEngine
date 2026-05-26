@@ -1,18 +1,38 @@
 //! SkyEngine public math layer.
 //!
-//! The engine owns this API surface even though the current implementation is
-//! backed by `glam` internally.
+//! The implementation now lives in the internal `sky_math` crate. This module
+//! preserves the historical `sky_engine::math` paths.
 
-pub mod matrix;
-pub mod projection;
-pub mod quaternion;
-pub mod screen;
-pub mod transform;
-pub mod vector;
+pub use sky_math::*;
 
-pub use matrix::Mat4;
-pub use projection::Projection;
-pub use quaternion::Quat;
-pub use screen::{LogicalDelta, LogicalPoint, LogicalSize, PhysicalSize};
-pub use transform::Transform;
-pub use vector::{Vec2, Vec3, Vec4};
+pub mod color {
+    pub use sky_math::color::*;
+}
+
+pub mod geometry {
+    pub use sky_math::geometry::*;
+}
+
+pub mod matrix {
+    pub use sky_math::matrix::*;
+}
+
+pub mod projection {
+    pub use sky_math::projection::*;
+}
+
+pub mod quaternion {
+    pub use sky_math::quaternion::*;
+}
+
+pub mod screen {
+    pub use sky_math::screen::*;
+}
+
+pub mod transform {
+    pub use sky_math::transform::*;
+}
+
+pub mod vector {
+    pub use sky_math::vector::*;
+}

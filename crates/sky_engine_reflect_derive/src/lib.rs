@@ -1,10 +1,13 @@
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
+use proc_macro_crate::{crate_name, FoundCrate};
 use quote::quote;
 use syn::{
     parse_macro_input, parse_quote, Attribute, Data, DeriveInput, Error, Expr, Fields, Ident,
-    LitStr, Result,
+    LitStr, Meta, Result, Token,
 };
+
+use syn::punctuated::Punctuated;
 
 #[proc_macro_derive(Reflect, attributes(reflect))]
 pub fn derive_reflect(input: TokenStream) -> TokenStream {
@@ -14,14 +17,186 @@ pub fn derive_reflect(input: TokenStream) -> TokenStream {
         .into()
 }
 
+#[proc_macro_attribute]
+pub fn persist(args: TokenStream, input: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(args with Punctuated::<Meta, Token![,]>::parse_terminated);
+    let input = parse_macro_input!(input as DeriveInput);
+    expand_persist(args, input)
+        .unwrap_or_else(Error::into_compile_error)
+        .into()
+}
+
+#[derive(Default)]
+struct PersistContainerAttrs {
+    component: bool,
+    name: Option<LitStr>,
+}
+
+fn expand_persist(
+    args: Punctuated<Meta, Token![,]>,
+    mut input: DeriveInput,
+) -> Result<TokenStream2> {
+    let attrs = parse_persist_container_attrs(args)?;
+    if !attrs.component {
+        return Err(Error::new_spanned(
+            input.ident,
+            "#[persist] currently requires the component mode: #[persist(component)]",
+        ));
+    }
+    if !input.generics.params.is_empty() {
+        return Err(Error::new_spanned(
+            input.generics,
+            "#[persist(component)] does not support generic component types yet",
+        ));
+    }
+
+    match &mut input.data {
+        Data::Struct(data) => rewrite_persist_field_attrs(&mut data.fields)?,
+        Data::Enum(_) => {}
+        Data::Union(_) => {
+            return Err(Error::new_spanned(
+                input.ident,
+                "#[persist(component)] does not support unions",
+            ));
+        }
+    }
+
+    input
+        .attrs
+        .push(parse_quote!(#[derive(::serde::Serialize, ::serde::Deserialize)]));
+
+    let ident = &input.ident;
+    let short_name = ident.to_string();
+    let name = if let Some(name) = attrs.name {
+        quote!(::std::option::Option::Some(#name))
+    } else {
+        quote!(::std::option::Option::None)
+    };
+
+    Ok(quote! {
+        #input
+
+        impl ::sky_engine::scene::Persist for #ident {
+            const SHORT_NAME: &'static str = #short_name;
+            const NAME: ::std::option::Option<&'static str> = #name;
+        }
+
+        ::sky_engine::scene::__private::inventory::submit! {
+            ::sky_engine::scene::PersistRegistration::component::<#ident>()
+        }
+    })
+}
+
+fn parse_persist_container_attrs(
+    args: Punctuated<Meta, Token![,]>,
+) -> Result<PersistContainerAttrs> {
+    let mut out = PersistContainerAttrs::default();
+    for meta in args {
+        match meta {
+            Meta::Path(path) if path.is_ident("component") => {
+                out.component = true;
+            }
+            Meta::NameValue(name_value) if name_value.path.is_ident("name") => {
+                let Expr::Lit(expr_lit) = name_value.value else {
+                    return Err(Error::new_spanned(
+                        name_value.value,
+                        "expected string literal",
+                    ));
+                };
+                let syn::Lit::Str(value) = expr_lit.lit else {
+                    return Err(Error::new_spanned(expr_lit, "expected string literal"));
+                };
+                out.name = Some(value);
+            }
+            other => {
+                return Err(Error::new_spanned(
+                    other,
+                    "unsupported #[persist(...)] attribute",
+                ));
+            }
+        }
+    }
+    Ok(out)
+}
+
+#[derive(Default)]
+struct PersistFieldAttrs {
+    skip: bool,
+    default: bool,
+}
+
+fn rewrite_persist_field_attrs(fields: &mut Fields) -> Result<()> {
+    for field in fields.iter_mut() {
+        let mut persist_attrs = PersistFieldAttrs::default();
+        let mut retained = Vec::with_capacity(field.attrs.len());
+
+        for attr in std::mem::take(&mut field.attrs) {
+            if attr.path().is_ident("persist") {
+                parse_persist_field_attr(&attr, &mut persist_attrs)?;
+            } else {
+                retained.push(attr);
+            }
+        }
+
+        if persist_attrs.skip {
+            retained.push(parse_quote!(#[serde(skip)]));
+        }
+        if persist_attrs.default {
+            retained.push(parse_quote!(#[serde(default)]));
+        }
+
+        field.attrs = retained;
+    }
+
+    Ok(())
+}
+
+fn parse_persist_field_attr(attr: &Attribute, out: &mut PersistFieldAttrs) -> Result<()> {
+    attr.parse_nested_meta(|meta| {
+        if meta.path.is_ident("skip") {
+            out.skip = true;
+            return Ok(());
+        }
+        if meta.path.is_ident("default") {
+            out.default = true;
+            return Ok(());
+        }
+        Err(meta.error("unsupported #[persist(...)] field attribute"))
+    })
+}
+
 fn expand_reflect(input: DeriveInput) -> Result<TokenStream2> {
+    let reflect_path = reflect_crate_path();
     match &input.data {
-        Data::Struct(data) => expand_struct(&input, data),
-        Data::Enum(data) => expand_enum(&input, data),
+        Data::Struct(data) => expand_struct(&input, data, &reflect_path),
+        Data::Enum(data) => expand_enum(&input, data, &reflect_path),
         Data::Union(_) => Err(Error::new_spanned(
             input.ident,
             "Reflect derive does not support unions",
         )),
+    }
+}
+
+fn reflect_crate_path() -> TokenStream2 {
+    match crate_name("sky_reflect") {
+        Ok(found) => crate_root_path(found),
+        Err(_) => match crate_name("sky_engine") {
+            Ok(found) => {
+                let root = crate_root_path(found);
+                quote!(#root::reflect)
+            }
+            Err(_) => quote!(::sky_engine::reflect),
+        },
+    }
+}
+
+fn crate_root_path(found: FoundCrate) -> TokenStream2 {
+    match found {
+        FoundCrate::Itself => quote!(crate),
+        FoundCrate::Name(name) => {
+            let ident = Ident::new(&name, proc_macro2::Span::call_site());
+            quote!(::#ident)
+        }
     }
 }
 
@@ -90,7 +265,7 @@ fn type_path_expr(attrs: &ReflectAttrs) -> TokenStream2 {
     }
 }
 
-fn attrs_expr(attrs: &ReflectAttrs) -> TokenStream2 {
+fn attrs_expr(attrs: &ReflectAttrs, reflect_path: &TokenStream2) -> TokenStream2 {
     let label = option_string(&attrs.label);
     let category = option_string(&attrs.category);
     let readonly = attrs.readonly;
@@ -99,7 +274,7 @@ fn attrs_expr(attrs: &ReflectAttrs) -> TokenStream2 {
     let step = option_f64(&attrs.step);
 
     quote! {
-        ::sky_engine::reflect::ReflectAttrs {
+        #reflect_path::ReflectAttrs {
             label: #label,
             readonly: #readonly,
             min: #min,
@@ -133,7 +308,11 @@ struct ReflectedField<'a> {
     attrs: ReflectAttrs,
 }
 
-fn expand_struct(input: &DeriveInput, data: &syn::DataStruct) -> Result<TokenStream2> {
+fn expand_struct(
+    input: &DeriveInput,
+    data: &syn::DataStruct,
+    reflect_path: &TokenStream2,
+) -> Result<TokenStream2> {
     let ident = &input.ident;
     let container_attrs = parse_reflect_attrs(&input.attrs)?;
     let type_path = type_path_expr(&container_attrs);
@@ -169,7 +348,7 @@ fn expand_struct(input: &DeriveInput, data: &syn::DataStruct) -> Result<TokenStr
             let ty = field.ty;
             where_clause
                 .predicates
-                .push(parse_quote!(#ty: ::sky_engine::reflect::Reflect));
+                .push(parse_quote!(#ty: #reflect_path::Reflect));
         }
     }
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
@@ -178,46 +357,46 @@ fn expand_struct(input: &DeriveInput, data: &syn::DataStruct) -> Result<TokenStr
         let field_ident = field.ident;
         let field_name = &field.name;
         let field_ty = field.ty;
-        let attrs = attrs_expr(&field.attrs);
+        let attrs = attrs_expr(&field.attrs, reflect_path);
         quote! {
-            ::sky_engine::reflect::ReflectField::new_raw::<Self, #field_ty>(
+            #reflect_path::ReflectField::new_raw::<Self, #field_ty>(
                 #field_name,
                 #attrs,
                 |owner: &dyn ::std::any::Any| {
                     let owner = owner.downcast_ref::<Self>().ok_or_else(|| {
-                        ::sky_engine::reflect::ReflectError::OwnerTypeMismatch {
+                        #reflect_path::ReflectError::OwnerTypeMismatch {
                             expected: ::std::any::type_name::<Self>().to_string(),
-                            actual: ::sky_engine::reflect::type_name_of_any(owner).to_string(),
+                            actual: #reflect_path::type_name_of_any(owner).to_string(),
                         }
                     })?;
-                    <#field_ty as ::sky_engine::reflect::Reflect>::to_reflect_value(&owner.#field_ident)
+                    <#field_ty as #reflect_path::Reflect>::to_reflect_value(&owner.#field_ident)
                 },
-                |owner: &mut dyn ::std::any::Any, value: ::sky_engine::reflect::ReflectValue| {
-                    let actual = ::sky_engine::reflect::type_name_of_any_mut(owner).to_string();
+                |owner: &mut dyn ::std::any::Any, value: #reflect_path::ReflectValue| {
+                    let actual = #reflect_path::type_name_of_any_mut(owner).to_string();
                     let owner = owner.downcast_mut::<Self>().ok_or_else(|| {
-                        ::sky_engine::reflect::ReflectError::OwnerTypeMismatch {
+                        #reflect_path::ReflectError::OwnerTypeMismatch {
                             expected: ::std::any::type_name::<Self>().to_string(),
                             actual,
                         }
                     })?;
-                    <#field_ty as ::sky_engine::reflect::Reflect>::apply_reflect_value(
+                    <#field_ty as #reflect_path::Reflect>::apply_reflect_value(
                         &mut owner.#field_ident,
                         value,
                     )
                 },
                 |owner: &dyn ::std::any::Any| {
                     let owner = owner.downcast_ref::<Self>().ok_or_else(|| {
-                        ::sky_engine::reflect::ReflectError::OwnerTypeMismatch {
+                        #reflect_path::ReflectError::OwnerTypeMismatch {
                             expected: ::std::any::type_name::<Self>().to_string(),
-                            actual: ::sky_engine::reflect::type_name_of_any(owner).to_string(),
+                            actual: #reflect_path::type_name_of_any(owner).to_string(),
                         }
                     })?;
                     Ok(&owner.#field_ident as &dyn ::std::any::Any)
                 },
                 |owner: &mut dyn ::std::any::Any| {
-                    let actual = ::sky_engine::reflect::type_name_of_any_mut(owner).to_string();
+                    let actual = #reflect_path::type_name_of_any_mut(owner).to_string();
                     let owner = owner.downcast_mut::<Self>().ok_or_else(|| {
-                        ::sky_engine::reflect::ReflectError::OwnerTypeMismatch {
+                        #reflect_path::ReflectError::OwnerTypeMismatch {
                             expected: ::std::any::type_name::<Self>().to_string(),
                             actual,
                         }
@@ -240,7 +419,7 @@ fn expand_struct(input: &DeriveInput, data: &syn::DataStruct) -> Result<TokenStr
         quote! {
             value.insert(
                 #field_name,
-                <#field_ty as ::sky_engine::reflect::Reflect>::to_reflect_value(&self.#field_ident)?,
+                <#field_ty as #reflect_path::Reflect>::to_reflect_value(&self.#field_ident)?,
             );
         }
     });
@@ -253,11 +432,11 @@ fn expand_struct(input: &DeriveInput, data: &syn::DataStruct) -> Result<TokenStr
         quote! {
             #field_name => {
                 if #readonly {
-                    return Err(::sky_engine::reflect::ReflectError::ReadonlyField {
+                    return Err(#reflect_path::ReflectError::ReadonlyField {
                         field: #field_name.to_string(),
                     });
                 }
-                <#field_ty as ::sky_engine::reflect::Reflect>::apply_reflect_value(
+                <#field_ty as #reflect_path::Reflect>::apply_reflect_value(
                     &mut self.#field_ident,
                     field.value().clone(),
                 )?;
@@ -266,17 +445,17 @@ fn expand_struct(input: &DeriveInput, data: &syn::DataStruct) -> Result<TokenStr
     });
 
     Ok(quote! {
-        impl #impl_generics ::sky_engine::reflect::Reflect for #ident #ty_generics #where_clause {
-            fn reflect_type() -> ::sky_engine::reflect::ReflectType {
-                ::sky_engine::reflect::ReflectType::new_struct::<Self>(
+        impl #impl_generics #reflect_path::Reflect for #ident #ty_generics #where_clause {
+            fn reflect_type() -> #reflect_path::ReflectType {
+                #reflect_path::ReflectType::new_struct::<Self>(
                     #type_path,
                     vec![#(#field_builders),*],
                 )
             }
 
             fn reflect_dependencies(
-                registry: &mut ::sky_engine::reflect::ReflectRegistry,
-            ) -> ::std::result::Result<(), ::sky_engine::reflect::ReflectError> {
+                registry: &mut #reflect_path::ReflectRegistry,
+            ) -> ::std::result::Result<(), #reflect_path::ReflectError> {
                 #(#dependency_registers)*
                 Ok(())
             }
@@ -284,22 +463,22 @@ fn expand_struct(input: &DeriveInput, data: &syn::DataStruct) -> Result<TokenStr
             fn to_reflect_value(
                 &self,
             ) -> ::std::result::Result<
-                ::sky_engine::reflect::ReflectValue,
-                ::sky_engine::reflect::ReflectError,
+                #reflect_path::ReflectValue,
+                #reflect_path::ReflectError,
             > {
-                let mut value = ::sky_engine::reflect::ReflectStructValue::new(#type_path);
+                let mut value = #reflect_path::ReflectStructValue::new(#type_path);
                 #(#value_fields)*
-                Ok(::sky_engine::reflect::ReflectValue::Struct(value))
+                Ok(#reflect_path::ReflectValue::Struct(value))
             }
 
             fn apply_reflect_value(
                 &mut self,
-                value: ::sky_engine::reflect::ReflectValue,
-            ) -> ::std::result::Result<(), ::sky_engine::reflect::ReflectError> {
+                value: #reflect_path::ReflectValue,
+            ) -> ::std::result::Result<(), #reflect_path::ReflectError> {
                 let value = match value {
-                    ::sky_engine::reflect::ReflectValue::Struct(value) => value,
+                    #reflect_path::ReflectValue::Struct(value) => value,
                     other => {
-                        return Err(::sky_engine::reflect::ReflectError::ValueTypeMismatch {
+                        return Err(#reflect_path::ReflectError::ValueTypeMismatch {
                             expected: "Struct",
                             actual: other.kind_name(),
                         });
@@ -308,7 +487,7 @@ fn expand_struct(input: &DeriveInput, data: &syn::DataStruct) -> Result<TokenStr
 
                 let expected = #type_path;
                 if !value.type_name().is_empty() && value.type_name() != expected {
-                    return Err(::sky_engine::reflect::ReflectError::StructTypeMismatch {
+                    return Err(#reflect_path::ReflectError::StructTypeMismatch {
                         expected: expected.to_string(),
                         actual: value.type_name().to_string(),
                     });
@@ -318,7 +497,7 @@ fn expand_struct(input: &DeriveInput, data: &syn::DataStruct) -> Result<TokenStr
                     match field.name() {
                         #(#apply_fields)*
                         name => {
-                            return Err(::sky_engine::reflect::ReflectError::UnknownField {
+                            return Err(#reflect_path::ReflectError::UnknownField {
                                 type_name: expected.to_string(),
                                 field: name.to_string(),
                             });
@@ -332,7 +511,11 @@ fn expand_struct(input: &DeriveInput, data: &syn::DataStruct) -> Result<TokenStr
     })
 }
 
-fn expand_enum(input: &DeriveInput, data: &syn::DataEnum) -> Result<TokenStream2> {
+fn expand_enum(
+    input: &DeriveInput,
+    data: &syn::DataEnum,
+    reflect_path: &TokenStream2,
+) -> Result<TokenStream2> {
     let ident = &input.ident;
     let container_attrs = parse_reflect_attrs(&input.attrs)?;
     let type_path = type_path_expr(&container_attrs);
@@ -344,7 +527,7 @@ fn expand_enum(input: &DeriveInput, data: &syn::DataEnum) -> Result<TokenStream2
             let ty = &field.ty;
             where_clause
                 .predicates
-                .push(parse_quote!(#ty: ::sky_engine::reflect::Reflect));
+                .push(parse_quote!(#ty: #reflect_path::Reflect));
         }
     }
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
@@ -352,10 +535,10 @@ fn expand_enum(input: &DeriveInput, data: &syn::DataEnum) -> Result<TokenStream2
     let variant_infos = data.variants.iter().map(|variant| {
         let name = variant.ident.to_string();
         let kind = match &variant.fields {
-            Fields::Unit => quote!(::sky_engine::reflect::ReflectVariantKind::Unit),
+            Fields::Unit => quote!(#reflect_path::ReflectVariantKind::Unit),
             Fields::Unnamed(fields) => {
                 let len = fields.unnamed.len();
-                quote!(::sky_engine::reflect::ReflectVariantKind::Tuple { fields: #len })
+                quote!(#reflect_path::ReflectVariantKind::Tuple { fields: #len })
             }
             Fields::Named(fields) => {
                 let names = fields.named.iter().map(|field| {
@@ -365,12 +548,12 @@ fn expand_enum(input: &DeriveInput, data: &syn::DataEnum) -> Result<TokenStream2
                         .map(|ident| ident.to_string())
                         .unwrap_or_default()
                 });
-                quote!(::sky_engine::reflect::ReflectVariantKind::Struct {
+                quote!(#reflect_path::ReflectVariantKind::Struct {
                     fields: vec![#(#names.to_string()),*],
                 })
             }
         };
-        quote!(::sky_engine::reflect::ReflectVariant::new(#name, #kind))
+        quote!(#reflect_path::ReflectVariant::new(#name, #kind))
     });
 
     let read_arms = data.variants.iter().map(|variant| {
@@ -398,17 +581,17 @@ fn expand_enum(input: &DeriveInput, data: &syn::DataEnum) -> Result<TokenStream2
     });
 
     Ok(quote! {
-        impl #impl_generics ::sky_engine::reflect::Reflect for #ident #ty_generics #where_clause {
-            fn reflect_type() -> ::sky_engine::reflect::ReflectType {
-                ::sky_engine::reflect::ReflectType::new_enum::<Self>(
+        impl #impl_generics #reflect_path::Reflect for #ident #ty_generics #where_clause {
+            fn reflect_type() -> #reflect_path::ReflectType {
+                #reflect_path::ReflectType::new_enum::<Self>(
                     #type_path,
                     vec![#(#variant_infos),*],
                 )
             }
 
             fn reflect_dependencies(
-                registry: &mut ::sky_engine::reflect::ReflectRegistry,
-            ) -> ::std::result::Result<(), ::sky_engine::reflect::ReflectError> {
+                registry: &mut #reflect_path::ReflectRegistry,
+            ) -> ::std::result::Result<(), #reflect_path::ReflectError> {
                 #(#dependency_registers)*
                 Ok(())
             }
@@ -416,25 +599,25 @@ fn expand_enum(input: &DeriveInput, data: &syn::DataEnum) -> Result<TokenStream2
             fn to_reflect_value(
                 &self,
             ) -> ::std::result::Result<
-                ::sky_engine::reflect::ReflectValue,
-                ::sky_engine::reflect::ReflectError,
+                #reflect_path::ReflectValue,
+                #reflect_path::ReflectError,
             > {
                 let variant = match self {
                     #(#read_arms,)*
                 };
-                Ok(::sky_engine::reflect::ReflectValue::Enum(
-                    ::sky_engine::reflect::ReflectEnumValue::new(#type_path, variant)
+                Ok(#reflect_path::ReflectValue::Enum(
+                    #reflect_path::ReflectEnumValue::new(#type_path, variant)
                 ))
             }
 
             fn apply_reflect_value(
                 &mut self,
-                value: ::sky_engine::reflect::ReflectValue,
-            ) -> ::std::result::Result<(), ::sky_engine::reflect::ReflectError> {
+                value: #reflect_path::ReflectValue,
+            ) -> ::std::result::Result<(), #reflect_path::ReflectError> {
                 let value = match value {
-                    ::sky_engine::reflect::ReflectValue::Enum(value) => value,
+                    #reflect_path::ReflectValue::Enum(value) => value,
                     other => {
-                        return Err(::sky_engine::reflect::ReflectError::ValueTypeMismatch {
+                        return Err(#reflect_path::ReflectError::ValueTypeMismatch {
                             expected: "Enum",
                             actual: other.kind_name(),
                         });
@@ -443,7 +626,7 @@ fn expand_enum(input: &DeriveInput, data: &syn::DataEnum) -> Result<TokenStream2
 
                 let expected = #type_path;
                 if !value.type_name().is_empty() && value.type_name() != expected {
-                    return Err(::sky_engine::reflect::ReflectError::EnumTypeMismatch {
+                    return Err(#reflect_path::ReflectError::EnumTypeMismatch {
                         expected: expected.to_string(),
                         actual: value.type_name().to_string(),
                     });
@@ -452,7 +635,7 @@ fn expand_enum(input: &DeriveInput, data: &syn::DataEnum) -> Result<TokenStream2
                 match value.variant() {
                     #(#unit_write_arms)*
                     variant => {
-                        return Err(::sky_engine::reflect::ReflectError::Unsupported {
+                        return Err(#reflect_path::ReflectError::Unsupported {
                             message: format!(
                                 "enum variant '{}::{}' cannot be written by Reflect v1",
                                 expected,

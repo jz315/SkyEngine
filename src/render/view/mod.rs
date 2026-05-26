@@ -19,6 +19,7 @@ pub use viewport::ViewportRect;
 pub(crate) use math::column_major_mul;
 #[cfg(feature = "live2d")]
 pub(crate) use math::scene_transform_matrix;
+pub(crate) use projection::ProjectionViewUniformExt;
 pub(crate) use scene_view::{build_scene_view, fallback_scene_view};
 pub(crate) use transform::{ResolvedSceneTransforms, SceneTransformResolver};
 pub(crate) use types::SCENE_HDR_FORMAT;

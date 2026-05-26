@@ -229,7 +229,7 @@ impl Default for Projection {
 #[cfg(test)]
 mod tests {
     use super::Projection;
-    use crate::math::{LogicalPoint, LogicalSize, Transform, Vec3};
+    use crate::{LogicalPoint, LogicalSize, Transform, Vec3};
 
     #[test]
     fn view_matrix_uses_full_transform_including_scale() {
@@ -248,14 +248,14 @@ mod tests {
         let projection = Projection::orthographic(720.0);
         assert_eq!(
             projection
-                .orthographic_size(crate::math::Vec2::new(1280.0, 720.0))
+                .orthographic_size(crate::Vec2::new(1280.0, 720.0))
                 .unwrap()
                 .to_array(),
             [1280.0, 720.0]
         );
         assert_eq!(
             projection
-                .orthographic_size(crate::math::Vec2::new(1680.0, 720.0))
+                .orthographic_size(crate::Vec2::new(1680.0, 720.0))
                 .unwrap()
                 .to_array(),
             [1680.0, 720.0]
@@ -267,14 +267,14 @@ mod tests {
         let projection = Projection::orthographic_fixed(1280.0, 720.0);
         assert_eq!(
             projection
-                .orthographic_size(crate::math::Vec2::new(1920.0, 1080.0))
+                .orthographic_size(crate::Vec2::new(1920.0, 1080.0))
                 .unwrap()
                 .to_array(),
             [1280.0, 720.0]
         );
         assert_eq!(
             projection
-                .orthographic_size(crate::math::Vec2::new(1080.0, 1920.0))
+                .orthographic_size(crate::Vec2::new(1080.0, 1920.0))
                 .unwrap()
                 .to_array(),
             [1280.0, 720.0]
@@ -286,8 +286,8 @@ mod tests {
         let projection = Projection::orthographic(720.0);
         let world = projection.screen_to_world_in_viewport(
             Transform::default(),
-            crate::math::Vec2::new(1680.0, 720.0),
-            crate::math::Vec2::new(1680.0, 0.0),
+            crate::Vec2::new(1680.0, 720.0),
+            crate::Vec2::new(1680.0, 0.0),
         );
 
         assert!((world.x() - 840.0).abs() <= 1e-5);

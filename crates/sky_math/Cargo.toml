@@ -1,0 +1,18 @@
+[package]
+name = "sky_math"
+version = "0.1.0"
+edition = "2021"
+description = "Shared math and color types for SkyEngine crates"
+license = "MIT"
+keywords = ["math", "game-engine", "color"]
+categories = ["game-development", "mathematics"]
+
+[features]
+default = ["reflect"]
+reflect = ["dep:sky_reflect"]
+wgpu = ["dep:wgpu"]
+
+[dependencies]
+glam = "0.32.1"
+sky_reflect = { path = "../sky_reflect", optional = true }
+wgpu = { version = "29", default-features = false, optional = true }

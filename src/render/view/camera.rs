@@ -2,6 +2,8 @@
 
 use crate::math::{LogicalPoint, LogicalSize, Projection, Transform, Vec2};
 
+use super::ProjectionViewUniformExt;
+
 /// GPU-ready view uniform shared by 2D and 3D render paths.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]

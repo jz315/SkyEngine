@@ -7,7 +7,6 @@
 
 mod api;
 mod backend;
-mod color;
 mod config;
 mod font_provider;
 mod image_provider;
@@ -23,8 +22,21 @@ pub mod eui {
 
 pub use api::{compose, open_window, register_skin};
 pub use backend::NeoUiBackend;
-pub use config::{NeoUiConfig, NeoWindowConfig};
+pub use config::{IntoNeoClearColor, NeoUiConfig, NeoWindowConfig};
 pub use eui_neo::expert;
 pub use eui_neo::prelude::*;
 pub use eui_neo::{apply_ease, has_anim_property};
 pub use plugin::{install_neo_ui_backend, NeoUiPlugin};
+
+/// Convert standalone Neo UI colors into SkyEngine render colors at the
+/// integration boundary.
+#[inline]
+pub fn to_render_color(value: eui_neo::Color) -> crate::render::Color {
+    crate::render::Color::new(value.r, value.g, value.b, value.a)
+}
+
+/// Convert SkyEngine render colors into standalone Neo UI colors.
+#[inline]
+pub fn from_render_color(value: crate::render::Color) -> eui_neo::Color {
+    eui_neo::Color::new(value.r, value.g, value.b, value.a)
+}

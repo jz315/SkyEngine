@@ -1,12 +1,9 @@
 use rustc_hash::FxHashMap;
 use std::any::{type_name, Any, TypeId};
 
-use crate::math::{Quat, Transform, Vec2, Vec3, Vec4};
+use sky_type::{type_of, Type};
 
-use super::{ReflectError, ReflectStructValue, ReflectValue};
-pub use sky_type::{
-    query_by_name, query_by_rust_type, register, registered_types, type_of, Type, TypeInfo,
-};
+use super::{ReflectError, ReflectValue};
 
 /// Best-effort name for erased values. `std::any::Any` exposes `TypeId`, not a
 /// stable dynamic type name, so this is only used in diagnostics.
@@ -17,29 +14,6 @@ pub fn type_name_of_any(_: &dyn Any) -> &'static str {
 /// Best-effort name for erased mutable values.
 pub fn type_name_of_any_mut(_: &mut dyn Any) -> &'static str {
     "<erased>"
-}
-
-/// ECS-facing semantic aliases for the shared foundational type layer.
-pub type ComponentType = Type;
-
-pub fn component_type<T: 'static>() -> ComponentType {
-    type_of::<T>()
-}
-
-pub fn register_component_type(name: &str, size: usize, align: usize) -> ComponentType {
-    register(name, size, align)
-}
-
-pub fn component_type_by_name(name: &str) -> Option<ComponentType> {
-    query_by_name(name)
-}
-
-pub fn component_type_by_rust_type<T: 'static>() -> Option<ComponentType> {
-    query_by_rust_type::<T>()
-}
-
-pub fn registered_component_types() -> Vec<ComponentType> {
-    registered_types()
 }
 
 /// Derive-able trait for inspector reflection.
@@ -382,12 +356,7 @@ impl ReflectRegistry {
             .and_then(|registry| registry.register::<usize>())
             .and_then(|registry| registry.register::<f32>())
             .and_then(|registry| registry.register::<f64>())
-            .and_then(|registry| registry.register::<String>())
-            .and_then(|registry| registry.register::<Vec2>())
-            .and_then(|registry| registry.register::<Vec3>())
-            .and_then(|registry| registry.register::<Vec4>())
-            .and_then(|registry| registry.register::<Quat>())
-            .and_then(|registry| registry.register::<Transform>());
+            .and_then(|registry| registry.register::<String>());
     }
 }
 
@@ -641,86 +610,6 @@ impl Reflect for String {
     }
 }
 
-impl Reflect for Vec2 {
-    fn reflect_type() -> ReflectType {
-        ReflectType::new_value::<Self>("sky.Vec2")
-    }
-
-    fn to_reflect_value(&self) -> Result<ReflectValue, ReflectError> {
-        Ok(ReflectValue::Vec2(self.to_array()))
-    }
-
-    fn apply_reflect_value(&mut self, value: ReflectValue) -> Result<(), ReflectError> {
-        match value {
-            ReflectValue::Vec2(value) => {
-                *self = Vec2::from_array(value);
-                Ok(())
-            }
-            other => Err(value_mismatch("Vec2", &other)),
-        }
-    }
-}
-
-impl Reflect for Vec3 {
-    fn reflect_type() -> ReflectType {
-        ReflectType::new_value::<Self>("sky.Vec3")
-    }
-
-    fn to_reflect_value(&self) -> Result<ReflectValue, ReflectError> {
-        Ok(ReflectValue::Vec3(self.to_array()))
-    }
-
-    fn apply_reflect_value(&mut self, value: ReflectValue) -> Result<(), ReflectError> {
-        match value {
-            ReflectValue::Vec3(value) => {
-                *self = Vec3::from_array(value);
-                Ok(())
-            }
-            other => Err(value_mismatch("Vec3", &other)),
-        }
-    }
-}
-
-impl Reflect for Vec4 {
-    fn reflect_type() -> ReflectType {
-        ReflectType::new_value::<Self>("sky.Vec4")
-    }
-
-    fn to_reflect_value(&self) -> Result<ReflectValue, ReflectError> {
-        Ok(ReflectValue::Vec4(self.to_array()))
-    }
-
-    fn apply_reflect_value(&mut self, value: ReflectValue) -> Result<(), ReflectError> {
-        match value {
-            ReflectValue::Vec4(value) => {
-                *self = Vec4::from_array(value);
-                Ok(())
-            }
-            other => Err(value_mismatch("Vec4", &other)),
-        }
-    }
-}
-
-impl Reflect for Quat {
-    fn reflect_type() -> ReflectType {
-        ReflectType::new_value::<Self>("sky.Quat")
-    }
-
-    fn to_reflect_value(&self) -> Result<ReflectValue, ReflectError> {
-        Ok(ReflectValue::Quat(self.to_xyzw_array()))
-    }
-
-    fn apply_reflect_value(&mut self, value: ReflectValue) -> Result<(), ReflectError> {
-        match value {
-            ReflectValue::Quat(value) => {
-                *self = Quat::from_xyzw_array(value);
-                Ok(())
-            }
-            other => Err(value_mismatch("Quat", &other)),
-        }
-    }
-}
-
 impl<T: Reflect> Reflect for Option<T> {
     fn reflect_type() -> ReflectType {
         ReflectType::new_option::<Self>(type_name::<Self>())
@@ -834,178 +723,6 @@ impl<T: Reflect, const N: usize> Reflect for [T; N] {
     }
 }
 
-impl Reflect for Transform {
-    fn reflect_type() -> ReflectType {
-        ReflectType::new_struct::<Self>(
-            "sky.Transform",
-            vec![
-                ReflectField::new_raw::<Self, Vec3>(
-                    "position",
-                    ReflectAttrs::default(),
-                    |owner| {
-                        let owner = owner.downcast_ref::<Transform>().ok_or_else(|| {
-                            ReflectError::OwnerTypeMismatch {
-                                expected: type_name::<Transform>().to_string(),
-                                actual: type_name_of_any(owner).to_string(),
-                            }
-                        })?;
-                        owner.position.to_reflect_value()
-                    },
-                    |owner, value| {
-                        let actual = type_name_of_any_mut(owner).to_string();
-                        let owner = owner.downcast_mut::<Transform>().ok_or_else(|| {
-                            ReflectError::OwnerTypeMismatch {
-                                expected: type_name::<Transform>().to_string(),
-                                actual,
-                            }
-                        })?;
-                        owner.position.apply_reflect_value(value)
-                    },
-                    |owner| {
-                        let owner = owner.downcast_ref::<Transform>().ok_or_else(|| {
-                            ReflectError::OwnerTypeMismatch {
-                                expected: type_name::<Transform>().to_string(),
-                                actual: type_name_of_any(owner).to_string(),
-                            }
-                        })?;
-                        Ok(&owner.position as &dyn Any)
-                    },
-                    |owner| {
-                        let actual = type_name_of_any_mut(owner).to_string();
-                        let owner = owner.downcast_mut::<Transform>().ok_or_else(|| {
-                            ReflectError::OwnerTypeMismatch {
-                                expected: type_name::<Transform>().to_string(),
-                                actual,
-                            }
-                        })?;
-                        Ok(&mut owner.position as &mut dyn Any)
-                    },
-                ),
-                ReflectField::new_raw::<Self, Vec3>(
-                    "scale",
-                    ReflectAttrs::default(),
-                    |owner| {
-                        let owner = owner.downcast_ref::<Transform>().ok_or_else(|| {
-                            ReflectError::OwnerTypeMismatch {
-                                expected: type_name::<Transform>().to_string(),
-                                actual: type_name_of_any(owner).to_string(),
-                            }
-                        })?;
-                        owner.scale.to_reflect_value()
-                    },
-                    |owner, value| {
-                        let actual = type_name_of_any_mut(owner).to_string();
-                        let owner = owner.downcast_mut::<Transform>().ok_or_else(|| {
-                            ReflectError::OwnerTypeMismatch {
-                                expected: type_name::<Transform>().to_string(),
-                                actual,
-                            }
-                        })?;
-                        owner.scale.apply_reflect_value(value)
-                    },
-                    |owner| {
-                        let owner = owner.downcast_ref::<Transform>().ok_or_else(|| {
-                            ReflectError::OwnerTypeMismatch {
-                                expected: type_name::<Transform>().to_string(),
-                                actual: type_name_of_any(owner).to_string(),
-                            }
-                        })?;
-                        Ok(&owner.scale as &dyn Any)
-                    },
-                    |owner| {
-                        let actual = type_name_of_any_mut(owner).to_string();
-                        let owner = owner.downcast_mut::<Transform>().ok_or_else(|| {
-                            ReflectError::OwnerTypeMismatch {
-                                expected: type_name::<Transform>().to_string(),
-                                actual,
-                            }
-                        })?;
-                        Ok(&mut owner.scale as &mut dyn Any)
-                    },
-                ),
-                ReflectField::new_raw::<Self, Quat>(
-                    "rotation",
-                    ReflectAttrs::default(),
-                    |owner| {
-                        let owner = owner.downcast_ref::<Transform>().ok_or_else(|| {
-                            ReflectError::OwnerTypeMismatch {
-                                expected: type_name::<Transform>().to_string(),
-                                actual: type_name_of_any(owner).to_string(),
-                            }
-                        })?;
-                        owner.rotation.to_reflect_value()
-                    },
-                    |owner, value| {
-                        let actual = type_name_of_any_mut(owner).to_string();
-                        let owner = owner.downcast_mut::<Transform>().ok_or_else(|| {
-                            ReflectError::OwnerTypeMismatch {
-                                expected: type_name::<Transform>().to_string(),
-                                actual,
-                            }
-                        })?;
-                        owner.rotation.apply_reflect_value(value)
-                    },
-                    |owner| {
-                        let owner = owner.downcast_ref::<Transform>().ok_or_else(|| {
-                            ReflectError::OwnerTypeMismatch {
-                                expected: type_name::<Transform>().to_string(),
-                                actual: type_name_of_any(owner).to_string(),
-                            }
-                        })?;
-                        Ok(&owner.rotation as &dyn Any)
-                    },
-                    |owner| {
-                        let actual = type_name_of_any_mut(owner).to_string();
-                        let owner = owner.downcast_mut::<Transform>().ok_or_else(|| {
-                            ReflectError::OwnerTypeMismatch {
-                                expected: type_name::<Transform>().to_string(),
-                                actual,
-                            }
-                        })?;
-                        Ok(&mut owner.rotation as &mut dyn Any)
-                    },
-                ),
-            ],
-        )
-    }
-
-    fn reflect_dependencies(registry: &mut ReflectRegistry) -> Result<(), ReflectError> {
-        registry.register::<Vec3>()?;
-        registry.register::<Quat>()?;
-        Ok(())
-    }
-
-    fn to_reflect_value(&self) -> Result<ReflectValue, ReflectError> {
-        Ok(ReflectValue::Struct(
-            ReflectStructValue::new("sky.Transform")
-                .with_field("position", self.position.to_reflect_value()?)
-                .with_field("scale", self.scale.to_reflect_value()?)
-                .with_field("rotation", self.rotation.to_reflect_value()?),
-        ))
-    }
-
-    fn apply_reflect_value(&mut self, value: ReflectValue) -> Result<(), ReflectError> {
-        let ReflectValue::Struct(value) = value else {
-            return Err(value_mismatch("Struct", &value));
-        };
-
-        for field in value.fields() {
-            match field.name() {
-                "position" => self.position.apply_reflect_value(field.value().clone())?,
-                "scale" => self.scale.apply_reflect_value(field.value().clone())?,
-                "rotation" => self.rotation.apply_reflect_value(field.value().clone())?,
-                name => {
-                    return Err(ReflectError::UnknownField {
-                        type_name: "sky.Transform".to_string(),
-                        field: name.to_string(),
-                    });
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
 fn value_mismatch(expected: &'static str, value: &ReflectValue) -> ReflectError {
     ReflectError::ValueTypeMismatch {
         expected,
@@ -1016,8 +733,7 @@ fn value_mismatch(expected: &'static str, value: &ReflectValue) -> ReflectError 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reflect::ReflectEnumValue;
-    use sky_engine_reflect_derive::Reflect;
+    use crate::{Reflect, ReflectEnumValue};
 
     #[derive(Reflect)]
     #[reflect(name = "game.Stats")]

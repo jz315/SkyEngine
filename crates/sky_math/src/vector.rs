@@ -1,4 +1,6 @@
-use std::ops::{Add, AddAssign, Div, DivAssign, Index, IndexMut, Mul, MulAssign, Sub, SubAssign};
+use std::ops::{
+    Add, AddAssign, Div, DivAssign, Index, IndexMut, Mul, MulAssign, Neg, Sub, SubAssign,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 #[repr(transparent)]
@@ -7,6 +9,8 @@ pub struct Vec2(pub(crate) glam::Vec2);
 impl Vec2 {
     pub const ZERO: Self = Self(glam::Vec2::ZERO);
     pub const ONE: Self = Self(glam::Vec2::ONE);
+    pub const X: Self = Self(glam::Vec2::X);
+    pub const Y: Self = Self(glam::Vec2::Y);
 
     #[inline]
     pub fn new(x: f32, y: f32) -> Self {
@@ -49,6 +53,16 @@ impl Vec2 {
     }
 
     #[inline]
+    pub fn distance_squared(self, rhs: Self) -> f32 {
+        (self.0 - rhs.0).length_squared()
+    }
+
+    #[inline]
+    pub fn distance(self, rhs: Self) -> f32 {
+        self.distance_squared(rhs).sqrt()
+    }
+
+    #[inline]
     pub fn dot(self, rhs: Self) -> f32 {
         self.0.dot(rhs.0)
     }
@@ -79,6 +93,41 @@ impl Vec2 {
     }
 
     #[inline]
+    pub fn floor(self) -> Self {
+        Self(self.0.floor())
+    }
+
+    #[inline]
+    pub fn ceil(self) -> Self {
+        Self(self.0.ceil())
+    }
+
+    #[inline]
+    pub fn round(self) -> Self {
+        Self(self.0.round())
+    }
+
+    #[inline]
+    pub fn is_finite(self) -> bool {
+        self.0.is_finite()
+    }
+
+    #[inline]
+    pub fn perp(self) -> Self {
+        Self(glam::Vec2::new(-self.0.y, self.0.x))
+    }
+
+    #[inline]
+    pub fn perp_dot(self, rhs: Self) -> f32 {
+        self.0.perp_dot(rhs.0)
+    }
+
+    #[inline]
+    pub fn extend(self, z: f32) -> Vec3 {
+        Vec3::new(self.0.x, self.0.y, z)
+    }
+
+    #[inline]
     pub fn try_normalized(self) -> Option<Self> {
         let len_sq = self.length_squared();
         if len_sq <= f32::EPSILON {
@@ -92,6 +141,11 @@ impl Vec2 {
     pub fn normalized(self) -> Self {
         self.try_normalized().unwrap_or(Self::ZERO)
     }
+
+    #[inline]
+    pub fn normalize_or_zero(self) -> Self {
+        self.normalized()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -101,6 +155,9 @@ pub struct Vec3(pub(crate) glam::Vec3);
 impl Vec3 {
     pub const ZERO: Self = Self(glam::Vec3::ZERO);
     pub const ONE: Self = Self(glam::Vec3::ONE);
+    pub const X: Self = Self(glam::Vec3::X);
+    pub const Y: Self = Self(glam::Vec3::Y);
+    pub const Z: Self = Self(glam::Vec3::Z);
 
     #[inline]
     pub fn new(x: f32, y: f32, z: f32) -> Self {
@@ -148,6 +205,16 @@ impl Vec3 {
     }
 
     #[inline]
+    pub fn distance_squared(self, rhs: Self) -> f32 {
+        (self.0 - rhs.0).length_squared()
+    }
+
+    #[inline]
+    pub fn distance(self, rhs: Self) -> f32 {
+        self.distance_squared(rhs).sqrt()
+    }
+
+    #[inline]
     pub fn dot(self, rhs: Self) -> f32 {
         self.0.dot(rhs.0)
     }
@@ -183,6 +250,31 @@ impl Vec3 {
     }
 
     #[inline]
+    pub fn floor(self) -> Self {
+        Self(self.0.floor())
+    }
+
+    #[inline]
+    pub fn ceil(self) -> Self {
+        Self(self.0.ceil())
+    }
+
+    #[inline]
+    pub fn round(self) -> Self {
+        Self(self.0.round())
+    }
+
+    #[inline]
+    pub fn is_finite(self) -> bool {
+        self.0.is_finite()
+    }
+
+    #[inline]
+    pub fn truncate(self) -> Vec2 {
+        Vec2::new(self.0.x, self.0.y)
+    }
+
+    #[inline]
     pub fn try_normalized(self) -> Option<Self> {
         let len_sq = self.length_squared();
         if len_sq <= f32::EPSILON {
@@ -195,6 +287,11 @@ impl Vec3 {
     #[inline]
     pub fn normalized(self) -> Self {
         self.try_normalized().unwrap_or(Self::ZERO)
+    }
+
+    #[inline]
+    pub fn normalize_or_zero(self) -> Self {
+        self.normalized()
     }
 
     #[inline]
@@ -215,6 +312,10 @@ pub struct Vec4(pub(crate) glam::Vec4);
 impl Vec4 {
     pub const ZERO: Self = Self(glam::Vec4::ZERO);
     pub const ONE: Self = Self(glam::Vec4::ONE);
+    pub const X: Self = Self(glam::Vec4::X);
+    pub const Y: Self = Self(glam::Vec4::Y);
+    pub const Z: Self = Self(glam::Vec4::Z);
+    pub const W: Self = Self(glam::Vec4::W);
 
     #[inline]
     pub fn new(x: f32, y: f32, z: f32, w: f32) -> Self {
@@ -254,6 +355,101 @@ impl Vec4 {
     #[inline]
     pub fn w(self) -> f32 {
         self.0.w
+    }
+
+    #[inline]
+    pub fn length_squared(self) -> f32 {
+        self.0.length_squared()
+    }
+
+    #[inline]
+    pub fn length(self) -> f32 {
+        self.0.length()
+    }
+
+    #[inline]
+    pub fn distance_squared(self, rhs: Self) -> f32 {
+        (self.0 - rhs.0).length_squared()
+    }
+
+    #[inline]
+    pub fn distance(self, rhs: Self) -> f32 {
+        self.distance_squared(rhs).sqrt()
+    }
+
+    #[inline]
+    pub fn dot(self, rhs: Self) -> f32 {
+        self.0.dot(rhs.0)
+    }
+
+    #[inline]
+    pub fn abs(self) -> Self {
+        Self(self.0.abs())
+    }
+
+    #[inline]
+    pub fn min(self, rhs: Self) -> Self {
+        Self(self.0.min(rhs.0))
+    }
+
+    #[inline]
+    pub fn max(self, rhs: Self) -> Self {
+        Self(self.0.max(rhs.0))
+    }
+
+    #[inline]
+    pub fn clamp(self, min: Self, max: Self) -> Self {
+        Self(self.0.clamp(min.0, max.0))
+    }
+
+    #[inline]
+    pub fn lerp(self, rhs: Self, t: f32) -> Self {
+        Self(self.0.lerp(rhs.0, t))
+    }
+
+    #[inline]
+    pub fn floor(self) -> Self {
+        Self(self.0.floor())
+    }
+
+    #[inline]
+    pub fn ceil(self) -> Self {
+        Self(self.0.ceil())
+    }
+
+    #[inline]
+    pub fn round(self) -> Self {
+        Self(self.0.round())
+    }
+
+    #[inline]
+    pub fn is_finite(self) -> bool {
+        self.0.is_finite()
+    }
+
+    #[inline]
+    pub fn truncate(self) -> Vec3 {
+        Vec3::new(self.0.x, self.0.y, self.0.z)
+    }
+
+    #[inline]
+    pub fn try_normalized(self) -> Option<Self> {
+        let len_sq = self.length_squared();
+        if len_sq <= f32::EPSILON {
+            None
+        } else {
+            Some(Self(self.0 / len_sq.sqrt()))
+        }
+    }
+
+    #[inline]
+    pub fn normalized(self) -> Self {
+        self.try_normalized().unwrap_or(Self::ZERO)
+    }
+
+    #[inline]
+    pub fn normalize_or_zero(self) -> Self {
+        self.normalized()
     }
 
     #[inline]
@@ -348,6 +544,22 @@ macro_rules! impl_vec_ops {
                 self.0 /= rhs;
             }
         }
+
+        impl Mul<$ty> for f32 {
+            type Output = $ty;
+
+            fn mul(self, rhs: $ty) -> Self::Output {
+                $ty(rhs.0 * self)
+            }
+        }
+
+        impl Neg for $ty {
+            type Output = Self;
+
+            fn neg(self) -> Self::Output {
+                Self(-self.0)
+            }
+        }
     };
 }
 
@@ -433,6 +645,10 @@ mod tests {
             [-1.0, 3.0]
         );
         assert_eq!(a2.lerp(b2, 0.5).to_array(), [2.0, 1.5]);
+        assert_eq!(a2.distance_squared(b2), 89.0);
+        assert_eq!(a2.perp().to_array(), [-4.0, -2.0]);
+        assert_eq!(a2.extend(9.0).to_array(), [-2.0, 4.0, 9.0]);
+        assert_eq!((2.0 * Vec2::X).to_array(), [2.0, 0.0]);
 
         let a3 = Vec3::new(-2.0, 4.0, -6.0);
         let b3 = Vec3::new(6.0, -1.0, 8.0);
@@ -445,5 +661,21 @@ mod tests {
             [-1.0, 3.0, -4.0]
         );
         assert_eq!(a3.lerp(b3, 0.5).to_array(), [2.0, 1.5, 1.0]);
+        assert_eq!(a3.truncate().to_array(), [-2.0, 4.0]);
+        assert_eq!((-Vec3::Z).to_array(), [0.0, 0.0, -1.0]);
+    }
+
+    #[test]
+    fn vec4_has_the_same_basic_utility_surface_as_smaller_vectors() {
+        let a = Vec4::new(-2.0, 4.0, -6.0, 8.0);
+        let b = Vec4::new(6.0, -1.0, 8.0, -4.0);
+
+        assert_eq!(a.abs().to_array(), [2.0, 4.0, 6.0, 8.0]);
+        assert_eq!(a.min(b).to_array(), [-2.0, -1.0, -6.0, -4.0]);
+        assert_eq!(a.max(b).to_array(), [6.0, 4.0, 8.0, 8.0]);
+        assert_eq!(a.dot(Vec4::ONE), 4.0);
+        assert_eq!(a.truncate().to_array(), [-2.0, 4.0, -6.0]);
+        assert_eq!((0.5 * Vec4::W).to_array(), [0.0, 0.0, 0.0, 0.5]);
+        assert!(Vec4::new(1.0, 2.0, 3.0, 4.0).is_finite());
     }
 }

@@ -9,18 +9,17 @@ categories = ["game-engines", "data-structures"]
 autobenches = false
 
 [dependencies]
-smallvec = "1.13.2"
-lazy_static = "1.4.0"
 mimalloc = "0.1.48"
 rustc-hash = "2.1.2"
-sky_type = { path = "crates/sky_type" }
 sky_ecs = { path = "crates/sky_ecs" }
+sky_math = { path = "crates/sky_math" }
+sky_reflect = { path = "crates/sky_reflect" }
 bitflags = "2"
-rayon = "1.10"
 glam = "0.32.1"
 log = { version = "0.4", features = ["std"] }
 crossbeam-queue = "0.3"
 serde = { version = "1", features = ["derive"], optional = true }
+inventory = { version = "0.3", optional = true }
 toml = { version = "0.8", optional = true }
 yarnspinner = { version = "0.8", default-features = false, optional = true }
 uuid = { version = "1", features = ["v4", "serde"], optional = true }
@@ -38,16 +37,11 @@ gltf = { version = "1", optional = true }
 winit = { version = "0.30", optional = true }
 pollster = { version = "0.4", optional = true }
 webbrowser = { version = "1.2.1", optional = true }
-exr = { version = "1.74", optional = true }
-half = { version = "2.7", features = ["bytemuck"], optional = true }
-intel-tex-2 = { package = "intel_tex_2", version = "=0.2.2", optional = true }
 kajiya = { path = "crates/vendor/kajiya/crates/lib/kajiya", optional = true }
 kajiya-rust-shaders-shared = { package = "rust-shaders-shared", path = "crates/vendor/kajiya/crates/lib/rust-shaders-shared", optional = true }
 renderling = { version = "0.4.9", default-features = false, features = ["shaders"], optional = true }
 gpu-profiler = { path = "crates/vendor/gpu-profiler", optional = true }
-puffin = { version = "0.20", optional = true }
 raw-window-handle-03 = { package = "raw-window-handle", version = "0.3", optional = true }
-shader-prepper = { version = "=0.3.0-pre.3", optional = true }
 turbosloth = { git = "https://github.com/h3r2tic/turbosloth.git", rev = "92030af", optional = true }
 
 # Asset loading (feature-gated)
@@ -73,16 +67,13 @@ eui-neo-winit = { path = "crates/eui-neo-winit", optional = true }
 ureq = { version = "2.12", default-features = false, features = ["tls"], optional = true }
 yakui = { path = "crates/vendor/yakui/crates/yakui", optional = true, default-features = true }
 yakui-core = { path = "crates/vendor/yakui/crates/yakui-core", optional = true }
-yakui-widgets = { path = "crates/vendor/yakui/crates/yakui-widgets", optional = true, default-features = true }
 yakui-wgpu = { path = "crates/vendor/yakui/crates/yakui-wgpu", optional = true }
 yakui-winit = { path = "crates/vendor/yakui/crates/yakui-winit", optional = true }
 
 # Existing optionals
 minifb = { version = "0.28.0", optional = true }
 rand = { version = "0.8", optional = true }
-hecs = { version = "0.10.5", optional = true }
-bevy_ecs = { version = "0.18.1", optional = true }
-bevy = { version = "0.18.1", default-features = false, features = ["bevy_winit", "bevy_render", "bevy_core_pipeline", "bevy_sprite", "bevy_gizmos", "bevy_text", "bevy_post_process", "default_font", "png", "x11"], optional = true }
+bevy_full = { package = "bevy", version = "0.18.1", default-features = false, features = ["bevy_winit", "bevy_render", "bevy_core_pipeline", "bevy_sprite", "bevy_gizmos", "bevy_text", "bevy_post_process", "default_font", "png", "x11"], optional = true }
 
 # ── ECS tutorials (no GPU needed) ─────────────────────────────────────────────
 
@@ -239,7 +230,7 @@ required-features = ["app", "physics"]
 [[example]]
 name = "lawn_defense_game"
 path = "examples/game/lawn_defense/main.rs"
-required-features = ["ui"]
+required-features = ["ui-legacy"]
 
 [[example]]
 name = "miniature_builder_game"
@@ -249,12 +240,17 @@ required-features = ["app"]
 [[example]]
 name = "kenney_platformer_game"
 path = "examples/game/kenney_platformer/main.rs"
-required-features = ["ui"]
+required-features = ["ui-legacy"]
 
 [[example]]
 name = "last_light_guild"
 path = "examples/game/last_light_guild/main.rs"
-required-features = ["ui"]
+required-features = ["ui-legacy"]
+
+[[example]]
+name = "fog_lantern_station"
+path = "examples/game/fog_lantern_station/main.rs"
+required-features = ["ui-neo"]
 
 # ── Full demo showcases (GPU, --features app) ────────────────────────────────
 
@@ -346,6 +342,11 @@ path = "examples/ui/neo/scroll_x.rs"
 required-features = ["ui-neo"]
 
 [[example]]
+name = "ui_neo_scroll_xy"
+path = "examples/ui/neo/scroll_xy.rs"
+required-features = ["ui-neo"]
+
+[[example]]
 name = "ui_neo_calculator"
 path = "examples/ui/neo/calculator.rs"
 required-features = ["ui-neo"]
@@ -400,23 +401,6 @@ name = "mp4_video_demo"
 path = "examples/mp4_video_demo.rs"
 required-features = ["video-ffmpeg"]
 
-# ── Legacy CPU-rendered (minifb, --features demo-legacy) ─────────────────────
-
-[[example]]
-name = "particles"
-path = "examples/legacy/particles.rs"
-required-features = ["demo-legacy"]
-
-[[example]]
-name = "asteroids"
-path = "examples/legacy/asteroids.rs"
-required-features = ["demo-legacy"]
-
-[[example]]
-name = "snake"
-path = "examples/legacy/snake.rs"
-required-features = ["demo-legacy"]
-
 # ── Cross-engine comparisons (--features compare) ───────────────────────────
 
 [[example]]
@@ -438,21 +422,16 @@ required-features = ["compare-bevy"]
 # Cross-platform OS helpers.
 platform = ["dep:webbrowser"]
 # Application framework (window + GPU + input + assets)
-app = ["asset", "platform", "dep:wgpu", "dep:winit", "dep:pollster", "dep:bytemuck", "dep:gltf"]
+app = ["asset", "platform", "sky_math/wgpu", "dep:wgpu", "dep:winit", "dep:pollster", "dep:bytemuck", "dep:gltf"]
 # Optional Renderer2D stage timing instrumentation.
 render-timings = []
 # Experimental Kajiya Vulkan renderer backend.
 kajiya-renderer = [
-    "dep:exr",
-    "dep:half",
-    "dep:intel-tex-2",
     "dep:kajiya",
     "dep:kajiya-rust-shaders-shared",
     "dep:gpu-profiler",
     "dep:bytes",
-    "dep:puffin",
     "dep:raw-window-handle-03",
-    "dep:shader-prepper",
     "dep:turbosloth",
 ]
 # Experimental Renderling wgpu renderer backend.
@@ -474,9 +453,9 @@ video = ["app"]
 # Native video decoding backend. Requires system FFmpeg development libraries.
 video-ffmpeg = ["video", "dep:ffmpeg-next"]
 # Scene and prefab documents/spawning.
-scene = ["dep:serde", "dep:serde_json"]
+scene = ["dep:serde", "dep:serde_json", "dep:inventory", "dep:uuid"]
 # Serde support for reflected values.
-reflect-serde = ["dep:serde"]
+reflect-serde = ["sky_reflect/serde"]
 # 2D physics runtime backed by Rapier.
 physics = ["dep:rapier2d"]
 # Visual novel / Galgame script and runtime core.
@@ -486,23 +465,25 @@ vn-audio = ["vn", "audio"]
 vn-live2d = ["vn", "live2d"]
 vn-tools = ["vn"]
 # GPU-accelerated demos (future)
-demo = ["app", "asset", "dep:rand"]
+demo = ["app", "asset"]
 # Live2D Cubism SDK integration
 live2d = ["app", "asset", "dep:cubism-sys", "dep:serde_json"]
 # egui immediate-mode UI overlay
 egui = ["app", "dep:egui", "dep:egui-wgpu", "dep:egui-winit"]
 # Backend-neutral UI host.
 ui-core = ["app"]
-# Native retained-mode game UI overlay
+# Legacy retained-mode game UI overlay
 ui-legacy = ["ui-core", "dep:glyphon"]
-# Compatibility alias for the current retained ECS UI.
-ui = ["ui-legacy"]
 # Experimental EUI-NEO-inspired declarative game UI runtime.
 ui-neo = [
     "ui-core",
     "dep:eui-neo",
     "dep:eui-neo-wgpu",
     "dep:eui-neo-winit",
+]
+# Optional network image/text helpers for EUI-NEO examples and remote images.
+ui-neo-net = [
+    "ui-neo",
     "dep:ureq",
 ]
 # Experimental yakui retained/declarative game UI backend.
@@ -510,16 +491,13 @@ yakui-ui = [
     "ui-core",
     "dep:yakui",
     "dep:yakui-core",
-    "dep:yakui-widgets",
     "dep:yakui-wgpu",
     "dep:yakui-winit",
 ]
-# Legacy CPU-rendered demos (existing minifb demos)
-demo-legacy = ["dep:minifb", "dep:rand"]
 # Comparison benchmarks
-compare = ["demo-legacy", "dep:hecs", "dep:bevy_ecs"]
+compare = ["dep:minifb", "dep:rand"]
 # Full Bevy GPU comparison
-compare-bevy = ["dep:bevy"]
+compare-bevy = ["dep:bevy_full"]
 [dev-dependencies]
 criterion = "0.8.2"
 cgmath = "0.18"
@@ -527,8 +505,6 @@ hecs = "0.10.5"
 bevy_ecs = "0.18.1"
 flecs_ecs = "0.2.2"
 tempfile = "3"
-serde_json = { version = "1", features = ["preserve_order"] }
-ureq = { version = "2.12", default-features = false, features = ["tls"] }
 
 [[bench]]
 name = "fair"
@@ -541,10 +517,16 @@ path = "benches/parallel_query.rs"
 harness = false
 
 [[bench]]
+name = "sky_math"
+path = "benches/sky_math.rs"
+harness = false
+
+[[bench]]
 name = "neo_ui"
 path = "benches/neo_ui.rs"
 harness = false
 required-features = ["ui-neo"]
+
 [profile.release]
 debug = true
 

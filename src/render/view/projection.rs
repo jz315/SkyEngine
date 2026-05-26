@@ -1,8 +1,12 @@
 use crate::math::{Projection, Transform, Vec2};
 use crate::render::view::ViewUniform;
 
-impl Projection {
-    pub fn view_uniform(self, transform: Transform, viewport: [u32; 2]) -> ViewUniform {
+pub(crate) trait ProjectionViewUniformExt {
+    fn view_uniform(self, transform: Transform, viewport: [u32; 2]) -> ViewUniform;
+}
+
+impl ProjectionViewUniformExt for Projection {
+    fn view_uniform(self, transform: Transform, viewport: [u32; 2]) -> ViewUniform {
         let viewport_size = Vec2::new(viewport[0].max(1) as f32, viewport[1].max(1) as f32);
         let view = self.view_matrix(transform);
         let projection = self.projection_matrix(viewport_size);

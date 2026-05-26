@@ -9,6 +9,24 @@ pub struct NeoWindowConfig {
     pub clear_color: crate::render::Color,
 }
 
+pub trait IntoNeoClearColor {
+    fn into_neo_clear_color(self) -> crate::render::Color;
+}
+
+impl IntoNeoClearColor for crate::render::Color {
+    #[inline]
+    fn into_neo_clear_color(self) -> crate::render::Color {
+        self
+    }
+}
+
+impl IntoNeoClearColor for eui_neo::Color {
+    #[inline]
+    fn into_neo_clear_color(self) -> crate::render::Color {
+        super::to_render_color(self)
+    }
+}
+
 impl NeoWindowConfig {
     pub fn new(title: impl Into<String>, width: u32, height: u32) -> Self {
         let title = title.into();
@@ -32,8 +50,8 @@ impl NeoWindowConfig {
         self
     }
 
-    pub fn clear_color(mut self, value: impl Into<crate::render::Color>) -> Self {
-        self.clear_color = value.into();
+    pub fn clear_color(mut self, value: impl IntoNeoClearColor) -> Self {
+        self.clear_color = value.into_neo_clear_color();
         self
     }
 }

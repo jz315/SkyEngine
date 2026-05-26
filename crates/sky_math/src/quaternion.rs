@@ -50,6 +50,11 @@ impl Quat {
     }
 
     #[inline]
+    pub fn dot(self, rhs: Self) -> f32 {
+        self.0.dot(rhs.0)
+    }
+
+    #[inline]
     pub fn normalized(self) -> Self {
         if self.length_squared() <= f32::EPSILON {
             Self::IDENTITY
@@ -61,6 +66,19 @@ impl Quat {
     #[inline]
     pub fn conjugate(self) -> Self {
         Self(self.0.conjugate())
+    }
+
+    #[inline]
+    pub fn inverse(self) -> Self {
+        self.normalized().conjugate()
+    }
+
+    #[inline]
+    pub fn from_axis_angle(axis: Vec3, radians: f32) -> Self {
+        match axis.try_normalized() {
+            Some(axis) => Self(glam::Quat::from_axis_angle(axis.as_glam(), radians)),
+            None => Self::IDENTITY,
+        }
     }
 
     #[inline]
@@ -90,6 +108,11 @@ impl Quat {
     }
 
     #[inline]
+    pub fn slerp(self, rhs: Self, t: f32) -> Self {
+        Self(self.normalized().0.slerp(rhs.normalized().0, t)).normalized()
+    }
+
+    #[inline]
     pub fn to_matrix4(self) -> Mat4 {
         Mat4::from_quat(self.normalized())
     }
@@ -116,5 +139,51 @@ impl Mul for Quat {
 
     fn mul(self, rhs: Self) -> Self::Output {
         Self(self.0 * rhs.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Quat;
+    use crate::Vec3;
+
+    fn assert_close(actual: Vec3, expected: Vec3) {
+        for (actual, expected) in actual.to_array().into_iter().zip(expected.to_array()) {
+            assert!(
+                (actual - expected).abs() <= 1.0e-5,
+                "{actual} != {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn axis_angle_handles_zero_axis_as_identity() {
+        let q = Quat::from_axis_angle(Vec3::ZERO, 1.0);
+        assert_eq!(q, Quat::IDENTITY);
+    }
+
+    #[test]
+    fn inverse_undoes_rotation() {
+        let q = Quat::from_axis_angle(Vec3::Z, std::f32::consts::FRAC_PI_2);
+        let rotated = q.rotate_vec3(Vec3::X);
+        let restored = q.inverse().rotate_vec3(rotated);
+
+        assert_close(rotated, Vec3::Y);
+        assert_close(restored, Vec3::X);
+    }
+
+    #[test]
+    fn slerp_returns_unit_rotation_between_endpoints() {
+        let start = Quat::IDENTITY;
+        let end = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+        let halfway = start.slerp(end, 0.5);
+
+        assert!((halfway.length_squared() - 1.0).abs() <= 1.0e-5);
+        let expected = Vec3::new(
+            std::f32::consts::FRAC_1_SQRT_2,
+            std::f32::consts::FRAC_1_SQRT_2,
+            0.0,
+        );
+        assert_close(halfway.rotate_vec3(Vec3::X), expected);
     }
 }

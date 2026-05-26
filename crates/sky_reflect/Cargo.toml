@@ -1,0 +1,16 @@
+[package]
+name = "sky_reflect"
+version = "0.1.0"
+edition = "2021"
+description = "Inspector and editing reflection metadata for Sky"
+license = "MIT"
+
+[features]
+default = []
+serde = ["dep:serde"]
+
+[dependencies]
+rustc-hash = "2.1.2"
+serde = { version = "1", features = ["derive"], optional = true }
+sky_engine_reflect_derive = { path = "../sky_engine_reflect_derive" }
+sky_type = { path = "../sky_type" }

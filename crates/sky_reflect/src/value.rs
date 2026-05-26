@@ -2,11 +2,8 @@ use std::fmt;
 
 /// Runtime edit/snapshot value used by inspector reflection.
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(
-    feature = "reflect-serde",
-    derive(serde::Deserialize, serde::Serialize)
-)]
-#[cfg_attr(feature = "reflect-serde", serde(tag = "kind", content = "value"))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(tag = "kind", content = "value"))]
 pub enum ReflectValue {
     Unit,
     Bool(bool),
@@ -51,17 +48,14 @@ impl ReflectValue {
 
 /// A reflected struct value with stable field order.
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(
-    feature = "reflect-serde",
-    derive(serde::Deserialize, serde::Serialize)
-)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct ReflectStructValue {
     #[cfg_attr(
-        feature = "reflect-serde",
+        feature = "serde",
         serde(default, rename = "type", skip_serializing_if = "String::is_empty")
     )]
     type_name: String,
-    #[cfg_attr(feature = "reflect-serde", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default))]
     fields: Vec<ReflectFieldValue>,
 }
 
@@ -114,10 +108,7 @@ impl ReflectStructValue {
 
 /// One named field inside [`ReflectStructValue`].
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(
-    feature = "reflect-serde",
-    derive(serde::Deserialize, serde::Serialize)
-)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct ReflectFieldValue {
     name: String,
     value: ReflectValue,
@@ -143,18 +134,15 @@ impl ReflectFieldValue {
 /// Current enum variant snapshot. V1 writes unit variants; richer variant
 /// payload editing can layer on top of this shape later.
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(
-    feature = "reflect-serde",
-    derive(serde::Deserialize, serde::Serialize)
-)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct ReflectEnumValue {
     #[cfg_attr(
-        feature = "reflect-serde",
+        feature = "serde",
         serde(default, rename = "type", skip_serializing_if = "String::is_empty")
     )]
     type_name: String,
     variant: String,
-    #[cfg_attr(feature = "reflect-serde", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default))]
     fields: Vec<ReflectFieldValue>,
 }
 
