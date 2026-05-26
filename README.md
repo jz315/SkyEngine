@@ -45,9 +45,10 @@ you want a stable dependency.
 ## Where To Start
 
 - [Examples Guide](examples/README.md) for the runnable learning path.
-- [Documentation Index](docs/api.md) for module-level docs.
-- [Render Guide](docs/render.md) for the rendering stack.
-- [ECS Guide](docs/ecs.md) for the entity/component core.
+- [Documentation Index](docs/README.md) for all docs.
+- [API Reference](docs/reference/index.md) for module-level API docs.
+- [Render Reference](docs/reference/render.md) for the rendering stack.
+- [ECS Reference](docs/reference/ecs.md) for the entity/component core.
 - [Benchmarks](benches/BENCHMARKS.md) for local benchmark history and policy.
 - [Chinese README](README_zh.md) for the Chinese overview.
 

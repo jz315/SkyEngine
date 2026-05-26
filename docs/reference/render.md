@@ -2,7 +2,7 @@
 
 `sky_engine::render` 是高层渲染 facade，在 `app` feature 下启用。它建立在 `gpu` 模块之上，提供组件、camera/view、sprite、mesh、lighting、postfx、pipeline/phase、tilemap、Live2D 等能力。
 
-更完整的低层 API 表格和 GPU 细节见 [Render API Reference](render_api.md)。架构背景见 [Architecture](architecture.md)。
+更完整的低层 API 表格和 GPU 细节见 [Render Expert Reference](render-expert.md)。架构背景见 [Architecture](../architecture/architecture.md)。
 
 ## 常用入口
 
@@ -149,7 +149,7 @@ render module creates Texture GPU resource
 Sprite references Texture / atlas / material
 ```
 
-具体 texture helper 见 [Render API Reference](render_api.md)。
+具体 texture helper 见 [Render Expert Reference](render-expert.md)。
 
 ## Phases
 
@@ -188,7 +188,7 @@ RenderGraph 位于 `render::expert`，用于声明式组织 render pass / comput
 
 更详细规则见：
 
-- [Render API Reference](render_api.md)
+- [Render Expert Reference](render-expert.md)
 - `src/render/graph/AGENTS.md`
 
 ## Tilemap / Tiled

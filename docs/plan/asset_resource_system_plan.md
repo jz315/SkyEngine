@@ -52,7 +52,7 @@ src/audio/assets.rs
 src/video/assets.rs
 src/app/services.rs
 src/app/frame.rs
-docs/asset.md
+docs/reference/asset.md
 ```
 
 Current public asset concepts:
@@ -217,7 +217,7 @@ Missing:
 - cancelled;
 - evicted.
 
-`docs/asset.md` should also be corrected because its event example still refers
+`docs/reference/asset.md` should also be corrected because its event example still refers
 to event kinds that no longer exist.
 
 ### 9. Diagnostics Are Incomplete
@@ -517,7 +517,7 @@ Purpose: make the current behavior accurately documented before changing it.
 
 Tasks:
 
-- Fix `docs/asset.md` event examples to match actual `AssetEventKind`.
+- Fix `docs/reference/asset.md` event examples to match actual `AssetEventKind`.
 - Document that `Handle<T>` is a lightweight id and does not own residency.
 - Document that `load()` must be balanced by `unload()` today.
 - Document raw texture loading as a convenience path, not the canonical cooked
@@ -1014,7 +1014,7 @@ Mitigation:
 
 The smallest useful slice is:
 
-1. Fix `docs/asset.md` event/lifetime wording.
+1. Fix `docs/reference/asset.md` event/lifetime wording.
 2. Add `AssetStats`.
 3. Add or refine explicit `AssetPlugin` configuration helpers.
 4. Add `AssetTicket<T>`.

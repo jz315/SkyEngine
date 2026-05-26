@@ -273,10 +273,10 @@ v1 支持直接写 unit variant。带 payload 的 variant 当前主要用于 ins
 
 ## Scene 边界
 
-Scene/save 是 serde-first：
+Persistence 是 serde-first：
 
-- 自定义保存组件只需要 `Serialize + DeserializeOwned`。
-- `SceneRuntime` 管理“哪些组件可保存/加载”。
+- 自定义保存组件使用 `#[persist(component)]` 声明保存意图。
+- `Persistence::auto(namespace)` 管理自动注册、稳定类型名和加载插入。
 - `reflect-serde` 不会被 scene 自动启用。
 - Inspector 反射可以以后用于编辑界面或 AI 工具，但不是 scene 文件格式的底层。
 

@@ -40,7 +40,7 @@ Progress after initial implementation:
 - `UiHost` and the minimal `UiBackend` contract exist under `src/ui/backend/`.
 - the existing ECS retained UI is registered through `LegacyUiBackend`;
 - `FrameContext::ui()` exposes a backend-neutral `UiFrame` facade;
-- `examples/ui/hud_menu.rs` uses `ctx.ui().update()` and
+- `examples/ui/legacy/hud_menu.rs` uses `ctx.ui().update()` and
   `ctx.ui().render_overlays()`;
 - yakui is not vendored yet, and the `wgpu 29` upgrade has not started.
 
@@ -80,7 +80,6 @@ app = ["asset", "dep:wgpu", "dep:winit", "dep:pollster", "dep:bytemuck", "dep:gl
 egui = ["app", "dep:egui", "dep:egui-wgpu", "dep:egui-winit"]
 ui-core = ["app"]
 ui-legacy = ["ui-core", "dep:glyphon"]
-ui = ["ui-legacy"]
 yakui-ui = [
     "ui-core",
     "dep:yakui",
@@ -96,10 +95,11 @@ Rules:
 - `egui` remains the debug/tool UI feature.
 - `ui-core` contains only backend-neutral host, input capture, texture bridge,
   and public extension points.
-- `ui-legacy` contains the current native retained UI backend.
-- `ui` remains an alias for the current legacy UI until migration is complete.
+- `ui-legacy` contains the legacy retained UI backend.
+- Retained UI builds are explicit through `ui-legacy`; do not add a generic
+  compatibility alias back.
 - `yakui-ui` starts experimental and registers a yakui backend into `ui-core`;
-  it must not replace `ui` in the first PR.
+  it must not replace `ui-legacy` in the first PR.
 - examples using game HUDs can opt into `yakui-ui` one at a time.
 - backend-neutral APIs should not mention yakui types.
 - yakui-specific convenience APIs may exist behind `yakui-ui`, but they should
@@ -110,7 +110,7 @@ Rules:
 This project should not:
 
 - rewrite the entire UI authoring model in the same PR as the `wgpu` upgrade;
-- delete the current `ui` module before yakui has a working replacement demo;
+- delete the current UI module before yakui has a working replacement demo;
 - remove egui from debug/tool workflows;
 - upgrade `winit` to a beta just because `wgpu` is being upgraded;
 - force renderling or Kajiya to be fixed in the same slice unless they block
@@ -296,7 +296,7 @@ Tasks:
 - run `cargo test`;
 - run `cargo test --features app`;
 - run `cargo check --examples --features app`;
-- run `cargo check --example hud_menu --features ui`;
+- run `cargo check --example ui_legacy_hud_menu --features ui-legacy`;
 - run `cargo check --example egui_demo --features egui`;
 - record any pre-existing failures in the PR description.
 
@@ -346,14 +346,14 @@ cargo check --features app
 cargo test --features app graph
 cargo check --example clear_screen --features app
 cargo check --example egui_demo --features egui
-cargo check --example hud_menu --features ui
+cargo check --example ui_legacy_hud_menu --features ui-legacy
 ```
 
 Acceptance criteria:
 
 - only one `wgpu` version appears in `cargo tree --features app -i wgpu`;
 - only one `wgpu` version appears in `cargo tree --features egui -i wgpu`;
-- only one `wgpu` version appears in `cargo tree --features ui -i wgpu`;
+- only one `wgpu` version appears in `cargo tree --features ui-legacy -i wgpu`;
 - app, egui, and legacy UI examples compile.
 
 ## Phase 2: Isolate Experimental Renderer Conflicts
@@ -370,7 +370,7 @@ Tasks:
 
 Policy:
 
-- normal `app`, `ui`, `egui`, and `yakui-ui` builds must be single-`wgpu`;
+- normal `app`, `ui-legacy`, `egui`, and `yakui-ui` builds must be single-`wgpu`;
 - experimental renderer features may temporarily be marked broken in docs;
 - do not hide duplicate-`wgpu` type conflicts behind broad trait objects.
 
@@ -378,7 +378,7 @@ Verification:
 
 ```powershell
 cargo tree --features app -i wgpu
-cargo tree --features ui -i wgpu
+cargo tree --features ui-legacy -i wgpu
 cargo tree --features egui -i wgpu
 cargo tree --features renderling-renderer -i wgpu
 ```
@@ -488,7 +488,7 @@ Verification:
 
 ```powershell
 cargo check --features ui-core
-cargo check --example hud_menu --features ui
+cargo check --example ui_legacy_hud_menu --features ui-legacy
 cargo test --features ui-core ui
 ```
 
@@ -548,7 +548,7 @@ Verification:
 
 ```powershell
 cargo check --features yakui-ui
-cargo run --example yakui_demo --features yakui-ui
+cargo run --example ui_yakui_demo --features yakui-ui
 ```
 
 Acceptance criteria:
@@ -568,7 +568,7 @@ Goal: prove a pluggable yakui backend can replace real game UI authoring pain.
 Create:
 
 ```text
-examples/ui/yakui_demo.rs
+examples/ui/yakui/demo.rs
 ```
 
 The demo should include:
@@ -589,13 +589,13 @@ Do not make it a marketing page. It should open directly into the usable UI.
 Verification:
 
 ```powershell
-cargo check --example yakui_demo --features yakui-ui
-cargo run --example yakui_demo --features yakui-ui
+cargo check --example ui_yakui_demo --features yakui-ui
+cargo run --example ui_yakui_demo --features yakui-ui
 ```
 
 Acceptance criteria:
 
-- the demo requires much less boilerplate than `hud_menu`;
+- the demo requires much less boilerplate than `ui_legacy_hud_menu`;
 - no manual `EntityId` UI bookkeeping is needed for basic widgets;
 - button/slider/toggle state flows naturally into app state;
 - UI can block pointer input from the game when hovered or active;
@@ -628,7 +628,7 @@ yakui::widgets::image(icon, size);
 Verification:
 
 ```powershell
-cargo check --example yakui_demo --features yakui-ui,asset
+cargo check --example ui_yakui_demo --features yakui-ui,asset
 ```
 
 Acceptance criteria:
@@ -644,7 +644,7 @@ Goal: decide whether yakui becomes the primary game UI path.
 
 Migration candidates:
 
-- `examples/ui/hud_menu.rs`;
+- `examples/ui/legacy/hud_menu.rs`;
 - `examples/game/lawn_defense/main.rs`;
 - `examples/game/kenney_platformer/main.rs`;
 - `examples/vn/after_school_promise.rs`;
@@ -680,11 +680,11 @@ Possible outcomes:
 
 Only after at least two real demos are migrated:
 
-- decide whether `ui` should point to yakui, legacy UI, or just `ui-core`;
-- decide whether legacy UI should move to `ui-legacy`;
+- decide whether a future default UI alias is useful, or keep backend selection explicit;
+- keep retained ECS UI behind `ui-legacy`;
 - decide which backend is installed by default, if any;
-- update `docs/ui.md`;
-- update `docs/ui_tutorial.md`;
+- update `docs/reference/ui.md`;
+- update `docs/tutorials/ui.md`;
 - update `examples/README.md`;
 - update README feature matrix;
 - add `src/ui/AGENTS.md` if the UI module grows multiple backends;
@@ -706,17 +706,17 @@ cargo check --examples --features app
 UI commands:
 
 ```powershell
-cargo check --example hud_menu --features ui
-cargo check --example weird_ui_lab --features ui
+cargo check --example ui_legacy_hud_menu --features ui-legacy
+cargo check --example ui_legacy_stress_lab --features ui-legacy
 cargo check --example egui_demo --features egui
-cargo check --example yakui_demo --features yakui-ui
+cargo check --example ui_yakui_demo --features yakui-ui
 ```
 
 Dependency checks:
 
 ```powershell
 cargo tree --features app -i wgpu
-cargo tree --features ui -i wgpu
+cargo tree --features ui-legacy -i wgpu
 cargo tree --features egui -i wgpu
 cargo tree --features yakui-ui -i wgpu
 ```
@@ -785,7 +785,7 @@ Risk: glyphon upgrade or yakui text path changes quality/performance.
 
 Mitigation:
 
-- keep `hud_menu` and `weird_ui_lab` compiling during the transition;
+- keep `ui_legacy_hud_menu` and `ui_legacy_stress_lab` compiling during the transition;
 - add visual manual checks for text clipping, scale factor, and resizing;
 - do not remove glyphon until yakui text quality is accepted.
 
@@ -827,7 +827,7 @@ Recommended PR sequence:
 6. legacy UI adapter or temporary bridge into `UiHost`.
 7. `yakui-ui` feature and minimal yakui backend state.
 8. yakui overlay renderer through `UiHost`.
-9. `yakui_demo`.
+9. `ui_yakui_demo`.
 10. backend-neutral texture bridge.
 11. migrate one real game UI demo.
 12. decide primary UI backend direction and update docs.
@@ -841,7 +841,7 @@ The project is complete when:
 
 - normal app/render/UI features use one `wgpu` version;
 - `egui` still works for debug/tool overlays;
-- current legacy `ui` still compiles or has an intentional replacement path;
+- current legacy `ui-legacy` still compiles or has an intentional replacement path;
 - `UiHost` exists and owns backend lifecycle, event fan-out, overlay rendering,
   and input capture aggregation;
 - yakui is available through a controlled fork or vendor path;
@@ -857,7 +857,7 @@ The project is complete when:
 
 - Should backend modules live under `src/ui/backends/*` or separate top-level
   modules?
-- Should `ui` eventually alias a default backend, or should users always choose
+- Should there ever be a default UI alias, or should users always choose
   `ui-legacy` / `yakui-ui` explicitly?
 - Should legacy ECS UI remain supported for data-driven/editor use cases?
 - Should yakui be vendored, submoduled, or consumed from a SkyEngine fork?

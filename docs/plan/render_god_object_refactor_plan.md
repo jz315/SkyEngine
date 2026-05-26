@@ -581,7 +581,7 @@ instead of being used to constrain the refactor.
 
 1. Update render examples under `examples/render/`.
 2. Update demo examples under `examples/demo/` if they use the old runtime API.
-3. Update `README.md`, `README_EN.md`, and `docs/api.md` render snippets.
+3. Update `README.md`, `README_EN.md`, and `docs/reference/render.md` render snippets.
 4. Update `src/render/mod.rs` facade export tests.
 5. Remove obsolete aliases and old-path exports instead of preserving them.
 

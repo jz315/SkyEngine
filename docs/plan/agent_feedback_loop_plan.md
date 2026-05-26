@@ -565,23 +565,23 @@ cargo run --bin sky-agent --features app -- run-example three_d_demo --frames 12
 
 runs the scenario and returns a useful exit code for CI and agents.
 
-## Milestone 7: Scene And Asset Probes
+## Milestone 7: Persistence And Asset Probes
 
 Purpose: extend beyond hard-coded examples.
 
 Tasks:
 
-- Add `run-scene` target for `SceneRuntime` / `SceneDocument`.
+- Add a persistence-document probe target built on `Persistence` / `PersistDocument`.
 - Register known component serializers for built-in render, physics, audio, and UI components as features allow.
 - Add asset validation report:
   - manifest present;
   - source/cooked artifacts present;
   - dependencies resolved;
   - runtime load/install state.
-- Add scene checks:
+- Add persistence document checks:
   - main camera exists;
   - at least one visible renderer;
-  - no duplicate scene ids;
+  - no duplicate persist ids;
   - referenced assets exist.
 
 Acceptance:

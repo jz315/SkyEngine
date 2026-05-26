@@ -4,10 +4,11 @@
 
 它的定位是“总览视角”：帮助开发者理解系统如何拼在一起，以及新增功能时应该挂在哪一层。它不替代更细的 API 文档：
 
-- 文档索引见 `docs/api.md`
-- ECS API 细节见 `docs/ecs.md`
-- Reflect API 细节见 `docs/reflect.md`
-- GPU / Render 中层 API 细节见 `docs/gpu.md`、`docs/render.md`、`docs/render_api.md`
+- 文档索引见 `docs/README.md`
+- API Reference 见 `docs/reference/index.md`
+- ECS API 细节见 `docs/reference/ecs.md`
+- Reflect API 细节见 `docs/reference/reflect.md`
+- GPU / Render 中层 API 细节见 `docs/reference/gpu.md`、`docs/reference/render.md`、`docs/reference/render-expert.md`
 - Render 模块维护规则见 `src/render/AGENTS.md`
 - RenderGraph 内部规则见 `src/render/graph/AGENTS.md`
 
@@ -116,7 +117,6 @@ crate 根部的 feature-gated 模块关系如下：
 | `live2d` | Live2D feature，并依赖 `app` + `asset` | 启用 Cubism SDK 集成与 `Live2DFeature` |
 | `egui` | egui overlay，并依赖 `app` | 启用 `FrameContext::egui(...)` 与 egui 示例 |
 | `demo` | `app` + `asset` + `rand` | GPU demo 辅助 feature |
-| `demo-legacy` | `minifb` + `rand` | CPU-rendered demos |
 | `compare` / `compare-bevy` | 对比示例依赖 | hecs / Bevy 对比示例 |
 
 ### 推荐入口
@@ -1644,7 +1644,6 @@ flowchart TB
     Examples --> DemoExamples[examples/demo]
     Examples --> Live2DExamples[examples/live2d]
     Examples --> CompareExamples[examples/compare]
-    Examples --> LegacyExamples[examples/legacy]
 
     Benches --> Fair[benches/fair]
 ```
@@ -1961,7 +1960,7 @@ docs-only 修改通常不需要 `cargo test`。但如果文档修改伴随 API�
 2. `src/ecs/mod.rs`
 3. `src/ecs/world.rs`
 4. `src/ecs/query/`
-5. `docs/ecs.md`
+5. `docs/reference/ecs.md`
 6. `src/app/runner.rs`
 7. `src/render/mod.rs`
 8. `src/render/AGENTS.md`
@@ -1970,7 +1969,7 @@ docs-only 修改通常不需要 `cargo test`。但如果文档修改伴随 API�
 11. `src/render/execution/`
 12. `src/render/graph/AGENTS.md`
 13. `src/asset/mod.rs`
-14. `docs/api.md`
+14. `docs/README.md`
 
 ### 15.2 ECS 学习路径
 
@@ -1979,7 +1978,7 @@ docs-only 修改通常不需要 `cargo test`。但如果文档修改伴随 API�
 3. `examples/ecs/commands.rs`
 4. `examples/ecs/systems.rs`
 5. `examples/ecs/tiny_defense.rs`
-6. `docs/ecs.md`
+6. `docs/reference/ecs.md`
 7. `src/ecs/world.rs`
 8. `src/ecs/query/prepared.rs`
 9. `src/ecs/commands.rs`
@@ -1999,23 +1998,23 @@ docs-only 修改通常不需要 `cargo test`。但如果文档修改伴随 API�
 10. `src/render/pipeline/`
 11. `src/render/execution/`
 12. `src/render/graph/`
-13. `docs/render.md`
-14. `docs/render_api.md`
+13. `docs/reference/render.md`
+14. `docs/reference/render-expert.md`
 
 ### 15.4 App / Asset / Audio 学习路径
 
 1. `src/app/config.rs`
 2. `src/app/runner.rs`
-3. `docs/app.md`
+3. `docs/reference/app.md`
 4. `src/input/mod.rs`
-5. `docs/input.md`
+5. `docs/reference/input.md`
 6. `examples/render/egui_demo.rs`
 7. `src/asset/mod.rs`
-8. `docs/asset.md`
+8. `docs/reference/asset.md`
 9. `examples/asset_cook_smoke.rs`
 10. `src/bin/sky-cook.rs`
 11. `src/audio/mod.rs`
-12. `docs/audio.md`
+12. `docs/reference/audio.md`
 13. `examples/audio_demo.rs`
 
 ### 15.5 Demo 与 benchmark

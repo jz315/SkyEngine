@@ -519,7 +519,7 @@ Diagnostics should use stable ids:
 
 Tasks:
 
-- Update `docs/asset.md` from `AssetServer` to `Assets`.
+- Update `docs/reference/asset.md` from `AssetServer` to `Assets`.
 - Update event examples to match actual events or new planned events.
 - Add a short "current vs target" note while migration is in progress.
 - Mark `asset_resource_system_standard.md` as superseded where it conflicts
@@ -721,7 +721,7 @@ cargo test --features app
 cargo check --examples --features app
 cargo check --examples --features "app audio"
 cargo check --examples --features video
-cargo check --examples --features ui
+cargo check --examples --features ui-legacy
 cargo check --examples --features ui-neo
 cargo check --examples --features yakui-ui
 ```

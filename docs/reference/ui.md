@@ -1,16 +1,16 @@
-# UI
+# Legacy Retained UI
 
-SkyEngine 的原生 UI 是 retained-mode、ECS-first 的游戏 UI。它用于 HUD、菜单、按钮、文本、进度条、卡牌栏这类运行时界面；`egui` 仍然适合作为 debug/tool overlay，不是游戏 UI 主路径。
+SkyEngine 的 legacy retained UI 是 retained-mode、ECS-first 的游戏 UI。它用于 HUD、菜单、按钮、文本、进度条、卡牌栏这类运行时界面；`egui` 仍然适合作为 debug/tool overlay，不是游戏 UI 主路径。
 
-如果你想跟着做一个完整小界面，先看 [`ui_tutorial.md`](ui_tutorial.md)。本文更像组件/API 速查。
+如果你想跟着做一个完整小界面，先看 [`../tutorials/ui.md`](../tutorials/ui.md)。本文更像组件/API 速查。
 
 ## Feature
 
 ```toml
-sky_engine = { path = "...", features = ["ui"] }
+sky_engine = { path = "...", features = ["ui-legacy"] }
 ```
 
-`ui` 会启用 `app`，并使用 `glyphon 0.8` 渲染文本。glyphon 类型不会出现在 public API 里。
+`ui-legacy` 会启用 `app`，并使用 `glyphon 0.8` 渲染文本。glyphon 类型不会出现在 public API 里。
 
 ## Frame Order
 
@@ -180,18 +180,18 @@ fonts.add_font_bytes("ui", include_bytes!("MyFont.ttf").as_slice());
 ## Examples
 
 ```bash
-cargo run --example hud_menu --features ui --release
-cargo run --example weird_ui_lab --features ui --release
-cargo run --example lawn_defense_game --features ui --release
+cargo run --example ui_legacy_hud_menu --features ui-legacy --release
+cargo run --example ui_legacy_stress_lab --features ui-legacy --release
+cargo run --example lawn_defense_game --features ui-legacy --release
 ```
 
-`hud_menu` 是最小原生 UI 示例；`weird_ui_lab` 是视觉压力测试场，用来检查 anchor、局部 z、Fill、disabled/hidden、overlap 和交互控件；`lawn_defense_game` 使用 UI 做顶部 HUD、血量/波次条、暂停按钮和标题/暂停/胜负菜单。
+`ui_legacy_hud_menu` 是最小 legacy retained UI 示例；`ui_legacy_stress_lab` 是视觉压力测试场，用来检查 anchor、局部 z、Fill、disabled/hidden、overlap 和交互控件；`lawn_defense_game` 使用 legacy UI 做顶部 HUD、血量/波次条、暂停按钮和标题/暂停/胜负菜单。
 
 ## Tests
 
 ```bash
-cargo test --features ui ui
-cargo check --example hud_menu --features ui
-cargo check --example weird_ui_lab --features ui
-cargo check --example lawn_defense_game --features ui
+cargo test --features ui-legacy ui
+cargo check --example ui_legacy_hud_menu --features ui-legacy
+cargo check --example ui_legacy_stress_lab --features ui-legacy
+cargo check --example lawn_defense_game --features ui-legacy
 ```

@@ -1,31 +1,31 @@
-# SkyEngine UI 教程
+# SkyEngine Legacy UI 教程
 
-这篇教程带你从零搭一个原生 retained-mode UI：顶部 HUD、居中菜单、按钮、进度条、滑杆、开关和可滚动面板。
+这篇教程带你从零搭一个 legacy retained-mode UI：顶部 HUD、居中菜单、按钮、进度条、滑杆、开关和可滚动面板。
 
-原生 UI 的目标是游戏运行时界面，例如 HUD、暂停菜单、战斗面板、卡牌栏、物品栏。它不是 editor/debug overlay；调试工具仍然可以继续用 `egui`。
+Legacy UI 的目标是游戏运行时界面，例如 HUD、暂停菜单、战斗面板、卡牌栏、物品栏。它不是 editor/debug overlay；调试工具仍然可以继续用 `egui`。
 
 ## 1. 启用 Feature
 
 ```toml
 [dependencies]
-sky_engine = { path = ".", features = ["ui"] }
+sky_engine = { path = ".", features = ["ui-legacy"] }
 ```
 
-`ui` 会自动启用 `app`，并启用 `glyphon` 文本渲染。公共 API 不暴露 glyphon 类型。
+`ui-legacy` 会自动启用 `app`，并启用 `glyphon` 文本渲染。公共 API 不暴露 glyphon 类型。
 
-如果你把教程代码放到 `examples/ui/tutorial_ui.rs`，需要在 `Cargo.toml` 注册：
+如果你把教程代码放到 `examples/ui/legacy/tutorial_ui.rs`，需要在 `Cargo.toml` 注册：
 
 ```toml
 [[example]]
 name = "tutorial_ui"
-path = "examples/ui/tutorial_ui.rs"
-required-features = ["ui"]
+path = "examples/ui/legacy/tutorial_ui.rs"
+required-features = ["ui-legacy"]
 ```
 
 运行：
 
 ```bash
-cargo run --example tutorial_ui --features ui --release
+cargo run --example tutorial_ui --features ui-legacy --release
 ```
 
 ## 2. 最小 App 骨架
@@ -352,7 +352,7 @@ fn main() {
     let mut world = World::new();
     world
         .install(
-            WindowPlugin::new("SkyEngine - UI Tutorial", 960, 600)
+            WindowPlugin::new("SkyEngine - Legacy UI Tutorial", 960, 600)
                 .with_vsync(false)
                 .with_resizable(true),
         )
@@ -383,6 +383,6 @@ fn main() {
 
 ## 9. 继续看
 
-- `examples/ui/hud_menu.rs`：小型 HUD + 菜单范例。
-- `examples/ui/weird_ui_lab.rs`：视觉压力测试，覆盖滚动、局部 z、Fill、anchor、禁用和隐藏。
-- `docs/ui.md`：组件/API 速查。
+- `examples/ui/legacy/hud_menu.rs`：小型 HUD + 菜单范例。
+- `examples/ui/legacy/stress_lab.rs`：视觉压力测试，覆盖滚动、局部 z、Fill、anchor、禁用和隐藏。
+- `docs/reference/ui.md`：组件/API 速查。
