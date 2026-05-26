@@ -7,10 +7,10 @@ use serde_json::Value;
 
 use crate::math::Transform;
 
-use super::{SceneComponents, SceneError, SceneValue, TRANSFORM_COMPONENT_TYPE};
+use super::{PersistComponents, PersistError, PersistValue, TRANSFORM_COMPONENT_TYPE};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-struct SceneTransformData {
+struct PersistTransformData {
     position: [f32; 3],
     #[serde(default)]
     rotation_z: f32,
@@ -18,7 +18,7 @@ struct SceneTransformData {
     scale: [f32; 3],
 }
 
-impl From<Transform> for SceneTransformData {
+impl From<Transform> for PersistTransformData {
     fn from(transform: Transform) -> Self {
         Self {
             position: transform.position.to_array(),
@@ -28,31 +28,31 @@ impl From<Transform> for SceneTransformData {
     }
 }
 
-impl From<SceneTransformData> for Transform {
-    fn from(data: SceneTransformData) -> Self {
+impl From<PersistTransformData> for Transform {
+    fn from(data: PersistTransformData) -> Self {
         Transform::from_xyz(data.position[0], data.position[1], data.position[2])
             .with_rotation(data.rotation_z)
             .with_scale3(data.scale[0], data.scale[1], data.scale[2])
     }
 }
 
-pub(crate) fn transform_to_scene_value(transform: Transform) -> SceneValue {
-    SceneValue::from(
-        serde_json::to_value(SceneTransformData::from(transform))
-            .expect("scene transform data should always serialize"),
+pub(crate) fn transform_to_persist_value(transform: Transform) -> PersistValue {
+    PersistValue::from(
+        serde_json::to_value(PersistTransformData::from(transform))
+            .expect("persist transform data should always serialize"),
     )
 }
 
-pub(crate) fn scene_value_to_transform(value: &SceneValue) -> Result<Transform, SceneError> {
-    serde_json::from_value::<SceneTransformData>(value.as_json().clone())
+pub(crate) fn persist_value_to_transform(value: &PersistValue) -> Result<Transform, PersistError> {
+    serde_json::from_value::<PersistTransformData>(value.as_json().clone())
         .map(Transform::from)
-        .map_err(|error| SceneError::ComponentSerde {
+        .map_err(|error| PersistError::ComponentSerde {
             type_name: TRANSFORM_COMPONENT_TYPE.to_string(),
             error: error.to_string(),
         })
 }
 
-impl Serialize for SceneComponents {
+impl Serialize for PersistComponents {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -65,34 +65,34 @@ impl Serialize for SceneComponents {
     }
 }
 
-impl<'de> Deserialize<'de> for SceneComponents {
+impl<'de> Deserialize<'de> for PersistComponents {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_any(SceneComponentsVisitor)
+        deserializer.deserialize_any(PersistComponentsVisitor)
     }
 }
 
-struct SceneComponentsVisitor;
+struct PersistComponentsVisitor;
 
-impl<'de> Visitor<'de> for SceneComponentsVisitor {
-    type Value = SceneComponents;
+impl<'de> Visitor<'de> for PersistComponentsVisitor {
+    type Value = PersistComponents;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("scene components object map")
+        formatter.write_str("persist components object map")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
     where
         A: MapAccess<'de>,
     {
-        let mut components = SceneComponents::new();
+        let mut components = PersistComponents::new();
         while let Some((type_name, value)) = map.next_entry::<String, Value>()? {
             if components.contains(&type_name) {
-                components.push_raw(type_name, SceneValue::from(value));
+                components.push_raw(type_name, PersistValue::from(value));
             } else {
-                components.insert(type_name, SceneValue::from(value));
+                components.insert(type_name, PersistValue::from(value));
             }
         }
         Ok(components)

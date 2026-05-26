@@ -1,33 +1,36 @@
-//! Scene and prefab documents for organizing ECS entity trees.
+//! Persistence and prefab documents for ECS entity trees.
 //!
-//! The v1 scene module is intentionally small: it stores stable document IDs,
-//! names, hierarchy links, and engine-owned component data, then spawns those
-//! documents into a [`World`](crate::ecs::World). It does not replace ECS; it
-//! gives ECS entities a reusable asset-like structure.
+//! The main API is [`Persistence`]: users keep spawning ordinary ECS entities,
+//! mark saveable components with `#[persist(component)]`, and then save a World
+//! or prefab subtree. The module owns stable document IDs, hierarchy metadata,
+//! serde-backed component payloads, and the in-memory [`PersistDocument`] layer.
 
-mod capture;
 mod components;
 mod document;
 mod errors;
 mod ids;
-mod runtime;
+mod persistence;
 mod serialize;
-mod spawn;
 mod validation;
 mod value;
 
 #[cfg(test)]
 mod tests;
 
-pub use capture::{capture_prefab, capture_scene};
-pub use components::{Children, Name, Parent, SceneEntity, SceneRoot};
+pub use components::{Children, Name, Parent};
+pub(crate) use components::{PersistEntity, PersistRoot};
 pub(crate) use document::TRANSFORM_COMPONENT_TYPE;
-pub use document::{PrefabDocument, PrefabSpawnOptions, SceneComponents, SceneDocument, SceneNode};
-pub use errors::SceneError;
-pub use ids::SceneEntityId;
-pub use runtime::SceneRuntime;
-pub use spawn::{
-    despawn_prefab_instance, despawn_scene_instance, spawn_prefab, spawn_scene, PrefabInstance,
-    SceneInstance,
+pub(crate) use document::{PersistComponents, PersistDocumentData, PersistNode};
+pub use errors::PersistError;
+pub use ids::PersistId;
+pub use persistence::{
+    Persist, PersistDocument, PersistPrefabInstance, PersistRegistration, PersistWorldInstance,
+    Persistence,
 };
-pub use value::SceneValue;
+pub use sky_engine_reflect_derive::persist;
+pub(crate) use value::PersistValue;
+
+#[doc(hidden)]
+pub mod __private {
+    pub use inventory;
+}

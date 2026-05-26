@@ -1,8 +1,8 @@
 use crate::ecs::EntityId;
 
-use super::SceneEntityId;
+use super::PersistId;
 
-/// Human-readable entity name used by scene tools and debugging UI.
+/// Human-readable entity name used by persistence tools and debugging UI.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Name(pub String);
 
@@ -20,22 +20,22 @@ impl Name {
 
 /// Runtime component storing the source document ID for an entity.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SceneEntity {
-    pub id: SceneEntityId,
+pub struct PersistEntity {
+    pub id: PersistId,
 }
 
-impl SceneEntity {
+impl PersistEntity {
     #[inline]
-    pub fn new(id: SceneEntityId) -> Self {
+    pub fn new(id: PersistId) -> Self {
         Self { id }
     }
 }
 
-/// Marker component inserted on scene or prefab root entities.
+/// Marker component inserted on loaded world or prefab root entities.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SceneRoot;
+pub struct PersistRoot;
 
-/// Parent link for scene hierarchy.
+/// Parent link for persisted hierarchy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Parent(pub EntityId);
 
@@ -51,7 +51,7 @@ impl Parent {
     }
 }
 
-/// Child list for scene hierarchy.
+/// Child list for persisted hierarchy.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Children {
     pub entities: Vec<EntityId>,

@@ -2,22 +2,22 @@ use std::fmt;
 
 use crate::ecs::EntityId;
 
-use super::SceneEntityId;
+use super::PersistId;
 
-/// Errors produced while validating or spawning scene/prefab documents.
+/// Errors produced while validating, saving, or loading persistence documents.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SceneError {
-    EmptySceneEntityId,
-    DuplicateSceneEntityId(SceneEntityId),
-    DuplicateTransform(SceneEntityId),
-    DuplicateSceneComponent {
-        entity: SceneEntityId,
+pub enum PersistError {
+    EmptyPersistId,
+    DuplicatePersistId(PersistId),
+    DuplicateTransform(PersistId),
+    DuplicatePersistComponent {
+        entity: PersistId,
         type_name: String,
     },
     DuplicateComponentType(String),
     UnregisteredComponentType(String),
     MissingRuntimeEntity(EntityId),
-    MissingSceneEntity(EntityId),
+    MissingPersistEntity(EntityId),
     DuplicateRuntimeEntity(EntityId),
     ComponentSerde {
         type_name: String,
@@ -28,39 +28,39 @@ pub enum SceneError {
     Io(String),
 }
 
-impl fmt::Display for SceneError {
+impl fmt::Display for PersistError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::EmptySceneEntityId => f.write_str("scene entity IDs must not be empty"),
-            Self::DuplicateSceneEntityId(id) => {
-                write!(f, "duplicate scene entity ID '{id}'")
+            Self::EmptyPersistId => f.write_str("persist IDs must not be empty"),
+            Self::DuplicatePersistId(id) => {
+                write!(f, "duplicate persist ID '{id}'")
             }
             Self::DuplicateTransform(id) => {
                 write!(
                     f,
-                    "scene entity '{id}' has more than one Transform component"
+                    "persist entity '{id}' has more than one Transform component"
                 )
             }
-            Self::DuplicateSceneComponent { entity, type_name } => {
+            Self::DuplicatePersistComponent { entity, type_name } => {
                 write!(
                     f,
-                    "scene entity '{entity}' has more than one '{type_name}' component"
+                    "persist entity '{entity}' has more than one '{type_name}' component"
                 )
             }
             Self::DuplicateComponentType(type_name) => {
                 write!(
                     f,
-                    "scene component type '{type_name}' is already registered"
+                    "persist component type '{type_name}' is already registered"
                 )
             }
             Self::UnregisteredComponentType(type_name) => {
-                write!(f, "scene component type '{type_name}' is not registered")
+                write!(f, "persist component type '{type_name}' is not registered")
             }
             Self::MissingRuntimeEntity(entity) => {
                 write!(f, "runtime entity '{entity:?}' does not exist")
             }
-            Self::MissingSceneEntity(entity) => {
-                write!(f, "runtime entity '{entity:?}' has no SceneEntity ID")
+            Self::MissingPersistEntity(entity) => {
+                write!(f, "runtime entity '{entity:?}' has no PersistEntity ID")
             }
             Self::DuplicateRuntimeEntity(entity) => {
                 write!(
@@ -69,24 +69,24 @@ impl fmt::Display for SceneError {
                 )
             }
             Self::ComponentSerde { type_name, error } => {
-                write!(f, "scene component '{type_name}' serde error: {error}")
+                write!(f, "persist component '{type_name}' serde error: {error}")
             }
             Self::MissingPrefabRoot => f.write_str("prefab document must contain one root node"),
-            Self::Json(error) => write!(f, "scene JSON error: {error}"),
-            Self::Io(error) => write!(f, "scene I/O error: {error}"),
+            Self::Json(error) => write!(f, "persistence JSON error: {error}"),
+            Self::Io(error) => write!(f, "persistence I/O error: {error}"),
         }
     }
 }
 
-impl std::error::Error for SceneError {}
+impl std::error::Error for PersistError {}
 
-impl From<serde_json::Error> for SceneError {
+impl From<serde_json::Error> for PersistError {
     fn from(error: serde_json::Error) -> Self {
         Self::Json(error.to_string())
     }
 }
 
-impl From<std::io::Error> for SceneError {
+impl From<std::io::Error> for PersistError {
     fn from(error: std::io::Error) -> Self {
         Self::Io(error.to_string())
     }
