@@ -329,7 +329,8 @@ impl SceneRenderer for RenderlingSceneRenderer {
         self.rebuild_stage_frame(assets.as_ref());
 
         let Some(pending_frame) = self.pending_frame.as_ref() else {
-            let outcome = SceneRenderOutcome::Skipped(SceneFrameSkipReason::BackendFrameUnavailable);
+            let outcome =
+                SceneRenderOutcome::Skipped(SceneFrameSkipReason::BackendFrameUnavailable);
             frame.set_render_outcome(outcome);
             return outcome;
         };
@@ -622,7 +623,11 @@ mod tests {
         ));
 
         let mut renderer = RenderlingSceneRenderer::new_for_tests([128, 96]);
-        renderer.render_world(&world);
+        let mut frame = renderer
+            .begin_frame()
+            .expect("test renderling begin_frame should succeed");
+        let _ = renderer.render_world(&mut frame, &world);
+        renderer.end_frame(frame);
         assert_eq!(
             renderer.sync_stats(),
             RenderlingSceneSyncStats {
