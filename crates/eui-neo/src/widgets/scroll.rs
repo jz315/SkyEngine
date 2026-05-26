@@ -216,222 +216,183 @@ pub(super) fn scrollbar(ui: &mut Ui, id: impl Into<String>) -> ScrollbarBuilder<
     ScrollbarBuilder::new(ui, id)
 }
 
-pub struct ScrollYBuilder<'ui> {
+struct ScrollAreaBuilder<'ui> {
     ui: &'ui mut Ui,
     id: String,
+    axis: ScrollAxis,
     layout: WidgetLayout,
     style: ScrollbarStyle,
     offset: f32,
-    content_height: Option<f32>,
+    content_extent: Option<f32>,
     step: f32,
     gap: f32,
     inset: EdgeInsets,
     padding: EdgeInsets,
-    scrollbar_width: f32,
+    scrollbar_size: f32,
     scrollbar_gap: f32,
     on_change: Option<ChangeCallback>,
 }
 
-impl<'ui> ScrollYBuilder<'ui> {
-    pub fn new(ui: &'ui mut Ui, id: impl Into<String>) -> Self {
+impl<'ui> ScrollAreaBuilder<'ui> {
+    fn new(ui: &'ui mut Ui, id: impl Into<String>, axis: ScrollAxis) -> Self {
+        let layout = match axis {
+            ScrollAxis::X => WidgetLayout::new(320.0, 120.0),
+            ScrollAxis::Y => WidgetLayout::new(320.0, 240.0),
+        };
         Self {
             ui,
             id: id.into(),
-            layout: WidgetLayout::new(320.0, 240.0),
+            axis,
+            layout,
             style: ScrollbarStyle::default(),
             offset: 0.0,
-            content_height: None,
+            content_extent: None,
             step: 48.0,
             gap: 0.0,
             inset: EdgeInsets::ZERO,
             padding: EdgeInsets::ZERO,
-            scrollbar_width: 8.0,
+            scrollbar_size: 8.0,
             scrollbar_gap: 8.0,
             on_change: None,
         }
     }
 
-    pub fn width(mut self, value: impl Into<Size>) -> Self {
+    fn width(mut self, value: impl Into<Size>) -> Self {
         self.layout = self.layout.width(value);
         self
     }
 
-    pub fn height(mut self, value: impl Into<Size>) -> Self {
+    fn height(mut self, value: impl Into<Size>) -> Self {
         self.layout = self.layout.height(value);
         self
     }
 
-    pub fn size(mut self, width: impl Into<Size>, height: impl Into<Size>) -> Self {
+    fn size(mut self, width: impl Into<Size>, height: impl Into<Size>) -> Self {
         self.layout = self.layout.size(width, height);
         self
     }
 
-    pub fn fill(mut self) -> Self {
+    fn fill(mut self) -> Self {
         self.layout = self.layout.size(Size::fill(), Size::fill());
         self
     }
 
-    pub fn min_width(mut self, value: f32) -> Self {
+    fn min_width(mut self, value: f32) -> Self {
         self.layout = self.layout.min_width(value);
         self
     }
 
-    pub fn max_width(mut self, value: f32) -> Self {
+    fn max_width(mut self, value: f32) -> Self {
         self.layout = self.layout.max_width(value);
         self
     }
 
-    pub fn min_height(mut self, value: f32) -> Self {
+    fn min_height(mut self, value: f32) -> Self {
         self.layout = self.layout.min_height(value);
         self
     }
 
-    pub fn max_height(mut self, value: f32) -> Self {
+    fn max_height(mut self, value: f32) -> Self {
         self.layout = self.layout.max_height(value);
         self
     }
 
-    pub fn grow(mut self, value: f32) -> Self {
+    fn grow(mut self, value: f32) -> Self {
         self.layout = self.layout.grow(value);
         self
     }
 
-    pub fn margin(mut self, value: f32) -> Self {
+    fn margin(mut self, value: f32) -> Self {
         self.layout = self.layout.margin(value);
         self
     }
 
-    pub fn margin_xy(mut self, horizontal: f32, vertical: f32) -> Self {
+    fn margin_xy(mut self, horizontal: f32, vertical: f32) -> Self {
         self.layout = self.layout.margin_xy(horizontal, vertical);
         self
     }
 
-    pub fn margin_each(mut self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
+    fn margin_each(mut self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
         self.layout = self.layout.margin_each(left, top, right, bottom);
         self
     }
 
-    /// Inset the scroll viewport from the outer container.
-    ///
-    /// This is the panel-safe padding: use it to keep the clipped viewport and
-    /// scrollbar away from a rounded outer shell.
-    pub fn inset(mut self, value: f32) -> Self {
+    fn inset(mut self, value: f32) -> Self {
         self.inset = EdgeInsets::all(value);
         self
     }
 
-    pub fn inset_xy(mut self, horizontal: f32, vertical: f32) -> Self {
+    fn inset_xy(mut self, horizontal: f32, vertical: f32) -> Self {
         self.inset = EdgeInsets::symmetric(horizontal, vertical);
         self
     }
 
-    pub fn inset_each(mut self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
+    fn inset_each(mut self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
         self.inset = EdgeInsets::new(left, top, right, bottom);
         self
     }
 
-    pub fn viewport_inset(self, value: f32) -> Self {
-        self.inset(value)
-    }
-
-    pub fn viewport_inset_xy(self, horizontal: f32, vertical: f32) -> Self {
-        self.inset_xy(horizontal, vertical)
-    }
-
-    pub fn viewport_inset_each(self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
-        self.inset_each(left, top, right, bottom)
-    }
-
-    pub fn padding(mut self, value: f32) -> Self {
+    fn padding(mut self, value: f32) -> Self {
         self.padding = EdgeInsets::all(value);
         self
     }
 
-    pub fn padding_xy(mut self, horizontal: f32, vertical: f32) -> Self {
+    fn padding_xy(mut self, horizontal: f32, vertical: f32) -> Self {
         self.padding = EdgeInsets::symmetric(horizontal, vertical);
         self
     }
 
-    pub fn padding_each(mut self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
+    fn padding_each(mut self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
         self.padding = EdgeInsets::new(left, top, right, bottom);
         self
     }
 
-    pub fn content_padding(self, value: f32) -> Self {
-        self.padding(value)
-    }
-
-    pub fn content_padding_xy(self, horizontal: f32, vertical: f32) -> Self {
-        self.padding_xy(horizontal, vertical)
-    }
-
-    pub fn content_padding_each(self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
-        self.padding_each(left, top, right, bottom)
-    }
-
-    pub fn gap(mut self, value: f32) -> Self {
+    fn gap(mut self, value: f32) -> Self {
         self.gap = value.max(0.0);
         self
     }
 
-    pub fn spacing(self, value: f32) -> Self {
-        self.gap(value)
-    }
-
-    pub fn content_height(mut self, value: f32) -> Self {
-        self.content_height = Some(value.max(0.0));
+    fn content_extent(mut self, value: f32) -> Self {
+        self.content_extent = Some(value.max(0.0));
         self
     }
 
-    pub fn auto_content_height(mut self) -> Self {
-        self.content_height = None;
+    fn auto_content_extent(mut self) -> Self {
+        self.content_extent = None;
         self
     }
 
-    pub fn offset(mut self, value: f32) -> Self {
+    fn offset(mut self, value: f32) -> Self {
         self.offset = value.max(0.0);
         self
     }
 
-    pub fn offset_bind<T: 'static>(self, binding: Binding<T, f32>) -> Self {
-        let value = binding.get();
-        self.offset(value).on_change(move |next| binding.set(next))
-    }
-
-    pub fn value(self, value: f32) -> Self {
-        self.offset(value)
-    }
-
-    pub fn value_bind<T: 'static>(self, binding: Binding<T, f32>) -> Self {
-        self.offset_bind(binding)
-    }
-
-    pub fn step(mut self, value: f32) -> Self {
+    fn step(mut self, value: f32) -> Self {
         self.step = value.max(1.0);
         self
     }
 
-    pub fn scrollbar_width(mut self, value: f32) -> Self {
-        self.scrollbar_width = value.max(0.0);
+    fn scrollbar_size(mut self, value: f32) -> Self {
+        self.scrollbar_size = value.max(0.0);
         self
     }
 
-    pub fn scrollbar_gap(mut self, value: f32) -> Self {
+    fn scrollbar_gap(mut self, value: f32) -> Self {
         self.scrollbar_gap = value.max(0.0);
         self
     }
 
-    pub fn style(mut self, value: ScrollbarStyle) -> Self {
+    fn style(mut self, value: ScrollbarStyle) -> Self {
         self.style = value;
         self
     }
 
-    pub fn theme(mut self, tokens: ThemeColorTokens) -> Self {
+    fn theme(mut self, tokens: ThemeColorTokens) -> Self {
         self.style = ScrollbarStyle::new(tokens);
         self
     }
 
-    pub fn on_change<F>(mut self, callback: F) -> Self
+    fn on_change<F>(mut self, callback: F) -> Self
     where
         F: FnMut(f32) + 'static,
     {
@@ -447,43 +408,55 @@ impl<'ui> ScrollYBuilder<'ui> {
         self
     }
 
-    pub fn content(self, content: impl FnOnce(&mut Ui)) -> Response {
+    fn content(self, content: impl FnOnce(&mut Ui)) -> Response {
         let id = self.id.clone();
         let viewport_id = format!("{id}.viewport");
         let content_id = format!("{id}.content");
-        let fallback_viewport_h =
-            (self.layout.fixed_height_or(240.0) - self.inset.vertical()).max(0.0);
-        let viewport_h = self
+        let axis = self.axis;
+        let fallback_viewport_extent = match axis {
+            ScrollAxis::X => (self.layout.fixed_width_or(320.0) - self.inset.horizontal()).max(0.0),
+            ScrollAxis::Y => (self.layout.fixed_height_or(240.0) - self.inset.vertical()).max(0.0),
+        };
+        let viewport_extent = self
             .ui
             .previous_frame(&viewport_id)
-            .map(|frame| frame.height)
-            .unwrap_or(fallback_viewport_h);
-        let measured_content_h = self
-            .ui
-            .previous_frame(&content_id)
-            .map(|frame| frame.height);
+            .map(|frame| match axis {
+                ScrollAxis::X => frame.width,
+                ScrollAxis::Y => frame.height,
+            })
+            .unwrap_or(fallback_viewport_extent);
+        let measured_content_extent = self.ui.previous_frame(&content_id).map(|frame| match axis {
+            ScrollAxis::X => frame.width,
+            ScrollAxis::Y => frame.height,
+        });
         let content_extent = self
-            .content_height
-            .or(measured_content_h)
-            .unwrap_or(viewport_h)
-            .max(viewport_h);
-        let max_offset = (content_extent - viewport_h).max(0.0);
+            .content_extent
+            .or(measured_content_extent)
+            .unwrap_or(viewport_extent)
+            .max(viewport_extent);
+        let max_offset = (content_extent - viewport_extent).max(0.0);
         let offset = self.offset.clamp(0.0, max_offset);
         let scrollable = max_offset > 0.0;
         let scroll_step = self.step;
         let on_wheel_change = self.on_change.clone();
         let on_scrollbar_change = self.on_change.clone();
-        let reserved_right = if scrollable {
-            self.scrollbar_width + self.scrollbar_gap
+        let reserved_cross = if scrollable {
+            self.scrollbar_size + self.scrollbar_gap
         } else {
             0.0
         };
-        let content_height = self
-            .content_height
+        let content_size = self
+            .content_extent
             .map(Size::fixed)
             .unwrap_or_else(Size::wrap_content);
+        let padding = self.padding;
+        let gap = self.gap;
+        let scrollbar_size = self.scrollbar_size;
+        let style = self.style;
+        let step = self.step;
 
-        self.layout
+        let root = self
+            .layout
             .apply_to_size(
                 self.ui.stack(id.clone()),
                 self.layout.width,
@@ -494,49 +467,280 @@ impl<'ui> ScrollYBuilder<'ui> {
                 self.inset.top,
                 self.inset.right,
                 self.inset.bottom,
-            )
-            .align_items(Align::End)
-            .content(|ui| {
-                let mut viewport = ui.stack(viewport_id).fill().clip();
-                if scrollable {
-                    viewport = viewport.on_scroll(move |event| {
-                        if let Some(callback) = &on_wheel_change {
-                            let next = (offset - event.y * scroll_step).clamp(0.0, max_offset);
-                            (callback.borrow_mut())(next);
-                        }
-                    });
-                }
+            );
+        let root = match axis {
+            ScrollAxis::X => root.justify_content(Align::End),
+            ScrollAxis::Y => root.align_items(Align::End),
+        };
 
-                viewport.content(|ui| {
+        root.content(|ui| {
+            let mut viewport = ui.stack(viewport_id).fill().clip();
+            if scrollable {
+                viewport = viewport.on_scroll(move |event| {
+                    if let Some(callback) = &on_wheel_change {
+                        let next = (offset - scroll_delta(axis, event) * scroll_step)
+                            .clamp(0.0, max_offset);
+                        (callback.borrow_mut())(next);
+                    }
+                });
+            }
+
+            viewport.content(|ui| match axis {
+                ScrollAxis::X => {
+                    ui.row(content_id)
+                        .x(-offset)
+                        .size(content_size, Size::fill())
+                        .padding_each(
+                            padding.left,
+                            padding.top,
+                            padding.right,
+                            padding.bottom + reserved_cross,
+                        )
+                        .gap(gap)
+                        .content(content);
+                }
+                ScrollAxis::Y => {
                     ui.column(content_id)
                         .y(-offset)
-                        .size(Size::fill(), content_height)
+                        .size(Size::fill(), content_size)
                         .padding_each(
-                            self.padding.left,
-                            self.padding.top,
-                            self.padding.right + reserved_right,
-                            self.padding.bottom,
+                            padding.left,
+                            padding.top,
+                            padding.right + reserved_cross,
+                            padding.bottom,
                         )
-                        .gap(self.gap)
+                        .gap(gap)
                         .content(content);
-                });
-
-                if scrollable && self.scrollbar_width > 0.0 {
-                    scrollbar(ui, format!("{id}.scrollbar"))
-                        .size(self.scrollbar_width, viewport_h)
-                        .viewport(viewport_h)
-                        .content(content_extent)
-                        .offset(offset)
-                        .step(self.step)
-                        .style(self.style)
-                        .on_change(move |next| {
-                            if let Some(callback) = &on_scrollbar_change {
-                                (callback.borrow_mut())(next);
-                            }
-                        })
-                        .build();
                 }
-            })
+            });
+
+            if scrollable && scrollbar_size > 0.0 {
+                let scrollbar = scrollbar(ui, format!("{id}.scrollbar"));
+                let scrollbar = match axis {
+                    ScrollAxis::X => scrollbar.horizontal().size(viewport_extent, scrollbar_size),
+                    ScrollAxis::Y => scrollbar.size(scrollbar_size, viewport_extent),
+                };
+                scrollbar
+                    .viewport(viewport_extent)
+                    .content(content_extent)
+                    .offset(offset)
+                    .step(step)
+                    .style(style)
+                    .on_change(move |next| {
+                        if let Some(callback) = &on_scrollbar_change {
+                            (callback.borrow_mut())(next);
+                        }
+                    })
+                    .build();
+            }
+        })
+    }
+}
+
+macro_rules! scroll_area_common_methods {
+    () => {
+        pub fn width(mut self, value: impl Into<Size>) -> Self {
+            self.inner = self.inner.width(value);
+            self
+        }
+
+        pub fn height(mut self, value: impl Into<Size>) -> Self {
+            self.inner = self.inner.height(value);
+            self
+        }
+
+        pub fn size(mut self, width: impl Into<Size>, height: impl Into<Size>) -> Self {
+            self.inner = self.inner.size(width, height);
+            self
+        }
+
+        pub fn fill(mut self) -> Self {
+            self.inner = self.inner.fill();
+            self
+        }
+
+        pub fn min_width(mut self, value: f32) -> Self {
+            self.inner = self.inner.min_width(value);
+            self
+        }
+
+        pub fn max_width(mut self, value: f32) -> Self {
+            self.inner = self.inner.max_width(value);
+            self
+        }
+
+        pub fn min_height(mut self, value: f32) -> Self {
+            self.inner = self.inner.min_height(value);
+            self
+        }
+
+        pub fn max_height(mut self, value: f32) -> Self {
+            self.inner = self.inner.max_height(value);
+            self
+        }
+
+        pub fn grow(mut self, value: f32) -> Self {
+            self.inner = self.inner.grow(value);
+            self
+        }
+
+        pub fn margin(mut self, value: f32) -> Self {
+            self.inner = self.inner.margin(value);
+            self
+        }
+
+        pub fn margin_xy(mut self, horizontal: f32, vertical: f32) -> Self {
+            self.inner = self.inner.margin_xy(horizontal, vertical);
+            self
+        }
+
+        pub fn margin_each(mut self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
+            self.inner = self.inner.margin_each(left, top, right, bottom);
+            self
+        }
+
+        /// Inset the clipped viewport and scrollbar from the outer container.
+        pub fn inset(mut self, value: f32) -> Self {
+            self.inner = self.inner.inset(value);
+            self
+        }
+
+        pub fn inset_xy(mut self, horizontal: f32, vertical: f32) -> Self {
+            self.inner = self.inner.inset_xy(horizontal, vertical);
+            self
+        }
+
+        pub fn inset_each(mut self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
+            self.inner = self.inner.inset_each(left, top, right, bottom);
+            self
+        }
+
+        pub fn viewport_inset(self, value: f32) -> Self {
+            self.inset(value)
+        }
+
+        pub fn viewport_inset_xy(self, horizontal: f32, vertical: f32) -> Self {
+            self.inset_xy(horizontal, vertical)
+        }
+
+        pub fn viewport_inset_each(self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
+            self.inset_each(left, top, right, bottom)
+        }
+
+        pub fn padding(mut self, value: f32) -> Self {
+            self.inner = self.inner.padding(value);
+            self
+        }
+
+        pub fn padding_xy(mut self, horizontal: f32, vertical: f32) -> Self {
+            self.inner = self.inner.padding_xy(horizontal, vertical);
+            self
+        }
+
+        pub fn padding_each(mut self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
+            self.inner = self.inner.padding_each(left, top, right, bottom);
+            self
+        }
+
+        pub fn content_padding(self, value: f32) -> Self {
+            self.padding(value)
+        }
+
+        pub fn content_padding_xy(self, horizontal: f32, vertical: f32) -> Self {
+            self.padding_xy(horizontal, vertical)
+        }
+
+        pub fn content_padding_each(self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
+            self.padding_each(left, top, right, bottom)
+        }
+
+        pub fn gap(mut self, value: f32) -> Self {
+            self.inner = self.inner.gap(value);
+            self
+        }
+
+        pub fn spacing(self, value: f32) -> Self {
+            self.gap(value)
+        }
+
+        pub fn offset(mut self, value: f32) -> Self {
+            self.inner = self.inner.offset(value);
+            self
+        }
+
+        pub fn offset_bind<T: 'static>(self, binding: Binding<T, f32>) -> Self {
+            let value = binding.get();
+            self.offset(value).on_change(move |next| binding.set(next))
+        }
+
+        pub fn value(self, value: f32) -> Self {
+            self.offset(value)
+        }
+
+        pub fn value_bind<T: 'static>(self, binding: Binding<T, f32>) -> Self {
+            self.offset_bind(binding)
+        }
+
+        pub fn step(mut self, value: f32) -> Self {
+            self.inner = self.inner.step(value);
+            self
+        }
+
+        pub fn scrollbar_gap(mut self, value: f32) -> Self {
+            self.inner = self.inner.scrollbar_gap(value);
+            self
+        }
+
+        pub fn style(mut self, value: ScrollbarStyle) -> Self {
+            self.inner = self.inner.style(value);
+            self
+        }
+
+        pub fn theme(mut self, tokens: ThemeColorTokens) -> Self {
+            self.inner = self.inner.theme(tokens);
+            self
+        }
+
+        pub fn on_change<F>(mut self, callback: F) -> Self
+        where
+            F: FnMut(f32) + 'static,
+        {
+            self.inner = self.inner.on_change(callback);
+            self
+        }
+    };
+}
+
+pub struct ScrollYBuilder<'ui> {
+    inner: ScrollAreaBuilder<'ui>,
+}
+
+impl<'ui> ScrollYBuilder<'ui> {
+    pub fn new(ui: &'ui mut Ui, id: impl Into<String>) -> Self {
+        Self {
+            inner: ScrollAreaBuilder::new(ui, id, ScrollAxis::Y),
+        }
+    }
+
+    scroll_area_common_methods!();
+
+    pub fn content_height(mut self, value: f32) -> Self {
+        self.inner = self.inner.content_extent(value);
+        self
+    }
+
+    pub fn auto_content_height(mut self) -> Self {
+        self.inner = self.inner.auto_content_extent();
+        self
+    }
+
+    pub fn scrollbar_width(mut self, value: f32) -> Self {
+        self.inner = self.inner.scrollbar_size(value);
+        self
+    }
+
+    pub fn content(self, content: impl FnOnce(&mut Ui)) -> Response {
+        self.inner.content(content)
     }
 }
 
@@ -545,325 +749,35 @@ pub fn scroll_y(ui: &mut Ui, id: impl Into<String>) -> ScrollYBuilder<'_> {
 }
 
 pub struct ScrollXBuilder<'ui> {
-    ui: &'ui mut Ui,
-    id: String,
-    layout: WidgetLayout,
-    style: ScrollbarStyle,
-    offset: f32,
-    content_width: Option<f32>,
-    step: f32,
-    gap: f32,
-    inset: EdgeInsets,
-    padding: EdgeInsets,
-    scrollbar_height: f32,
-    scrollbar_gap: f32,
-    on_change: Option<ChangeCallback>,
+    inner: ScrollAreaBuilder<'ui>,
 }
 
 impl<'ui> ScrollXBuilder<'ui> {
     pub fn new(ui: &'ui mut Ui, id: impl Into<String>) -> Self {
         Self {
-            ui,
-            id: id.into(),
-            layout: WidgetLayout::new(320.0, 120.0),
-            style: ScrollbarStyle::default(),
-            offset: 0.0,
-            content_width: None,
-            step: 48.0,
-            gap: 0.0,
-            inset: EdgeInsets::ZERO,
-            padding: EdgeInsets::ZERO,
-            scrollbar_height: 8.0,
-            scrollbar_gap: 8.0,
-            on_change: None,
+            inner: ScrollAreaBuilder::new(ui, id, ScrollAxis::X),
         }
     }
 
-    pub fn width(mut self, value: impl Into<Size>) -> Self {
-        self.layout = self.layout.width(value);
-        self
-    }
-
-    pub fn height(mut self, value: impl Into<Size>) -> Self {
-        self.layout = self.layout.height(value);
-        self
-    }
-
-    pub fn size(mut self, width: impl Into<Size>, height: impl Into<Size>) -> Self {
-        self.layout = self.layout.size(width, height);
-        self
-    }
-
-    pub fn fill(mut self) -> Self {
-        self.layout = self.layout.size(Size::fill(), Size::fill());
-        self
-    }
-
-    pub fn min_width(mut self, value: f32) -> Self {
-        self.layout = self.layout.min_width(value);
-        self
-    }
-
-    pub fn max_width(mut self, value: f32) -> Self {
-        self.layout = self.layout.max_width(value);
-        self
-    }
-
-    pub fn min_height(mut self, value: f32) -> Self {
-        self.layout = self.layout.min_height(value);
-        self
-    }
-
-    pub fn max_height(mut self, value: f32) -> Self {
-        self.layout = self.layout.max_height(value);
-        self
-    }
-
-    pub fn grow(mut self, value: f32) -> Self {
-        self.layout = self.layout.grow(value);
-        self
-    }
-
-    pub fn margin(mut self, value: f32) -> Self {
-        self.layout = self.layout.margin(value);
-        self
-    }
-
-    pub fn margin_xy(mut self, horizontal: f32, vertical: f32) -> Self {
-        self.layout = self.layout.margin_xy(horizontal, vertical);
-        self
-    }
-
-    pub fn margin_each(mut self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
-        self.layout = self.layout.margin_each(left, top, right, bottom);
-        self
-    }
-
-    /// Inset the scroll viewport from the outer container.
-    ///
-    /// This keeps the clipped viewport and horizontal scrollbar inside a
-    /// rounded outer shell.
-    pub fn inset(mut self, value: f32) -> Self {
-        self.inset = EdgeInsets::all(value);
-        self
-    }
-
-    pub fn inset_xy(mut self, horizontal: f32, vertical: f32) -> Self {
-        self.inset = EdgeInsets::symmetric(horizontal, vertical);
-        self
-    }
-
-    pub fn inset_each(mut self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
-        self.inset = EdgeInsets::new(left, top, right, bottom);
-        self
-    }
-
-    pub fn viewport_inset(self, value: f32) -> Self {
-        self.inset(value)
-    }
-
-    pub fn viewport_inset_xy(self, horizontal: f32, vertical: f32) -> Self {
-        self.inset_xy(horizontal, vertical)
-    }
-
-    pub fn viewport_inset_each(self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
-        self.inset_each(left, top, right, bottom)
-    }
-
-    pub fn padding(mut self, value: f32) -> Self {
-        self.padding = EdgeInsets::all(value);
-        self
-    }
-
-    pub fn padding_xy(mut self, horizontal: f32, vertical: f32) -> Self {
-        self.padding = EdgeInsets::symmetric(horizontal, vertical);
-        self
-    }
-
-    pub fn padding_each(mut self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
-        self.padding = EdgeInsets::new(left, top, right, bottom);
-        self
-    }
-
-    pub fn content_padding(self, value: f32) -> Self {
-        self.padding(value)
-    }
-
-    pub fn content_padding_xy(self, horizontal: f32, vertical: f32) -> Self {
-        self.padding_xy(horizontal, vertical)
-    }
-
-    pub fn content_padding_each(self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
-        self.padding_each(left, top, right, bottom)
-    }
-
-    pub fn gap(mut self, value: f32) -> Self {
-        self.gap = value.max(0.0);
-        self
-    }
-
-    pub fn spacing(self, value: f32) -> Self {
-        self.gap(value)
-    }
+    scroll_area_common_methods!();
 
     pub fn content_width(mut self, value: f32) -> Self {
-        self.content_width = Some(value.max(0.0));
+        self.inner = self.inner.content_extent(value);
         self
     }
 
     pub fn auto_content_width(mut self) -> Self {
-        self.content_width = None;
-        self
-    }
-
-    pub fn offset(mut self, value: f32) -> Self {
-        self.offset = value.max(0.0);
-        self
-    }
-
-    pub fn offset_bind<T: 'static>(self, binding: Binding<T, f32>) -> Self {
-        let value = binding.get();
-        self.offset(value).on_change(move |next| binding.set(next))
-    }
-
-    pub fn value(self, value: f32) -> Self {
-        self.offset(value)
-    }
-
-    pub fn value_bind<T: 'static>(self, binding: Binding<T, f32>) -> Self {
-        self.offset_bind(binding)
-    }
-
-    pub fn step(mut self, value: f32) -> Self {
-        self.step = value.max(1.0);
+        self.inner = self.inner.auto_content_extent();
         self
     }
 
     pub fn scrollbar_height(mut self, value: f32) -> Self {
-        self.scrollbar_height = value.max(0.0);
-        self
-    }
-
-    pub fn scrollbar_gap(mut self, value: f32) -> Self {
-        self.scrollbar_gap = value.max(0.0);
-        self
-    }
-
-    pub fn style(mut self, value: ScrollbarStyle) -> Self {
-        self.style = value;
-        self
-    }
-
-    pub fn theme(mut self, tokens: ThemeColorTokens) -> Self {
-        self.style = ScrollbarStyle::new(tokens);
-        self
-    }
-
-    pub fn on_change<F>(mut self, callback: F) -> Self
-    where
-        F: FnMut(f32) + 'static,
-    {
-        let next: ChangeCallback = Rc::new(RefCell::new(Box::new(callback)));
-        self.on_change = Some(if let Some(existing) = self.on_change.take() {
-            Rc::new(RefCell::new(Box::new(move |value| {
-                (existing.borrow_mut())(value);
-                (next.borrow_mut())(value);
-            })))
-        } else {
-            next
-        });
+        self.inner = self.inner.scrollbar_size(value);
         self
     }
 
     pub fn content(self, content: impl FnOnce(&mut Ui)) -> Response {
-        let id = self.id.clone();
-        let viewport_id = format!("{id}.viewport");
-        let content_id = format!("{id}.content");
-        let fallback_viewport_w =
-            (self.layout.fixed_width_or(320.0) - self.inset.horizontal()).max(0.0);
-        let viewport_w = self
-            .ui
-            .previous_frame(&viewport_id)
-            .map(|frame| frame.width)
-            .unwrap_or(fallback_viewport_w);
-        let measured_content_w = self.ui.previous_frame(&content_id).map(|frame| frame.width);
-        let content_extent = self
-            .content_width
-            .or(measured_content_w)
-            .unwrap_or(viewport_w)
-            .max(viewport_w);
-        let max_offset = (content_extent - viewport_w).max(0.0);
-        let offset = self.offset.clamp(0.0, max_offset);
-        let scrollable = max_offset > 0.0;
-        let scroll_step = self.step;
-        let on_wheel_change = self.on_change.clone();
-        let on_scrollbar_change = self.on_change.clone();
-        let reserved_bottom = if scrollable {
-            self.scrollbar_height + self.scrollbar_gap
-        } else {
-            0.0
-        };
-        let content_width = self
-            .content_width
-            .map(Size::fixed)
-            .unwrap_or_else(Size::wrap_content);
-
-        self.layout
-            .apply_to_size(
-                self.ui.stack(id.clone()),
-                self.layout.width,
-                self.layout.height,
-            )
-            .padding_each(
-                self.inset.left,
-                self.inset.top,
-                self.inset.right,
-                self.inset.bottom,
-            )
-            .justify_content(Align::End)
-            .content(|ui| {
-                let mut viewport = ui.stack(viewport_id).fill().clip();
-                if scrollable {
-                    viewport = viewport.on_scroll(move |event| {
-                        if let Some(callback) = &on_wheel_change {
-                            let next = (offset - scroll_delta(ScrollAxis::X, event) * scroll_step)
-                                .clamp(0.0, max_offset);
-                            (callback.borrow_mut())(next);
-                        }
-                    });
-                }
-
-                viewport.content(|ui| {
-                    ui.row(content_id)
-                        .x(-offset)
-                        .size(content_width, Size::fill())
-                        .padding_each(
-                            self.padding.left,
-                            self.padding.top,
-                            self.padding.right,
-                            self.padding.bottom + reserved_bottom,
-                        )
-                        .gap(self.gap)
-                        .content(content);
-                });
-
-                if scrollable && self.scrollbar_height > 0.0 {
-                    scrollbar(ui, format!("{id}.scrollbar"))
-                        .horizontal()
-                        .size(viewport_w, self.scrollbar_height)
-                        .viewport(viewport_w)
-                        .content(content_extent)
-                        .offset(offset)
-                        .step(self.step)
-                        .style(self.style)
-                        .on_change(move |next| {
-                            if let Some(callback) = &on_scrollbar_change {
-                                (callback.borrow_mut())(next);
-                            }
-                        })
-                        .build();
-                }
-            })
+        self.inner.content(content)
     }
 }
 
