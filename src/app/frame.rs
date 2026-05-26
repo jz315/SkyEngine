@@ -12,8 +12,8 @@ use crate::input::raw::Input;
 use crate::logging::LogStore;
 use crate::math::{LogicalSize, PhysicalSize};
 use crate::render::{
-    RenderAssets, RenderRuntime, RenderStats, SceneRenderer, SharedRenderAssetCache,
-    TextureReadiness,
+    RenderAssets, RenderRuntime, RenderStats, SceneFrame, SceneFrameClearReason,
+    SceneRenderOutcome, SceneRenderer, SharedRenderAssetCache, TextureReadiness,
 };
 
 /// Per-frame context passed to [`crate::app::AppState::update`].
@@ -43,6 +43,7 @@ pub struct FrameContext<'a> {
     /// is the runner-sampled clamped delta; manual ticks update `world.time`.
     pub dt: f32,
 
+    pub(crate) frame: &'a mut SceneFrame,
     pub(crate) renderer: &'a mut dyn SceneRenderer,
     pub(crate) window: &'a Window,
     pub(crate) exit_requested: &'a mut bool,
@@ -77,8 +78,9 @@ impl<'a> FrameContext<'a> {
     }
 
     /// Execute the installed render pipeline.
-    pub fn render(&mut self) {
-        self.renderer.render_world(self.world);
+    #[must_use]
+    pub fn render(&mut self) -> SceneRenderOutcome {
+        self.renderer.render_world(self.frame, self.world)
     }
 
     /// Return the current CPU/GPU readiness state for a texture handle.
@@ -341,6 +343,13 @@ impl<'a> FrameContext<'a> {
     /// Requires `--features ui-legacy`.
     #[cfg(feature = "ui-legacy")]
     pub fn render_ui(&mut self) {
+        if !self.frame.is_presentable() {
+            self.renderer.clear_frame(
+                self.frame,
+                self.world,
+                SceneFrameClearReason::OverlayWithoutScene,
+            );
+        }
         let Some((gpu, render_assets)) = self.renderer.wgpu_overlay_parts_mut() else {
             panic!("FrameContext::render_ui is only available for the wgpu render backend");
         };
@@ -353,6 +362,13 @@ impl<'a> FrameContext<'a> {
     /// Requires `--features ui-core`.
     #[cfg(feature = "ui-core")]
     pub fn render_ui_overlays(&mut self) {
+        if !self.frame.is_presentable() {
+            self.renderer.clear_frame(
+                self.frame,
+                self.world,
+                SceneFrameClearReason::OverlayWithoutScene,
+            );
+        }
         let Some((gpu, render_assets)) = self.renderer.wgpu_overlay_parts_mut() else {
             panic!(
                 "FrameContext::render_ui_overlays is only available for the wgpu render backend"

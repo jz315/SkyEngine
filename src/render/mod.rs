@@ -55,7 +55,8 @@ pub use backend::{KajiyaSceneRenderer, KajiyaSceneSyncStats};
 #[cfg(feature = "renderling-renderer")]
 pub use backend::{RenderlingSceneRenderer, RenderlingSceneSyncStats};
 pub use backend::{
-    SceneRenderer, SceneRendererError, SceneRendererInitError, SceneSpotLight, WgpuSceneRenderer,
+    SceneFrame, SceneFrameClearReason, SceneFrameSkipReason, SceneRenderOutcome, SceneRenderer,
+    SceneRendererError, SceneRendererInitError, SceneSpotLight, WgpuSceneRenderer,
 };
 pub use builtins::{
     Bloom, ContactShadows, DebugView, GiCompositePass, GiUpdateCompute, SceneMaterialPrepass,
@@ -103,6 +104,7 @@ pub use resources::material::{
 pub use resources::texture_cache::{SharedRenderAssetCache, TextureReadiness};
 pub use runtime::RenderRuntime;
 pub use runtime::RenderTimingStats;
+pub use runtime::{FrameRenderOutcome, FrameSkipReason};
 pub use runtime::{HistoryTexture, HistoryTextureRequest, HistoryTextureSize};
 pub use sprite::Sprite;
 pub use tilemap::{
