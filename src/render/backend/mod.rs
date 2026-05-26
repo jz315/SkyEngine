@@ -334,7 +334,11 @@ mod tests {
         ));
 
         let mut renderer = KajiyaSceneRenderer::new_for_tests([128, 96]);
-        renderer.render_world(&world);
+        let mut frame = renderer
+            .begin_frame()
+            .expect("test kajiya begin_frame should succeed");
+        let _ = renderer.render_world(&mut frame, &world);
+        renderer.end_frame(frame);
         assert_eq!(
             renderer.sync_stats(),
             KajiyaSceneSyncStats {
