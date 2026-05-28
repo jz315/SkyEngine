@@ -18,13 +18,22 @@ Completed:
   dirty reasons, layout anchors, scroll/clip ancestry, and target vs draw
   frames.
 - `UiActionTrace` prints normalized dirty roots alongside raw dirty roots.
+- Stable `.content(...)` elements now act as inferred retained boundaries.
+  Signal and clock reads bind to the current element/widget owner instead of a
+  public manual scope.
+- Public `Ui::scope(...)` and `Ui::live_scope(...)` were removed from the
+  app-facing DSL. Their retained-boundary equivalents are crate-private test
+  helpers only.
+- Stress Lab was migrated away from hand-authored cache scopes. Its tab,
+  segment, chart, and live-animation tests now exercise inferred element
+  ownership.
+- Dirty-owner rebuilds conservatively block descendant subtree reuse, preventing
+  stale child content when a dirty parent computes values used by descendants.
 
 Still open:
 
-- Automatic retained boundary ownership from stable element/widget ids.
-- Public API cleanup for `scope` / `live_scope` once automatic ownership is
-  proven in real examples.
-- Control Center and Gallery migration away from hand-authored cache scopes.
+- Control Center and Gallery audit for any remaining old cache-boundary
+  assumptions.
 - Real-window WGPU probes for filtered rect dumps and screenshot comparison.
 
 This plan replaces the previous reactive signal/scope plan, which presented
@@ -456,14 +465,9 @@ Optional cadence API:
 let pulse = ui.clock().every(Duration::from_millis(100));
 ```
 
-Explicit advanced boundary API should move under an expert namespace or be
-renamed to make the internal nature clear:
-
-```rust
-ui.expert().retained_boundary("debug.boundary", |ui| {
-    ...
-});
-```
+Do not expose explicit retained-boundary APIs to normal users. If an expert
+escape hatch is ever needed, it must live outside the app-facing DSL and should
+be justified by diagnostics first.
 
 ### Public API Changes
 
@@ -475,15 +479,15 @@ Add:
 - `UiClock::every(Duration) -> ClockTick`
 - internal dependency registration when clock values are read
 
-Deprecate for normal code:
+Remove:
 
 - `Ui::live_scope(...)`
-- `Ui::scope(...)` as the required dependency boundary
+- `Ui::scope(...)`
 
-Keep temporarily:
+Keep only internally:
 
-- `Ui::scope(...)` for migration and tests
-- `Ui::live_scope(...)` as an internal bridge until clock dependencies land
+- crate-private retained-boundary helpers for focused runtime tests
+- debug snapshot fields that explain retained-boundary behavior
 
 Remove from demos after migration:
 
@@ -648,7 +652,6 @@ The WGPU rect dump must show gradual movement instead of snapping.
 
 ### High Risk
 
-- Removing public scope immediately.
 - Inferring all retained boundaries automatically without enough diagnostics.
 - Optimizing partial layout before correctness is proven.
 

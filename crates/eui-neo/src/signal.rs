@@ -290,7 +290,7 @@ mod tests {
         );
         let mut ui = Ui::new("test");
 
-        ui.scope("nav", |ui| {
+        ui.retained_scope("nav", |ui| {
             assert_eq!(page.watch(ui), 0);
         });
 
@@ -308,7 +308,7 @@ mod tests {
         );
         let mut ui = Ui::new("test");
 
-        ui.scope("nav", |ui| {
+        ui.retained_scope("nav", |ui| {
             assert_eq!(page.watch(ui), 0);
         });
 
@@ -367,7 +367,7 @@ mod tests {
         );
         let mut ui = Ui::new("test");
 
-        ui.scope("name", |_ui| {
+        ui.retained_scope("name", |_ui| {
             assert_eq!(name.peek(), "Sky");
         });
 

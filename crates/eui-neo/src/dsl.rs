@@ -38,6 +38,7 @@ pub struct Ui {
     element_stack: Vec<String>,
     scope_stack: Vec<String>,
     dependency_owner_stack: Vec<String>,
+    dirty_owner_stack: Vec<String>,
     scope_roots: ScopeRoots,
     dirty_scopes: ScopeSet,
     live_scopes: ScopeSet,
@@ -143,6 +144,7 @@ impl Ui {
             element_stack: Vec::new(),
             scope_stack: Vec::new(),
             dependency_owner_stack: Vec::new(),
+            dirty_owner_stack: Vec::new(),
             scope_roots: ScopeRoots::default(),
             dirty_scopes: FxHashSet::default(),
             live_scopes: FxHashSet::default(),
@@ -353,22 +355,24 @@ impl Ui {
         self.element(ElementKind::Polygon, id)
     }
 
-    pub fn scope(&mut self, id: impl Into<String>, build: impl FnOnce(&mut Ui)) {
+    #[cfg(test)]
+    pub(crate) fn retained_scope(&mut self, id: impl Into<String>, build: impl FnOnce(&mut Ui)) {
         let id = self.resolve_scope_id(&id.into());
         self.build_scope(id, build);
     }
 
-    /// Retained scope that is rebuilt on every scoped compose.
-    ///
-    /// Use this for frame-time or procedural animation. App data should still
-    /// flow through [`State`](crate::State) / [`Signal`](crate::Signal); this is
-    /// only the retention boundary's "do not reuse me next frame" marker.
-    pub fn live_scope(&mut self, id: impl Into<String>, build: impl FnOnce(&mut Ui)) {
+    #[cfg(test)]
+    pub(crate) fn retained_live_scope(
+        &mut self,
+        id: impl Into<String>,
+        build: impl FnOnce(&mut Ui),
+    ) {
         let id = self.resolve_scope_id(&id.into());
         self.live_scopes.insert(id.clone());
         self.build_scope(id, build);
     }
 
+    #[cfg(test)]
     fn build_scope(&mut self, id: String, build: impl FnOnce(&mut Ui)) {
         // Reusing a scope transfers its previous elements and callbacks as a
         // unit. If the scope itself or any nested scope is dirty, rebuild it so
@@ -389,6 +393,7 @@ impl Ui {
             }
         }
 
+        let pushed_dirty_owner = self.push_dirty_owner_if_exact_dirty(&id);
         self.scope_stack.push(id);
         let start = children_at_path_mut(&mut self.roots, &self.path).len();
         build(self);
@@ -396,6 +401,11 @@ impl Ui {
             .scope_stack
             .pop()
             .expect("scope stack should contain active scope");
+        if pushed_dirty_owner {
+            self.dirty_owner_stack
+                .pop()
+                .expect("dirty owner stack should contain active scope");
+        }
         let roots = children_at_path_mut(&mut self.roots, &self.path)[start..].to_vec();
         self.scope_events.push(ScopeComposeEvent {
             scope: id.clone(),
@@ -405,14 +415,15 @@ impl Ui {
         self.scope_stats.built += 1;
     }
 
-    pub fn active_scope_id(&self) -> Option<String> {
+    #[cfg(test)]
+    pub(crate) fn active_scope_id(&self) -> Option<String> {
         self.scope_stack
             .last()
             .cloned()
             .or_else(|| (!self.page_id.is_empty()).then(|| self.page_id.clone()))
     }
 
-    pub fn dependency_owner_id(&self) -> Option<String> {
+    pub(crate) fn dependency_owner_id(&self) -> Option<String> {
         self.scope_stack
             .last()
             .cloned()
@@ -440,6 +451,58 @@ impl Ui {
         let index = children.len();
         children.push(element);
         index
+    }
+
+    pub(crate) fn reuse_retained_element(&mut self, id: &str) -> bool {
+        if !self.dirty_owner_stack.is_empty()
+            || !self.scope_reuse_enabled
+            || retained_element_has_dirty_dependency(
+                &self.dirty_scopes,
+                &self.previous_scope_roots,
+                id,
+            )
+        {
+            return false;
+        }
+        let Some(elements) = self.previous_scope_roots.get(id).cloned() else {
+            return false;
+        };
+        self.callbacks
+            .transfer_for_elements(&mut self.previous_callbacks, &elements);
+        let children = children_at_path_mut(&mut self.roots, &self.path);
+        children.extend(elements.clone());
+        self.scope_events.push(ScopeComposeEvent {
+            scope: id.to_string(),
+            action: ScopeComposeAction::Reused,
+        });
+        self.scope_roots.insert(id.to_string(), elements);
+        self.scope_stats.reused += 1;
+        true
+    }
+
+    pub(crate) fn record_retained_element(&mut self, id: String, index: usize) {
+        let element = children_at_path_mut(&mut self.roots, &self.path)[index].clone();
+        self.scope_events.push(ScopeComposeEvent {
+            scope: id.clone(),
+            action: ScopeComposeAction::Built,
+        });
+        self.scope_roots.insert(id, vec![element]);
+        self.scope_stats.built += 1;
+    }
+
+    pub(crate) fn push_dirty_owner_if_exact_dirty(&mut self, id: &str) -> bool {
+        if self.dirty_scopes.contains(id) {
+            self.dirty_owner_stack.push(id.to_string());
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn pop_dirty_owner(&mut self) {
+        self.dirty_owner_stack
+            .pop()
+            .expect("dirty owner stack should contain pushed owner");
     }
 
     pub(crate) fn push_path(&mut self, index: usize) {
@@ -471,6 +534,7 @@ impl Ui {
         self.resolve_id_ref(id).into_owned()
     }
 
+    #[cfg(test)]
     fn resolve_scope_id(&self, id: &str) -> String {
         if id.is_empty() || self.page_id.is_empty() || is_resolved_id(id, &self.page_id) {
             return self.resolve_id(id);
@@ -579,6 +643,32 @@ fn children_at_path_mut<'a>(
     }
 }
 
+fn retained_element_has_dirty_dependency(
+    dirty_scopes: &ScopeSet,
+    previous_scope_roots: &ScopeRoots,
+    id: &str,
+) -> bool {
+    if scope_has_dirty_descendant(dirty_scopes, id) {
+        return true;
+    }
+    let Some(elements) = previous_scope_roots.get(id) else {
+        return false;
+    };
+    dirty_scopes.iter().any(|dirty| {
+        previous_scope_roots.get(dirty).is_some_and(|dirty_roots| {
+            dirty_roots
+                .iter()
+                .any(|root| element_tree_contains(elements, &root.id))
+        })
+    })
+}
+
+fn element_tree_contains(elements: &[Element], id: &str) -> bool {
+    elements
+        .iter()
+        .any(|element| element.id == id || element_tree_contains(&element.children, id))
+}
+
 impl UiClock<'_> {
     pub fn seconds(mut self) -> f32 {
         self.register_dependency();
@@ -662,9 +752,9 @@ mod tests {
     fn nested_scopes_extend_the_parent_scope_id() {
         let mut ui = Ui::new("page");
 
-        ui.scope("nav", |ui| {
+        ui.retained_scope("nav", |ui| {
             assert_eq!(ui.active_scope_id().as_deref(), Some("page.nav"));
-            ui.scope("selection", |ui| {
+            ui.retained_scope("selection", |ui| {
                 assert_eq!(ui.active_scope_id().as_deref(), Some("page.nav.selection"));
             });
         });

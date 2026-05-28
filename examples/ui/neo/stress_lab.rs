@@ -183,7 +183,6 @@ impl NeoUiStressLab {
                 ui,
                 screen.width,
                 screen.height,
-                time,
                 &compose_state,
                 perf,
                 pointer_owned,
@@ -656,7 +655,6 @@ fn draw_lab(
     ui: &mut Ui,
     screen_width: f32,
     screen_height: f32,
-    time: f32,
     state_store: &State<LabState>,
     perf: &PerfSnapshot,
     pointer_owned: bool,
@@ -665,45 +663,37 @@ fn draw_lab(
     let motion = Transition::ease(0.24, Ease::OutCubic);
     let body_height = (screen_height - OUTER_PAD * 2.0 - HEADER_H - 18.0).max(0.0);
 
-    ui.scope("lab.background.scope", |ui| {
-        let alarm = alarm_signal(state_store).watch(ui);
-        draw_background(ui, screen_width, screen_height, alarm);
-    });
+    ui.stack("lab.background")
+        .size(screen_width, screen_height)
+        .content(|ui| {
+            let alarm = alarm_signal(state_store).watch(ui);
+            draw_background(ui, screen_width, screen_height, alarm);
+        });
 
     ui.column("lab.root")
         .size(screen_width, screen_height)
         .padding(OUTER_PAD)
         .gap(18.0)
         .content(|ui| {
-            ui.live_scope("lab.header.scope", |ui| {
-                draw_header(ui, state_store, perf, time, pointer_owned, keyboard_owned);
-            });
+            draw_header(ui, state_store, perf, pointer_owned, keyboard_owned);
 
             ui.row("lab.body")
                 .size(Size::fill(), body_height)
                 .gap(18.0)
                 .content(|ui| {
-                    ui.scope("lab.control.scope", |ui| {
-                        draw_control_panel(ui, state_store, motion, body_height);
-                    });
-                    ui.live_scope("lab.signals.scope", |ui| {
-                        draw_signal_panel(ui, state_store, time, motion, body_height);
-                    });
-                    ui.scope("lab.interactions.scope", |ui| {
-                        draw_interaction_panel(
-                            ui,
-                            state_store,
-                            pointer_owned,
-                            keyboard_owned,
-                            body_height,
-                        );
-                    });
+                    draw_control_panel(ui, state_store, motion, body_height);
+                    draw_signal_panel(ui, state_store, motion, body_height);
+                    draw_interaction_panel(
+                        ui,
+                        state_store,
+                        pointer_owned,
+                        keyboard_owned,
+                        body_height,
+                    );
                 });
         });
 
-    ui.scope("lab.overlays.scope", |ui| {
-        draw_lab_overlays(ui, screen_width, screen_height, state_store);
-    });
+    draw_lab_overlays(ui, screen_width, screen_height, state_store);
 }
 
 fn draw_background(ui: &mut Ui, width: f32, height: f32, alarm: f32) {
@@ -728,22 +718,22 @@ fn draw_header(
     ui: &mut Ui,
     state_store: &State<LabState>,
     perf: &PerfSnapshot,
-    time: f32,
     pointer_owned: bool,
     keyboard_owned: bool,
 ) {
-    let clicks = clicks_signal(state_store).watch(ui);
-    let mode = mode_signal(state_store).watch(ui);
-    let glass = glass_signal(state_store).watch(ui);
-    let lock = lock_signal(state_store).watch(ui);
-    let reveal = reveal_signal(state_store).watch(ui);
-    let alarm = alarm_signal(state_store).watch(ui);
-    let density = density_signal(state_store).watch(ui);
-    let scan = (time * (0.22 + density * 0.72)).fract();
-
     ui.stack("header")
         .size(Size::fill(), HEADER_H)
         .content(|ui| {
+            let time = ui.clock().seconds();
+            let clicks = clicks_signal(state_store).watch(ui);
+            let mode = mode_signal(state_store).watch(ui);
+            let glass = glass_signal(state_store).watch(ui);
+            let lock = lock_signal(state_store).watch(ui);
+            let reveal = reveal_signal(state_store).watch(ui);
+            let alarm = alarm_signal(state_store).watch(ui);
+            let density = density_signal(state_store).watch(ui);
+            let scan = (time * (0.22 + density * 0.72)).fract();
+
             widgets::panel(ui, "header.bg")
                 .fill()
                 .radius(18.0)
@@ -862,11 +852,11 @@ fn draw_header(
 }
 
 fn draw_control_panel(ui: &mut Ui, state_store: &State<LabState>, motion: Transition, height: f32) {
-    let wobble = wobble_signal(state_store).watch(ui);
-    let density = density_signal(state_store).watch(ui);
-    let alarm = alarm_signal(state_store).watch(ui);
-
     ui.stack("controls").size(SIDE_W, height).content(|ui| {
+        let wobble = wobble_signal(state_store).watch(ui);
+        let density = density_signal(state_store).watch(ui);
+        let alarm = alarm_signal(state_store).watch(ui);
+
         panel_shell(
             ui,
             "controls.bg",
@@ -956,26 +946,21 @@ fn draw_control_panel(ui: &mut Ui, state_store: &State<LabState>, motion: Transi
     });
 }
 
-fn draw_signal_panel(
-    ui: &mut Ui,
-    state_store: &State<LabState>,
-    time: f32,
-    motion: Transition,
-    height: f32,
-) {
-    let pulse = time.sin() * 0.5 + 0.5;
-    let wobble = wobble_signal(state_store).watch(ui);
-    let density = density_signal(state_store).watch(ui);
-    let alarm = alarm_signal(state_store).watch(ui);
-    let glass = glass_signal(state_store).watch(ui);
-    let tab = tab_signal(state_store).watch(ui);
-    let scan = (time * (0.22 + density * 0.72)).fract();
-
+fn draw_signal_panel(ui: &mut Ui, state_store: &State<LabState>, motion: Transition, height: f32) {
     ui.stack("signals")
         .size(360.0, height)
         .grow(1.0)
         .min_width(360.0)
         .content(|ui| {
+            let time = ui.clock().seconds();
+            let pulse = time.sin() * 0.5 + 0.5;
+            let wobble = wobble_signal(state_store).watch(ui);
+            let density = density_signal(state_store).watch(ui);
+            let alarm = alarm_signal(state_store).watch(ui);
+            let glass = glass_signal(state_store).watch(ui);
+            let tab = tab_signal(state_store).watch(ui);
+            let scan = (time * (0.22 + density * 0.72)).fract();
+
             panel_shell(
                 ui,
                 "signals.bg",
@@ -1318,14 +1303,14 @@ fn draw_interaction_panel(
     keyboard_owned: bool,
     height: f32,
 ) {
-    let lock = lock_signal(state_store).watch(ui);
-    let reveal = reveal_signal(state_store).watch(ui);
-    let segment = segment_signal(state_store).watch(ui);
-    let dropdown_selected = dropdown_selected_signal(state_store).watch(ui);
-
     ui.stack("interactions")
         .size(RIGHT_W, height)
         .content(|ui| {
+            let lock = lock_signal(state_store).watch(ui);
+            let reveal = reveal_signal(state_store).watch(ui);
+            let segment = segment_signal(state_store).watch(ui);
+            let dropdown_selected = dropdown_selected_signal(state_store).watch(ui);
+
             panel_shell(
                 ui,
                 "interactions.bg",
@@ -1440,69 +1425,75 @@ fn draw_lab_overlays(
     screen_height: f32,
     state_store: &State<LabState>,
 ) {
-    let context_position = context_menu_position_signal(state_store).watch(ui);
+    ui.stack("lab.overlays")
+        .size(screen_width, screen_height)
+        .content(|ui| {
+            let context_position = context_menu_position_signal(state_store).watch(ui);
 
-    widgets::context_menu(ui, "lab.context")
-        .open_signal(context_menu_open_signal(state_store))
-        .screen(screen_width, screen_height)
-        .position(context_position[0], context_position[1])
-        .items(["Cycle mode", "Show toast", "Close menu"])
-        .on_dismiss({
-            let open = context_menu_open_signal(state_store);
-            move || open.set(false)
-        })
-        .on_select({
-            let mode = mode_signal(state_store);
-            let toast = toast_visible_signal(state_store);
-            let open = context_menu_open_signal(state_store);
-            move |index| match index {
-                0 => mode.update(|mode| (mode + 1).rem_euclid(4)),
-                1 => toast.set(true),
-                _ => open.set(false),
-            }
-        })
-        .build();
+            widgets::context_menu(ui, "lab.context")
+                .open_signal(context_menu_open_signal(state_store))
+                .screen(screen_width, screen_height)
+                .position(context_position[0], context_position[1])
+                .items(["Cycle mode", "Show toast", "Close menu"])
+                .on_dismiss({
+                    let open = context_menu_open_signal(state_store);
+                    move || open.set(false)
+                })
+                .on_select({
+                    let mode = mode_signal(state_store);
+                    let toast = toast_visible_signal(state_store);
+                    let open = context_menu_open_signal(state_store);
+                    move |index| match index {
+                        0 => mode.update(|mode| (mode + 1).rem_euclid(4)),
+                        1 => toast.set(true),
+                        _ => open.set(false),
+                    }
+                })
+                .build();
 
-    widgets::dialog(ui, "lab.dialog")
-        .open_signal(dialog_open_signal(state_store))
-        .screen(screen_width, screen_height)
-        .title("Stress Lab Confirmation")
-        .message("This modal is centered by the widget while the page beneath is pure layout flow.")
-        .primary_text("Proceed")
-        .secondary_text("Cancel")
-        .on_primary({
-            let dialog = dialog_open_signal(state_store);
-            let toast = toast_visible_signal(state_store);
-            move || {
-                dialog.set(false);
-                toast.set(true);
-            }
-        })
-        .on_secondary({
-            let dialog = dialog_open_signal(state_store);
-            move || dialog.set(false)
-        })
-        .on_close({
-            let dialog = dialog_open_signal(state_store);
-            move || dialog.set(false)
-        })
-        .build();
+            widgets::dialog(ui, "lab.dialog")
+                .open_signal(dialog_open_signal(state_store))
+                .screen(screen_width, screen_height)
+                .title("Stress Lab Confirmation")
+                .message(
+                    "This modal is centered by the widget while the page beneath is pure layout flow.",
+                )
+                .primary_text("Proceed")
+                .secondary_text("Cancel")
+                .on_primary({
+                    let dialog = dialog_open_signal(state_store);
+                    let toast = toast_visible_signal(state_store);
+                    move || {
+                        dialog.set(false);
+                        toast.set(true);
+                    }
+                })
+                .on_secondary({
+                    let dialog = dialog_open_signal(state_store);
+                    move || dialog.set(false)
+                })
+                .on_close({
+                    let dialog = dialog_open_signal(state_store);
+                    move || dialog.set(false)
+                })
+                .build();
 
-    widgets::toast(ui, "lab.toast")
-        .visible_signal(toast_visible_signal(state_store))
-        .screen(screen_width, screen_height)
-        .title("Layout held")
-        .message("Rows, columns, grow, fill, clipping, and overlays survived the frame.")
-        .duration(2.4)
-        .on_dismiss({
-            let visible = toast_visible_signal(state_store);
-            move || visible.set(false)
-        })
-        .on_auto_dismiss({
-            let visible = toast_visible_signal(state_store);
-            move || visible.set(false)
-        })
-        .build();
+            widgets::toast(ui, "lab.toast")
+                .visible_signal(toast_visible_signal(state_store))
+                .screen(screen_width, screen_height)
+                .title("Layout held")
+                .message("Rows, columns, grow, fill, clipping, and overlays survived the frame.")
+                .duration(2.4)
+                .on_dismiss({
+                    let visible = toast_visible_signal(state_store);
+                    move || visible.set(false)
+                })
+                .on_auto_dismiss({
+                    let visible = toast_visible_signal(state_store);
+                    move || visible.set(false)
+                })
+                .build();
+        });
 }
 
 fn panel_shell(ui: &mut Ui, id: &str, top: Color, bottom: Color) {
@@ -2337,16 +2328,7 @@ mod tests {
             WINDOW_H as f32,
             dirty_scopes,
             move |ui, screen| {
-                draw_lab(
-                    ui,
-                    screen.width,
-                    screen.height,
-                    0.0,
-                    &state,
-                    &perf,
-                    false,
-                    false,
-                );
+                draw_lab(ui, screen.width, screen.height, &state, &perf, false, false);
             },
         );
     }
@@ -2365,19 +2347,18 @@ mod tests {
         dirty_scopes: Vec<String>,
         time: f32,
     ) {
+        if time > 0.0 {
+            driver.runtime_mut().update_events_and_timers(
+                PointerEvent::default(),
+                sky_engine::ui::neo::ScrollEvent::default(),
+                sky_engine::ui::neo::KeyboardEvent::default(),
+                time,
+            );
+        }
         let perf = perf_snapshot();
         let state = state.clone();
         driver.compose_scoped(dirty_scopes, move |ui, screen| {
-            draw_lab(
-                ui,
-                screen.width,
-                screen.height,
-                time,
-                &state,
-                &perf,
-                false,
-                false,
-            );
+            draw_lab(ui, screen.width, screen.height, &state, &perf, false, false);
         });
     }
 
@@ -2401,10 +2382,11 @@ mod tests {
         assert_eq!(state.read(|state| state.tab), 1, "{trace}");
         assert!(trace.point.is_some_and(|[x, y]| label.contains([x, y])));
         let dirty_scopes = state.take_dirty_scopes();
-        assert_eq!(
-            dirty_scopes,
-            vec!["stress-lab.lab.signals.scope".to_string()],
-            "{trace}"
+        assert!(
+            dirty_scopes
+                .iter()
+                .any(|scope| scope == "stress-lab.signals"),
+            "signals panel should be dirty after tab click: dirty={dirty_scopes:?} trace={trace}"
         );
         compose_lab_driver(&mut driver, &state, dirty_scopes);
 
@@ -2414,7 +2396,7 @@ mod tests {
             .debug_snapshot()
             .scope_events
             .iter()
-            .any(|event| { event.scope.as_str() == "stress-lab.lab.signals.scope" }));
+            .any(|event| { event.scope.as_str() == "stress-lab.signals" }));
         let indicator = driver
             .find("signals.tabs.indicator")
             .expect("tabs indicator should exist")
@@ -2446,10 +2428,11 @@ mod tests {
 
         assert_eq!(state.read(|state| state.tab), 1, "{trace}");
         let dirty_scopes = state.take_dirty_scopes();
-        assert_eq!(
-            dirty_scopes,
-            vec!["stress-lab.lab.signals.scope".to_string()],
-            "{trace}"
+        assert!(
+            dirty_scopes
+                .iter()
+                .any(|scope| scope == "stress-lab.signals"),
+            "signals panel should be dirty after tab hit rect click: dirty={dirty_scopes:?} trace={trace}"
         );
         compose_lab_driver(&mut driver, &state, dirty_scopes);
 
@@ -2459,7 +2442,7 @@ mod tests {
             .debug_snapshot()
             .scope_events
             .iter()
-            .any(|event| { event.scope.as_str() == "stress-lab.lab.signals.scope" }));
+            .any(|event| { event.scope.as_str() == "stress-lab.signals" }));
         let indicator = driver
             .find("signals.tabs.indicator")
             .expect("tabs indicator should exist")
@@ -2553,7 +2536,7 @@ mod tests {
             snapshot
                 .dirty_scopes
                 .iter()
-                .any(|scope| scope == "stress-lab.lab.signals.scope"),
+                .any(|scope| scope == "stress-lab.signals"),
             "signals live scope should be dirty on the post-switch frame: {snapshot:?}"
         );
     }
@@ -2634,10 +2617,11 @@ mod tests {
             .expect("odd segment hit rect should exist");
         assert_eq!(state.read(|state| state.segment), 1, "{trace}");
         let dirty_scopes = state.take_dirty_scopes();
-        assert_eq!(
-            dirty_scopes,
-            vec!["stress-lab.lab.interactions.scope".to_string()],
-            "{trace}"
+        assert!(
+            dirty_scopes
+                .iter()
+                .any(|scope| scope == "stress-lab.interactions"),
+            "interactions panel should be dirty after segment click: dirty={dirty_scopes:?} trace={trace}"
         );
 
         compose_lab_driver(&mut driver, &state, dirty_scopes);

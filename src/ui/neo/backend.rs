@@ -485,7 +485,7 @@ mod tests {
             backend.compose_scoped(
                 move || dirty_state.take_dirty_scopes(),
                 move |ui, _| {
-                    ui.scope("nav", |ui| {
+                    ui.column("nav").size(160.0, 80.0).content(|ui| {
                         builds.set(builds.get() + 1);
                         let page = compose_state.signal(
                             "page",
@@ -545,7 +545,7 @@ mod tests {
             backend.compose_scoped(
                 move || dirty_state.take_dirty_scopes(),
                 move |ui, _| {
-                    ui.scope("nav", |ui| {
+                    ui.column("nav").size(240.0, 80.0).content(|ui| {
                         let page = compose_state.signal(
                             "page",
                             |model| model.page,

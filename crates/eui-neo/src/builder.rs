@@ -768,10 +768,19 @@ impl<'ui> ElementBuilder<'ui> {
 
     pub fn content(self, content: impl FnOnce(&mut Ui)) -> Response {
         let response = self.ui.response(&self.element.id);
+        if self.ui.reuse_retained_element(&self.element.id) {
+            return response;
+        }
+        let id = self.element.id.clone();
         let index = self.ui.push_element(self.element);
         self.ui.push_path(index);
+        let pushed_dirty_owner = self.ui.push_dirty_owner_if_exact_dirty(&id);
         content(self.ui);
+        if pushed_dirty_owner {
+            self.ui.pop_dirty_owner();
+        }
         self.ui.pop_path();
+        self.ui.record_retained_element(id, index);
         response
     }
 }
