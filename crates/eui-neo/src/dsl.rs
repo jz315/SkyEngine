@@ -34,6 +34,7 @@ pub struct Ui {
     previous_roots: Vec<Element>,
     previous_scope_roots: ScopeRoots,
     previous_clock_periods: Option<ClockPeriodMap>,
+    dirty_root_ids: FxHashSet<String>,
     previous_frame_cache: RefCell<FxHashMap<String, Option<LayoutRect>>>,
     path: Vec<usize>,
     element_stack: Vec<String>,
@@ -157,6 +158,7 @@ impl Ui {
             previous_roots: Vec::new(),
             previous_scope_roots: ScopeRoots::default(),
             previous_clock_periods: None,
+            dirty_root_ids: FxHashSet::default(),
             previous_frame_cache: RefCell::new(FxHashMap::default()),
             path: Vec::new(),
             element_stack: Vec::new(),
@@ -308,6 +310,7 @@ impl Ui {
         previous_clock_periods: Option<ClockPeriodMap>,
     ) {
         self.previous_scope_roots = previous_scope_roots;
+        self.dirty_root_ids = dirty_root_ids_for_scopes(&dirty_scopes, &self.previous_scope_roots);
         self.dirty_scopes = dirty_scopes;
         self.previous_callbacks = previous_callbacks;
         self.previous_clock_periods = previous_clock_periods;
@@ -429,7 +432,7 @@ impl Ui {
         // signal reads and callbacks capture fresh state.
         if self.scope_reuse_enabled
             && !retained_element_has_dirty_dependency(
-                &self.dirty_scopes,
+                &self.dirty_root_ids,
                 &self.previous_scope_roots,
                 &id,
             )
@@ -541,7 +544,7 @@ impl Ui {
         if !self.dirty_owner_stack.is_empty()
             || !self.scope_reuse_enabled
             || retained_element_has_dirty_dependency(
-                &self.dirty_scopes,
+                &self.dirty_root_ids,
                 &self.previous_scope_roots,
                 id,
             )
@@ -813,27 +816,31 @@ fn children_at_path_mut<'a>(
     }
 }
 
-fn retained_element_has_dirty_dependency(
+fn dirty_root_ids_for_scopes(
     dirty_scopes: &ScopeSet,
+    previous_scope_roots: &ScopeRoots,
+) -> FxHashSet<String> {
+    dirty_scopes
+        .iter()
+        .filter_map(|dirty| previous_scope_roots.get(dirty))
+        .flat_map(|roots| roots.iter().map(|root| root.id.clone()))
+        .collect()
+}
+
+fn retained_element_has_dirty_dependency(
+    dirty_root_ids: &FxHashSet<String>,
     previous_scope_roots: &ScopeRoots,
     id: &str,
 ) -> bool {
-    let Some(elements) = previous_scope_roots.get(id) else {
-        return false;
-    };
-    dirty_scopes.iter().any(|dirty| {
-        previous_scope_roots.get(dirty).is_some_and(|dirty_roots| {
-            dirty_roots
-                .iter()
-                .any(|root| element_tree_contains(elements, &root.id))
-        })
-    })
+    previous_scope_roots
+        .get(id)
+        .is_some_and(|elements| element_tree_contains_any(elements, dirty_root_ids))
 }
 
-fn element_tree_contains(elements: &[RetainedRoot], id: &str) -> bool {
-    elements
-        .iter()
-        .any(|element| element.id == id || element_tree_contains(&element.children, id))
+fn element_tree_contains_any(elements: &[RetainedRoot], ids: &FxHashSet<String>) -> bool {
+    elements.iter().any(|element| {
+        ids.contains(&element.id) || element_tree_contains_any(&element.children, ids)
+    })
 }
 
 fn previous_elements_for_scope(
