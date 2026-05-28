@@ -15,6 +15,8 @@ pub(crate) type ScopeSet = FxHashSet<ScopeId>;
 
 pub(crate) struct ScopeFrame {
     pub can_reuse_scopes: bool,
+    pub input_dirty_scopes: ScopeSet,
+    pub live_dirty_scopes: ScopeSet,
     pub dirty_scopes: ScopeSet,
     pub previous_scope_roots: ScopeRoots,
 }
@@ -61,16 +63,21 @@ pub(crate) fn begin_scope_frame(
     live_scopes: &mut ScopeSet,
 ) -> ScopeFrame {
     let mut dirty_scopes = dirty_scopes.unwrap_or_default();
-    let previous_scope_roots = if can_reuse_scopes {
-        merge_live_scopes(&mut dirty_scopes, live_scopes);
-        std::mem::take(scope_roots)
+    let input_dirty_scopes = dirty_scopes.clone();
+    let (live_dirty_scopes, previous_scope_roots) = if can_reuse_scopes {
+        (
+            merge_live_scopes(&mut dirty_scopes, live_scopes),
+            std::mem::take(scope_roots),
+        )
     } else {
         live_scopes.clear();
-        ScopeRoots::default()
+        (ScopeSet::default(), ScopeRoots::default())
     };
 
     ScopeFrame {
         can_reuse_scopes,
+        input_dirty_scopes,
+        live_dirty_scopes,
         dirty_scopes,
         previous_scope_roots,
     }
@@ -99,8 +106,25 @@ impl ScopeFrame {
 
 /// Live scopes are intentionally dirty on every scoped compose. They cover
 /// frame-time/procedural animation without pretending that time is app state.
-fn merge_live_scopes(dirty_scopes: &mut ScopeSet, live_scopes: &mut ScopeSet) {
-    dirty_scopes.extend(std::mem::take(live_scopes));
+fn merge_live_scopes(dirty_scopes: &mut ScopeSet, live_scopes: &mut ScopeSet) -> ScopeSet {
+    let live_dirty_scopes = std::mem::take(live_scopes);
+    dirty_scopes.extend(live_dirty_scopes.iter().cloned());
+    live_dirty_scopes
+}
+
+pub(crate) fn scope_contains_id(scope: &str, id: &str) -> bool {
+    scope == id || is_resolved_id(id, scope)
+}
+
+pub(crate) fn scope_parent<'a>(
+    scope: &str,
+    scopes: impl IntoIterator<Item = &'a String>,
+) -> Option<String> {
+    scopes
+        .into_iter()
+        .filter(|candidate| candidate.as_str() != scope && scope_contains_id(candidate, scope))
+        .max_by_key(|candidate| scope_depth(candidate))
+        .cloned()
 }
 
 pub(crate) fn scope_has_dirty_descendant(dirty_scopes: &ScopeSet, scope: &str) -> bool {

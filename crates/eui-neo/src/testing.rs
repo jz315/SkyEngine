@@ -86,13 +86,15 @@ impl fmt::Display for UiActionTrace {
         writeln!(f, "  needs compose: {}", self.needs_compose_after_input)?;
         writeln!(
             f,
-            "  before: layout={:?} dirty={:?}",
-            self.before.layout_mode, self.before.dirty_scopes
+            "  before: layout={:?} dirty={:?} normalized={:?}",
+            self.before.layout_mode, self.before.dirty_scopes, self.before.normalized_dirty_scopes
         )?;
         write!(
             f,
-            "  after:  layout={:?} dirty={:?}",
-            self.after_input.layout_mode, self.after_input.dirty_scopes
+            "  after:  layout={:?} dirty={:?} normalized={:?}",
+            self.after_input.layout_mode,
+            self.after_input.dirty_scopes,
+            self.after_input.normalized_dirty_scopes
         )
     }
 }

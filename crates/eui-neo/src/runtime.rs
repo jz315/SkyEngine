@@ -12,8 +12,9 @@ use super::event::InteractionState;
 use super::fonts::FontRef;
 use super::layout::{layout_element_in_frame_with_text_system, layout_roots_with_text_system};
 use super::retained::{
-    begin_scope_frame, normalize_dirty_scopes, structurally_incompatible_dirty_scopes,
-    FullLayoutReason, LayoutMode, ScopeComposeEvent, ScopeComposeStats, ScopeRoots, ScopeSet,
+    begin_scope_frame, normalize_dirty_scopes, scope_contains_id, scope_parent,
+    structurally_incompatible_dirty_scopes, FullLayoutReason, LayoutMode, ScopeComposeAction,
+    ScopeComposeEvent, ScopeComposeStats, ScopeRoots, ScopeSet,
 };
 use super::skin::{NeoSkin, SkinRegistry};
 use super::text_measure::{DefaultTextSystem, TextSystem};
@@ -35,7 +36,41 @@ pub struct ElementSnapshot {
     pub signature: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DirtyReason {
+    External,
+    Live,
+    Clock,
+}
+
 #[derive(Debug, Clone, PartialEq)]
+pub struct ScopeDebugRecord {
+    pub id: String,
+    pub parent_scope: Option<String>,
+    pub dirty: bool,
+    pub raw_dirty: bool,
+    pub normalized_dirty_root: bool,
+    pub dirty_reasons: Vec<DirtyReason>,
+    pub action: Option<ScopeComposeAction>,
+    pub previous_roots: usize,
+    pub current_roots: usize,
+    pub layout_anchor: Option<LayoutRect>,
+    pub scroll_ancestor: Option<String>,
+    pub clip_ancestor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ElementDebugRecord {
+    pub id: String,
+    pub parent: Option<String>,
+    pub retained_boundary: Option<String>,
+    pub scroll_ancestor: Option<String>,
+    pub clip_ancestor: Option<String>,
+    pub target_frame: LayoutRect,
+    pub draw_frame: Option<LayoutRect>,
+}
+
+#[derive(Clone, PartialEq)]
 pub struct UiDebugSnapshot {
     pub frame_index: u64,
     pub screen: Screen,
@@ -43,6 +78,8 @@ pub struct UiDebugSnapshot {
     pub normalized_dirty_scopes: Vec<String>,
     pub live_scopes: Vec<String>,
     pub clock_scopes: Vec<String>,
+    pub scopes: Vec<ScopeDebugRecord>,
+    pub elements: Vec<ElementDebugRecord>,
     pub scope_events: Vec<ScopeComposeEvent>,
     pub scope_stats: ScopeComposeStats,
     pub layout_mode: LayoutMode,
@@ -55,6 +92,31 @@ pub struct UiDebugSnapshot {
     pub active_animation_count: usize,
 }
 
+impl std::fmt::Debug for UiDebugSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UiDebugSnapshot")
+            .field("frame_index", &self.frame_index)
+            .field("screen", &self.screen)
+            .field("dirty_scopes", &self.dirty_scopes)
+            .field("normalized_dirty_scopes", &self.normalized_dirty_scopes)
+            .field("live_scopes", &self.live_scopes)
+            .field("clock_scopes", &self.clock_scopes)
+            .field("scopes", &self.scopes)
+            .field("element_count", &self.elements.len())
+            .field("scope_events", &self.scope_events)
+            .field("scope_stats", &self.scope_stats)
+            .field("layout_mode", &self.layout_mode)
+            .field("needs_render", &self.needs_render)
+            .field("needs_compose", &self.needs_compose)
+            .field("full_redraw", &self.full_redraw)
+            .field("focused_id", &self.focused_id)
+            .field("active_id", &self.active_id)
+            .field("hovered_id", &self.hovered_id)
+            .field("active_animation_count", &self.active_animation_count)
+            .finish()
+    }
+}
+
 impl Default for UiDebugSnapshot {
     fn default() -> Self {
         Self {
@@ -64,6 +126,8 @@ impl Default for UiDebugSnapshot {
             normalized_dirty_scopes: Vec::new(),
             live_scopes: Vec::new(),
             clock_scopes: Vec::new(),
+            scopes: Vec::new(),
+            elements: Vec::new(),
             scope_events: Vec::new(),
             scope_stats: ScopeComposeStats::default(),
             layout_mode: LayoutMode::Full(FullLayoutReason::ScopeReuseUnavailable),
@@ -152,6 +216,7 @@ pub struct Runtime {
     roots: Vec<Element>,
     scope_roots: ScopeRoots,
     live_scopes: ScopeSet,
+    clock_scopes: ScopeSet,
     structure: Vec<ElementSnapshot>,
     screen: Screen,
     interactions: FxHashMap<String, InteractionState>,
@@ -280,6 +345,7 @@ impl Runtime {
             roots: Vec::new(),
             scope_roots: FxHashMap::default(),
             live_scopes: FxHashSet::default(),
+            clock_scopes: FxHashSet::default(),
             structure: Vec::new(),
             screen: Screen::default(),
             interactions: FxHashMap::default(),
@@ -492,6 +558,7 @@ impl Runtime {
         self.needs_compose = false;
         let screen = Screen { width, height };
         let can_reuse_scopes = dirty_scopes.is_some() && self.screen == screen;
+        let previous_clock_scopes = self.clock_scopes.clone();
         let scope_frame = begin_scope_frame(
             can_reuse_scopes,
             dirty_scopes,
@@ -582,16 +649,36 @@ impl Runtime {
         self.roots = roots;
         self.scope_roots = scope_roots;
         self.live_scopes = live_scopes;
+        self.clock_scopes = clock_scopes;
         self.callbacks = callbacks;
         self.scope_stats = scope_stats;
         self.frame_index = self.frame_index.saturating_add(1);
+        let element_debug_records = collect_element_debug_records(
+            &self.roots,
+            &self.scope_roots,
+            &self.callbacks,
+            &self.animations,
+        );
+        let scope_debug_records = collect_scope_debug_records(
+            &self.scope_roots,
+            &scope_frame.previous_scope_roots,
+            &scope_frame.input_dirty_scopes,
+            &scope_frame.live_dirty_scopes,
+            &previous_clock_scopes,
+            &scope_frame.dirty_scopes,
+            &normalized_dirty_scopes,
+            &element_debug_records,
+            &scope_events,
+        );
         self.debug_snapshot = UiDebugSnapshot {
             frame_index: self.frame_index,
             screen: self.screen,
             dirty_scopes: sorted_scope_set(&scope_frame.dirty_scopes),
             normalized_dirty_scopes: sorted_scope_set(&normalized_dirty_scopes),
             live_scopes: sorted_scope_set(&self.live_scopes),
-            clock_scopes: sorted_scope_set(&clock_scopes),
+            clock_scopes: sorted_scope_set(&self.clock_scopes),
+            scopes: scope_debug_records,
+            elements: element_debug_records,
             scope_events,
             scope_stats: self.scope_stats,
             layout_mode,
@@ -1401,6 +1488,64 @@ fn trace_debug_snapshot(snapshot: &UiDebugSnapshot) {
     for event in &snapshot.scope_events {
         eprintln!("[eui-neo scope] {:?} {}", event.action, event.scope);
     }
+    trace_debug_filters(snapshot);
+}
+
+fn trace_debug_filters(snapshot: &UiDebugSnapshot) {
+    if std::env::var_os("SKY_NEO_DEBUG_DIRTY").is_some() {
+        for scope in snapshot.scopes.iter().filter(|scope| scope.dirty) {
+            eprintln!(
+                "[eui-neo dirty] scope={} raw={} normalized={} reasons={:?} action={:?} roots={}->{} anchor={:?}",
+                scope.id,
+                scope.raw_dirty,
+                scope.normalized_dirty_root,
+                scope.dirty_reasons,
+                scope.action,
+                scope.previous_roots,
+                scope.current_roots,
+                scope.layout_anchor,
+            );
+        }
+    }
+    if let Ok(filter) = std::env::var("SKY_NEO_DEBUG_SCOPE") {
+        for scope in snapshot
+            .scopes
+            .iter()
+            .filter(|scope| scope.id.contains(&filter))
+        {
+            eprintln!(
+                "[eui-neo scope-debug] id={} parent={:?} dirty={} raw={} normalized={} reasons={:?} action={:?} scroll={:?} clip={:?} anchor={:?}",
+                scope.id,
+                scope.parent_scope,
+                scope.dirty,
+                scope.raw_dirty,
+                scope.normalized_dirty_root,
+                scope.dirty_reasons,
+                scope.action,
+                scope.scroll_ancestor,
+                scope.clip_ancestor,
+                scope.layout_anchor,
+            );
+        }
+    }
+    if let Ok(filter) = std::env::var("SKY_NEO_DEBUG_ELEMENT") {
+        for element in snapshot
+            .elements
+            .iter()
+            .filter(|element| element.id.contains(&filter))
+        {
+            eprintln!(
+                "[eui-neo element] id={} parent={:?} boundary={:?} scroll={:?} clip={:?} target={:?} draw={:?}",
+                element.id,
+                element.parent,
+                element.retained_boundary,
+                element.scroll_ancestor,
+                element.clip_ancestor,
+                element.target_frame,
+                element.draw_frame,
+            );
+        }
+    }
 }
 
 fn elapsed_ms(start: Option<Instant>) -> f32 {
@@ -1530,6 +1675,188 @@ fn hovered_id(interactions: &FxHashMap<String, InteractionState>) -> Option<Stri
     interactions
         .iter()
         .find_map(|(id, state)| state.hovered.then(|| id.clone()))
+}
+
+fn collect_scope_debug_records(
+    current_scope_roots: &ScopeRoots,
+    previous_scope_roots: &ScopeRoots,
+    input_dirty_scopes: &ScopeSet,
+    live_dirty_scopes: &ScopeSet,
+    previous_clock_scopes: &ScopeSet,
+    dirty_scopes: &ScopeSet,
+    normalized_dirty_scopes: &ScopeSet,
+    element_records: &[ElementDebugRecord],
+    scope_events: &[ScopeComposeEvent],
+) -> Vec<ScopeDebugRecord> {
+    let mut scope_ids: ScopeSet = ScopeSet::default();
+    scope_ids.extend(current_scope_roots.keys().cloned());
+    scope_ids.extend(previous_scope_roots.keys().cloned());
+    scope_ids.extend(dirty_scopes.iter().cloned());
+    scope_ids.extend(normalized_dirty_scopes.iter().cloned());
+
+    let action_by_scope: FxHashMap<_, _> = scope_events
+        .iter()
+        .map(|event| (event.scope.clone(), event.action))
+        .collect();
+    let element_by_id: FxHashMap<_, _> = element_records
+        .iter()
+        .map(|record| (record.id.as_str(), record))
+        .collect();
+    let mut scope_ids_sorted = sorted_scope_set(&scope_ids);
+    scope_ids_sorted.sort_by(|left, right| {
+        scope_depth(left)
+            .cmp(&scope_depth(right))
+            .then_with(|| left.cmp(right))
+    });
+
+    scope_ids_sorted
+        .into_iter()
+        .map(|scope| {
+            let first_current_root = current_scope_roots
+                .get(&scope)
+                .and_then(|roots| roots.first())
+                .map(|element| element.id.as_str());
+            let first_previous_root = previous_scope_roots
+                .get(&scope)
+                .and_then(|roots| roots.first());
+            let current_record = first_current_root.and_then(|id| element_by_id.get(id).copied());
+            ScopeDebugRecord {
+                parent_scope: scope_parent(&scope, scope_ids.iter()),
+                dirty: dirty_scopes.contains(&scope),
+                raw_dirty: input_dirty_scopes.contains(&scope),
+                normalized_dirty_root: normalized_dirty_scopes.contains(&scope),
+                dirty_reasons: dirty_reasons_for_scope(
+                    &scope,
+                    input_dirty_scopes,
+                    live_dirty_scopes,
+                    previous_clock_scopes,
+                ),
+                action: action_by_scope.get(&scope).copied(),
+                previous_roots: previous_scope_roots
+                    .get(&scope)
+                    .map_or(0, |roots| roots.len()),
+                current_roots: current_scope_roots
+                    .get(&scope)
+                    .map_or(0, |roots| roots.len()),
+                layout_anchor: first_previous_root
+                    .map(|element| element.frame)
+                    .or_else(|| current_record.map(|record| record.target_frame)),
+                scroll_ancestor: current_record.and_then(|record| record.scroll_ancestor.clone()),
+                clip_ancestor: current_record.and_then(|record| record.clip_ancestor.clone()),
+                id: scope,
+            }
+        })
+        .collect()
+}
+
+fn dirty_reasons_for_scope(
+    scope: &str,
+    input_dirty_scopes: &ScopeSet,
+    live_dirty_scopes: &ScopeSet,
+    previous_clock_scopes: &ScopeSet,
+) -> Vec<DirtyReason> {
+    let mut reasons = Vec::new();
+    if input_dirty_scopes.contains(scope) {
+        reasons.push(DirtyReason::External);
+    }
+    if live_dirty_scopes.contains(scope) {
+        if previous_clock_scopes.contains(scope) {
+            reasons.push(DirtyReason::Clock);
+        } else {
+            reasons.push(DirtyReason::Live);
+        }
+    }
+    reasons
+}
+
+fn collect_element_debug_records(
+    roots: &[Element],
+    scope_roots: &ScopeRoots,
+    callbacks: &UiCallbacks,
+    animations: &FxHashMap<String, ElementAnimation>,
+) -> Vec<ElementDebugRecord> {
+    let mut records = Vec::new();
+    let scope_ids: Vec<_> = scope_roots.keys().cloned().collect();
+    for root in roots {
+        collect_element_debug_record(
+            root,
+            None,
+            None,
+            None,
+            &scope_ids,
+            callbacks,
+            animations,
+            &mut records,
+        );
+    }
+    records
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_element_debug_record(
+    element: &Element,
+    parent: Option<&str>,
+    scroll_ancestor: Option<&str>,
+    clip_ancestor: Option<&str>,
+    scope_ids: &[String],
+    callbacks: &UiCallbacks,
+    animations: &FxHashMap<String, ElementAnimation>,
+    records: &mut Vec<ElementDebugRecord>,
+) {
+    let retained_boundary = nearest_scope_for_id(&element.id, scope_ids);
+    let draw_frame = animations
+        .get(&element.id)
+        .and_then(|animation| animation.frame.as_ref())
+        .map(AnimatedValue::current)
+        .unwrap_or(element.frame);
+    records.push(ElementDebugRecord {
+        id: element.id.clone(),
+        parent: parent.map(str::to_string),
+        retained_boundary,
+        scroll_ancestor: scroll_ancestor.map(str::to_string),
+        clip_ancestor: clip_ancestor.map(str::to_string),
+        target_frame: element.frame,
+        draw_frame: Some(draw_frame),
+    });
+
+    let next_scroll_ancestor = if callbacks.on_scroll.contains_key(&element.id) {
+        Some(element.id.as_str())
+    } else {
+        scroll_ancestor
+    };
+    let next_clip_ancestor = if element.clip {
+        Some(element.id.as_str())
+    } else {
+        clip_ancestor
+    };
+    for child in &element.children {
+        collect_element_debug_record(
+            child,
+            Some(&element.id),
+            next_scroll_ancestor,
+            next_clip_ancestor,
+            scope_ids,
+            callbacks,
+            animations,
+            records,
+        );
+    }
+}
+
+fn nearest_scope_for_id(id: &str, scope_ids: &[String]) -> Option<String> {
+    scope_ids
+        .iter()
+        .filter(|scope| scope_contains_id(scope, id))
+        .max_by_key(|scope| scope_depth(scope))
+        .cloned()
+}
+
+fn scope_depth(scope: &str) -> usize {
+    scope
+        .as_bytes()
+        .iter()
+        .filter(|byte| **byte == b'.')
+        .count()
 }
 
 fn collect_element_structure(element: &Element, snapshots: &mut Vec<ElementSnapshot>) {
@@ -1943,10 +2270,11 @@ mod tests {
     use super::Runtime;
     use crate::expert::{UiDrawCommand, UiRectDraw};
     use crate::widgets::{button, panel, text};
+    use crate::DirtyReason;
     use crate::{
         Align, AnimProperty, Ease, FontRef, FrameInput, FullLayoutReason, HorizontalAlign,
-        KeyboardEvent, LayoutMode, LayoutRect, PointerEvent, Screen, ScrollEvent, Size, State,
-        TextMeasure, TextMeasureRequest, TextSystem, Transition,
+        KeyboardEvent, LayoutMode, LayoutRect, PointerEvent, ScopeComposeAction, Screen,
+        ScrollEvent, Size, State, TextMeasure, TextMeasureRequest, TextSystem, Transition,
     };
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
@@ -2211,7 +2539,54 @@ mod tests {
             runtime.debug_snapshot().clock_scopes,
             vec!["page.clocked".to_string()]
         );
+        let clocked_scope = runtime
+            .debug_snapshot()
+            .scopes
+            .iter()
+            .find(|scope| scope.id == "page.clocked")
+            .expect("clocked scope should be reported");
+        assert_eq!(clocked_scope.dirty_reasons, vec![DirtyReason::Clock]);
         assert!(runtime.scope_compose_stats().partial_layout);
+    }
+
+    #[test]
+    fn debug_snapshot_records_scope_and_element_ancestry() {
+        let mut runtime = Runtime::new("page");
+
+        runtime.compose(240.0, 120.0, |ui, _| {
+            ui.scope("panel", |ui| {
+                ui.stack("panel.scroll")
+                    .size(200.0, 100.0)
+                    .clip()
+                    .on_scroll(|_| {})
+                    .content(|ui| {
+                        ui.scope("child", |ui| {
+                            ui.rect("panel.child.leaf").size(40.0, 20.0).build();
+                        });
+                    });
+            });
+        });
+
+        let snapshot = runtime.debug_snapshot();
+        let child_scope = snapshot
+            .scopes
+            .iter()
+            .find(|scope| scope.id == "page.panel.child")
+            .expect("child scope should be reported");
+        assert_eq!(child_scope.parent_scope.as_deref(), Some("page.panel"));
+        assert_eq!(child_scope.current_roots, 1);
+        assert_eq!(child_scope.action, Some(ScopeComposeAction::Built));
+
+        let leaf = snapshot
+            .elements
+            .iter()
+            .find(|element| element.id == "page.panel.child.leaf")
+            .expect("leaf element should be reported");
+        assert_eq!(leaf.parent.as_deref(), Some("page.panel.scroll"));
+        assert_eq!(leaf.retained_boundary.as_deref(), Some("page.panel.child"));
+        assert_eq!(leaf.scroll_ancestor.as_deref(), Some("page.panel.scroll"));
+        assert_eq!(leaf.clip_ancestor.as_deref(), Some("page.panel.scroll"));
+        assert_eq!(leaf.draw_frame, Some(leaf.target_frame));
     }
 
     #[test]
