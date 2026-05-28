@@ -2550,6 +2550,55 @@ mod tests {
     }
 
     #[test]
+    fn clock_read_without_scope_uses_current_element_owner() {
+        let mut runtime = Runtime::new("page");
+
+        runtime.compose_scoped(240.0, 80.0, Vec::<String>::new(), |ui, _| {
+            ui.stack("panel").size(160.0, 40.0).content(|ui| {
+                let seconds = ui.clock().seconds();
+                ui.text("panel.label")
+                    .size(120.0, 24.0)
+                    .text(format!("{seconds:.1}"))
+                    .build();
+            });
+        });
+
+        assert_eq!(
+            runtime.debug_snapshot().clock_scopes,
+            vec!["page.panel".to_string()]
+        );
+
+        runtime.update_events_and_timers(
+            PointerEvent::default(),
+            ScrollEvent::default(),
+            KeyboardEvent::default(),
+            0.25,
+        );
+        runtime.compose_scoped(240.0, 80.0, Vec::<String>::new(), |ui, _| {
+            ui.stack("panel").size(160.0, 40.0).content(|ui| {
+                let seconds = ui.clock().seconds();
+                ui.text("panel.label")
+                    .size(120.0, 24.0)
+                    .text(format!("{seconds:.2}"))
+                    .build();
+            });
+        });
+
+        assert_eq!(
+            runtime.debug_snapshot().dirty_scopes,
+            vec!["page.panel".to_string()]
+        );
+        assert_eq!(runtime.find("panel.label").unwrap().text, "0.25");
+        let panel_scope = runtime
+            .debug_snapshot()
+            .scopes
+            .iter()
+            .find(|scope| scope.id == "page.panel")
+            .expect("automatic clock owner should be reported");
+        assert_eq!(panel_scope.dirty_reasons, vec![DirtyReason::Clock]);
+    }
+
+    #[test]
     fn debug_snapshot_records_scope_and_element_ancestry() {
         let mut runtime = Runtime::new("page");
 

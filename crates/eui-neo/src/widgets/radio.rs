@@ -90,7 +90,8 @@ impl<'ui> RadioBuilder<'ui> {
     }
 
     pub fn signal<T: 'static>(self, signal: Signal<T, bool>) -> Self {
-        let selected = signal.watch(self.ui);
+        let owner = self.id.clone();
+        let selected = self.ui.with_dependency_owner(owner, |ui| signal.watch(ui));
         self.selected(selected)
             .on_change(move |next| signal.set(next))
     }

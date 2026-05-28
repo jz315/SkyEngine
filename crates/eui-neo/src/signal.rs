@@ -205,7 +205,7 @@ impl<T, V: Clone> Signal<T, V> {
     }
 
     pub fn watch(&self, ui: &mut Ui) -> V {
-        if let Some(scope) = ui.active_scope_id() {
+        if let Some(scope) = ui.dependency_owner_id() {
             self.state
                 .graph
                 .borrow_mut()
@@ -328,6 +328,30 @@ mod tests {
                 super::DirtyFlags::COMPOSE | super::DirtyFlags::DRAW
             )
         );
+    }
+
+    #[test]
+    fn signal_watch_without_scope_registers_current_element_owner() {
+        let state = State::new(AppState::default());
+        let page = state.signal(
+            "page",
+            |state| state.page,
+            |state, value| state.page = value,
+        );
+        let mut ui = Ui::new("test");
+
+        ui.column("panel").content(|ui| {
+            assert_eq!(page.watch(ui), 0);
+            ui.text("panel.label").text("Panel").build();
+        });
+
+        let dependencies = state.signal_dependencies();
+        assert_eq!(dependencies.len(), 1);
+        assert_eq!(dependencies[0].0.as_str(), "page");
+        assert_eq!(dependencies[0].1, vec!["test.panel".to_string()]);
+
+        page.set(1);
+        assert_eq!(state.dirty_scopes(), vec!["test.panel".to_string()]);
     }
 
     #[test]

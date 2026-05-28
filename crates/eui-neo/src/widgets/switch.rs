@@ -89,7 +89,8 @@ impl<'ui> SwitchBuilder<'ui> {
     }
 
     pub fn signal<T: 'static>(self, signal: Signal<T, bool>) -> Self {
-        let value = signal.watch(self.ui);
+        let owner = self.id.clone();
+        let value = self.ui.with_dependency_owner(owner, |ui| signal.watch(ui));
         self.checked(value).on_change(move |next| signal.set(next))
     }
 

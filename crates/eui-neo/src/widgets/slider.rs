@@ -82,7 +82,8 @@ impl<'ui> SliderBuilder<'ui> {
     }
 
     pub fn signal<T: 'static>(self, signal: Signal<T, f32>) -> Self {
-        let value = signal.watch(self.ui);
+        let owner = self.id.clone();
+        let value = self.ui.with_dependency_owner(owner, |ui| signal.watch(ui));
         self.value(value).on_change(move |next| signal.set(next))
     }
 

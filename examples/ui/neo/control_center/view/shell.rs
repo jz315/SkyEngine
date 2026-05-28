@@ -100,20 +100,18 @@ fn draw_sidebar(ui: &mut Ui, state_store: &State<AppModel>, model: &AppModel, ap
                                 .build();
                         });
 
-                    ui.scope("control-center.nav.selection", |ui| {
-                        let mut nav = widgets::nav_group(ui, "control-center.nav")
-                            .size(Size::fill(), 210.0)
-                            .theme(app_theme.tokens)
-                            .signal(actions::page_signal(state_store));
-                        for page in Page::ALL {
-                            nav = nav.item_icon(
-                                page.index(),
-                                page.icon(),
-                                locale::page_label(model.locale, page),
-                            );
-                        }
-                        nav.build();
-                    });
+                    let mut nav = widgets::nav_group(ui, "control-center.nav")
+                        .size(Size::fill(), 210.0)
+                        .theme(app_theme.tokens)
+                        .signal(actions::page_signal(state_store));
+                    for page in Page::ALL {
+                        nav = nav.item_icon(
+                            page.index(),
+                            page.icon(),
+                            locale::page_label(model.locale, page),
+                        );
+                    }
+                    nav.build();
 
                     components::spacer(ui, "control-center.sidebar.flex");
 

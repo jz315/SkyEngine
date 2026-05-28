@@ -89,7 +89,8 @@ impl<'ui> TabsBuilder<'ui> {
     }
 
     pub fn signal<T: 'static>(self, signal: Signal<T, i32>) -> Self {
-        let value = signal.watch(self.ui);
+        let owner = self.id.clone();
+        let value = self.ui.with_dependency_owner(owner, |ui| signal.watch(ui));
         self.selected(value).on_change(move |next| signal.set(next))
     }
 

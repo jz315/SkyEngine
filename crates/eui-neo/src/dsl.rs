@@ -35,7 +35,9 @@ pub struct Ui {
     previous_scope_roots: ScopeRoots,
     previous_frame_cache: RefCell<FxHashMap<String, Option<LayoutRect>>>,
     path: Vec<usize>,
+    element_stack: Vec<String>,
     scope_stack: Vec<String>,
+    dependency_owner_stack: Vec<String>,
     scope_roots: ScopeRoots,
     dirty_scopes: ScopeSet,
     live_scopes: ScopeSet,
@@ -138,7 +140,9 @@ impl Ui {
             previous_scope_roots: ScopeRoots::default(),
             previous_frame_cache: RefCell::new(FxHashMap::default()),
             path: Vec::new(),
+            element_stack: Vec::new(),
             scope_stack: Vec::new(),
+            dependency_owner_stack: Vec::new(),
             scope_roots: ScopeRoots::default(),
             dirty_scopes: FxHashSet::default(),
             live_scopes: FxHashSet::default(),
@@ -287,7 +291,7 @@ impl Ui {
         UiClock {
             seconds: self.clock_seconds,
             frame_index: self.clock_frame_index,
-            owner: self.active_scope_id(),
+            owner: self.dependency_owner_id(),
             live_scopes: &mut self.live_scopes,
             clock_scopes: &mut self.clock_scopes,
         }
@@ -408,6 +412,29 @@ impl Ui {
             .or_else(|| (!self.page_id.is_empty()).then(|| self.page_id.clone()))
     }
 
+    pub fn dependency_owner_id(&self) -> Option<String> {
+        self.scope_stack
+            .last()
+            .cloned()
+            .or_else(|| self.dependency_owner_stack.last().cloned())
+            .or_else(|| self.element_stack.last().cloned())
+            .or_else(|| (!self.page_id.is_empty()).then(|| self.page_id.clone()))
+    }
+
+    pub(crate) fn with_dependency_owner<R>(
+        &mut self,
+        id: impl AsRef<str>,
+        build: impl FnOnce(&mut Ui) -> R,
+    ) -> R {
+        let id = self.resolve_id(id.as_ref());
+        self.dependency_owner_stack.push(id);
+        let result = build(self);
+        self.dependency_owner_stack
+            .pop()
+            .expect("dependency owner stack should contain pushed owner");
+        result
+    }
+
     pub(crate) fn push_element(&mut self, element: Element) -> usize {
         let children = children_at_path_mut(&mut self.roots, &self.path);
         let index = children.len();
@@ -416,11 +443,18 @@ impl Ui {
     }
 
     pub(crate) fn push_path(&mut self, index: usize) {
+        let id = children_at_path_mut(&mut self.roots, &self.path)[index]
+            .id
+            .clone();
+        self.element_stack.push(id);
         self.path.push(index);
     }
 
     pub(crate) fn pop_path(&mut self) {
         self.path.pop();
+        self.element_stack
+            .pop()
+            .expect("element stack should contain pushed element");
     }
 
     fn element(&mut self, kind: ElementKind, id: impl Into<String>) -> ElementBuilder<'_> {

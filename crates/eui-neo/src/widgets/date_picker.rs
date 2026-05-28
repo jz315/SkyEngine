@@ -151,7 +151,8 @@ impl<'ui> DatePickerBuilder<'ui> {
     }
 
     pub fn open_signal<T: 'static>(self, signal: Signal<T, bool>) -> Self {
-        let value = signal.watch(self.ui);
+        let owner = self.id.clone();
+        let value = self.ui.with_dependency_owner(owner, |ui| signal.watch(ui));
         self.open(value)
             .on_open_change(move |next| signal.set(next))
     }
@@ -176,7 +177,8 @@ impl<'ui> DatePickerBuilder<'ui> {
     }
 
     pub fn value_signal<T: 'static>(self, signal: Signal<T, [i32; 3]>) -> Self {
-        let [year, month, day] = signal.watch(self.ui);
+        let owner = self.id.clone();
+        let [year, month, day] = self.ui.with_dependency_owner(owner, |ui| signal.watch(ui));
         self.date(year, month, day)
             .on_change(move |year, month, day| signal.set([year, month, day]))
     }

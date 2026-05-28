@@ -123,7 +123,8 @@ impl<'ui> ColorPickerBuilder<'ui> {
     }
 
     pub fn open_signal<T: 'static>(self, signal: Signal<T, bool>) -> Self {
-        let value = signal.watch(self.ui);
+        let owner = self.id.clone();
+        let value = self.ui.with_dependency_owner(owner, |ui| signal.watch(ui));
         self.open(value)
             .on_open_change(move |next| signal.set(next))
     }
@@ -146,7 +147,8 @@ impl<'ui> ColorPickerBuilder<'ui> {
     }
 
     pub fn value_signal<T: 'static>(self, signal: Signal<T, Color>) -> Self {
-        let value = signal.watch(self.ui);
+        let owner = self.id.clone();
+        let value = self.ui.with_dependency_owner(owner, |ui| signal.watch(ui));
         self.value(value).on_change(move |next| signal.set(next))
     }
 

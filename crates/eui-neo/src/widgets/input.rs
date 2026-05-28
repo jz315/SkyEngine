@@ -161,7 +161,8 @@ impl<'ui> InputBuilder<'ui> {
     }
 
     pub fn text_signal<T: 'static>(self, signal: Signal<T, String>) -> Self {
-        let value = signal.watch(self.ui);
+        let owner = self.id.clone();
+        let value = self.ui.with_dependency_owner(owner, |ui| signal.watch(ui));
         self.text(value)
             .on_change(move |next| signal.set(next.to_string()))
     }

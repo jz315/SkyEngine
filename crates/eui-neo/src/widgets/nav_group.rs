@@ -196,7 +196,9 @@ impl<'ui, T: 'static, V: Clone + PartialEq + 'static> BoundNavGroupBuilder<'ui, 
     pub fn build(self) -> Response {
         let id = self.id;
         let item_id_prefix = id.clone();
-        let selected = self.signal.watch(self.ui);
+        let selected = self
+            .ui
+            .with_dependency_owner(&id, |ui| self.signal.watch(ui));
         let signal = self.signal;
         let items = self.items;
         let item_height = self.item_height;

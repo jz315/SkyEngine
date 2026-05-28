@@ -139,7 +139,8 @@ impl<'ui> TimePickerBuilder<'ui> {
     }
 
     pub fn open_signal<T: 'static>(self, signal: Signal<T, bool>) -> Self {
-        let value = signal.watch(self.ui);
+        let owner = self.id.clone();
+        let value = self.ui.with_dependency_owner(owner, |ui| signal.watch(ui));
         self.open(value)
             .on_open_change(move |next| signal.set(next))
     }
@@ -163,7 +164,8 @@ impl<'ui> TimePickerBuilder<'ui> {
     }
 
     pub fn value_signal<T: 'static>(self, signal: Signal<T, [i32; 2]>) -> Self {
-        let [hour, minute] = signal.watch(self.ui);
+        let owner = self.id.clone();
+        let [hour, minute] = self.ui.with_dependency_owner(owner, |ui| signal.watch(ui));
         self.time(hour, minute)
             .on_change(move |hour, minute| signal.set([hour, minute]))
     }

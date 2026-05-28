@@ -94,7 +94,8 @@ impl<'ui> ToastBuilder<'ui> {
     }
 
     pub fn visible_signal<T: 'static>(self, signal: Signal<T, bool>) -> Self {
-        let value = signal.watch(self.ui);
+        let owner = self.id.clone();
+        let value = self.ui.with_dependency_owner(owner, |ui| signal.watch(ui));
         let dismiss_signal = signal.clone();
         self.visible(value)
             .on_dismiss(move || dismiss_signal.set(false))

@@ -685,7 +685,11 @@ macro_rules! scroll_area_common_methods {
         }
 
         pub fn offset_signal<T: 'static>(self, signal: Signal<T, f32>) -> Self {
-            let value = signal.watch(self.inner.ui);
+            let owner = self.inner.id.clone();
+            let value = self
+                .inner
+                .ui
+                .with_dependency_owner(owner, |ui| signal.watch(ui));
             self.offset(value).on_change(move |next| signal.set(next))
         }
 
@@ -1126,7 +1130,8 @@ impl<'ui> ScrollXYBuilder<'ui> {
     }
 
     pub fn offset_signal<T: 'static>(self, signal: Signal<T, (f32, f32)>) -> Self {
-        let (x, y) = signal.watch(self.ui);
+        let owner = self.id.clone();
+        let (x, y) = self.ui.with_dependency_owner(owner, |ui| signal.watch(ui));
         self.offset(x, y)
             .on_change(move |next_x, next_y| signal.set((next_x, next_y)))
     }
