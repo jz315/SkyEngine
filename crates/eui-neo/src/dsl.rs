@@ -11,8 +11,8 @@ use super::{
     LayoutRect, PanelSkin, PointerEvent, Response, ScrollEvent, SkinRegistry, SliderSkin,
 };
 use crate::retained::{
-    RetainedComposeAction, RetainedComposeEvent, RetainedComposeStats, ScopeComposeRecord,
-    ScopeRoots, ScopeSet,
+    RetainedComposeAction, RetainedComposeEvent, RetainedComposeStats, RetainedRoot,
+    ScopeComposeRecord, ScopeRoots, ScopeSet,
 };
 
 /// Logical screen size supplied to neo composition.
@@ -394,7 +394,9 @@ impl Ui {
                 &id,
             )
         {
-            if let Some(elements) = self.previous_scope_roots.get(&id).cloned() {
+            if let Some(elements) =
+                previous_elements_for_scope(&self.previous_roots, &self.previous_scope_roots, &id)
+            {
                 self.callbacks
                     .transfer_for_elements(&mut self.previous_callbacks, &elements);
                 let children = children_at_path_mut(&mut self.roots, &self.path);
@@ -411,7 +413,7 @@ impl Ui {
                     current_roots: elements.len(),
                     element_count: count_elements(&elements),
                 });
-                self.scope_roots.insert(id, elements);
+                self.record_scope_roots(id, &elements);
                 self.retained_stats.reused += 1;
                 return;
             }
@@ -448,7 +450,7 @@ impl Ui {
             current_roots: roots.len(),
             element_count: count_elements(&roots),
         });
-        self.scope_roots.insert(id, roots);
+        self.record_scope_roots(id, &roots);
         self.retained_stats.built += 1;
     }
 
@@ -501,7 +503,9 @@ impl Ui {
         {
             return false;
         }
-        let Some(elements) = self.previous_scope_roots.get(id).cloned() else {
+        let Some(elements) =
+            previous_elements_for_scope(&self.previous_roots, &self.previous_scope_roots, id)
+        else {
             return false;
         };
         self.callbacks
@@ -520,7 +524,7 @@ impl Ui {
             current_roots: elements.len(),
             element_count: count_elements(&elements),
         });
-        self.scope_roots.insert(id.to_string(), elements);
+        self.record_scope_roots(id.to_string(), &elements);
         self.retained_stats.reused += 1;
         true
     }
@@ -543,8 +547,13 @@ impl Ui {
             current_roots: roots.len(),
             element_count: count_elements(&roots),
         });
-        self.scope_roots.insert(id, roots);
+        self.record_scope_roots(id, &roots);
         self.retained_stats.built += 1;
+    }
+
+    fn record_scope_roots(&mut self, id: String, elements: &[Element]) {
+        self.scope_roots
+            .insert(id, RetainedRoot::from_elements(elements));
     }
 
     pub(crate) fn push_dirty_owner_if_exact_dirty(&mut self, id: &str) -> bool {
@@ -717,10 +726,23 @@ fn retained_element_has_dirty_dependency(
     })
 }
 
-fn element_tree_contains(elements: &[Element], id: &str) -> bool {
+fn element_tree_contains(elements: &[RetainedRoot], id: &str) -> bool {
     elements
         .iter()
         .any(|element| element.id == id || element_tree_contains(&element.children, id))
+}
+
+fn previous_elements_for_scope(
+    previous_roots: &[Element],
+    previous_scope_roots: &ScopeRoots,
+    id: &str,
+) -> Option<Vec<Element>> {
+    let roots = previous_scope_roots.get(id)?;
+    let mut elements = Vec::with_capacity(roots.len());
+    for root in roots {
+        elements.push(find_element(previous_roots, &root.id)?.clone());
+    }
+    Some(elements)
 }
 
 impl UiClock<'_> {
@@ -758,6 +780,18 @@ fn find_frame(elements: &[Element], id: &str) -> Option<LayoutRect> {
         }
         if let Some(frame) = find_frame(&element.children, id) {
             return Some(frame);
+        }
+    }
+    None
+}
+
+fn find_element<'a>(elements: &'a [Element], id: &str) -> Option<&'a Element> {
+    for element in elements {
+        if element.id == id {
+            return Some(element);
+        }
+        if let Some(found) = find_element(&element.children, id) {
+            return Some(found);
         }
     }
     None

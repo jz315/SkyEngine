@@ -8,11 +8,61 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::OnceLock;
 
-use crate::Element;
+use crate::{Element, ElementKind, LayoutRect};
 
 pub(crate) type ScopeId = String;
-pub(crate) type ScopeRoots = FxHashMap<ScopeId, Vec<Element>>;
+pub(crate) type ScopeRoots = FxHashMap<ScopeId, Vec<RetainedRoot>>;
 pub(crate) type ScopeSet = FxHashSet<ScopeId>;
+
+/// Stable identity and layout-relevant shape for a retained root.
+///
+/// Full `Element` trees stay in `Runtime::roots`; retained roots keep only the
+/// metadata needed to normalize dirty scopes, validate partial layout, and
+/// anchor debug/layout refresh after layout has resolved frames.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RetainedRoot {
+    pub id: String,
+    pub kind: ElementKind,
+    pub z_index: i32,
+    pub clip: bool,
+    pub clip_radius: f32,
+    pub width: crate::Size,
+    pub height: crate::Size,
+    pub margin: crate::EdgeInsets,
+    pub min_width: f32,
+    pub max_layout_width: f32,
+    pub min_height: f32,
+    pub max_height: f32,
+    pub grow: f32,
+    pub frame: LayoutRect,
+    pub children: Vec<RetainedRoot>,
+}
+
+impl RetainedRoot {
+    pub(crate) fn from_element(element: &Element) -> Self {
+        Self {
+            id: element.id.clone(),
+            kind: element.kind,
+            z_index: element.z_index,
+            clip: element.clip,
+            clip_radius: element.clip_radius,
+            width: element.width,
+            height: element.height,
+            margin: element.margin,
+            min_width: element.min_width,
+            max_layout_width: element.max_layout_width,
+            min_height: element.min_height,
+            max_height: element.max_height,
+            grow: element.grow,
+            frame: element.frame,
+            children: element.children.iter().map(Self::from_element).collect(),
+        }
+    }
+
+    pub(crate) fn from_elements(elements: &[Element]) -> Vec<Self> {
+        elements.iter().map(Self::from_element).collect()
+    }
+}
 
 pub(crate) struct ScopeFrame {
     pub can_reuse_scopes: bool,
@@ -173,7 +223,7 @@ fn dirty_scope_contains(candidate: &str, scope: &str, previous_scope_roots: &Sco
     })
 }
 
-fn element_contains_id(element: &Element, id: &str) -> bool {
+fn element_contains_id(element: &RetainedRoot, id: &str) -> bool {
     element.id == id
         || element
             .children
@@ -195,7 +245,10 @@ fn dirty_scope_is_structurally_compatible(
     element_lists_are_structurally_compatible(previous_roots, next_roots)
 }
 
-fn element_lists_are_structurally_compatible(previous: &[Element], next: &[Element]) -> bool {
+fn element_lists_are_structurally_compatible(
+    previous: &[RetainedRoot],
+    next: &[RetainedRoot],
+) -> bool {
     previous.len() == next.len()
         && previous
             .iter()
@@ -203,7 +256,7 @@ fn element_lists_are_structurally_compatible(previous: &[Element], next: &[Eleme
             .all(|(previous, next)| elements_are_structurally_compatible(previous, next))
 }
 
-fn elements_are_structurally_compatible(previous: &Element, next: &Element) -> bool {
+fn elements_are_structurally_compatible(previous: &RetainedRoot, next: &RetainedRoot) -> bool {
     previous.id == next.id
         && previous.kind == next.kind
         && previous.z_index == next.z_index
@@ -213,7 +266,7 @@ fn elements_are_structurally_compatible(previous: &Element, next: &Element) -> b
         && element_lists_are_structurally_compatible(&previous.children, &next.children)
 }
 
-fn first_element_list_mismatch(previous: &[Element], next: &[Element]) -> Option<String> {
+fn first_element_list_mismatch(previous: &[RetainedRoot], next: &[RetainedRoot]) -> Option<String> {
     if previous.len() != next.len() {
         return Some(format!(
             "root count changed {} -> {}",
@@ -227,7 +280,7 @@ fn first_element_list_mismatch(previous: &[Element], next: &[Element]) -> Option
         .find_map(|(previous, next)| first_element_mismatch(previous, next))
 }
 
-fn first_element_mismatch(previous: &Element, next: &Element) -> Option<String> {
+fn first_element_mismatch(previous: &RetainedRoot, next: &RetainedRoot) -> Option<String> {
     if previous.id != next.id {
         return Some(format!("id changed {} -> {}", previous.id, next.id));
     }
@@ -272,7 +325,10 @@ fn first_element_mismatch(previous: &Element, next: &Element) -> Option<String> 
     })
 }
 
-fn first_parent_layout_input_mismatch(previous: &Element, next: &Element) -> Option<String> {
+fn first_parent_layout_input_mismatch(
+    previous: &RetainedRoot,
+    next: &RetainedRoot,
+) -> Option<String> {
     if previous.width != next.width {
         return Some(format!(
             "{} width changed {:?} -> {:?}",
@@ -324,7 +380,10 @@ fn first_parent_layout_input_mismatch(previous: &Element, next: &Element) -> Opt
     None
 }
 
-fn element_parent_layout_inputs_are_compatible(previous: &Element, next: &Element) -> bool {
+fn element_parent_layout_inputs_are_compatible(
+    previous: &RetainedRoot,
+    next: &RetainedRoot,
+) -> bool {
     same_size(previous.width, next.width)
         && same_size(previous.height, next.height)
         && same_edge_insets(previous.margin, next.margin)
@@ -364,7 +423,7 @@ pub(crate) fn scope_profile_enabled() -> bool {
 mod tests {
     use crate::{Element, ElementKind};
 
-    use super::{normalize_dirty_scopes_with_roots, ScopeRoots, ScopeSet};
+    use super::{normalize_dirty_scopes_with_roots, RetainedRoot, ScopeRoots, ScopeSet};
 
     fn scopes(ids: &[&str]) -> ScopeSet {
         ids.iter().map(|id| (*id).to_string()).collect()
@@ -422,10 +481,14 @@ mod tests {
         scroll.children.push(content);
 
         let mut roots = ScopeRoots::default();
-        roots.insert("page.interactions.scroll".to_string(), vec![scroll]);
+        roots.insert(
+            "page.interactions.scroll".to_string(),
+            RetainedRoot::from_elements(&[scroll]),
+        );
+        let cards = Element::new(ElementKind::Row, "page.interactions.cards");
         roots.insert(
             "page.interactions.cards".to_string(),
-            vec![Element::new(ElementKind::Row, "page.interactions.cards")],
+            RetainedRoot::from_elements(&[cards]),
         );
 
         let normalized = normalize_dirty_scopes_with_roots(

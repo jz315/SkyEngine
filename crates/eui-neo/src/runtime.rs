@@ -14,7 +14,8 @@ use super::layout::{layout_element_in_frame_with_text_system, layout_roots_with_
 use super::retained::{
     begin_scope_frame, normalize_dirty_scopes_with_roots, structural_incompatibility_reports,
     structurally_incompatible_dirty_scopes, FullLayoutReason, LayoutMode, RetainedComposeAction,
-    RetainedComposeEvent, RetainedComposeStats, ScopeComposeRecord, ScopeRoots, ScopeSet,
+    RetainedComposeEvent, RetainedComposeStats, RetainedRoot, ScopeComposeRecord, ScopeRoots,
+    ScopeSet,
 };
 use super::skin::{NeoSkin, SkinRegistry};
 use super::text_measure::{DefaultTextSystem, TextSystem};
@@ -1956,15 +1957,15 @@ fn scope_contains_dirty_dependency(
         previous_scope_roots.get(dirty).is_some_and(|dirty_roots| {
             dirty_roots
                 .iter()
-                .any(|root| elements_contain_id(scope_roots, &root.id))
+                .any(|root| retained_roots_contain_id(scope_roots, &root.id))
         })
     })
 }
 
-fn elements_contain_id(elements: &[Element], id: &str) -> bool {
+fn retained_roots_contain_id(elements: &[RetainedRoot], id: &str) -> bool {
     elements
         .iter()
-        .any(|element| element.id == id || elements_contain_id(&element.children, id))
+        .any(|element| element.id == id || retained_roots_contain_id(&element.children, id))
 }
 
 fn collect_element_debug_records(
@@ -2117,7 +2118,7 @@ fn visual_structures_match(next: &[ElementSnapshot], previous: &[ElementSnapshot
 fn layout_dirty_ids_with_text_system(
     roots: &mut [Element],
     dirty_ids: &FxHashSet<String>,
-    previous_scope_roots: &FxHashMap<String, Vec<Element>>,
+    previous_scope_roots: &ScopeRoots,
     text_system: &mut dyn TextSystem,
 ) -> bool {
     for scope in dirty_ids {
@@ -2153,10 +2154,7 @@ fn partial_layout_blocker(
     })
 }
 
-fn refresh_scope_roots_from_tree(
-    scope_roots: &mut FxHashMap<String, Vec<Element>>,
-    roots: &[Element],
-) {
+fn refresh_scope_roots_from_tree(scope_roots: &mut ScopeRoots, roots: &[Element]) {
     let mut elements_by_id = FxHashMap::default();
     collect_elements_by_id(roots, &mut elements_by_id);
     for elements in scope_roots.values_mut() {
@@ -2178,7 +2176,7 @@ fn collect_elements_by_id<'a>(
     }
 }
 
-fn refresh_retained_root_layout_frames(element: &mut Element, updated: &Element) {
+fn refresh_retained_root_layout_frames(element: &mut RetainedRoot, updated: &Element) {
     // Layout mutates only Element::frame. Retained scope roots keep the same
     // visual/callback data unless their structure changed, so refresh frames
     // in place and fall back to replacement only when the tree no longer matches.
@@ -2186,7 +2184,7 @@ fn refresh_retained_root_layout_frames(element: &mut Element, updated: &Element)
         || element.id != updated.id
         || element.children.len() != updated.children.len()
     {
-        *element = updated.clone();
+        *element = RetainedRoot::from_element(updated);
         return;
     }
     element.frame = updated.frame;
@@ -2621,6 +2619,7 @@ fn hash_f32(value: f32, hasher: &mut impl Hasher) {
 #[cfg(test)]
 mod tests {
     use super::Color;
+    use super::RetainedRoot;
     use super::Runtime;
     use crate::expert::{UiDrawCommand, UiRectDraw};
     use crate::widgets::{button, panel, text};
@@ -2671,7 +2670,10 @@ mod tests {
             .children
             .push(Element::new(ElementKind::Rect, "page.grandchild"));
         let mut scope_roots = FxHashMap::default();
-        scope_roots.insert("page.child".to_string(), vec![stale_child]);
+        scope_roots.insert(
+            "page.child".to_string(),
+            RetainedRoot::from_elements(&[stale_child]),
+        );
 
         super::refresh_scope_roots_from_tree(&mut scope_roots, &[root]);
 
