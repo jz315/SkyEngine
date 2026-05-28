@@ -24,7 +24,7 @@ use super::{
     LayoutRect, Motion, PointerEvent, Response, Screen, ScrollEvent, Shadow, SmoothedValue,
     Transform, Transition, Ui, UiClip,
 };
-/// Compact structure snapshot used to detect tree-level changes.
+/// Compact structure snapshot used to detect tree-level and paint changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ElementSnapshot {
     pub id: String,
@@ -33,7 +33,8 @@ pub struct ElementSnapshot {
     pub clip: bool,
     pub clip_radius_bits: u32,
     pub child_count: usize,
-    pub signature: u64,
+    pub layout_signature: u64,
+    pub visual_signature: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -665,8 +666,13 @@ impl Runtime {
         let layout_ms = elapsed_ms(layout_start);
         let structure_start = timed.then(Instant::now);
         let next_structure = collect_structure(&roots, self.structure.len());
-        if next_structure != self.structure || self.screen != screen {
+        let layout_structure_changed =
+            self.screen != screen || !layout_structures_match(&next_structure, &self.structure);
+        let visual_structure_changed = !visual_structures_match(&next_structure, &self.structure);
+        if layout_structure_changed {
             self.mark_full_redraw_dirty();
+        } else if visual_structure_changed {
+            self.mark_render_dirty();
         }
         let structure_ms = elapsed_ms(structure_start);
         self.structure = next_structure;
@@ -2025,11 +2031,35 @@ fn collect_element_structure(element: &Element, snapshots: &mut Vec<ElementSnaps
         clip: element.clip,
         clip_radius_bits: element.clip_radius.to_bits(),
         child_count: element.children.len(),
-        signature: element_structure_signature(element),
+        layout_signature: element_layout_signature(element),
+        visual_signature: element_visual_signature(element),
     });
     for child in &element.children {
         collect_element_structure(child, snapshots);
     }
+}
+
+fn layout_structures_match(next: &[ElementSnapshot], previous: &[ElementSnapshot]) -> bool {
+    next.len() == previous.len()
+        && next.iter().zip(previous).all(|(next, previous)| {
+            next.id == previous.id
+                && next.kind == previous.kind
+                && next.child_count == previous.child_count
+                && next.layout_signature == previous.layout_signature
+        })
+}
+
+fn visual_structures_match(next: &[ElementSnapshot], previous: &[ElementSnapshot]) -> bool {
+    next.len() == previous.len()
+        && next.iter().zip(previous).all(|(next, previous)| {
+            next.id == previous.id
+                && next.kind == previous.kind
+                && next.z_index == previous.z_index
+                && next.clip == previous.clip
+                && next.clip_radius_bits == previous.clip_radius_bits
+                && next.child_count == previous.child_count
+                && next.visual_signature == previous.visual_signature
+        })
 }
 
 fn layout_dirty_ids_with_text_system(
@@ -2288,9 +2318,52 @@ fn collect_timer_ids(elements: &[Element], timers: &mut Vec<(String, f32)>) {
     }
 }
 
-fn element_structure_signature(element: &Element) -> u64 {
+fn element_layout_signature(element: &Element) -> u64 {
     let mut hasher = FxHasher::default();
     hash_rect(element.frame, &mut hasher);
+    element.has_x.hash(&mut hasher);
+    element.has_y.hash(&mut hasher);
+    hash_f32(element.x, &mut hasher);
+    hash_f32(element.y, &mut hasher);
+    hash_size(element.width, &mut hasher);
+    hash_size(element.height, &mut hasher);
+    hash_edge_insets(element.margin, &mut hasher);
+    hash_edge_insets(element.padding, &mut hasher);
+    hash_f32(element.min_width, &mut hasher);
+    hash_f32(element.max_layout_width, &mut hasher);
+    hash_f32(element.min_height, &mut hasher);
+    hash_f32(element.max_height, &mut hasher);
+    hash_f32(element.grow, &mut hasher);
+    hash_f32(element.spacing, &mut hasher);
+    element.main_align.hash(&mut hasher);
+    element.cross_align.hash(&mut hasher);
+
+    match element.kind {
+        ElementKind::Row | ElementKind::Column | ElementKind::Stack | ElementKind::Rect => {}
+        ElementKind::Polygon => {}
+        ElementKind::Text => {
+            element.text.hash(&mut hasher);
+            element.font.hash(&mut hasher);
+            hash_f32(element.font_size, &mut hasher);
+            element.font_weight.hash(&mut hasher);
+            hash_f32(element.text_max_width, &mut hasher);
+            element.wrap.hash(&mut hasher);
+            element.horizontal_align.hash(&mut hasher);
+            element.vertical_align.hash(&mut hasher);
+            hash_f32(element.line_height, &mut hasher);
+        }
+        ElementKind::Image | ElementKind::NineSlice => {}
+    }
+
+    hash_f32(element.timer_seconds, &mut hasher);
+    hasher.finish()
+}
+
+fn element_visual_signature(element: &Element) -> u64 {
+    let mut hasher = FxHasher::default();
+    element.z_index.hash(&mut hasher);
+    element.clip.hash(&mut hasher);
+    hash_f32(element.clip_radius, &mut hasher);
 
     match element.kind {
         ElementKind::Row | ElementKind::Column | ElementKind::Stack => {
@@ -2321,12 +2394,12 @@ fn element_structure_signature(element: &Element) -> u64 {
             element.font.hash(&mut hasher);
             hash_f32(element.font_size, &mut hasher);
             element.font_weight.hash(&mut hasher);
-            hash_color(element.text_color, &mut hasher);
             hash_f32(element.text_max_width, &mut hasher);
             element.wrap.hash(&mut hasher);
             element.horizontal_align.hash(&mut hasher);
             element.vertical_align.hash(&mut hasher);
             hash_f32(element.line_height, &mut hasher);
+            hash_color(element.text_color, &mut hasher);
             hash_transform(element.transform, &mut hasher);
             hash_f32(element.opacity, &mut hasher);
         }
@@ -2341,6 +2414,7 @@ fn element_structure_signature(element: &Element) -> u64 {
         ElementKind::NineSlice => {
             element.image.hash(&mut hasher);
             hash_slice(element.slice, &mut hasher);
+            hash_edge_insets(element.content_inset, &mut hasher);
             element.center_mode.hash(&mut hasher);
             element.edge_mode.hash(&mut hasher);
             hash_color(element.tint, &mut hasher);
@@ -2372,7 +2446,6 @@ fn element_structure_signature(element: &Element) -> u64 {
     hash_motion(element.transition.motion, &mut hasher);
     hash_f32(element.transition.damping_ratio, &mut hasher);
     element.explicit_frame_animation.hash(&mut hasher);
-    hash_f32(element.timer_seconds, &mut hasher);
     hasher.finish()
 }
 
@@ -2381,6 +2454,24 @@ fn hash_rect(rect: LayoutRect, hasher: &mut impl Hasher) {
     hash_f32(rect.y, hasher);
     hash_f32(rect.width, hasher);
     hash_f32(rect.height, hasher);
+}
+
+fn hash_size(size: super::Size, hasher: &mut impl Hasher) {
+    match size {
+        super::Size::Fixed(value) => {
+            0_u8.hash(hasher);
+            hash_f32(value, hasher);
+        }
+        super::Size::WrapContent => 1_u8.hash(hasher),
+        super::Size::Fill => 2_u8.hash(hasher),
+    }
+}
+
+fn hash_edge_insets(insets: super::EdgeInsets, hasher: &mut impl Hasher) {
+    hash_f32(insets.left, hasher);
+    hash_f32(insets.top, hasher);
+    hash_f32(insets.right, hasher);
+    hash_f32(insets.bottom, hasher);
 }
 
 fn hash_gradient(gradient: super::Gradient, hasher: &mut impl Hasher) {
@@ -3288,15 +3379,55 @@ mod tests {
     }
 
     #[test]
-    fn runtime_detects_visual_changes_with_same_structure() {
+    fn runtime_detects_visual_changes_without_full_layout_redraw() {
         let mut runtime = Runtime::new("demo");
         runtime.compose(100.0, 100.0, |ui, _| {
-            ui.text("title").text("A").build();
+            ui.rect("panel").size(40.0, 20.0).color(Color::RED).build();
         });
         runtime.mark_rendered();
 
         runtime.compose(100.0, 100.0, |ui, _| {
-            ui.text("title").text("B").build();
+            ui.rect("panel").size(40.0, 20.0).color(Color::BLUE).build();
+        });
+
+        assert!(runtime.needs_render());
+        assert!(!runtime.full_redraw());
+    }
+
+    #[test]
+    fn runtime_treats_fixed_text_color_as_visual_only() {
+        let mut runtime = Runtime::new("demo");
+        runtime.compose(100.0, 100.0, |ui, _| {
+            ui.text("title")
+                .size(80.0, 20.0)
+                .text("A")
+                .color(Color::RED)
+                .build();
+        });
+        runtime.mark_rendered();
+
+        runtime.compose(100.0, 100.0, |ui, _| {
+            ui.text("title")
+                .size(80.0, 20.0)
+                .text("A")
+                .color(Color::BLUE)
+                .build();
+        });
+
+        assert!(runtime.needs_render());
+        assert!(!runtime.full_redraw());
+    }
+
+    #[test]
+    fn runtime_detects_text_content_as_layout_affecting_until_fixed_text_cache_lands() {
+        let mut runtime = Runtime::new("demo");
+        runtime.compose(100.0, 100.0, |ui, _| {
+            ui.text("title").size(80.0, 20.0).text("A").build();
+        });
+        runtime.mark_rendered();
+
+        runtime.compose(100.0, 100.0, |ui, _| {
+            ui.text("title").size(80.0, 20.0).text("B").build();
         });
 
         assert!(runtime.needs_render());
