@@ -2939,6 +2939,40 @@ mod tests {
     }
 
     #[test]
+    fn dirty_scope_with_changed_fixed_size_uses_full_layout_fallback() {
+        let mut runtime = Runtime::new("page");
+
+        runtime.compose(240.0, 80.0, |ui, _| {
+            ui.row("root").size(240.0, 40.0).content(|ui| {
+                ui.retained_scope("left", |ui| {
+                    ui.rect("left.box").size(40.0, 40.0).build();
+                });
+                ui.rect("right").size(40.0, 40.0).build();
+            });
+        });
+        let right_before = runtime.find("right").unwrap().frame;
+
+        runtime.compose_incremental(240.0, 80.0, vec!["page.left".to_string()], |ui, _| {
+            ui.row("root").size(240.0, 40.0).content(|ui| {
+                ui.retained_scope("left", |ui| {
+                    ui.rect("left.box").size(80.0, 40.0).build();
+                });
+                ui.rect("right").size(40.0, 40.0).build();
+            });
+        });
+
+        let right_after = runtime.find("right").unwrap().frame;
+        assert_eq!(right_before.x, 40.0);
+        assert_eq!(right_after.x, 80.0);
+        assert_eq!(
+            runtime.debug_snapshot().layout_mode,
+            LayoutMode::Full(FullLayoutReason::StructureChanged {
+                ids: vec!["page.left".to_string()]
+            })
+        );
+    }
+
+    #[test]
     fn root_dirty_scope_without_retained_scope_roots_uses_full_layout_fallback() {
         let mut runtime = Runtime::new("page");
         runtime.compose(240.0, 80.0, |ui, _| {

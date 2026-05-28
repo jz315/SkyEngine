@@ -195,8 +195,40 @@ fn elements_are_structurally_compatible(previous: &Element, next: &Element) -> b
         && previous.kind == next.kind
         && previous.z_index == next.z_index
         && previous.clip == next.clip
+        && element_parent_layout_inputs_are_compatible(previous, next)
         && previous.children.len() == next.children.len()
         && element_lists_are_structurally_compatible(&previous.children, &next.children)
+}
+
+fn element_parent_layout_inputs_are_compatible(previous: &Element, next: &Element) -> bool {
+    same_size(previous.width, next.width)
+        && same_size(previous.height, next.height)
+        && same_edge_insets(previous.margin, next.margin)
+        && same_f32(previous.min_width, next.min_width)
+        && same_f32(previous.max_layout_width, next.max_layout_width)
+        && same_f32(previous.min_height, next.min_height)
+        && same_f32(previous.max_height, next.max_height)
+        && same_f32(previous.grow, next.grow)
+}
+
+fn same_size(previous: crate::Size, next: crate::Size) -> bool {
+    match (previous, next) {
+        (crate::Size::Fixed(previous), crate::Size::Fixed(next)) => same_f32(previous, next),
+        (crate::Size::WrapContent, crate::Size::WrapContent) => true,
+        (crate::Size::Fill, crate::Size::Fill) => true,
+        _ => false,
+    }
+}
+
+fn same_edge_insets(previous: crate::EdgeInsets, next: crate::EdgeInsets) -> bool {
+    same_f32(previous.left, next.left)
+        && same_f32(previous.top, next.top)
+        && same_f32(previous.right, next.right)
+        && same_f32(previous.bottom, next.bottom)
+}
+
+fn same_f32(previous: f32, next: f32) -> bool {
+    previous.to_bits() == next.to_bits()
 }
 
 #[cfg(test)]
