@@ -2342,15 +2342,17 @@ fn element_layout_signature(element: &Element) -> u64 {
         ElementKind::Row | ElementKind::Column | ElementKind::Stack | ElementKind::Rect => {}
         ElementKind::Polygon => {}
         ElementKind::Text => {
-            element.text.hash(&mut hasher);
-            element.font.hash(&mut hasher);
-            hash_f32(element.font_size, &mut hasher);
-            element.font_weight.hash(&mut hasher);
-            hash_f32(element.text_max_width, &mut hasher);
-            element.wrap.hash(&mut hasher);
-            element.horizontal_align.hash(&mut hasher);
-            element.vertical_align.hash(&mut hasher);
-            hash_f32(element.line_height, &mut hasher);
+            if text_measure_affects_layout(element) {
+                element.text.hash(&mut hasher);
+                element.font.hash(&mut hasher);
+                hash_f32(element.font_size, &mut hasher);
+                element.font_weight.hash(&mut hasher);
+                hash_f32(element.text_max_width, &mut hasher);
+                element.wrap.hash(&mut hasher);
+                element.horizontal_align.hash(&mut hasher);
+                element.vertical_align.hash(&mut hasher);
+                hash_f32(element.line_height, &mut hasher);
+            }
         }
         ElementKind::Image | ElementKind::NineSlice => {}
     }
@@ -2447,6 +2449,11 @@ fn element_visual_signature(element: &Element) -> u64 {
     hash_f32(element.transition.damping_ratio, &mut hasher);
     element.explicit_frame_animation.hash(&mut hasher);
     hasher.finish()
+}
+
+fn text_measure_affects_layout(element: &Element) -> bool {
+    matches!(element.width, super::Size::WrapContent)
+        || matches!(element.height, super::Size::WrapContent)
 }
 
 fn hash_rect(rect: LayoutRect, hasher: &mut impl Hasher) {
@@ -3419,7 +3426,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_detects_text_content_as_layout_affecting_until_fixed_text_cache_lands() {
+    fn runtime_treats_fixed_text_content_as_visual_only() {
         let mut runtime = Runtime::new("demo");
         runtime.compose(100.0, 100.0, |ui, _| {
             ui.text("title").size(80.0, 20.0).text("A").build();
@@ -3428,6 +3435,22 @@ mod tests {
 
         runtime.compose(100.0, 100.0, |ui, _| {
             ui.text("title").size(80.0, 20.0).text("B").build();
+        });
+
+        assert!(runtime.needs_render());
+        assert!(!runtime.full_redraw());
+    }
+
+    #[test]
+    fn runtime_detects_wrap_content_text_content_as_layout_affecting() {
+        let mut runtime = Runtime::new("demo");
+        runtime.compose(100.0, 100.0, |ui, _| {
+            ui.text("title").wrap_content().text("A").build();
+        });
+        runtime.mark_rendered();
+
+        runtime.compose(100.0, 100.0, |ui, _| {
+            ui.text("title").wrap_content().text("Wider").build();
         });
 
         assert!(runtime.needs_render());
