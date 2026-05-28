@@ -126,12 +126,14 @@ impl<'ui> PopoverBuilder<'ui> {
             return self.ui.response(&id);
         }
 
-        let anchor = self
+        let Some(anchor) = self
             .anchor
             .as_deref()
             .and_then(|id| self.ui.previous_frame(id))
             .or(self.fallback_anchor)
-            .unwrap_or(LayoutRect::ZERO);
+        else {
+            return self.ui.response(&id);
+        };
         let width = self.layout.fixed_width_or(anchor.width.max(1.0));
         let height = self.layout.fixed_height_or(1.0);
         let [x, y] = popover_position(anchor, width, height, self.placement, self.gap, self.offset);

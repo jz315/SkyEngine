@@ -636,6 +636,30 @@ mod tests {
     }
 
     #[test]
+    fn popover_without_anchor_frame_does_not_guess_zero_anchor() {
+        let mut runtime = Runtime::new("page");
+        runtime.compose(320.0, 180.0, |ui, _| {
+            ui.column("panel")
+                .position(20.0, 30.0)
+                .size(120.0, 80.0)
+                .content(|ui| {
+                    ui.rect("anchor").size(50.0, 20.0).build();
+                    popover(ui, "menu")
+                        .anchor("anchor")
+                        .placement(PopoverPlacement::BottomStart)
+                        .gap(4.0)
+                        .size(80.0, 60.0)
+                        .content(|ui| {
+                            ui.rect("menu.bg").size(Size::fill(), Size::fill()).build();
+                        });
+                });
+        });
+
+        assert!(runtime.find("anchor").is_some());
+        assert!(runtime.find("menu").is_none());
+    }
+
+    #[test]
     fn input_text_event_reports_changed_text() {
         let value = Rc::new(std::cell::RefCell::new(String::new()));
         let callback_value = value.clone();
@@ -813,23 +837,26 @@ mod tests {
         });
         let compose_state = state.clone();
         let mut runtime = Runtime::new("page");
-        runtime.compose(320.0, 220.0, move |ui, _| {
-            let selected = compose_state.signal(
-                "test.signal",
-                |state| state.selected,
-                |state, value| state.selected = value,
-            );
-            let open = compose_state.signal(
-                "test.signal",
-                |state| state.open,
-                |state, value| state.open = value,
-            );
-            dropdown(ui, "quality")
-                .items(["Low", "Medium", "High"])
-                .value_signal(selected)
-                .open_signal(open)
-                .build();
-        });
+        for _ in 0..2 {
+            let compose_state = compose_state.clone();
+            runtime.compose(320.0, 220.0, move |ui, _| {
+                let selected = compose_state.signal(
+                    "test.signal",
+                    |state| state.selected,
+                    |state, value| state.selected = value,
+                );
+                let open = compose_state.signal(
+                    "test.signal",
+                    |state| state.open,
+                    |state, value| state.open = value,
+                );
+                dropdown(ui, "quality")
+                    .items(["Low", "Medium", "High"])
+                    .value_signal(selected)
+                    .open_signal(open)
+                    .build();
+            });
+        }
 
         runtime.update_pointer(PointerEvent::pressed_at(16.0, 100.0));
         runtime.update_pointer(PointerEvent::released_at(16.0, 100.0));
@@ -885,16 +912,20 @@ mod tests {
         let callback_selected = selected.clone();
         let callback_opened = opened.clone();
         let mut runtime = Runtime::new("page");
-        runtime.compose(320.0, 220.0, move |ui, _| {
+        for _ in 0..2 {
             let callback_selected = callback_selected.clone();
             let callback_opened = callback_opened.clone();
-            dropdown(ui, "quality")
-                .items(["Low", "Medium", "High"])
-                .open(true)
-                .on_change(move |index| callback_selected.set(index))
-                .on_open_change(move |next| callback_opened.set(next))
-                .build();
-        });
+            runtime.compose(320.0, 220.0, move |ui, _| {
+                let callback_selected = callback_selected.clone();
+                let callback_opened = callback_opened.clone();
+                dropdown(ui, "quality")
+                    .items(["Low", "Medium", "High"])
+                    .open(true)
+                    .on_change(move |index| callback_selected.set(index))
+                    .on_open_change(move |next| callback_opened.set(next))
+                    .build();
+            });
+        }
 
         runtime.update_pointer(PointerEvent::pressed_at(16.0, 100.0));
         runtime.update_pointer(PointerEvent::released_at(16.0, 100.0));

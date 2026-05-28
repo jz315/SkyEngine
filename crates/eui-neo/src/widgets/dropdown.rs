@@ -6,7 +6,7 @@ use std::rc::Rc;
 use crate::Color;
 
 use super::super::{
-    AnimProperty, HorizontalAlign, LayoutRect, Response, Shadow, Signal, Transition, Ui,
+    AnimProperty, HorizontalAlign, Response, Shadow, Signal, Transition, Ui,
     VerticalAlign,
 };
 use super::popover::{popover, PopoverPlacement};
@@ -280,7 +280,6 @@ impl<'ui> DropdownBuilder<'ui> {
         popover(self.ui, format!("{id}.popup"))
             .open(self.open)
             .anchor(format!("{id}.field"))
-            .fallback_anchor(LayoutRect::new(0.0, 0.0, self.width, self.height))
             .placement(PopoverPlacement::BottomStart)
             .gap(popup_gap)
             .size(self.width, popup_height)
