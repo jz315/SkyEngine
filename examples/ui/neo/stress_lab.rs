@@ -2756,6 +2756,83 @@ mod tests {
     }
 
     #[test]
+    fn interaction_scroll_moves_active_and_live_probe_cards() {
+        let state = State::new(LabState::default());
+        let mut driver = UiTestDriver::new("stress-lab", WINDOW_W as f32, WINDOW_H as f32);
+
+        compose_lab_driver(&mut driver, &state, Vec::new());
+        compose_lab_driver(&mut driver, &state, state.take_dirty_ids());
+        driver.runtime_mut().tick_animations(0.0);
+
+        let active_before = driver
+            .frame("interactions.locked")
+            .expect("active card should exist before scroll");
+        let probe_before = driver
+            .frame("interactions.secret")
+            .expect("live probe card should exist before scroll");
+        let active_draw_before = rect_draw(driver.runtime(), "interactions.locked.bg")
+            .expect("active card background should draw before scroll")
+            .frame;
+        let probe_draw_before = rect_draw(driver.runtime(), "interactions.secret.bg")
+            .expect("live probe background should draw before scroll")
+            .frame;
+
+        let trace = driver
+            .scroll("interactions.scroll.viewport", 0.0, -2.0)
+            .expect("interaction viewport should receive scroll");
+        let dirty_ids = state.take_dirty_ids();
+        eprintln!(
+            "[interaction scroll] trace={trace}\n  dirty={dirty_ids:?}\n  offset={}",
+            state.read(|state| state.interaction_scroll)
+        );
+        assert!(
+            dirty_ids
+                .iter()
+                .any(|id| id == "stress-lab.interactions.scroll"),
+            "scrolling should dirty the interaction scroll owner: dirty={dirty_ids:?} trace={trace}"
+        );
+
+        compose_lab_driver(&mut driver, &state, dirty_ids);
+        driver.runtime_mut().tick_animations(0.0);
+
+        let active_after = driver
+            .frame("interactions.locked")
+            .expect("active card should exist after scroll");
+        let probe_after = driver
+            .frame("interactions.secret")
+            .expect("live probe card should exist after scroll");
+        let active_draw_after = rect_draw(driver.runtime(), "interactions.locked.bg")
+            .expect("active card background should draw after scroll")
+            .frame;
+        let probe_draw_after = rect_draw(driver.runtime(), "interactions.secret.bg")
+            .expect("live probe background should draw after scroll")
+            .frame;
+        let snapshot = driver.runtime().debug_snapshot_current();
+        eprintln!(
+            "[interaction scroll] active target {active_before:?} -> {active_after:?}, draw {active_draw_before:?} -> {active_draw_after:?}\n  probe target {probe_before:?} -> {probe_after:?}, draw {probe_draw_before:?} -> {probe_draw_after:?}\n  normalized={:?} layout={:?}",
+            snapshot.normalized_dirty_ids,
+            snapshot.layout_mode
+        );
+
+        assert!(
+            active_after.y < active_before.y - 1.0,
+            "active card target frame should move upward when scrolled down: before={active_before:?} after={active_after:?} snapshot={snapshot:?}"
+        );
+        assert!(
+            probe_after.y < probe_before.y - 1.0,
+            "live probe target frame should move upward when scrolled down: before={probe_before:?} after={probe_after:?} snapshot={snapshot:?}"
+        );
+        assert!(
+            active_draw_after.y < active_draw_before.y - 1.0,
+            "active card draw frame should move upward when scrolled down: before={active_draw_before:?} after={active_draw_after:?} snapshot={snapshot:?}"
+        );
+        assert!(
+            probe_draw_after.y < probe_draw_before.y - 1.0,
+            "live probe draw frame should move upward when scrolled down: before={probe_draw_before:?} after={probe_draw_after:?} snapshot={snapshot:?}"
+        );
+    }
+
+    #[test]
     fn live_ids_rebuild_without_state_dirty() {
         let state = State::new(LabState::default());
         let mut runtime = Runtime::new("stress-lab");

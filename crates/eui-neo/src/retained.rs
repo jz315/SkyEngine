@@ -146,7 +146,10 @@ pub(crate) fn structurally_incompatible_dirty_scopes(
     scopes
 }
 
-pub(crate) fn normalize_dirty_scopes(dirty_scopes: &ScopeSet) -> ScopeSet {
+pub(crate) fn normalize_dirty_scopes_with_roots(
+    dirty_scopes: &ScopeSet,
+    previous_scope_roots: &ScopeRoots,
+) -> ScopeSet {
     let mut scopes: Vec<_> = dirty_scopes.iter().cloned().collect();
     scopes.sort_by(|left, right| {
         scope_depth(left)
@@ -155,18 +158,42 @@ pub(crate) fn normalize_dirty_scopes(dirty_scopes: &ScopeSet) -> ScopeSet {
     });
 
     let mut normalized = ScopeSet::default();
-    let mut kept: Vec<ScopeId> = Vec::new();
     for scope in scopes {
-        if kept
-            .iter()
-            .any(|ancestor| scope == *ancestor || is_resolved_id(&scope, ancestor))
+        if dirty_scopes.iter().any(|candidate| {
+            candidate != &scope
+                && dirty_scope_contains(candidate, &scope, previous_scope_roots)
+        })
         {
             continue;
         }
-        kept.push(scope.clone());
         normalized.insert(scope);
     }
     normalized
+}
+
+fn dirty_scope_contains(candidate: &str, scope: &str, previous_scope_roots: &ScopeRoots) -> bool {
+    if scope == candidate || is_resolved_id(scope, candidate) {
+        return true;
+    }
+    let Some(scope_roots) = previous_scope_roots.get(scope) else {
+        return false;
+    };
+    let Some(candidate_roots) = previous_scope_roots.get(candidate) else {
+        return false;
+    };
+    scope_roots.iter().any(|scope_root| {
+        candidate_roots
+            .iter()
+            .any(|candidate_root| element_contains_id(candidate_root, &scope_root.id))
+    })
+}
+
+fn element_contains_id(element: &Element, id: &str) -> bool {
+    element.id == id
+        || element
+            .children
+            .iter()
+            .any(|child| element_contains_id(child, id))
 }
 
 fn dirty_scope_is_structurally_compatible(
@@ -216,7 +243,9 @@ fn scope_depth(scope: &str) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_dirty_scopes, ScopeSet};
+    use crate::{Element, ElementKind};
+
+    use super::{normalize_dirty_scopes_with_roots, ScopeRoots, ScopeSet};
 
     fn scopes(ids: &[&str]) -> ScopeSet {
         ids.iter().map(|id| (*id).to_string()).collect()
@@ -224,13 +253,16 @@ mod tests {
 
     #[test]
     fn dirty_normalization_removes_descendants_covered_by_dirty_ancestors() {
-        let normalized = normalize_dirty_scopes(&scopes(&[
-            "page.panel.child.live",
-            "page.panel",
-            "page.sidebar.item",
-            "page.sidebar",
-            "page.other",
-        ]));
+        let normalized = normalize_dirty_scopes_with_roots(
+            &scopes(&[
+                "page.panel.child.live",
+                "page.panel",
+                "page.sidebar.item",
+                "page.sidebar",
+                "page.other",
+            ]),
+            &ScopeRoots::default(),
+        );
 
         assert_eq!(
             sorted(&normalized),
@@ -244,11 +276,14 @@ mod tests {
 
     #[test]
     fn dirty_normalization_keeps_siblings_and_prefix_lookalikes() {
-        let normalized = normalize_dirty_scopes(&scopes(&[
-            "page.panel",
-            "page.panel_extra.child",
-            "page.panel.child",
-        ]));
+        let normalized = normalize_dirty_scopes_with_roots(
+            &scopes(&[
+                "page.panel",
+                "page.panel_extra.child",
+                "page.panel.child",
+            ]),
+            &ScopeRoots::default(),
+        );
 
         assert_eq!(
             sorted(&normalized),
@@ -256,6 +291,33 @@ mod tests {
                 "page.panel".to_string(),
                 "page.panel_extra.child".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn dirty_normalization_removes_layout_descendants_from_retained_roots() {
+        let mut scroll = Element::new(ElementKind::Stack, "page.interactions.scroll");
+        let mut content = Element::new(ElementKind::Column, "page.interactions.scroll.content");
+        content
+            .children
+            .push(Element::new(ElementKind::Row, "page.interactions.cards"));
+        scroll.children.push(content);
+
+        let mut roots = ScopeRoots::default();
+        roots.insert("page.interactions.scroll".to_string(), vec![scroll]);
+        roots.insert(
+            "page.interactions.cards".to_string(),
+            vec![Element::new(ElementKind::Row, "page.interactions.cards")],
+        );
+
+        let normalized = normalize_dirty_scopes_with_roots(
+            &scopes(&["page.interactions.cards", "page.interactions.scroll"]),
+            &roots,
+        );
+
+        assert_eq!(
+            sorted(&normalized),
+            vec!["page.interactions.scroll".to_string()]
         );
     }
 

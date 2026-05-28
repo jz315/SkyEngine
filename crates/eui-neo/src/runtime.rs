@@ -12,7 +12,7 @@ use super::event::InteractionState;
 use super::fonts::FontRef;
 use super::layout::{layout_element_in_frame_with_text_system, layout_roots_with_text_system};
 use super::retained::{
-    begin_scope_frame, normalize_dirty_scopes, scope_contains_id, scope_parent,
+    begin_scope_frame, normalize_dirty_scopes_with_roots, scope_contains_id, scope_parent,
     structurally_incompatible_dirty_scopes, FullLayoutReason, LayoutMode, RetainedComposeAction,
     RetainedComposeEvent, RetainedComposeStats, ScopeRoots, ScopeSet,
 };
@@ -598,7 +598,10 @@ impl Runtime {
             retained_events,
         ) = ui.into_parts();
         let layout_start = profile.then(Instant::now);
-        let normalized_dirty_ids = normalize_dirty_scopes(&scope_frame.dirty_scopes);
+        let normalized_dirty_ids = normalize_dirty_scopes_with_roots(
+            &scope_frame.dirty_scopes,
+            &scope_frame.previous_scope_roots,
+        );
         let partial_layout_blocker = scope_frame
             .partial_layout_blocker(&normalized_dirty_ids)
             .or_else(|| {
