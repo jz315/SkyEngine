@@ -77,14 +77,17 @@ pub(crate) fn begin_scope_frame(
 }
 
 impl ScopeFrame {
-    pub fn partial_layout_blocker(&self) -> Option<FullLayoutReason> {
+    pub fn partial_layout_blocker(
+        &self,
+        layout_dirty_scopes: &ScopeSet,
+    ) -> Option<FullLayoutReason> {
         if !self.can_reuse_scopes {
             return Some(FullLayoutReason::ScopeReuseUnavailable);
         }
-        if self.dirty_scopes.is_empty() {
+        if layout_dirty_scopes.is_empty() {
             return Some(FullLayoutReason::NoDirtyScopes);
         }
-        self.dirty_scopes.iter().find_map(|scope| {
+        layout_dirty_scopes.iter().find_map(|scope| {
             (!self.previous_scope_roots.contains_key(scope)).then(|| {
                 FullLayoutReason::MissingPreviousScopeRoot {
                     scope: scope.clone(),
@@ -122,6 +125,29 @@ pub(crate) fn structurally_incompatible_dirty_scopes(
     scopes
 }
 
+pub(crate) fn normalize_dirty_scopes(dirty_scopes: &ScopeSet) -> ScopeSet {
+    let mut scopes: Vec<_> = dirty_scopes.iter().cloned().collect();
+    scopes.sort_by(|left, right| {
+        scope_depth(left)
+            .cmp(&scope_depth(right))
+            .then_with(|| left.cmp(right))
+    });
+
+    let mut normalized = ScopeSet::default();
+    let mut kept: Vec<ScopeId> = Vec::new();
+    for scope in scopes {
+        if kept
+            .iter()
+            .any(|ancestor| scope == *ancestor || is_resolved_id(&scope, ancestor))
+        {
+            continue;
+        }
+        kept.push(scope.clone());
+        normalized.insert(scope);
+    }
+    normalized
+}
+
 fn dirty_scope_is_structurally_compatible(
     scope: &str,
     previous_scope_roots: &ScopeRoots,
@@ -157,4 +183,64 @@ fn is_resolved_id(id: &str, parent: &str) -> bool {
     id.len() > parent.len()
         && id.starts_with(parent)
         && id.as_bytes().get(parent.len()) == Some(&b'.')
+}
+
+fn scope_depth(scope: &str) -> usize {
+    scope
+        .as_bytes()
+        .iter()
+        .filter(|byte| **byte == b'.')
+        .count()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_dirty_scopes, ScopeSet};
+
+    fn scopes(ids: &[&str]) -> ScopeSet {
+        ids.iter().map(|id| (*id).to_string()).collect()
+    }
+
+    #[test]
+    fn dirty_normalization_removes_descendants_covered_by_dirty_ancestors() {
+        let normalized = normalize_dirty_scopes(&scopes(&[
+            "page.panel.child.live",
+            "page.panel",
+            "page.sidebar.item",
+            "page.sidebar",
+            "page.other",
+        ]));
+
+        assert_eq!(
+            sorted(&normalized),
+            vec![
+                "page.other".to_string(),
+                "page.panel".to_string(),
+                "page.sidebar".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn dirty_normalization_keeps_siblings_and_prefix_lookalikes() {
+        let normalized = normalize_dirty_scopes(&scopes(&[
+            "page.panel",
+            "page.panel_extra.child",
+            "page.panel.child",
+        ]));
+
+        assert_eq!(
+            sorted(&normalized),
+            vec![
+                "page.panel".to_string(),
+                "page.panel_extra.child".to_string()
+            ]
+        );
+    }
+
+    fn sorted(scopes: &ScopeSet) -> Vec<String> {
+        let mut scopes: Vec<_> = scopes.iter().cloned().collect();
+        scopes.sort();
+        scopes
+    }
 }

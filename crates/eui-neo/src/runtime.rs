@@ -12,8 +12,8 @@ use super::event::InteractionState;
 use super::fonts::FontRef;
 use super::layout::{layout_element_in_frame_with_text_system, layout_roots_with_text_system};
 use super::retained::{
-    begin_scope_frame, structurally_incompatible_dirty_scopes, FullLayoutReason, LayoutMode,
-    ScopeComposeEvent, ScopeComposeStats, ScopeRoots, ScopeSet,
+    begin_scope_frame, normalize_dirty_scopes, structurally_incompatible_dirty_scopes,
+    FullLayoutReason, LayoutMode, ScopeComposeEvent, ScopeComposeStats, ScopeRoots, ScopeSet,
 };
 use super::skin::{NeoSkin, SkinRegistry};
 use super::text_measure::{DefaultTextSystem, TextSystem};
@@ -40,6 +40,7 @@ pub struct UiDebugSnapshot {
     pub frame_index: u64,
     pub screen: Screen,
     pub dirty_scopes: Vec<String>,
+    pub normalized_dirty_scopes: Vec<String>,
     pub live_scopes: Vec<String>,
     pub scope_events: Vec<ScopeComposeEvent>,
     pub scope_stats: ScopeComposeStats,
@@ -59,6 +60,7 @@ impl Default for UiDebugSnapshot {
             frame_index: 0,
             screen: Screen::default(),
             dirty_scopes: Vec::new(),
+            normalized_dirty_scopes: Vec::new(),
             live_scopes: Vec::new(),
             scope_events: Vec::new(),
             scope_stats: ScopeComposeStats::default(),
@@ -517,14 +519,17 @@ impl Runtime {
         let (mut roots, callbacks, mut scope_roots, live_scopes, mut scope_stats, scope_events) =
             ui.into_parts();
         let layout_start = profile.then(Instant::now);
-        let partial_layout_blocker = scope_frame.partial_layout_blocker().or_else(|| {
-            let scopes = structurally_incompatible_dirty_scopes(
-                &scope_frame.dirty_scopes,
-                &scope_frame.previous_scope_roots,
-                &scope_roots,
-            );
-            (!scopes.is_empty()).then_some(FullLayoutReason::StructureChanged { scopes })
-        });
+        let normalized_dirty_scopes = normalize_dirty_scopes(&scope_frame.dirty_scopes);
+        let partial_layout_blocker = scope_frame
+            .partial_layout_blocker(&normalized_dirty_scopes)
+            .or_else(|| {
+                let scopes = structurally_incompatible_dirty_scopes(
+                    &normalized_dirty_scopes,
+                    &scope_frame.previous_scope_roots,
+                    &scope_roots,
+                );
+                (!scopes.is_empty()).then_some(FullLayoutReason::StructureChanged { scopes })
+            });
         let partial_layout = partial_layout_blocker.is_none();
         let mut used_partial_layout = false;
         if partial_layout {
@@ -532,7 +537,7 @@ impl Runtime {
                 copy_previous_frames(&mut roots, previous_roots_for_layout);
                 used_partial_layout = layout_dirty_scopes_with_text_system(
                     &mut roots,
-                    &scope_frame.dirty_scopes,
+                    &normalized_dirty_scopes,
                     &scope_frame.previous_scope_roots,
                     self.text_system.as_mut(),
                 );
@@ -572,6 +577,7 @@ impl Runtime {
             frame_index: self.frame_index,
             screen: self.screen,
             dirty_scopes: sorted_scope_set(&scope_frame.dirty_scopes),
+            normalized_dirty_scopes: sorted_scope_set(&normalized_dirty_scopes),
             live_scopes: sorted_scope_set(&self.live_scopes),
             scope_events,
             scope_stats: self.scope_stats,
@@ -2129,6 +2135,97 @@ mod tests {
         assert_eq!(runtime.scope_compose_stats().reused, 1);
         assert!(runtime.scope_compose_stats().partial_layout);
         assert!(!runtime.scope_compose_stats().full_layout);
+    }
+
+    #[test]
+    fn dirty_parent_normalizes_live_child_for_layout_but_still_rebuilds_child() {
+        let mut runtime = Runtime::new("page");
+        let parent_builds = Rc::new(Cell::new(0));
+        let child_builds = Rc::new(Cell::new(0));
+
+        let compose = |runtime: &mut Runtime, dirty_scopes: Vec<String>| {
+            let parent_builds = parent_builds.clone();
+            let child_builds = child_builds.clone();
+            runtime.compose_scoped(240.0, 80.0, dirty_scopes, move |ui, _| {
+                ui.scope("parent", |ui| {
+                    parent_builds.set(parent_builds.get() + 1);
+                    ui.row("row").size(240.0, 40.0).content(|ui| {
+                        ui.live_scope("child", |ui| {
+                            child_builds.set(child_builds.get() + 1);
+                            ui.text("label")
+                                .size(100.0, 40.0)
+                                .text(format!("child {}", child_builds.get()))
+                                .build();
+                        });
+                    });
+                });
+            });
+        };
+
+        compose(&mut runtime, Vec::new());
+        compose(&mut runtime, vec!["page.parent".to_string()]);
+
+        assert_eq!(parent_builds.get(), 2);
+        assert_eq!(child_builds.get(), 2);
+        assert_eq!(runtime.find("label").unwrap().text, "child 2");
+        assert_eq!(
+            runtime.debug_snapshot().dirty_scopes,
+            vec!["page.parent".to_string(), "page.parent.child".to_string()]
+        );
+        assert_eq!(
+            runtime.debug_snapshot().normalized_dirty_scopes,
+            vec!["page.parent".to_string()]
+        );
+        assert!(runtime.scope_compose_stats().partial_layout);
+    }
+
+    #[test]
+    fn live_child_inside_dirty_scroll_parent_tracks_scroll_offset() {
+        let mut runtime = Runtime::new("page");
+        let live_builds = Rc::new(Cell::new(0));
+
+        let compose = |runtime: &mut Runtime, dirty_scopes: Vec<String>, offset: f32| {
+            let live_builds = live_builds.clone();
+            runtime.compose_scoped(240.0, 120.0, dirty_scopes, move |ui, _| {
+                ui.scope("panel", |ui| {
+                    ui.scroll_y("scroll")
+                        .size(200.0, 80.0)
+                        .content_height(180.0)
+                        .offset(offset)
+                        .content(|ui| {
+                            ui.stack("top").size(Size::fill(), 60.0).build();
+                            ui.live_scope("secret.live", |ui| {
+                                live_builds.set(live_builds.get() + 1);
+                                ui.stack("secret").size(Size::fill(), 40.0).build();
+                            });
+                        });
+                });
+            });
+        };
+
+        compose(&mut runtime, Vec::new(), 0.0);
+        let first = runtime.find("secret").unwrap().frame;
+
+        compose(&mut runtime, vec!["page.panel".to_string()], 30.0);
+        let second = runtime.find("secret").unwrap().frame;
+
+        assert_eq!(live_builds.get(), 2);
+        assert!(
+            (second.y - (first.y - 30.0)).abs() < 0.001,
+            "live child should remain attached to scroll content: first={first:?} second={second:?}"
+        );
+        assert_eq!(
+            runtime.debug_snapshot().dirty_scopes,
+            vec![
+                "page.panel".to_string(),
+                "page.panel.secret.live".to_string()
+            ]
+        );
+        assert_eq!(
+            runtime.debug_snapshot().normalized_dirty_scopes,
+            vec!["page.panel".to_string()]
+        );
+        assert!(runtime.scope_compose_stats().partial_layout);
     }
 
     #[test]
