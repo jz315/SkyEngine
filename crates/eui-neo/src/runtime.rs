@@ -1140,8 +1140,10 @@ impl Runtime {
         self.frame_targets.retain(|_, target| target.seen);
 
         let active = self.animations.values().any(ElementAnimation::is_active);
-        if changed || active {
+        if changed {
             self.mark_render_dirty();
+        } else if active {
+            self.request_render();
         }
         changed
     }
@@ -3523,6 +3525,37 @@ mod tests {
 
         assert!((bar.frame.width - 60.0).abs() < 0.001);
         assert!(runtime.needs_render());
+    }
+
+    #[test]
+    fn active_animation_without_value_change_keeps_draw_list_cache() {
+        let mut runtime = Runtime::new("demo");
+        runtime.compose(200.0, 100.0, |ui, _| {
+            ui.rect("bar")
+                .size(10.0, 10.0)
+                .transition(Transition::ease(1.0, Ease::Linear))
+                .animate(AnimProperty::FRAME)
+                .build();
+        });
+        runtime.tick_animations(0.0);
+        runtime.mark_rendered();
+
+        runtime.compose(200.0, 100.0, |ui, _| {
+            ui.rect("bar")
+                .size(110.0, 10.0)
+                .transition(Transition::ease(1.0, Ease::Linear))
+                .animate(AnimProperty::FRAME)
+                .build();
+        });
+        assert!(runtime.tick_animations(0.5));
+        let first = runtime.draw_list();
+        runtime.mark_rendered();
+
+        assert!(!runtime.tick_animations(0.0));
+        assert!(runtime.needs_render());
+        let second = runtime.draw_list();
+
+        assert_eq!(first.revision(), second.revision());
     }
 
     #[test]
