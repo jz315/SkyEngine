@@ -2162,7 +2162,7 @@ fn refresh_scope_roots_from_tree(
     for elements in scope_roots.values_mut() {
         for element in elements {
             if let Some(updated) = elements_by_id.get(element.id.as_str()) {
-                sync_layout_frames_or_replace(element, updated);
+                refresh_retained_root_layout_frames(element, updated);
             }
         }
     }
@@ -2178,7 +2178,10 @@ fn collect_elements_by_id<'a>(
     }
 }
 
-fn sync_layout_frames_or_replace(element: &mut Element, updated: &Element) {
+fn refresh_retained_root_layout_frames(element: &mut Element, updated: &Element) {
+    // Layout mutates only Element::frame. Retained scope roots keep the same
+    // visual/callback data unless their structure changed, so refresh frames
+    // in place and fall back to replacement only when the tree no longer matches.
     if element.kind != updated.kind
         || element.id != updated.id
         || element.children.len() != updated.children.len()
@@ -2188,7 +2191,7 @@ fn sync_layout_frames_or_replace(element: &mut Element, updated: &Element) {
     }
     element.frame = updated.frame;
     for (child, updated_child) in element.children.iter_mut().zip(&updated.children) {
-        sync_layout_frames_or_replace(child, updated_child);
+        refresh_retained_root_layout_frames(child, updated_child);
     }
 }
 
