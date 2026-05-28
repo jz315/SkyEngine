@@ -2157,12 +2157,38 @@ fn refresh_scope_roots_from_tree(
     scope_roots: &mut FxHashMap<String, Vec<Element>>,
     roots: &[Element],
 ) {
+    let mut elements_by_id = FxHashMap::default();
+    collect_elements_by_id(roots, &mut elements_by_id);
     for elements in scope_roots.values_mut() {
         for element in elements {
-            if let Some(updated) = find_element_in_slice(roots, &element.id) {
-                *element = updated.clone();
+            if let Some(updated) = elements_by_id.get(element.id.as_str()) {
+                sync_layout_frames_or_replace(element, updated);
             }
         }
+    }
+}
+
+fn collect_elements_by_id<'a>(
+    elements: &'a [Element],
+    index: &mut FxHashMap<&'a str, &'a Element>,
+) {
+    for element in elements {
+        index.entry(element.id.as_str()).or_insert(element);
+        collect_elements_by_id(&element.children, index);
+    }
+}
+
+fn sync_layout_frames_or_replace(element: &mut Element, updated: &Element) {
+    if element.kind != updated.kind
+        || element.id != updated.id
+        || element.children.len() != updated.children.len()
+    {
+        *element = updated.clone();
+        return;
+    }
+    element.frame = updated.frame;
+    for (child, updated_child) in element.children.iter_mut().zip(&updated.children) {
+        sync_layout_frames_or_replace(child, updated_child);
     }
 }
 
@@ -2597,10 +2623,12 @@ mod tests {
     use crate::widgets::{button, panel, text};
     use crate::DirtyReason;
     use crate::{
-        Align, AnimProperty, Ease, FontRef, FrameInput, FullLayoutReason, HorizontalAlign,
-        KeyboardEvent, LayoutMode, LayoutRect, PointerEvent, RetainedComposeAction, Screen,
-        ScrollEvent, Size, State, TextMeasure, TextMeasureRequest, TextSystem, Transition,
+        Align, AnimProperty, Ease, Element, ElementKind, FontRef, FrameInput, FullLayoutReason,
+        HorizontalAlign, KeyboardEvent, LayoutMode, LayoutRect, PointerEvent,
+        RetainedComposeAction, Screen, ScrollEvent, Size, State, TextMeasure, TextMeasureRequest,
+        TextSystem, Transition,
     };
+    use rustc_hash::FxHashMap;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use std::time::Duration;
@@ -2622,6 +2650,36 @@ mod tests {
         assert!(runtime.find("title").is_some());
         assert!(runtime.needs_render());
         assert!(runtime.full_redraw());
+    }
+
+    #[test]
+    fn refresh_scope_roots_updates_from_current_tree_by_id() {
+        let mut root = Element::new(ElementKind::Stack, "page.root");
+        let mut child = Element::new(ElementKind::Stack, "page.child");
+        child.frame = LayoutRect::new(10.0, 20.0, 30.0, 40.0);
+        let mut grandchild = Element::new(ElementKind::Rect, "page.grandchild");
+        grandchild.frame = LayoutRect::new(11.0, 22.0, 33.0, 44.0);
+        child.children.push(grandchild);
+        root.children.push(child);
+
+        let mut stale_child = Element::new(ElementKind::Stack, "page.child");
+        stale_child.frame = LayoutRect::new(0.0, 0.0, 1.0, 1.0);
+        stale_child
+            .children
+            .push(Element::new(ElementKind::Rect, "page.grandchild"));
+        let mut scope_roots = FxHashMap::default();
+        scope_roots.insert("page.child".to_string(), vec![stale_child]);
+
+        super::refresh_scope_roots_from_tree(&mut scope_roots, &[root]);
+
+        assert_eq!(
+            scope_roots["page.child"][0].frame,
+            LayoutRect::new(10.0, 20.0, 30.0, 40.0)
+        );
+        assert_eq!(
+            scope_roots["page.child"][0].children[0].frame,
+            LayoutRect::new(11.0, 22.0, 33.0, 44.0)
+        );
     }
 
     #[test]
