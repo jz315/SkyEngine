@@ -560,13 +560,19 @@ impl Runtime {
         compose: impl FnOnce(&mut Ui, Screen),
     ) {
         let profile = neo_profile_enabled();
+        let debug_trace = neo_debug_trace_enabled();
         let scope_profile = neo_scope_profile_enabled();
+        let diagnostics_enabled = neo_diagnostics_enabled() || debug_trace || scope_profile;
         let timed = profile || scope_profile;
         let total_start = timed.then(Instant::now);
         self.needs_compose = false;
         let screen = Screen { width, height };
         let can_reuse_scopes = dirty_ids.is_some() && self.screen == screen;
-        let previous_clock_ids = self.clock_ids.clone();
+        let previous_clock_ids = if diagnostics_enabled {
+            self.clock_ids.clone()
+        } else {
+            ScopeSet::default()
+        };
         let scope_frame_start = timed.then(Instant::now);
         let scope_frame = begin_scope_frame(
             can_reuse_scopes,
@@ -586,6 +592,7 @@ impl Runtime {
         ui.set_focused_id(self.focused_id.clone());
         ui.set_clock(self.clock_seconds, self.frame_index);
         ui.set_profile_timing(timed);
+        ui.set_diagnostics_enabled(diagnostics_enabled);
         let ui_setup_ms = elapsed_ms(ui_setup_start);
         let previous_roots_start = timed.then(Instant::now);
         let previous_roots = std::mem::take(&mut self.roots);
@@ -705,55 +712,76 @@ impl Runtime {
         self.retained_stats = retained_stats;
         self.frame_index = self.frame_index.saturating_add(1);
         let commit_state_ms = elapsed_ms(commit_state_start);
-        let element_debug_start = timed.then(Instant::now);
-        let element_debug_records = collect_element_debug_records(
-            &self.roots,
-            &self.scope_roots,
-            &self.callbacks,
-            &self.animations,
-        );
+        let element_debug_start = (timed && diagnostics_enabled).then(Instant::now);
+        let element_debug_records = if diagnostics_enabled {
+            collect_element_debug_records(
+                &self.roots,
+                &self.scope_roots,
+                &self.callbacks,
+                &self.animations,
+            )
+        } else {
+            Vec::new()
+        };
         let element_debug_ms = elapsed_ms(element_debug_start);
-        let scope_debug_start = timed.then(Instant::now);
-        let scope_debug_records = collect_scope_debug_records(
-            &self.scope_roots,
-            &previous_scope_roots,
-            &input_dirty_scopes,
-            &live_dirty_scopes,
-            &previous_clock_ids,
-            &dirty_scopes,
-            &normalized_dirty_ids,
-            &element_debug_records,
-            &retained_events,
-        );
+        let scope_debug_start = (timed && diagnostics_enabled).then(Instant::now);
+        let scope_debug_records = if diagnostics_enabled {
+            collect_scope_debug_records(
+                &self.scope_roots,
+                &previous_scope_roots,
+                &input_dirty_scopes,
+                &live_dirty_scopes,
+                &previous_clock_ids,
+                &dirty_scopes,
+                &normalized_dirty_ids,
+                &element_debug_records,
+                &retained_events,
+            )
+        } else {
+            Vec::new()
+        };
         let scope_debug_ms = elapsed_ms(scope_debug_start);
-        let snapshot_start = timed.then(Instant::now);
-        self.debug_snapshot = UiDebugSnapshot {
-            frame_index: self.frame_index,
-            screen: self.screen,
-            dirty_ids: sorted_scope_set(&dirty_scopes),
-            normalized_dirty_ids: sorted_scope_set(&normalized_dirty_ids),
-            live_ids: sorted_scope_set(&self.live_ids),
-            clock_ids: sorted_scope_set(&self.clock_ids),
-            retained: scope_debug_records,
-            elements: element_debug_records,
-            retained_events,
-            scope_compose: scope_compose_records,
-            retained_stats: self.retained_stats,
-            layout_mode,
-            needs_render: self.needs_render,
-            needs_compose: self.needs_compose,
-            full_redraw: self.full_redraw,
-            focused_id: self.focused_id.clone(),
-            active_id: self.active_id.clone(),
-            hovered_id: hovered_id(&self.interactions),
-            active_animation_count: self
-                .animations
-                .values()
-                .filter(|animation| animation.is_active())
-                .count(),
+        let snapshot_start = (timed && diagnostics_enabled).then(Instant::now);
+        if diagnostics_enabled {
+            self.debug_snapshot = UiDebugSnapshot {
+                frame_index: self.frame_index,
+                screen: self.screen,
+                dirty_ids: sorted_scope_set(&dirty_scopes),
+                normalized_dirty_ids: sorted_scope_set(&normalized_dirty_ids),
+                live_ids: sorted_scope_set(&self.live_ids),
+                clock_ids: sorted_scope_set(&self.clock_ids),
+                retained: scope_debug_records,
+                elements: element_debug_records,
+                retained_events,
+                scope_compose: scope_compose_records,
+                retained_stats: self.retained_stats,
+                layout_mode,
+                needs_render: self.needs_render,
+                needs_compose: self.needs_compose,
+                full_redraw: self.full_redraw,
+                focused_id: self.focused_id.clone(),
+                active_id: self.active_id.clone(),
+                hovered_id: hovered_id(&self.interactions),
+                active_animation_count: self
+                    .animations
+                    .values()
+                    .filter(|animation| animation.is_active())
+                    .count(),
+            };
+        } else {
+            self.debug_snapshot = UiDebugSnapshot {
+                frame_index: self.frame_index,
+                screen: self.screen,
+                retained_stats: self.retained_stats,
+                layout_mode,
+                needs_render: self.needs_render,
+                needs_compose: self.needs_compose,
+                full_redraw: self.full_redraw,
+                ..UiDebugSnapshot::default()
+            };
         };
         let snapshot_ms = elapsed_ms(snapshot_start);
-        if neo_debug_trace_enabled() {
+        if debug_trace {
             trace_debug_snapshot(&self.debug_snapshot);
         }
         if scope_profile {
@@ -1565,6 +1593,12 @@ fn neo_profile_enabled() -> bool {
 fn neo_debug_trace_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var_os("SKY_NEO_DEBUG_TRACE").is_some())
+}
+
+fn neo_diagnostics_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED
+        .get_or_init(|| cfg!(debug_assertions) || std::env::var_os("SKY_NEO_DIAGNOSTICS").is_some())
 }
 
 fn neo_scope_profile_enabled() -> bool {

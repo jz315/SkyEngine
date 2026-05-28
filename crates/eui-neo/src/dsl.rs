@@ -51,6 +51,7 @@ pub struct Ui {
     generated_id: usize,
     focused_id: Option<String>,
     retained_stats: RetainedComposeStats,
+    diagnostics_enabled: bool,
     profile_timing: bool,
     retained_lookup_ms: f32,
     retained_metadata_ms: f32,
@@ -168,6 +169,7 @@ impl Ui {
             generated_id: 0,
             focused_id: None,
             retained_stats: RetainedComposeStats::default(),
+            diagnostics_enabled: cfg!(debug_assertions),
             profile_timing: false,
             retained_lookup_ms: 0.0,
             retained_metadata_ms: 0.0,
@@ -305,6 +307,10 @@ impl Ui {
         self.profile_timing = enabled;
     }
 
+    pub(crate) fn set_diagnostics_enabled(&mut self, enabled: bool) {
+        self.diagnostics_enabled = enabled;
+    }
+
     pub(crate) fn with_root_layer<R>(&mut self, build: impl FnOnce(&mut Ui) -> R) -> R {
         let saved_path = std::mem::take(&mut self.path);
         let result = build(self);
@@ -421,19 +427,21 @@ impl Ui {
                     .transfer_for_elements(&mut self.previous_callbacks, &elements);
                 let children = children_at_path_mut(&mut self.roots, &self.path);
                 children.extend(elements.clone());
-                self.retained_events.push(RetainedComposeEvent {
-                    id: id.clone(),
-                    action: RetainedComposeAction::Reused,
-                });
-                self.scope_compose_records.push(ScopeComposeRecord {
-                    id: id.clone(),
-                    action: RetainedComposeAction::Reused,
-                    build_ms: 0.0,
-                    self_build_ms: 0.0,
-                    previous_roots: elements.len(),
-                    current_roots: elements.len(),
-                    element_count: count_elements(&elements),
-                });
+                if self.diagnostics_enabled {
+                    self.retained_events.push(RetainedComposeEvent {
+                        id: id.clone(),
+                        action: RetainedComposeAction::Reused,
+                    });
+                    self.scope_compose_records.push(ScopeComposeRecord {
+                        id: id.clone(),
+                        action: RetainedComposeAction::Reused,
+                        build_ms: 0.0,
+                        self_build_ms: 0.0,
+                        previous_roots: elements.len(),
+                        current_roots: elements.len(),
+                        element_count: count_elements(&elements),
+                    });
+                }
                 self.record_scope_roots(id, &elements);
                 self.retained_stats.reused += 1;
                 return;
@@ -456,22 +464,24 @@ impl Ui {
                 .expect("dirty owner stack should contain active scope");
         }
         let roots = children_at_path_mut(&mut self.roots, &self.path)[start..].to_vec();
-        self.retained_events.push(RetainedComposeEvent {
-            id: id.clone(),
-            action: RetainedComposeAction::Built,
-        });
-        self.scope_compose_records.push(ScopeComposeRecord {
-            id: id.clone(),
-            action: RetainedComposeAction::Built,
-            build_ms,
-            self_build_ms,
-            previous_roots: self
-                .previous_scope_roots
-                .get(&id)
-                .map_or(0, |roots| roots.len()),
-            current_roots: roots.len(),
-            element_count: count_elements(&roots),
-        });
+        if self.diagnostics_enabled {
+            self.retained_events.push(RetainedComposeEvent {
+                id: id.clone(),
+                action: RetainedComposeAction::Built,
+            });
+            self.scope_compose_records.push(ScopeComposeRecord {
+                id: id.clone(),
+                action: RetainedComposeAction::Built,
+                build_ms,
+                self_build_ms,
+                previous_roots: self
+                    .previous_scope_roots
+                    .get(&id)
+                    .map_or(0, |roots| roots.len()),
+                current_roots: roots.len(),
+                element_count: count_elements(&roots),
+            });
+        }
         self.record_scope_roots(id, &roots);
         self.retained_stats.built += 1;
     }
@@ -532,19 +542,21 @@ impl Ui {
             .transfer_for_elements(&mut self.previous_callbacks, &elements);
         let children = children_at_path_mut(&mut self.roots, &self.path);
         children.extend(elements.clone());
-        self.retained_events.push(RetainedComposeEvent {
-            id: id.to_string(),
-            action: RetainedComposeAction::Reused,
-        });
-        self.scope_compose_records.push(ScopeComposeRecord {
-            id: id.to_string(),
-            action: RetainedComposeAction::Reused,
-            build_ms: 0.0,
-            self_build_ms: 0.0,
-            previous_roots: elements.len(),
-            current_roots: elements.len(),
-            element_count: count_elements(&elements),
-        });
+        if self.diagnostics_enabled {
+            self.retained_events.push(RetainedComposeEvent {
+                id: id.to_string(),
+                action: RetainedComposeAction::Reused,
+            });
+            self.scope_compose_records.push(ScopeComposeRecord {
+                id: id.to_string(),
+                action: RetainedComposeAction::Reused,
+                build_ms: 0.0,
+                self_build_ms: 0.0,
+                previous_roots: elements.len(),
+                current_roots: elements.len(),
+                element_count: count_elements(&elements),
+            });
+        }
         self.record_scope_roots(id.to_string(), &elements);
         self.retained_stats.reused += 1;
         true
@@ -558,23 +570,25 @@ impl Ui {
         self_build_ms: f32,
     ) {
         let element = children_at_path_mut(&mut self.roots, &self.path)[index].clone();
-        self.retained_events.push(RetainedComposeEvent {
-            id: id.clone(),
-            action: RetainedComposeAction::Built,
-        });
         let roots = vec![element];
-        self.scope_compose_records.push(ScopeComposeRecord {
-            id: id.clone(),
-            action: RetainedComposeAction::Built,
-            build_ms,
-            self_build_ms,
-            previous_roots: self
-                .previous_scope_roots
-                .get(&id)
-                .map_or(0, |roots| roots.len()),
-            current_roots: roots.len(),
-            element_count: count_elements(&roots),
-        });
+        if self.diagnostics_enabled {
+            self.retained_events.push(RetainedComposeEvent {
+                id: id.clone(),
+                action: RetainedComposeAction::Built,
+            });
+            self.scope_compose_records.push(ScopeComposeRecord {
+                id: id.clone(),
+                action: RetainedComposeAction::Built,
+                build_ms,
+                self_build_ms,
+                previous_roots: self
+                    .previous_scope_roots
+                    .get(&id)
+                    .map_or(0, |roots| roots.len()),
+                current_roots: roots.len(),
+                element_count: count_elements(&roots),
+            });
+        }
         self.record_scope_roots(id, &roots);
         self.retained_stats.built += 1;
     }
