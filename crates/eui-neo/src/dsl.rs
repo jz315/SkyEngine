@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::time::Duration;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -38,6 +39,7 @@ pub struct Ui {
     scope_roots: ScopeRoots,
     dirty_scopes: ScopeSet,
     live_scopes: ScopeSet,
+    clock_scopes: ScopeSet,
     scope_reuse_enabled: bool,
     responses: FxHashMap<String, Response>,
     callbacks: UiCallbacks,
@@ -47,6 +49,24 @@ pub struct Ui {
     focused_id: Option<String>,
     scope_stats: ScopeComposeStats,
     scope_events: Vec<ScopeComposeEvent>,
+    clock_seconds: f64,
+    clock_frame_index: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClockTick {
+    pub seconds: f32,
+    pub frame_index: u64,
+    pub period: Duration,
+}
+
+#[derive(Debug)]
+pub struct UiClock<'ui> {
+    seconds: f64,
+    frame_index: u64,
+    owner: Option<String>,
+    live_scopes: &'ui mut ScopeSet,
+    clock_scopes: &'ui mut ScopeSet,
 }
 
 #[derive(Default)]
@@ -122,6 +142,7 @@ impl Ui {
             scope_roots: ScopeRoots::default(),
             dirty_scopes: FxHashSet::default(),
             live_scopes: FxHashSet::default(),
+            clock_scopes: FxHashSet::default(),
             scope_reuse_enabled: false,
             responses: FxHashMap::default(),
             callbacks: UiCallbacks::default(),
@@ -131,6 +152,8 @@ impl Ui {
             focused_id: None,
             scope_stats: ScopeComposeStats::default(),
             scope_events: Vec::new(),
+            clock_seconds: 0.0,
+            clock_frame_index: 0,
         }
     }
 
@@ -153,6 +176,7 @@ impl Ui {
         UiCallbacks,
         ScopeRoots,
         ScopeSet,
+        ScopeSet,
         ScopeComposeStats,
         Vec<ScopeComposeEvent>,
     ) {
@@ -161,6 +185,7 @@ impl Ui {
             self.callbacks,
             self.scope_roots,
             self.live_scopes,
+            self.clock_scopes,
             self.scope_stats,
             self.scope_events,
         )
@@ -251,6 +276,21 @@ impl Ui {
 
     pub(crate) fn set_focused_id(&mut self, id: Option<String>) {
         self.focused_id = id;
+    }
+
+    pub(crate) fn set_clock(&mut self, seconds: f64, frame_index: u64) {
+        self.clock_seconds = seconds.max(0.0);
+        self.clock_frame_index = frame_index;
+    }
+
+    pub fn clock(&mut self) -> UiClock<'_> {
+        UiClock {
+            seconds: self.clock_seconds,
+            frame_index: self.clock_frame_index,
+            owner: self.active_scope_id(),
+            live_scopes: &mut self.live_scopes,
+            clock_scopes: &mut self.clock_scopes,
+        }
     }
 
     pub fn row(&mut self, id: impl Into<String>) -> ElementBuilder<'_> {
@@ -502,6 +542,34 @@ fn children_at_path_mut<'a>(
         children_at_path_mut(&mut elements[index].children, rest)
     } else {
         elements
+    }
+}
+
+impl UiClock<'_> {
+    pub fn seconds(mut self) -> f32 {
+        self.register_dependency();
+        self.seconds as f32
+    }
+
+    pub fn frame_index(mut self) -> u64 {
+        self.register_dependency();
+        self.frame_index
+    }
+
+    pub fn every(mut self, period: Duration) -> ClockTick {
+        self.register_dependency();
+        ClockTick {
+            seconds: self.seconds as f32,
+            frame_index: self.frame_index,
+            period,
+        }
+    }
+
+    fn register_dependency(&mut self) {
+        if let Some(owner) = self.owner.as_ref() {
+            self.live_scopes.insert(owner.clone());
+            self.clock_scopes.insert(owner.clone());
+        }
     }
 }
 

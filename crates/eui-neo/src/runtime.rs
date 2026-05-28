@@ -42,6 +42,7 @@ pub struct UiDebugSnapshot {
     pub dirty_scopes: Vec<String>,
     pub normalized_dirty_scopes: Vec<String>,
     pub live_scopes: Vec<String>,
+    pub clock_scopes: Vec<String>,
     pub scope_events: Vec<ScopeComposeEvent>,
     pub scope_stats: ScopeComposeStats,
     pub layout_mode: LayoutMode,
@@ -62,6 +63,7 @@ impl Default for UiDebugSnapshot {
             dirty_scopes: Vec::new(),
             normalized_dirty_scopes: Vec::new(),
             live_scopes: Vec::new(),
+            clock_scopes: Vec::new(),
             scope_events: Vec::new(),
             scope_stats: ScopeComposeStats::default(),
             layout_mode: LayoutMode::Full(FullLayoutReason::ScopeReuseUnavailable),
@@ -171,6 +173,7 @@ pub struct Runtime {
     draw_cache: RefCell<CacheCell<DrawListCacheKey, super::draw::UiDrawList>>,
     scope_stats: ScopeComposeStats,
     frame_index: u64,
+    clock_seconds: f64,
     debug_snapshot: UiDebugSnapshot,
 }
 
@@ -298,6 +301,7 @@ impl Runtime {
             draw_cache: RefCell::new(CacheCell::default()),
             scope_stats: ScopeComposeStats::default(),
             frame_index: 0,
+            clock_seconds: 0.0,
             debug_snapshot: UiDebugSnapshot::default(),
         }
     }
@@ -497,6 +501,7 @@ impl Runtime {
         let mut ui = Ui::new(self.page_id.clone());
         ui.set_skins(self.skins.clone());
         ui.set_focused_id(self.focused_id.clone());
+        ui.set_clock(self.clock_seconds, self.frame_index);
         let previous_roots_start = profile.then(Instant::now);
         let previous_roots = std::mem::take(&mut self.roots);
         let previous_roots_for_layout =
@@ -516,8 +521,15 @@ impl Runtime {
         let build_start = profile.then(Instant::now);
         compose(&mut ui, screen);
         let build_ms = elapsed_ms(build_start);
-        let (mut roots, callbacks, mut scope_roots, live_scopes, mut scope_stats, scope_events) =
-            ui.into_parts();
+        let (
+            mut roots,
+            callbacks,
+            mut scope_roots,
+            live_scopes,
+            clock_scopes,
+            mut scope_stats,
+            scope_events,
+        ) = ui.into_parts();
         let layout_start = profile.then(Instant::now);
         let normalized_dirty_scopes = normalize_dirty_scopes(&scope_frame.dirty_scopes);
         let partial_layout_blocker = scope_frame
@@ -579,6 +591,7 @@ impl Runtime {
             dirty_scopes: sorted_scope_set(&scope_frame.dirty_scopes),
             normalized_dirty_scopes: sorted_scope_set(&normalized_dirty_scopes),
             live_scopes: sorted_scope_set(&self.live_scopes),
+            clock_scopes: sorted_scope_set(&clock_scopes),
             scope_events,
             scope_stats: self.scope_stats,
             layout_mode,
@@ -1024,6 +1037,7 @@ impl Runtime {
         keyboard: KeyboardEvent,
         delta_seconds: f32,
     ) -> bool {
+        self.clock_seconds += f64::from(delta_seconds.max(0.0));
         let mut changed = self.update_pointer(pointer);
         changed |= self.update_scroll(scroll);
         changed |= self.update_keyboard(keyboard);
@@ -1370,11 +1384,13 @@ fn neo_debug_trace_enabled() -> bool {
 
 fn trace_debug_snapshot(snapshot: &UiDebugSnapshot) {
     eprintln!(
-        "[eui-neo debug] frame={} layout={:?} dirty={:?} live={:?} built={} reused={} animations={} focused={:?} hovered={:?} active={:?}",
+        "[eui-neo debug] frame={} layout={:?} dirty={:?} normalized_dirty={:?} live={:?} clock={:?} built={} reused={} animations={} focused={:?} hovered={:?} active={:?}",
         snapshot.frame_index,
         snapshot.layout_mode,
         snapshot.dirty_scopes,
+        snapshot.normalized_dirty_scopes,
         snapshot.live_scopes,
+        snapshot.clock_scopes,
         snapshot.scope_stats.built,
         snapshot.scope_stats.reused,
         snapshot.active_animation_count,
@@ -1934,6 +1950,7 @@ mod tests {
     };
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
+    use std::time::Duration;
 
     #[test]
     fn runtime_composes_and_lays_out_tree() {
@@ -2135,6 +2152,66 @@ mod tests {
         assert_eq!(runtime.scope_compose_stats().reused, 1);
         assert!(runtime.scope_compose_stats().partial_layout);
         assert!(!runtime.scope_compose_stats().full_layout);
+    }
+
+    #[test]
+    fn clock_read_marks_active_scope_live_and_rebuilds_next_scoped_compose() {
+        let mut runtime = Runtime::new("page");
+        let builds = Rc::new(Cell::new(0));
+        let mut sampled_seconds = 0.0;
+
+        let compose =
+            |runtime: &mut Runtime, dirty_scopes: Vec<String>, sampled_seconds: &mut f32| {
+                let builds = builds.clone();
+                runtime.compose_scoped(240.0, 80.0, dirty_scopes, move |ui, _| {
+                    ui.scope("clocked", |ui| {
+                        builds.set(builds.get() + 1);
+                        let seconds = ui.clock().seconds();
+                        let tick = ui.clock().every(Duration::from_millis(250));
+                        assert_eq!(tick.period, Duration::from_millis(250));
+                        *sampled_seconds = seconds;
+                        ui.text("label")
+                            .size(100.0, 40.0)
+                            .text(format!("clock {seconds:.1}"))
+                            .build();
+                    });
+                    ui.scope("static", |ui| {
+                        ui.text("static.label")
+                            .size(100.0, 40.0)
+                            .text("static")
+                            .build();
+                    });
+                });
+            };
+
+        compose(&mut runtime, Vec::new(), &mut sampled_seconds);
+        assert_eq!(builds.get(), 1);
+        assert_eq!(sampled_seconds, 0.0);
+        assert_eq!(
+            runtime.debug_snapshot().clock_scopes,
+            vec!["page.clocked".to_string()]
+        );
+
+        runtime.update_events_and_timers(
+            PointerEvent::default(),
+            ScrollEvent::default(),
+            KeyboardEvent::default(),
+            0.5,
+        );
+        compose(&mut runtime, Vec::new(), &mut sampled_seconds);
+
+        assert_eq!(builds.get(), 2);
+        assert_eq!(sampled_seconds, 0.5);
+        assert_eq!(runtime.find("label").unwrap().text, "clock 0.5");
+        assert_eq!(
+            runtime.debug_snapshot().dirty_scopes,
+            vec!["page.clocked".to_string()]
+        );
+        assert_eq!(
+            runtime.debug_snapshot().clock_scopes,
+            vec!["page.clocked".to_string()]
+        );
+        assert!(runtime.scope_compose_stats().partial_layout);
     }
 
     #[test]

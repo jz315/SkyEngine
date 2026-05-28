@@ -32,7 +32,7 @@ pub use builder::{ElementBuilder, Response};
 pub use cache::{CacheAccess, CacheCell, CacheStats};
 pub use color::Color;
 pub use diagnostics::{UiDrawDebugCommand, UiDrawDebugTrace};
-pub use dsl::{Screen, Ui};
+pub use dsl::{ClockTick, Screen, Ui, UiClock};
 pub use element::{
     Align, Border, CenterMode, CursorShape, EdgeInsets, EdgeMode, Element, ElementKind, Gradient,
     GradientDirection, HorizontalAlign, ImageFit, ImageRef, ImageRefKind, Insets,
@@ -53,16 +53,16 @@ pub use text_measure::{DefaultTextSystem, TextMeasure, TextMeasureRequest, TextS
 pub mod prelude {
     pub use crate::widgets::PopoverPlacement;
     pub use crate::{
-        widgets, Align, AnimProperty, Border, ButtonSkin, CenterMode, CheckboxSkin, Color,
-        CursorShape, DefaultTextSystem, DragEvent, Ease, EdgeInsets, EdgeMode, FontRef, Frame,
-        FrameInput, FrameResult, FullLayoutReason, Gradient, GradientDirection, HorizontalAlign,
-        ImageFit, ImageRef, ImageRefKind, Insets, IntoPolygonPoints, KeyboardEvent, LayoutMode,
-        LayoutRect, Lerp, Motion, MotionPreset, NeoSkin, PanelSkin, PointerEvent, Response,
-        Runtime, ScopeComposeAction, ScopeComposeEvent, ScopeComposeStats, Screen, ScrollEvent,
-        Shadow, Signal, SignalKey, Size, SkinRegistry, Slice, SliderSkin, SmoothedValue,
-        SpringMotion, State, TargetPoint, TextMeasure, TextMeasureRequest, TextSystem, Transform,
-        Transition, Ui, UiActionTrace, UiClip, UiDebugSnapshot, UiDrawDebugCommand,
-        UiDrawDebugTrace, UiTestDriver, UiTestError, Vec2, VerticalAlign,
+        widgets, Align, AnimProperty, Border, ButtonSkin, CenterMode, CheckboxSkin, ClockTick,
+        Color, CursorShape, DefaultTextSystem, DragEvent, Ease, EdgeInsets, EdgeMode, FontRef,
+        Frame, FrameInput, FrameResult, FullLayoutReason, Gradient, GradientDirection,
+        HorizontalAlign, ImageFit, ImageRef, ImageRefKind, Insets, IntoPolygonPoints,
+        KeyboardEvent, LayoutMode, LayoutRect, Lerp, Motion, MotionPreset, NeoSkin, PanelSkin,
+        PointerEvent, Response, Runtime, ScopeComposeAction, ScopeComposeEvent, ScopeComposeStats,
+        Screen, ScrollEvent, Shadow, Signal, SignalKey, Size, SkinRegistry, Slice, SliderSkin,
+        SmoothedValue, SpringMotion, State, TargetPoint, TextMeasure, TextMeasureRequest,
+        TextSystem, Transform, Transition, Ui, UiActionTrace, UiClip, UiClock, UiDebugSnapshot,
+        UiDrawDebugCommand, UiDrawDebugTrace, UiTestDriver, UiTestError, Vec2, VerticalAlign,
     };
 }
 

@@ -693,7 +693,6 @@ fn draw_lab(
                         draw_interaction_panel(
                             ui,
                             state_store,
-                            time,
                             pointer_owned,
                             keyboard_owned,
                             body_height,
@@ -1315,7 +1314,6 @@ fn draw_motion_tab(ui: &mut Ui, wobble: f32, density: f32, alarm: f32, pulse: f3
 fn draw_interaction_panel(
     ui: &mut Ui,
     state_store: &State<LabState>,
-    time: f32,
     pointer_owned: bool,
     keyboard_owned: bool,
     height: f32,
@@ -1404,9 +1402,7 @@ fn draw_interaction_panel(
                         .content(|ui| {
                             action_card(ui, "interactions.locked", state_store, lock);
                             if reveal {
-                                ui.live_scope("interactions.secret.live", |ui| {
-                                    secret_card(ui, "interactions.secret", state_store, time);
-                                });
+                                secret_card(ui, "interactions.secret", state_store);
                             }
                         });
 
@@ -2004,7 +2000,8 @@ fn action_card(ui: &mut Ui, id: &str, state_store: &State<LabState>, locked: boo
         });
 }
 
-fn secret_card(ui: &mut Ui, id: &str, state_store: &State<LabState>, time: f32) {
+fn secret_card(ui: &mut Ui, id: &str, state_store: &State<LabState>) {
+    let time = ui.clock().seconds();
     ui.stack(id)
         .size(124.0, Size::fill())
         .grow(1.0)
@@ -2023,7 +2020,7 @@ fn secret_card(ui: &mut Ui, id: &str, state_store: &State<LabState>, time: f32) 
                 .content(|ui| {
                     ui.text(format!("{id}.title"))
                         .size(Size::fill(), 22.0)
-                        .text(format!("Secret {}", ((time * 2.0).sin() > 0.0) as i32))
+                        .text(format!("Live Probe {}", ((time * 2.0).sin() > 0.0) as i32))
                         .font_size(15.0)
                         .line_height(20.0)
                         .color(c(0.980, 0.920, 1.0, 0.94))
