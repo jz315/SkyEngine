@@ -1,6 +1,6 @@
 use sky_engine::ui::neo::widgets;
 use sky_engine::ui::neo::Color;
-use sky_engine::ui::neo::{Align, NeoState, Screen, Size, Ui};
+use sky_engine::ui::neo::{Align, Screen, Size, State, Ui};
 
 use crate::actions;
 use crate::locale;
@@ -18,7 +18,7 @@ const HEADER_H: f32 = 146.0;
 pub fn render_shell(
     ui: &mut Ui,
     screen: Screen,
-    state_store: &NeoState<AppModel>,
+    state_store: &State<AppModel>,
     model: &AppModel,
     runtime: RuntimeInfo,
 ) {
@@ -54,12 +54,7 @@ fn draw_background(ui: &mut Ui, width: f32, height: f32, app_theme: AppTheme) {
         .build();
 }
 
-fn draw_sidebar(
-    ui: &mut Ui,
-    state_store: &NeoState<AppModel>,
-    model: &AppModel,
-    app_theme: AppTheme,
-) {
+fn draw_sidebar(ui: &mut Ui, state_store: &State<AppModel>, model: &AppModel, app_theme: AppTheme) {
     ui.stack("control-center.sidebar")
         .size(SIDEBAR_W, Size::fill())
         .content(|ui| {
@@ -105,14 +100,20 @@ fn draw_sidebar(
                                 .build();
                         });
 
-                    ui.column("control-center.nav")
-                        .size(Size::fill(), 210.0)
-                        .gap(12.0)
-                        .content(|ui| {
-                            for page in Page::ALL {
-                                nav_button(ui, page, state_store, model, app_theme);
-                            }
-                        });
+                    ui.scope("control-center.nav.selection", |ui| {
+                        let mut nav = widgets::nav_group(ui, "control-center.nav")
+                            .size(Size::fill(), 210.0)
+                            .theme(app_theme.tokens)
+                            .signal(actions::page_signal(state_store));
+                        for page in Page::ALL {
+                            nav = nav.item_icon(
+                                page.index(),
+                                page.icon(),
+                                locale::page_label(model.locale, page),
+                            );
+                        }
+                        nav.build();
+                    });
 
                     components::spacer(ui, "control-center.sidebar.flex");
 
@@ -185,64 +186,11 @@ fn draw_sidebar(
         });
 }
 
-fn nav_button(
-    ui: &mut Ui,
-    page: Page,
-    state_store: &NeoState<AppModel>,
-    model: &AppModel,
-    app_theme: AppTheme,
-) {
-    let selected = model.page == page;
-    let base = if selected {
-        app_theme.tokens.primary
-    } else {
-        app_theme.panel_alt
-    };
-    let hover = if selected {
-        theme::mix(base, Color::WHITE, 0.12)
-    } else {
-        app_theme.tokens.surface_hover
-    };
-    let pressed = if selected {
-        theme::mix(base, Color::BLACK, 0.18)
-    } else {
-        app_theme.tokens.surface_active
-    };
-    let text_color = if selected || app_theme.tokens.dark {
-        Color::new(0.96, 0.98, 1.0, 1.0)
-    } else {
-        app_theme.tokens.text
-    };
-    let page_state = state_store.clone();
-
-    widgets::button(ui, format!("control-center.nav.{}", page.index()))
-        .size(Size::fill(), 58.0)
-        .icon_codepoint(page.icon())
-        .icon_size(16.0)
-        .text(locale::page_label(model.locale, page))
-        .font_size(16.0)
-        .colors(base, hover, pressed)
-        .text_color(text_color)
-        .icon_color(text_color)
-        .border(
-            1.0,
-            if selected {
-                theme::alpha(app_theme.tokens.primary, 0.62)
-            } else {
-                app_theme.shell_edge
-            },
-        )
-        .shadow(12.0, 0.0, 4.0, theme::alpha(Color::BLACK, 0.10))
-        .radius(18.0)
-        .on_click(move || actions::switch_page(&page_state, page))
-        .build();
-}
-
 fn draw_workspace(
     ui: &mut Ui,
     width: f32,
     height: f32,
-    state_store: &NeoState<AppModel>,
+    state_store: &State<AppModel>,
     model: &AppModel,
     runtime: RuntimeInfo,
     app_theme: AppTheme,
@@ -261,7 +209,7 @@ fn draw_workspace(
 
 fn draw_header(
     ui: &mut Ui,
-    state_store: &NeoState<AppModel>,
+    state_store: &State<AppModel>,
     model: &AppModel,
     runtime: RuntimeInfo,
     app_theme: AppTheme,

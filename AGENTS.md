@@ -118,6 +118,7 @@
 - Prefer `popover` for dropdowns, menus, pickers, and other floating UI that should not affect parent layout. Popovers are root-layer content anchored from the previous resolved frame, so call `.anchor(...)` with a stable element id and provide `.fallback_anchor(...)` when first-frame placement matters.
 - Use `.rounded_clip(radius)` or `.clip_to_radius()` when the visual shell is rounded and its children must be clipped to the same shape. `UiClip` carries the clip rect and radius through draw-list generation, hit testing, and `eui-neo-wgpu` primitive rendering.
 - Validate visible UI with SkyEngine's built-in screenshot path (`FrameContext::request_screenshot`) rather than browser screenshots.
+- When debugging retained `ui-neo` layout, do not trust a single-frame layout dump. Many failures are temporal: `live_scope`, animation, scroll widgets, and dirty-scope partial rebuilds can make a correct first frame drift on later frames. For suspected retained UI bugs, dump the same element across several frames and compare layout frame, active clip rect, draw-list command, renderer primitive/scissor data, and final screenshot pixels before assigning blame to layout, draw-list generation, or WGPU.
 - Keep the EUI-NEO port plan consolidated in `docs/plan/eui_neo_rust_ui_port_plan.md`; remove completed execution plans from that file instead of creating more plan files.
 
 ## Storage and Performance Notes

@@ -5,6 +5,7 @@
 //! visual transform semantics, then emits backend-neutral draw commands for
 //! host renderers.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use smallvec::SmallVec;
@@ -20,12 +21,14 @@ use super::{
 #[derive(Debug, Clone)]
 pub struct UiDrawList {
     commands: Arc<[UiDrawCommand]>,
+    revision: u64,
 }
 
 impl UiDrawList {
     pub fn new(commands: Vec<UiDrawCommand>) -> Self {
         Self {
             commands: commands.into(),
+            revision: next_draw_list_revision(),
         }
     }
 
@@ -33,8 +36,16 @@ impl UiDrawList {
         self.commands.as_ref()
     }
 
-    pub fn cache_key(&self) -> (usize, usize) {
-        (self.commands.as_ptr() as usize, self.commands.len())
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn cache_key(&self) -> (usize, usize, u64) {
+        (
+            self.commands.as_ptr() as usize,
+            self.commands.len(),
+            self.revision,
+        )
     }
 
     pub fn is_empty(&self) -> bool {
@@ -46,8 +57,14 @@ impl Default for UiDrawList {
     fn default() -> Self {
         Self {
             commands: Arc::from([]),
+            revision: 0,
         }
     }
+}
+
+fn next_draw_list_revision() -> u64 {
+    static NEXT_REVISION: AtomicU64 = AtomicU64::new(1);
+    NEXT_REVISION.fetch_add(1, Ordering::Relaxed)
 }
 
 /// Primitive-level draw command stream. `PushClip` / `PopClip` mirror EUI-NEO's
@@ -498,6 +515,14 @@ mod tests {
             .collect();
 
         assert_eq!(ids, ["page.low", "page.high"]);
+    }
+
+    #[test]
+    fn fresh_draw_lists_with_same_command_count_have_distinct_cache_keys() {
+        let first = super::UiDrawList::new(vec![UiDrawCommand::PopClip]);
+        let second = super::UiDrawList::new(vec![UiDrawCommand::PopClip]);
+
+        assert_ne!(first.cache_key(), second.cache_key());
     }
 
     #[test]

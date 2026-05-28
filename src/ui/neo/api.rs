@@ -2,7 +2,7 @@ use super::backend::NeoUiBackend;
 use super::config::{NeoUiConfig, NeoWindowConfig};
 use super::plugin::install_neo_ui_backend;
 use super::window::NeoAuxWindowClient;
-use super::{NeoSkin, Screen, Ui};
+use super::{NeoSkin, Screen, State, Ui};
 use crate::asset::Assets;
 use crate::ecs::World;
 
@@ -50,6 +50,36 @@ pub fn compose<R>(
         backend.compose(|ui, screen| {
             output = Some(f(ui, screen));
         });
+        output
+    })
+    .flatten()
+}
+
+/// Compose an EUI-NEO UI using dirty scopes from a [`State`].
+///
+/// Clean `Ui::scope` subtrees can be retained from the previous frame while
+/// dirty scopes are rebuilt from the supplied closure.
+pub fn compose_state<T, R>(
+    ctx: &mut crate::app::FrameContext<'_>,
+    state: &State<T>,
+    f: impl FnOnce(&mut Ui, Screen) -> R,
+) -> Option<R> {
+    if crate::ui::with_ui_backend_mut::<NeoUiBackend, _>(ctx.world, |_| ()).is_none() {
+        install_neo_ui_backend(ctx.world, NeoUiConfig::default());
+    }
+    let input = *ctx.input;
+    let logical_surface_size = ctx.logical_view_size().to_array();
+    let dt = ctx.dt;
+    let mut ui = ctx.ui();
+    ui.with_backend_mut::<NeoUiBackend, _>(|backend| {
+        backend.begin_frame_snapshot(&input, logical_surface_size, dt);
+        let mut output = None;
+        backend.compose_scoped(
+            || state.take_dirty_scopes(),
+            |ui, screen| {
+                output = Some(f(ui, screen));
+            },
+        );
         output
     })
     .flatten()

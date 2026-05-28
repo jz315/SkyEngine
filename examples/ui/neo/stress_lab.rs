@@ -16,7 +16,8 @@ use sky_engine::render::{
 };
 use sky_engine::ui::neo::widgets;
 use sky_engine::ui::neo::{
-    Align, AnimProperty, Binding, Color, Ease, HorizontalAlign, NeoState, Size, Transition, Ui,
+    Align, AnimProperty, Color, Ease, HorizontalAlign, NeoUiBackend, PointerEvent, Signal, Size,
+    State, Transition, Ui,
 };
 
 const WINDOW_W: u32 = 1180;
@@ -40,9 +41,13 @@ const STUTTER_MS: f32 = 33.3;
 struct NeoUiStressLab {
     time: f32,
     title_timer: f32,
-    state: NeoState<LabState>,
+    state: State<LabState>,
     frame_monitor: FrameMonitor,
     screenshot: ScreenshotProbe,
+    frame_index: u32,
+    auto_chart_clicked: bool,
+    layout_dumped: bool,
+    draw_dumped: bool,
 }
 
 #[derive(Debug)]
@@ -75,9 +80,13 @@ impl Default for NeoUiStressLab {
         Self {
             time: 0.0,
             title_timer: 1.0,
-            state: NeoState::new(LabState::default()),
+            state: State::new(LabState::default()),
             frame_monitor: FrameMonitor::default(),
             screenshot: ScreenshotProbe::default(),
+            frame_index: 0,
+            auto_chart_clicked: false,
+            layout_dumped: false,
+            draw_dumped: false,
         }
     }
 }
@@ -157,6 +166,7 @@ impl AppState for NeoUiStressLab {
         let signature = self.state.read(LabSignature::from_state);
         self.frame_monitor.observe_signature(signature);
         ctx.request_redraw();
+        self.frame_index = self.frame_index.saturating_add(1);
     }
 }
 
@@ -164,40 +174,99 @@ impl NeoUiStressLab {
     fn draw_ui(&mut self, ctx: &mut FrameContext<'_>, perf: &PerfSnapshot) {
         let time = self.time;
         let state_store = self.state.clone();
-        let snapshot = self.state.read(LabSnapshot::from_state);
         let pointer_owned = ctx.ui().wants_pointer();
         let keyboard_owned = ctx.ui().wants_keyboard();
+        let compose_state = state_store.clone();
 
-        sky_engine::ui::neo::compose(ctx, move |ui, screen| {
+        sky_engine::ui::neo::compose_state(ctx, &state_store, move |ui, screen| {
             draw_lab(
                 ui,
                 screen.width,
                 screen.height,
                 time,
-                &state_store,
-                &snapshot,
+                &compose_state,
                 perf,
                 pointer_owned,
                 keyboard_owned,
             );
         });
-    }
-}
 
-#[derive(Debug, Clone)]
-struct LabSnapshot {
-    clicks: u32,
-    mode: i32,
-    wobble: f32,
-    density: f32,
-    alarm: f32,
-    glass: bool,
-    lock: bool,
-    reveal: bool,
-    tab: i32,
-    segment: i32,
-    dropdown_selected: i32,
-    context_menu_position: [f32; 2],
+        if env_flag("SKY_NEO_LAB_DUMP_LAYOUT") && !self.layout_dumped {
+            let mut ui = ctx.ui();
+            ui.with_backend_mut::<NeoUiBackend, _>(|backend| {
+                dump_runtime_layout("stress_lab", backend.runtime());
+            });
+            self.layout_dumped = true;
+        }
+
+        if env_flag("SKY_NEO_LAB_DUMP_DRAW") && !self.draw_dumped {
+            let mut ui = ctx.ui();
+            ui.with_backend_mut::<NeoUiBackend, _>(|backend| {
+                dump_runtime_draw("stress_lab", backend.runtime());
+            });
+            self.draw_dumped = true;
+        }
+
+        if env_flag("SKY_NEO_LAB_TRACE_CHART") {
+            let tab = self.state.read(|state| state.tab);
+            if tab.rem_euclid(3) == 1 {
+                let mut ui = ctx.ui();
+                ui.with_backend_mut::<NeoUiBackend, _>(|backend| {
+                    trace_chart_runtime("stress_lab", tab, time, backend.runtime());
+                });
+            }
+        }
+
+        self.maybe_auto_click_chart(ctx);
+    }
+
+    fn maybe_auto_click_chart(&mut self, ctx: &mut FrameContext<'_>) {
+        let Some(click_frame) = env_u32("SKY_NEO_LAB_AUTO_CLICK_CHART_FRAME") else {
+            return;
+        };
+        if self.auto_chart_clicked || self.frame_index < click_frame {
+            return;
+        }
+
+        let mut clicked = false;
+        let mut missing = false;
+        let mut ui = ctx.ui();
+        ui.with_backend_mut::<NeoUiBackend, _>(|backend| {
+            let target_frame = backend
+                .runtime()
+                .find("signals.tabs.hit.1")
+                .map(|element| element.frame);
+            if let Some(frame) = target_frame {
+                let x = frame.x + frame.width * 0.5;
+                let y = frame.y + frame.height * 0.5;
+                let pressed = backend.runtime_mut().update_pointer(PointerEvent::pressed_at(x, y));
+                let released = backend
+                    .runtime_mut()
+                    .update_pointer(PointerEvent::released_at(x, y));
+                eprintln!(
+                    "[neo auto click] target=signals.tabs.hit.1 frame=({:.2},{:.2},{:.2},{:.2}) point=({:.2},{:.2}) pressed_changed={} released_changed={} needs_compose={}",
+                    frame.x,
+                    frame.y,
+                    frame.width,
+                    frame.height,
+                    x,
+                    y,
+                    pressed,
+                    released,
+                    backend.runtime().needs_compose()
+                );
+                clicked = true;
+            } else {
+                missing = true;
+            }
+        });
+
+        if clicked {
+            self.auto_chart_clicked = true;
+        } else if missing {
+            eprintln!("[neo auto click] missing target=signals.tabs.hit.1");
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -411,71 +480,89 @@ fn trigger_label(previous: LabSignature, next: LabSignature) -> &'static str {
     }
 }
 
-impl LabSnapshot {
-    fn from_state(value: &LabState) -> Self {
-        Self {
-            clicks: value.clicks,
-            mode: value.mode,
-            wobble: value.wobble,
-            density: value.density,
-            alarm: value.alarm,
-            glass: value.glass,
-            lock: value.lock,
-            reveal: value.reveal,
-            tab: value.tab,
-            segment: value.segment,
-            dropdown_selected: value.dropdown_selected,
-            context_menu_position: value.context_menu_position,
-        }
-    }
+fn clicks_signal(state: &State<LabState>) -> Signal<LabState, u32> {
+    state.signal(
+        "stress-lab.clicks",
+        |state| state.clicks,
+        |state, value| state.clicks = value,
+    )
 }
 
-fn bind_wobble(state: &NeoState<LabState>) -> Binding<LabState, f32> {
-    state.bind(
+fn mode_signal(state: &State<LabState>) -> Signal<LabState, i32> {
+    state.signal(
+        "stress-lab.mode",
+        |state| state.mode,
+        |state, value| state.mode = value.rem_euclid(4),
+    )
+}
+
+fn wobble_signal(state: &State<LabState>) -> Signal<LabState, f32> {
+    state.signal(
+        "stress-lab.wobble",
         |state| state.wobble,
         |state, value| state.wobble = value.clamp(0.0, 1.0),
     )
 }
 
-fn bind_density(state: &NeoState<LabState>) -> Binding<LabState, f32> {
-    state.bind(
+fn density_signal(state: &State<LabState>) -> Signal<LabState, f32> {
+    state.signal(
+        "stress-lab.density",
         |state| state.density,
         |state, value| state.density = value.clamp(0.0, 1.0),
     )
 }
 
-fn bind_alarm(state: &NeoState<LabState>) -> Binding<LabState, f32> {
-    state.bind(
+fn alarm_signal(state: &State<LabState>) -> Signal<LabState, f32> {
+    state.signal(
+        "stress-lab.alarm",
         |state| state.alarm,
         |state, value| state.alarm = value.clamp(0.0, 1.0),
     )
 }
 
-fn bind_glass(state: &NeoState<LabState>) -> Binding<LabState, bool> {
-    state.bind(|state| state.glass, |state, value| state.glass = value)
+fn glass_signal(state: &State<LabState>) -> Signal<LabState, bool> {
+    state.signal(
+        "stress-lab.glass",
+        |state| state.glass,
+        |state, value| state.glass = value,
+    )
 }
 
-fn bind_lock(state: &NeoState<LabState>) -> Binding<LabState, bool> {
-    state.bind(|state| state.lock, |state, value| state.lock = value)
+fn lock_signal(state: &State<LabState>) -> Signal<LabState, bool> {
+    state.signal(
+        "stress-lab.lock",
+        |state| state.lock,
+        |state, value| state.lock = value,
+    )
 }
 
-fn bind_reveal(state: &NeoState<LabState>) -> Binding<LabState, bool> {
-    state.bind(|state| state.reveal, |state, value| state.reveal = value)
+fn reveal_signal(state: &State<LabState>) -> Signal<LabState, bool> {
+    state.signal(
+        "stress-lab.reveal",
+        |state| state.reveal,
+        |state, value| state.reveal = value,
+    )
 }
 
-fn bind_tab(state: &NeoState<LabState>) -> Binding<LabState, i32> {
-    state.bind(|state| state.tab, |state, value| state.tab = value.max(0))
+fn tab_signal(state: &State<LabState>) -> Signal<LabState, i32> {
+    state.signal(
+        "stress-lab.tab",
+        |state| state.tab,
+        |state, value| state.tab = value.max(0),
+    )
 }
 
-fn bind_segment(state: &NeoState<LabState>) -> Binding<LabState, i32> {
-    state.bind(
+fn segment_signal(state: &State<LabState>) -> Signal<LabState, i32> {
+    state.signal(
+        "stress-lab.segment",
         |state| state.segment,
         |state, value| state.segment = value.max(0),
     )
 }
 
-fn bind_radio_value(state: &NeoState<LabState>, value: i32) -> Binding<LabState, bool> {
-    state.bind(
+fn radio_value_signal(state: &State<LabState>, value: i32) -> Signal<LabState, bool> {
+    state.signal(
+        format!("stress-lab.radio.{value}"),
         move |state| state.radio == value,
         move |state, selected| {
             if selected {
@@ -485,64 +572,81 @@ fn bind_radio_value(state: &NeoState<LabState>, value: i32) -> Binding<LabState,
     )
 }
 
-fn bind_dropdown_open(state: &NeoState<LabState>) -> Binding<LabState, bool> {
-    state.bind(
+fn dropdown_open_signal(state: &State<LabState>) -> Signal<LabState, bool> {
+    state.signal(
+        "stress-lab.dropdown-open",
         |state| state.dropdown_open,
         |state, value| state.dropdown_open = value,
     )
 }
 
-fn bind_dropdown_selected(state: &NeoState<LabState>) -> Binding<LabState, i32> {
-    state.bind(
+fn dropdown_selected_signal(state: &State<LabState>) -> Signal<LabState, i32> {
+    state.signal(
+        "stress-lab.dropdown-selected",
         |state| state.dropdown_selected,
         |state, value| state.dropdown_selected = value.max(0),
     )
 }
 
-fn bind_dialog_open(state: &NeoState<LabState>) -> Binding<LabState, bool> {
-    state.bind(
+fn dialog_open_signal(state: &State<LabState>) -> Signal<LabState, bool> {
+    state.signal(
+        "stress-lab.dialog-open",
         |state| state.dialog_open,
         |state, value| state.dialog_open = value,
     )
 }
 
-fn bind_toast_visible(state: &NeoState<LabState>) -> Binding<LabState, bool> {
-    state.bind(
+fn toast_visible_signal(state: &State<LabState>) -> Signal<LabState, bool> {
+    state.signal(
+        "stress-lab.toast-visible",
         |state| state.toast_visible,
         |state, value| state.toast_visible = value,
     )
 }
 
-fn bind_context_menu_open(state: &NeoState<LabState>) -> Binding<LabState, bool> {
-    state.bind(
+fn context_menu_open_signal(state: &State<LabState>) -> Signal<LabState, bool> {
+    state.signal(
+        "stress-lab.context-menu-open",
         |state| state.context_menu_open,
         |state, value| state.context_menu_open = value,
     )
 }
 
-fn bind_control_scroll(state: &NeoState<LabState>) -> Binding<LabState, f32> {
-    state.bind(
+fn context_menu_position_signal(state: &State<LabState>) -> Signal<LabState, [f32; 2]> {
+    state.signal(
+        "stress-lab.context-menu-position",
+        |state| state.context_menu_position,
+        |state, value| state.context_menu_position = value,
+    )
+}
+
+fn control_scroll_signal(state: &State<LabState>) -> Signal<LabState, f32> {
+    state.signal(
+        "stress-lab.control-scroll",
         |state| state.control_scroll,
         |state, value| state.control_scroll = value.max(0.0),
     )
 }
 
-fn bind_signal_scroll(state: &NeoState<LabState>) -> Binding<LabState, f32> {
-    state.bind(
+fn signal_scroll_signal(state: &State<LabState>) -> Signal<LabState, f32> {
+    state.signal(
+        "stress-lab.signal-scroll",
         |state| state.signal_scroll,
         |state, value| state.signal_scroll = value.max(0.0),
     )
 }
 
-fn bind_interaction_scroll(state: &NeoState<LabState>) -> Binding<LabState, f32> {
-    state.bind(
+fn interaction_scroll_signal(state: &State<LabState>) -> Signal<LabState, f32> {
+    state.signal(
+        "stress-lab.interaction-scroll",
         |state| state.interaction_scroll,
         |state, value| state.interaction_scroll = value.max(0.0),
     )
 }
 
-fn bind_input_text(state: &NeoState<LabState>) -> Binding<LabState, String> {
-    state.bind_clone(
+fn input_text_signal(state: &State<LabState>) -> Signal<LabState, String> {
+    state.signal(
+        "stress-lab.input-text",
         |state| state.input_text.clone(),
         |state, value| state.input_text = value,
     )
@@ -553,62 +657,54 @@ fn draw_lab(
     screen_width: f32,
     screen_height: f32,
     time: f32,
-    state_store: &NeoState<LabState>,
-    state: &LabSnapshot,
+    state_store: &State<LabState>,
     perf: &PerfSnapshot,
     pointer_owned: bool,
     keyboard_owned: bool,
 ) {
-    let pulse = time.sin() * 0.5 + 0.5;
-    let scan = (time * (0.22 + state.density * 0.72)).fract();
     let motion = Transition::ease(0.24, Ease::OutCubic);
     let body_height = (screen_height - OUTER_PAD * 2.0 - HEADER_H - 18.0).max(0.0);
 
-    draw_background(ui, screen_width, screen_height, state.alarm);
+    ui.scope("lab.background.scope", |ui| {
+        let alarm = alarm_signal(state_store).watch(ui);
+        draw_background(ui, screen_width, screen_height, alarm);
+    });
 
     ui.column("lab.root")
         .size(screen_width, screen_height)
         .padding(OUTER_PAD)
         .gap(18.0)
         .content(|ui| {
-            draw_header(
-                ui,
-                state_store,
-                state,
-                perf,
-                scan,
-                pointer_owned,
-                keyboard_owned,
-            );
+            ui.live_scope("lab.header.scope", |ui| {
+                draw_header(ui, state_store, perf, time, pointer_owned, keyboard_owned);
+            });
 
             ui.row("lab.body")
                 .size(Size::fill(), body_height)
                 .gap(18.0)
                 .content(|ui| {
-                    draw_control_panel(ui, state_store, state, motion, body_height);
-                    draw_signal_panel(
-                        ui,
-                        state_store,
-                        state,
-                        time,
-                        pulse,
-                        scan,
-                        motion,
-                        body_height,
-                    );
-                    draw_interaction_panel(
-                        ui,
-                        state_store,
-                        state,
-                        time,
-                        pointer_owned,
-                        keyboard_owned,
-                        body_height,
-                    );
+                    ui.scope("lab.control.scope", |ui| {
+                        draw_control_panel(ui, state_store, motion, body_height);
+                    });
+                    ui.live_scope("lab.signals.scope", |ui| {
+                        draw_signal_panel(ui, state_store, time, motion, body_height);
+                    });
+                    ui.scope("lab.interactions.scope", |ui| {
+                        draw_interaction_panel(
+                            ui,
+                            state_store,
+                            time,
+                            pointer_owned,
+                            keyboard_owned,
+                            body_height,
+                        );
+                    });
                 });
         });
 
-    draw_lab_overlays(ui, screen_width, screen_height, state_store, state);
+    ui.scope("lab.overlays.scope", |ui| {
+        draw_lab_overlays(ui, screen_width, screen_height, state_store);
+    });
 }
 
 fn draw_background(ui: &mut Ui, width: f32, height: f32, alarm: f32) {
@@ -631,13 +727,21 @@ fn draw_background(ui: &mut Ui, width: f32, height: f32, alarm: f32) {
 
 fn draw_header(
     ui: &mut Ui,
-    state_store: &NeoState<LabState>,
-    state: &LabSnapshot,
+    state_store: &State<LabState>,
     perf: &PerfSnapshot,
-    scan: f32,
+    time: f32,
     pointer_owned: bool,
     keyboard_owned: bool,
 ) {
+    let clicks = clicks_signal(state_store).watch(ui);
+    let mode = mode_signal(state_store).watch(ui);
+    let glass = glass_signal(state_store).watch(ui);
+    let lock = lock_signal(state_store).watch(ui);
+    let reveal = reveal_signal(state_store).watch(ui);
+    let alarm = alarm_signal(state_store).watch(ui);
+    let density = density_signal(state_store).watch(ui);
+    let scan = (time * (0.22 + density * 0.72)).fract();
+
     ui.stack("header")
         .size(Size::fill(), HEADER_H)
         .content(|ui| {
@@ -673,11 +777,11 @@ fn draw_header(
                                 .size(Size::fill(), 22.0)
                                 .text(format!(
                                     "mode {}  clicks {}  glass {}  lock {}  reveal {}  pointer {}  keyboard {}",
-                                    state.mode,
-                                    state.clicks,
-                                    on_off(state.glass),
-                                    on_off(state.lock),
-                                    on_off(state.reveal),
+                                    mode,
+                                    clicks,
+                                    on_off(glass),
+                                    on_off(lock),
+                                    on_off(reveal),
                                     on_off(pointer_owned),
                                     on_off(keyboard_owned),
                                 ))
@@ -704,7 +808,7 @@ fn draw_header(
                                 ui,
                                 "header.alarm",
                                 "alarm",
-                                state.alarm,
+                                alarm,
                                 c(0.980, 0.520, 0.350, 1.0),
                             );
                         });
@@ -723,12 +827,11 @@ fn draw_header(
                                 .font_size(14.0)
                                 .radius(12.0)
                                 .on_click({
-                                    let state = state_store.clone();
+                                    let clicks = clicks_signal(state_store);
+                                    let mode = mode_signal(state_store);
                                     move || {
-                                        state.update(|state| {
-                                            state.clicks = state.clicks.wrapping_add(1);
-                                            state.mode = (state.mode + 1).rem_euclid(4);
-                                        });
+                                        clicks.update(|clicks| clicks.wrapping_add(1));
+                                        mode.update(|mode| (mode + 1).rem_euclid(4));
                                     }
                                 })
                                 .build();
@@ -746,12 +849,11 @@ fn draw_header(
                                 )
                                 .radius(12.0)
                                 .on_click({
-                                    let state = state_store.clone();
+                                    let clicks = clicks_signal(state_store);
+                                    let alarm = alarm_signal(state_store);
                                     move || {
-                                        state.update(|state| {
-                                            state.clicks = state.clicks.wrapping_add(1);
-                                            state.alarm = (state.alarm + 0.22).fract();
-                                        });
+                                        clicks.update(|clicks| clicks.wrapping_add(1));
+                                        alarm.update(|alarm| (alarm + 0.22).fract());
                                     }
                                 })
                                 .build();
@@ -760,13 +862,11 @@ fn draw_header(
         });
 }
 
-fn draw_control_panel(
-    ui: &mut Ui,
-    state_store: &NeoState<LabState>,
-    state: &LabSnapshot,
-    motion: Transition,
-    height: f32,
-) {
+fn draw_control_panel(ui: &mut Ui, state_store: &State<LabState>, motion: Transition, height: f32) {
+    let wobble = wobble_signal(state_store).watch(ui);
+    let density = density_signal(state_store).watch(ui);
+    let alarm = alarm_signal(state_store).watch(ui);
+
     ui.stack("controls").size(SIDE_W, height).content(|ui| {
         panel_shell(
             ui,
@@ -781,38 +881,38 @@ fn draw_control_panel(
             .padding(PANEL_PAD)
             .gap(12.0)
             .scrollbar_gap(8.0)
-            .offset_bind(bind_control_scroll(state_store))
+            .offset_signal(control_scroll_signal(state_store))
             .content(|ui| {
                 section_title(
                     ui,
                     "controls.title",
                     "Control Cabinet",
-                    "Bindings and capture",
+                    "Signals and capture",
                 );
 
                 slider_row(
                     ui,
                     "controls.wobble",
                     "Wobble",
-                    state.wobble,
+                    wobble,
                     c(0.340, 0.580, 0.980, 1.0),
-                    bind_wobble(state_store),
+                    wobble_signal(state_store),
                 );
                 slider_row(
                     ui,
                     "controls.density",
                     "Density",
-                    state.density,
+                    density,
                     c(0.280, 0.850, 0.580, 1.0),
-                    bind_density(state_store),
+                    density_signal(state_store),
                 );
                 slider_row(
                     ui,
                     "controls.alarm",
                     "Alarm",
-                    state.alarm,
+                    alarm,
                     c(1.000, 0.620, 0.300, 1.0),
-                    bind_alarm(state_store),
+                    alarm_signal(state_store),
                 );
 
                 ui.column("controls.toggles")
@@ -821,17 +921,17 @@ fn draw_control_panel(
                     .content(|ui| {
                         widgets::switch(ui, "controls.glass")
                             .size(230.0, 30.0)
-                            .checked_bind(bind_glass(state_store))
+                            .signal(glass_signal(state_store))
                             .text("Glass Tint")
                             .build();
                         widgets::checkbox(ui, "controls.lock")
                             .size(230.0, 30.0)
-                            .checked_bind(bind_lock(state_store))
+                            .signal(lock_signal(state_store))
                             .text("Disable Right Card")
                             .build();
                         widgets::checkbox(ui, "controls.reveal")
                             .size(230.0, 30.0)
-                            .checked_bind(bind_reveal(state_store))
+                            .signal(reveal_signal(state_store))
                             .text("Reveal Extra Card")
                             .build();
                     });
@@ -850,7 +950,7 @@ fn draw_control_panel(
                     .gap(8.0)
                     .content(|ui| {
                         for index in 0..10 {
-                            dense_row(ui, index, state.alarm, state.density, motion);
+                            dense_row(ui, index, alarm, density, motion);
                         }
                     });
             });
@@ -859,14 +959,19 @@ fn draw_control_panel(
 
 fn draw_signal_panel(
     ui: &mut Ui,
-    state_store: &NeoState<LabState>,
-    state: &LabSnapshot,
+    state_store: &State<LabState>,
     time: f32,
-    pulse: f32,
-    scan: f32,
     motion: Transition,
     height: f32,
 ) {
+    let pulse = time.sin() * 0.5 + 0.5;
+    let wobble = wobble_signal(state_store).watch(ui);
+    let density = density_signal(state_store).watch(ui);
+    let alarm = alarm_signal(state_store).watch(ui);
+    let glass = glass_signal(state_store).watch(ui);
+    let tab = tab_signal(state_store).watch(ui);
+    let scan = (time * (0.22 + density * 0.72)).fract();
+
     ui.stack("signals")
         .size(360.0, height)
         .grow(1.0)
@@ -885,19 +990,19 @@ fn draw_signal_panel(
                 .padding(PANEL_PAD)
                 .gap(10.0)
                 .scrollbar_gap(8.0)
-                .offset_bind(bind_signal_scroll(state_store))
+                .offset_signal(signal_scroll_signal(state_store))
                 .content(|ui| {
                     section_title(ui, "signals.title", "Signal Board", "Growth, fill, stacks");
 
                     widgets::tabs(ui, "signals.tabs")
                         .size(360.0, 38.0)
                         .items(["Signals", "Charts", "Motion"])
-                        .selected_bind(bind_tab(state_store))
+                        .signal(tab_signal(state_store))
                         .build();
 
-                    draw_stage(ui, state, time, pulse, scan, motion);
-                    draw_metric_strip(ui, state, pulse, scan);
-                    draw_tab_body(ui, state_store, state, pulse, scan);
+                    draw_stage(ui, glass, alarm, wobble, time, pulse, scan, motion);
+                    draw_metric_strip(ui, wobble, pulse, scan);
+                    draw_tab_body(ui, state_store, tab, wobble, density, alarm, pulse, scan);
 
                     widgets::button(ui, "signals.context.button")
                         .height(40.0)
@@ -907,24 +1012,22 @@ fn draw_signal_panel(
                         .secondary_theme(widgets::theme::dark_theme_colors())
                         .radius(13.0)
                         .on_context_menu({
-                            let state = state_store.clone();
+                            let open = context_menu_open_signal(state_store);
+                            let position = context_menu_position_signal(state_store);
                             move |event, bounds| {
                                 let point = event
                                     .position()
                                     .unwrap_or([bounds.x + bounds.width, bounds.y]);
-                                state.update(|state| {
-                                    state.context_menu_open = true;
-                                    state.context_menu_position = point;
-                                });
+                                open.set(true);
+                                position.set(point);
                             }
                         })
                         .on_click({
-                            let state = state_store.clone();
+                            let open = context_menu_open_signal(state_store);
+                            let position = context_menu_position_signal(state_store);
                             move || {
-                                state.update(|state| {
-                                    state.context_menu_open = true;
-                                    state.context_menu_position = [760.0, 310.0];
-                                });
+                                open.set(true);
+                                position.set([760.0, 310.0]);
                             }
                         })
                         .build();
@@ -934,7 +1037,9 @@ fn draw_signal_panel(
 
 fn draw_stage(
     ui: &mut Ui,
-    state: &LabSnapshot,
+    glass: bool,
+    alarm: f32,
+    wobble: f32,
     time: f32,
     pulse: f32,
     scan: f32,
@@ -947,7 +1052,7 @@ fn draw_stage(
             widgets::panel(ui, "signals.stage.bg")
                 .fill()
                 .radius(16.0)
-                .color(if state.glass {
+                .color(if glass {
                     c(0.070, 0.150, 0.180, 0.70)
                 } else {
                     c(0.064, 0.080, 0.105, 0.94)
@@ -981,11 +1086,11 @@ fn draw_stage(
                         ui,
                         "signals.stage.c",
                         "alarm",
-                        state.alarm,
+                        alarm,
                         mix(
                             c(0.840, 0.440, 0.620, 0.88),
                             c(1.000, 0.540, 0.320, 0.96),
-                            state.alarm,
+                            alarm,
                         ),
                         motion,
                     );
@@ -998,7 +1103,7 @@ fn draw_stage(
                                 .size(78.0, 78.0)
                                 .radius(24.0)
                                 .color(c(0.130, 0.190, 0.250, 0.82))
-                                .rotate((time * 0.8).sin() * 0.18 * state.wobble)
+                                .rotate((time * 0.8).sin() * 0.18 * wobble)
                                 .transform_origin(0.5, 0.5)
                                 .transition(motion)
                                 .animate(AnimProperty::TRANSFORM | AnimProperty::COLOR)
@@ -1017,7 +1122,7 @@ fn draw_stage(
         });
 }
 
-fn draw_metric_strip(ui: &mut Ui, state: &LabSnapshot, pulse: f32, scan: f32) {
+fn draw_metric_strip(ui: &mut Ui, wobble: f32, pulse: f32, scan: f32) {
     ui.row("signals.metrics")
         .size(Size::fill(), 100.0)
         .gap(12.0)
@@ -1026,7 +1131,7 @@ fn draw_metric_strip(ui: &mut Ui, state: &LabSnapshot, pulse: f32, scan: f32) {
                 ui,
                 "signals.metric.wobble",
                 "Wobble",
-                percent(state.wobble),
+                percent(wobble),
                 "slider bound",
                 c(0.330, 0.600, 0.980, 1.0),
             );
@@ -1051,22 +1156,27 @@ fn draw_metric_strip(ui: &mut Ui, state: &LabSnapshot, pulse: f32, scan: f32) {
 
 fn draw_tab_body(
     ui: &mut Ui,
-    state_store: &NeoState<LabState>,
-    state: &LabSnapshot,
+    state_store: &State<LabState>,
+    tab: i32,
+    wobble: f32,
+    density: f32,
+    alarm: f32,
     pulse: f32,
     scan: f32,
 ) {
-    match state.tab.rem_euclid(3) {
-        1 => draw_chart_tab(ui, state),
-        2 => draw_motion_tab(ui, state, pulse, scan),
-        _ => draw_signal_tab(ui, state_store, state, pulse, scan),
+    match tab.rem_euclid(3) {
+        1 => draw_chart_tab(ui, wobble, density, alarm, pulse, scan),
+        2 => draw_motion_tab(ui, wobble, density, alarm, pulse, scan),
+        _ => draw_signal_tab(ui, state_store, wobble, density, alarm, pulse, scan),
     }
 }
 
 fn draw_signal_tab(
     ui: &mut Ui,
-    state_store: &NeoState<LabState>,
-    state: &LabSnapshot,
+    state_store: &State<LabState>,
+    wobble: f32,
+    density: f32,
+    alarm: f32,
     pulse: f32,
     scan: f32,
 ) {
@@ -1078,21 +1188,21 @@ fn draw_signal_tab(
                 ui,
                 "signals.fill.blue",
                 "blue fill",
-                (pulse * 0.55 + state.wobble * 0.45).fract(),
+                (pulse * 0.55 + wobble * 0.45).fract(),
                 c(0.330, 0.640, 0.980, 1.0),
             );
             meter_row(
                 ui,
                 "signals.fill.green",
                 "green fill",
-                (scan + state.density * 0.25).fract(),
+                (scan + density * 0.25).fract(),
                 c(0.280, 0.850, 0.580, 1.0),
             );
             meter_row(
                 ui,
                 "signals.fill.alarm",
                 "alarm fill",
-                state.alarm.max((1.0 - pulse) * 0.35),
+                alarm.max((1.0 - pulse) * 0.35),
                 c(1.000, 0.620, 0.300, 1.0),
             );
 
@@ -1107,7 +1217,7 @@ fn draw_signal_tab(
                         .text("Dialog")
                         .font_size(14.0)
                         .on_click({
-                            let dialog = bind_dialog_open(state_store);
+                            let dialog = dialog_open_signal(state_store);
                             move || dialog.set(true)
                         })
                         .build();
@@ -1119,7 +1229,7 @@ fn draw_signal_tab(
                         .font_size(14.0)
                         .secondary_theme(widgets::theme::dark_theme_colors())
                         .on_click({
-                            let toast = bind_toast_visible(state_store);
+                            let toast = toast_visible_signal(state_store);
                             move || toast.set(true)
                         })
                         .build();
@@ -1127,7 +1237,7 @@ fn draw_signal_tab(
         });
 }
 
-fn draw_chart_tab(ui: &mut Ui, state: &LabSnapshot) {
+fn draw_chart_tab(ui: &mut Ui, wobble: f32, density: f32, alarm: f32, pulse: f32, scan: f32) {
     ui.row("signals.tab.charts")
         .size(Size::fill(), 132.0)
         .gap(12.0)
@@ -1135,23 +1245,23 @@ fn draw_chart_tab(ui: &mut Ui, state: &LabSnapshot) {
             widgets::bar_chart(ui, "signals.chart.bar")
                 .size(184.0, 132.0)
                 .title("Load")
-                .values([state.wobble, state.density, state.alarm, 0.48])
-                .labels(["W", "D", "A", "Q"])
+                .values([wobble, density, alarm, pulse])
+                .labels(["W", "D", "A", "P"])
                 .build();
             widgets::pie_chart(ui, "signals.chart.pie")
                 .size(132.0, 132.0)
                 .title("Mix")
                 .values([
-                    state.wobble.max(0.02),
-                    state.density.max(0.02),
-                    state.alarm.max(0.02),
+                    (wobble * 0.55 + scan * 0.45).max(0.02),
+                    (density * 0.70 + pulse * 0.30).max(0.02),
+                    alarm.max(0.02),
                 ])
                 .labels(["wobble", "density", "alarm"])
                 .build();
         });
 }
 
-fn draw_motion_tab(ui: &mut Ui, state: &LabSnapshot, pulse: f32, scan: f32) {
+fn draw_motion_tab(ui: &mut Ui, wobble: f32, density: f32, alarm: f32, pulse: f32, scan: f32) {
     ui.column("signals.tab.motion")
         .size(Size::fill(), 132.0)
         .gap(10.0)
@@ -1163,19 +1273,19 @@ fn draw_motion_tab(ui: &mut Ui, state: &LabSnapshot, pulse: f32, scan: f32) {
                     grow_block(
                         ui,
                         "signals.motion.a",
-                        0.7 + state.wobble,
+                        0.7 + wobble,
                         c(0.330, 0.520, 0.900, 0.94),
                     );
                     grow_block(
                         ui,
                         "signals.motion.b",
-                        0.7 + state.density,
+                        0.7 + density,
                         c(0.260, 0.730, 0.560, 0.94),
                     );
                     grow_block(
                         ui,
                         "signals.motion.c",
-                        0.7 + state.alarm,
+                        0.7 + alarm,
                         c(0.850, 0.420, 0.520, 0.94),
                     );
                 });
@@ -1204,13 +1314,17 @@ fn draw_motion_tab(ui: &mut Ui, state: &LabSnapshot, pulse: f32, scan: f32) {
 
 fn draw_interaction_panel(
     ui: &mut Ui,
-    state_store: &NeoState<LabState>,
-    state: &LabSnapshot,
+    state_store: &State<LabState>,
     time: f32,
     pointer_owned: bool,
     keyboard_owned: bool,
     height: f32,
 ) {
+    let lock = lock_signal(state_store).watch(ui);
+    let reveal = reveal_signal(state_store).watch(ui);
+    let segment = segment_signal(state_store).watch(ui);
+    let dropdown_selected = dropdown_selected_signal(state_store).watch(ui);
+
     ui.stack("interactions")
         .size(RIGHT_W, height)
         .content(|ui| {
@@ -1227,7 +1341,7 @@ fn draw_interaction_panel(
                 .padding(PANEL_PAD)
                 .gap(10.0)
                 .scrollbar_gap(8.0)
-                .offset_bind(bind_interaction_scroll(state_store))
+                .offset_signal(interaction_scroll_signal(state_store))
                 .content(|ui| {
                     section_title(
                         ui,
@@ -1239,20 +1353,20 @@ fn draw_interaction_panel(
                     widgets::segmented(ui, "interactions.segment")
                         .size(RIGHT_FIELD_W, 36.0)
                         .items(["mild", "odd", "loud"])
-                        .selected_bind(bind_segment(state_store))
+                        .signal(segment_signal(state_store))
                         .build();
 
                     widgets::input(ui, "interactions.input")
                         .size(Size::fill(), 42.0)
-                        .text_bind(bind_input_text(state_store))
+                        .text_signal(input_text_signal(state_store))
                         .placeholder("type a strange word")
                         .build();
 
                     widgets::dropdown(ui, "interactions.dropdown")
                         .size(RIGHT_FIELD_W, 42.0)
                         .items(["Low hum", "Signal", "Unstable"])
-                        .selected_bind(bind_dropdown_selected(state_store))
-                        .open_bind(bind_dropdown_open(state_store))
+                        .value_signal(dropdown_selected_signal(state_store))
+                        .open_signal(dropdown_open_signal(state_store))
                         .build();
 
                     ui.row("interactions.actions")
@@ -1266,7 +1380,7 @@ fn draw_interaction_panel(
                                 .text("Dialog")
                                 .font_size(14.0)
                                 .on_click({
-                                    let dialog = bind_dialog_open(state_store);
+                                    let dialog = dialog_open_signal(state_store);
                                     move || dialog.set(true)
                                 })
                                 .build();
@@ -1278,7 +1392,7 @@ fn draw_interaction_panel(
                                 .font_size(14.0)
                                 .secondary_theme(widgets::theme::dark_theme_colors())
                                 .on_click({
-                                    let toast = bind_toast_visible(state_store);
+                                    let toast = toast_visible_signal(state_store);
                                     move || toast.set(true)
                                 })
                                 .build();
@@ -1288,9 +1402,11 @@ fn draw_interaction_panel(
                         .size(Size::fill(), 96.0)
                         .gap(12.0)
                         .content(|ui| {
-                            action_card(ui, "interactions.locked", state_store, state.lock);
-                            if state.reveal {
-                                secret_card(ui, "interactions.secret", state_store, time);
+                            action_card(ui, "interactions.locked", state_store, lock);
+                            if reveal {
+                                ui.live_scope("interactions.secret.live", |ui| {
+                                    secret_card(ui, "interactions.secret", state_store, time);
+                                });
                             }
                         });
 
@@ -1299,7 +1415,7 @@ fn draw_interaction_panel(
                         .gap(9.0)
                         .content(|ui| {
                             for index in 0..12 {
-                                feed_row(ui, index, state.segment, state.dropdown_selected);
+                                feed_row(ui, index, segment, dropdown_selected);
                             }
                         });
 
@@ -1326,71 +1442,68 @@ fn draw_lab_overlays(
     ui: &mut Ui,
     screen_width: f32,
     screen_height: f32,
-    state_store: &NeoState<LabState>,
-    state: &LabSnapshot,
+    state_store: &State<LabState>,
 ) {
+    let context_position = context_menu_position_signal(state_store).watch(ui);
+
     widgets::context_menu(ui, "lab.context")
-        .open_bind(bind_context_menu_open(state_store))
+        .open_signal(context_menu_open_signal(state_store))
         .screen(screen_width, screen_height)
-        .position(
-            state.context_menu_position[0],
-            state.context_menu_position[1],
-        )
+        .position(context_position[0], context_position[1])
         .items(["Cycle mode", "Show toast", "Close menu"])
         .on_dismiss({
-            let open = bind_context_menu_open(state_store);
+            let open = context_menu_open_signal(state_store);
             move || open.set(false)
         })
         .on_select({
-            let state = state_store.clone();
-            move |index| {
-                state.update(|state| match index {
-                    0 => state.mode = (state.mode + 1).rem_euclid(4),
-                    1 => state.toast_visible = true,
-                    _ => state.context_menu_open = false,
-                });
+            let mode = mode_signal(state_store);
+            let toast = toast_visible_signal(state_store);
+            let open = context_menu_open_signal(state_store);
+            move |index| match index {
+                0 => mode.update(|mode| (mode + 1).rem_euclid(4)),
+                1 => toast.set(true),
+                _ => open.set(false),
             }
         })
         .build();
 
     widgets::dialog(ui, "lab.dialog")
-        .open_bind(bind_dialog_open(state_store))
+        .open_signal(dialog_open_signal(state_store))
         .screen(screen_width, screen_height)
         .title("Stress Lab Confirmation")
         .message("This modal is centered by the widget while the page beneath is pure layout flow.")
         .primary_text("Proceed")
         .secondary_text("Cancel")
         .on_primary({
-            let state = state_store.clone();
+            let dialog = dialog_open_signal(state_store);
+            let toast = toast_visible_signal(state_store);
             move || {
-                state.update(|state| {
-                    state.dialog_open = false;
-                    state.toast_visible = true;
-                });
+                dialog.set(false);
+                toast.set(true);
             }
         })
         .on_secondary({
-            let dialog = bind_dialog_open(state_store);
+            let dialog = dialog_open_signal(state_store);
             move || dialog.set(false)
         })
         .on_close({
-            let dialog = bind_dialog_open(state_store);
+            let dialog = dialog_open_signal(state_store);
             move || dialog.set(false)
         })
         .build();
 
     widgets::toast(ui, "lab.toast")
-        .visible_bind(bind_toast_visible(state_store))
+        .visible_signal(toast_visible_signal(state_store))
         .screen(screen_width, screen_height)
         .title("Layout held")
         .message("Rows, columns, grow, fill, clipping, and overlays survived the frame.")
         .duration(2.4)
         .on_dismiss({
-            let visible = bind_toast_visible(state_store);
+            let visible = toast_visible_signal(state_store);
             move || visible.set(false)
         })
         .on_auto_dismiss({
-            let visible = bind_toast_visible(state_store);
+            let visible = toast_visible_signal(state_store);
             move || visible.set(false)
         })
         .build();
@@ -1434,7 +1547,7 @@ fn slider_row(
     label: &str,
     value: f32,
     color: Color,
-    binding: Binding<LabState, f32>,
+    signal: Signal<LabState, f32>,
 ) {
     ui.column(id)
         .size(Size::fill(), 55.0)
@@ -1466,16 +1579,16 @@ fn slider_row(
             style.fill = color;
             widgets::slider(ui, format!("{id}.slider"))
                 .size(CONTROL_FIELD_W, 26.0)
-                .value_bind(binding)
+                .signal(signal)
                 .style(style)
                 .build();
         });
 }
 
-fn radio_item(ui: &mut Ui, state_store: &NeoState<LabState>, id: &str, label: &str, value: i32) {
+fn radio_item(ui: &mut Ui, state_store: &State<LabState>, id: &str, label: &str, value: i32) {
     widgets::radio(ui, id)
         .size(76.0, 28.0)
-        .selected_bind(bind_radio_value(state_store, value))
+        .signal(radio_value_signal(state_store, value))
         .text(label)
         .font_size(15.0)
         .build();
@@ -1848,7 +1961,7 @@ fn motion_card(ui: &mut Ui, id: &str, title: &str, value: f32, color: Color) {
         });
 }
 
-fn action_card(ui: &mut Ui, id: &str, state_store: &NeoState<LabState>, locked: bool) {
+fn action_card(ui: &mut Ui, id: &str, state_store: &State<LabState>, locked: bool) {
     ui.stack(id)
         .size(124.0, Size::fill())
         .grow(1.0)
@@ -1883,19 +1996,15 @@ fn action_card(ui: &mut Ui, id: &str, state_store: &NeoState<LabState>, locked: 
                         .font_size(13.0)
                         .disabled(locked)
                         .on_click({
-                            let state = state_store.clone();
-                            move || {
-                                state.update(|state| {
-                                    state.clicks = state.clicks.wrapping_add(1);
-                                });
-                            }
+                            let clicks = clicks_signal(state_store);
+                            move || clicks.update(|clicks| clicks.wrapping_add(1))
                         })
                         .build();
                 });
         });
 }
 
-fn secret_card(ui: &mut Ui, id: &str, state_store: &NeoState<LabState>, time: f32) {
+fn secret_card(ui: &mut Ui, id: &str, state_store: &State<LabState>, time: f32) {
     ui.stack(id)
         .size(124.0, Size::fill())
         .grow(1.0)
@@ -1925,12 +2034,8 @@ fn secret_card(ui: &mut Ui, id: &str, state_store: &NeoState<LabState>, time: f3
                         .text("Ping")
                         .font_size(13.0)
                         .on_click({
-                            let state = state_store.clone();
-                            move || {
-                                state.update(|state| {
-                                    state.clicks = state.clicks.wrapping_add(1);
-                                });
-                            }
+                            let clicks = clicks_signal(state_store);
+                            move || clicks.update(|clicks| clicks.wrapping_add(1))
                         })
                         .build();
                 });
@@ -1990,8 +2095,11 @@ fn c(r: f32, g: f32, b: f32, a: f32) -> Color {
 struct ScreenshotProbe {
     path: Option<String>,
     frame: u32,
+    second_path: Option<String>,
+    second_frame: u32,
     frame_count: u32,
     taken: bool,
+    second_taken: bool,
     exit_after: bool,
 }
 
@@ -2002,8 +2110,13 @@ impl Default for ScreenshotProbe {
                 .ok()
                 .filter(|value| !value.trim().is_empty()),
             frame: env_u32("SKY_NEO_SCREENSHOT_FRAME").unwrap_or(45),
+            second_path: std::env::var("SKY_NEO_SCREENSHOT_PATH_2")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
+            second_frame: env_u32("SKY_NEO_SCREENSHOT_FRAME_2").unwrap_or(u32::MAX),
             frame_count: 0,
             taken: false,
+            second_taken: false,
             exit_after: env_flag("SKY_NEO_EXIT_AFTER_SCREENSHOT"),
         }
     }
@@ -2015,10 +2128,18 @@ impl ScreenshotProbe {
             if let Some(path) = self.path.as_ref() {
                 ctx.request_screenshot(path);
                 self.taken = true;
-                if self.exit_after {
-                    ctx.request_exit();
-                }
             }
+        }
+        if !self.second_taken && self.frame_count >= self.second_frame {
+            if let Some(path) = self.second_path.as_ref() {
+                ctx.request_screenshot(path);
+                self.second_taken = true;
+            }
+        }
+        let all_requested_shots_taken =
+            self.taken && (self.second_path.is_none() || self.second_taken);
+        if self.exit_after && all_requested_shots_taken {
+            ctx.request_exit();
         }
         self.frame_count = self.frame_count.saturating_add(1);
     }
@@ -2032,6 +2153,13 @@ fn env_flag(key: &str) -> bool {
 
 fn env_u32(key: &str) -> Option<u32> {
     std::env::var(key).ok()?.parse().ok()
+}
+
+fn env_string(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn elapsed_ms(start: Instant) -> f32 {
@@ -2057,6 +2185,106 @@ fn on_off(value: bool) -> &'static str {
     }
 }
 
+fn dump_runtime_layout(label: &str, runtime: &sky_engine::ui::neo::Runtime) {
+    let snapshot = runtime.debug_snapshot_current();
+    eprintln!(
+        "[neo layout dump] {label}: screen={:?} layout={:?} dirty={:?} live={:?} built={} reused={} active_animations={} needs_render={} needs_compose={} full_redraw={}",
+        snapshot.screen,
+        snapshot.layout_mode,
+        snapshot.dirty_scopes,
+        snapshot.live_scopes,
+        snapshot.scope_stats.built,
+        snapshot.scope_stats.reused,
+        snapshot.active_animation_count,
+        snapshot.needs_render,
+        snapshot.needs_compose,
+        snapshot.full_redraw
+    );
+    for root in runtime.roots() {
+        dump_element_layout(root, 0);
+    }
+    eprintln!("[neo layout dump end] {label}");
+}
+
+fn dump_runtime_draw(label: &str, runtime: &sky_engine::ui::neo::Runtime) {
+    let trace = runtime.draw_debug_trace();
+    let filter = env_string("SKY_NEO_LAB_DUMP_DRAW_FILTER");
+    eprintln!(
+        "[neo draw dump] {label}: screen={:?} commands={} primitives={} push_clip={} pop_clip={} max_clip_depth={} unbalanced_pops={} remaining_clip_depth={} filter={:?}",
+        trace.screen,
+        trace.command_count,
+        trace.primitive_count,
+        trace.push_clip_count,
+        trace.pop_clip_count,
+        trace.max_clip_depth,
+        trace.unbalanced_pops,
+        trace.remaining_clip_depth,
+        filter
+    );
+
+    if env_flag("SKY_NEO_LAB_DUMP_DRAW_JSON") && filter.is_none() {
+        eprintln!("{}", trace.to_json_pretty());
+    } else if let Some(filter) = filter.as_deref() {
+        for command in trace.filtered(filter) {
+            eprintln!("{command}");
+        }
+    } else {
+        eprintln!("{trace}");
+    }
+
+    eprintln!("[neo draw dump end] {label}");
+}
+
+fn dump_element_layout(element: &sky_engine::ui::neo::eui::Element, depth: usize) {
+    let indent = "  ".repeat(depth);
+    eprintln!(
+        "{indent}{} {:?} frame=({:.1},{:.1},{:.1},{:.1}) size={:?}x{:?} children={} interactive={} focusable={} z={} clip={} text={:?}",
+        element.id,
+        element.kind,
+        element.frame.x,
+        element.frame.y,
+        element.frame.width,
+        element.frame.height,
+        element.width,
+        element.height,
+        element.children.len(),
+        element.interactive,
+        element.focusable,
+        element.z_index,
+        element.clip,
+        element.text
+    );
+    for child in &element.children {
+        dump_element_layout(child, depth + 1);
+    }
+}
+
+fn trace_chart_runtime(label: &str, tab: i32, time: f32, runtime: &sky_engine::ui::neo::Runtime) {
+    let snapshot = runtime.debug_snapshot_current();
+    let target = runtime
+        .find("signals.chart.bar.bar.3")
+        .map(|element| element.frame);
+    let draw = runtime.draw_list().commands().iter().find_map(|command| {
+        if let sky_engine::ui::neo::expert::UiDrawCommand::Rect(rect) = command {
+            rect.id
+                .ends_with(".signals.chart.bar.bar.3")
+                .then_some(rect.frame)
+        } else {
+            None
+        }
+    });
+    eprintln!(
+        "[neo chart trace] {label} app_time={time:.3} tab={tab} runtime_frame={} layout={:?} dirty={:?} live={:?} target={target:?} draw={draw:?} active_animations={} needs_render={} full_redraw={}",
+        snapshot.frame_index,
+        snapshot.layout_mode,
+        snapshot.dirty_scopes,
+        snapshot.live_scopes,
+        snapshot.active_animation_count,
+        snapshot.needs_render,
+        snapshot.full_redraw
+    );
+}
+
 fn main() {
     let mut world = World::new();
     world
@@ -2078,4 +2306,485 @@ fn main() {
         .unwrap();
 
     App::new(world).run(NeoUiStressLab::default());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sky_engine::ui::neo::{Runtime, UiTestDriver};
+
+    fn perf_snapshot() -> PerfSnapshot {
+        PerfSnapshot {
+            frame: 1,
+            fps: 60.0,
+            frame_ms: 16.0,
+            avg_ms: 16.0,
+            lifetime_worst_ms: 16.0,
+            compose_ms: 0.0,
+            render_ms: 0.0,
+            overlay_ms: 0.0,
+            rest_ms: 0.0,
+            stutter_count: 0,
+            trigger_stutter_count: 0,
+            trigger_active: false,
+            trigger_label: "idle".to_string(),
+            trigger_age_ms: 0.0,
+        }
+    }
+
+    fn compose_lab(runtime: &mut Runtime, state: &State<LabState>, dirty_scopes: Vec<String>) {
+        let perf = perf_snapshot();
+        let state = state.clone();
+        runtime.compose_scoped(
+            WINDOW_W as f32,
+            WINDOW_H as f32,
+            dirty_scopes,
+            move |ui, screen| {
+                draw_lab(
+                    ui,
+                    screen.width,
+                    screen.height,
+                    0.0,
+                    &state,
+                    &perf,
+                    false,
+                    false,
+                );
+            },
+        );
+    }
+
+    fn compose_lab_driver(
+        driver: &mut UiTestDriver,
+        state: &State<LabState>,
+        dirty_scopes: Vec<String>,
+    ) {
+        compose_lab_driver_at(driver, state, dirty_scopes, 0.0);
+    }
+
+    fn compose_lab_driver_at(
+        driver: &mut UiTestDriver,
+        state: &State<LabState>,
+        dirty_scopes: Vec<String>,
+        time: f32,
+    ) {
+        let perf = perf_snapshot();
+        let state = state.clone();
+        driver.compose_scoped(dirty_scopes, move |ui, screen| {
+            draw_lab(
+                ui,
+                screen.width,
+                screen.height,
+                time,
+                &state,
+                &perf,
+                false,
+                false,
+            );
+        });
+    }
+
+    #[test]
+    fn signals_tab_click_uses_driver_and_rebuilds_signals_scope() {
+        let state = State::new(LabState::default());
+        let mut driver = UiTestDriver::new("stress-lab", WINDOW_W as f32, WINDOW_H as f32);
+
+        compose_lab_driver(&mut driver, &state, Vec::new());
+        let label = driver
+            .find("signals.tabs.label.1")
+            .expect("charts tab label should exist")
+            .frame;
+        let trace = driver
+            .click_at(
+                "signals.tabs.label.1",
+                sky_engine::ui::neo::TargetPoint::Center,
+            )
+            .expect("clicking over charts label should hit the tab");
+
+        assert_eq!(state.read(|state| state.tab), 1, "{trace}");
+        assert!(trace.point.is_some_and(|[x, y]| label.contains([x, y])));
+        let dirty_scopes = state.take_dirty_scopes();
+        assert_eq!(
+            dirty_scopes,
+            vec!["stress-lab.lab.signals.scope".to_string()],
+            "{trace}"
+        );
+        compose_lab_driver(&mut driver, &state, dirty_scopes);
+
+        assert!(driver.runtime().scope_compose_stats().built >= 1);
+        assert!(driver.runtime().scope_compose_stats().reused >= 1);
+        assert!(driver
+            .debug_snapshot()
+            .scope_events
+            .iter()
+            .any(|event| { event.scope.as_str() == "stress-lab.lab.signals.scope" }));
+        let indicator = driver
+            .find("signals.tabs.indicator")
+            .expect("tabs indicator should exist")
+            .frame;
+        let charts_hit = driver
+            .find("signals.tabs.hit.1")
+            .expect("charts tab hit rect should still exist")
+            .frame;
+        assert!(indicator.x > charts_hit.x);
+        assert!(indicator.x < charts_hit.x + charts_hit.width);
+
+        compose_lab_driver(&mut driver, &state, state.take_dirty_scopes());
+        assert!(
+            driver.runtime().scope_compose_stats().partial_layout,
+            "stable post-tab frame should return to partial layout: {:?}",
+            driver.debug_snapshot()
+        );
+    }
+
+    #[test]
+    fn signals_tab_hit_rect_click_uses_driver_and_rebuilds_signals_scope() {
+        let state = State::new(LabState::default());
+        let mut driver = UiTestDriver::new("stress-lab", WINDOW_W as f32, WINDOW_H as f32);
+
+        compose_lab_driver(&mut driver, &state, Vec::new());
+        let trace = driver
+            .click("signals.tabs.hit.1")
+            .expect("charts tab hit rect should exist");
+
+        assert_eq!(state.read(|state| state.tab), 1, "{trace}");
+        let dirty_scopes = state.take_dirty_scopes();
+        assert_eq!(
+            dirty_scopes,
+            vec!["stress-lab.lab.signals.scope".to_string()],
+            "{trace}"
+        );
+        compose_lab_driver(&mut driver, &state, dirty_scopes);
+
+        assert!(driver.runtime().scope_compose_stats().built >= 1);
+        assert!(driver.runtime().scope_compose_stats().reused >= 1);
+        assert!(driver
+            .debug_snapshot()
+            .scope_events
+            .iter()
+            .any(|event| { event.scope.as_str() == "stress-lab.lab.signals.scope" }));
+        let indicator = driver
+            .find("signals.tabs.indicator")
+            .expect("tabs indicator should exist")
+            .frame;
+        let charts_hit = driver
+            .find("signals.tabs.hit.1")
+            .expect("charts tab hit rect should still exist")
+            .frame;
+        assert!(indicator.x > charts_hit.x);
+        assert!(indicator.x < charts_hit.x + charts_hit.width);
+    }
+
+    #[test]
+    fn signal_to_charts_keeps_live_animation_targets_advancing() {
+        let state = State::new(LabState::default());
+        let mut driver = UiTestDriver::new("stress-lab", WINDOW_W as f32, WINDOW_H as f32);
+
+        compose_lab_driver_at(&mut driver, &state, Vec::new(), 0.0);
+        let before_orb = driver
+            .find("signals.stage.a.orb.fill")
+            .expect("pulse orb fill should exist before tab switch")
+            .frame;
+
+        let trace = driver
+            .click("signals.tabs.hit.1")
+            .expect("charts tab hit rect should exist");
+        assert_eq!(state.read(|state| state.tab), 1, "{trace}");
+
+        let dirty_scopes = state.take_dirty_scopes();
+        compose_lab_driver_at(&mut driver, &state, dirty_scopes, 0.0);
+        assert!(
+            driver.find("signals.tab.charts").is_some(),
+            "charts body should be present after tab switch: {:?}",
+            driver.debug_snapshot()
+        );
+        driver.runtime_mut().tick_animations(1.0);
+        let before_bar = rect_draw(driver.runtime(), "signals.chart.bar.bar.3")
+            .expect("pulse chart bar should draw after switching to charts")
+            .frame;
+        eprintln!(
+            "[signal->charts] after click settled: tab={} pulse_bar_draw={before_bar:?} snapshot={:?}",
+            state.read(|state| state.tab),
+            driver.runtime().debug_snapshot_current()
+        );
+
+        compose_lab_driver_at(&mut driver, &state, state.take_dirty_scopes(), 1.570_796_4);
+        let after_orb = driver
+            .find("signals.stage.a.orb.fill")
+            .expect("pulse orb fill should still exist on charts tab")
+            .frame;
+        let after_bar_target = driver
+            .find("signals.chart.bar.bar.3")
+            .expect("pulse chart bar should still exist on charts tab")
+            .frame;
+        let after_compose_bar = rect_draw(driver.runtime(), "signals.chart.bar.bar.3")
+            .expect("pulse chart bar should draw immediately after live compose")
+            .frame;
+        let mut sampled_bars = Vec::new();
+        for step in 1..=18 {
+            driver.runtime_mut().tick_animations(1.0 / 60.0);
+            if matches!(step, 1 | 6 | 12 | 18) {
+                let frame = rect_draw(driver.runtime(), "signals.chart.bar.bar.3")
+                    .expect("pulse chart bar should draw during animation ticks")
+                    .frame;
+                sampled_bars.push((step, frame));
+            }
+        }
+        let after_tick_bar = sampled_bars
+            .last()
+            .map(|(_, frame)| *frame)
+            .expect("pulse chart bar should draw after animation tick");
+        let snapshot = driver.debug_snapshot();
+        eprintln!(
+            "[signal->charts] after live compose: orb_target={after_orb:?} pulse_bar_target={after_bar_target:?} pulse_bar_draw={after_compose_bar:?} sampled_ticks={sampled_bars:?} snapshot={:?}",
+            driver.runtime().debug_snapshot_current()
+        );
+
+        assert!(
+            after_orb.width > before_orb.width + 8.0,
+            "live pulse target should advance after switching to charts: before={before_orb:?} after={after_orb:?} snapshot={snapshot:?}"
+        );
+        assert!(
+            after_bar_target.height > before_bar.height + 8.0,
+            "charts tab should receive live pulse values: before_bar={before_bar:?} after_target={after_bar_target:?} snapshot={snapshot:?}"
+        );
+        assert!(
+            after_tick_bar.height > after_compose_bar.height,
+            "charts bar draw frame should animate after a tick: after_compose={after_compose_bar:?} after_tick={after_tick_bar:?}"
+        );
+        assert!(
+            snapshot
+                .dirty_scopes
+                .iter()
+                .any(|scope| scope == "stress-lab.lab.signals.scope"),
+            "signals live scope should be dirty on the post-switch frame: {snapshot:?}"
+        );
+    }
+
+    #[test]
+    fn signals_tabs_indicator_animates_between_adjacent_tabs() {
+        fn sample_transition(start_tab: i32, hit_id: &str) -> (f32, f32, f32) {
+            let state = State::new(LabState {
+                tab: start_tab,
+                ..LabState::default()
+            });
+            let mut driver = UiTestDriver::new("stress-lab", WINDOW_W as f32, WINDOW_H as f32);
+
+            compose_lab_driver_at(&mut driver, &state, Vec::new(), 0.0);
+            driver.runtime_mut().tick_animations(0.0);
+            let start_draw = rect_draw_x(driver.runtime(), "signals.tabs.indicator")
+                .expect("tabs indicator should draw before click");
+
+            let trace = driver
+                .click(hit_id)
+                .expect("target tab hit rect should exist");
+            let dirty_scopes = state.take_dirty_scopes();
+            assert!(!dirty_scopes.is_empty(), "{trace}");
+            compose_lab_driver_at(&mut driver, &state, dirty_scopes, 0.0);
+            driver.runtime_mut().tick_animations(0.0);
+            let after_compose_draw = rect_draw_x(driver.runtime(), "signals.tabs.indicator")
+                .expect("tabs indicator should draw after click");
+            let target = driver
+                .find("signals.tabs.indicator")
+                .expect("tabs indicator target should exist after click")
+                .frame
+                .x;
+
+            driver.runtime_mut().tick_animations(1.0 / 60.0);
+            let after_tick_draw = rect_draw_x(driver.runtime(), "signals.tabs.indicator")
+                .expect("tabs indicator should draw after animation tick");
+
+            eprintln!(
+                "[tabs indicator] start_tab={start_tab} hit={hit_id} start_draw={start_draw:.3} after_compose={after_compose_draw:.3} after_tick={after_tick_draw:.3} target={target:.3} snapshot={:?}",
+                driver.runtime().debug_snapshot_current()
+            );
+
+            (start_draw, after_compose_draw, after_tick_draw)
+        }
+
+        let signal_to_chart = sample_transition(0, "signals.tabs.hit.1");
+        let chart_to_motion = sample_transition(1, "signals.tabs.hit.2");
+
+        assert!(
+            signal_to_chart.2 > signal_to_chart.1,
+            "Signals -> Charts indicator should move after one tick: {signal_to_chart:?}"
+        );
+        assert!(
+            chart_to_motion.2 > chart_to_motion.1,
+            "Charts -> Motion indicator should move after one tick: {chart_to_motion:?}"
+        );
+    }
+
+    #[test]
+    fn interaction_segment_click_starts_indicator_animation_and_ticks_forward() {
+        let state = State::new(LabState {
+            segment: 0,
+            ..LabState::default()
+        });
+        let mut driver = UiTestDriver::new("stress-lab", WINDOW_W as f32, WINDOW_H as f32);
+
+        compose_lab_driver(&mut driver, &state, Vec::new());
+        driver.runtime_mut().tick_animations(0.0);
+        let start_target = driver
+            .find("interactions.segment.indicator")
+            .expect("segment indicator should exist before click")
+            .frame;
+        let start_draw = rect_draw_x(driver.runtime(), "interactions.segment.indicator")
+            .expect("segment indicator should draw before click");
+
+        let trace = driver
+            .click("interactions.segment.hit.1")
+            .expect("odd segment hit rect should exist");
+        assert_eq!(state.read(|state| state.segment), 1, "{trace}");
+        let dirty_scopes = state.take_dirty_scopes();
+        assert_eq!(
+            dirty_scopes,
+            vec!["stress-lab.lab.interactions.scope".to_string()],
+            "{trace}"
+        );
+
+        compose_lab_driver(&mut driver, &state, dirty_scopes);
+        driver.runtime_mut().tick_animations(0.0);
+        let next_target = driver
+            .find("interactions.segment.indicator")
+            .expect("segment indicator should exist after click")
+            .frame;
+        let after_compose_draw = rect_draw_x(driver.runtime(), "interactions.segment.indicator")
+            .expect("segment indicator should draw after click");
+        let snapshot = driver.runtime().debug_snapshot_current();
+
+        assert!(
+            next_target.x > start_target.x,
+            "indicator target should move from mild to odd: start={start_target:?} next={next_target:?}"
+        );
+        assert!(
+            after_compose_draw < next_target.x,
+            "drawn indicator should initially lag behind target while animating: draw={after_compose_draw} target={}",
+            next_target.x
+        );
+        assert!(
+            snapshot.active_animation_count > 0,
+            "segment click should leave active animations: {snapshot:?}"
+        );
+
+        driver.runtime_mut().tick_animations(1.0 / 60.0);
+        let after_tick_draw = rect_draw_x(driver.runtime(), "interactions.segment.indicator")
+            .expect("segment indicator should draw after tick");
+        assert!(
+            after_tick_draw > after_compose_draw,
+            "indicator draw frame should move forward after a tick: before={after_compose_draw} after={after_tick_draw}"
+        );
+        assert!(
+            (after_tick_draw - start_draw).abs() > 0.001,
+            "indicator draw frame should no longer be frozen at the old position"
+        );
+    }
+
+    #[test]
+    fn interaction_segment_click_draws_odd_as_selected() {
+        let state = State::new(LabState {
+            segment: 0,
+            ..LabState::default()
+        });
+        let mut driver = UiTestDriver::new("stress-lab", WINDOW_W as f32, WINDOW_H as f32);
+
+        compose_lab_driver(&mut driver, &state, Vec::new());
+        driver.runtime_mut().tick_animations(0.0);
+        log_segment_draw_state("before click", &driver);
+
+        let trace = driver
+            .click("interactions.segment.hit.1")
+            .expect("odd segment hit rect should exist");
+        eprintln!("{trace}");
+        eprintln!(
+            "state.segment after click = {}",
+            state.read(|state| state.segment)
+        );
+
+        let dirty_scopes = state.take_dirty_scopes();
+        eprintln!("dirty scopes after click = {dirty_scopes:?}");
+        compose_lab_driver(&mut driver, &state, dirty_scopes);
+        driver.runtime_mut().tick_animations(0.0);
+        log_segment_draw_state("after compose", &driver);
+
+        for step in 1..=12 {
+            driver.runtime_mut().tick_animations(1.0 / 60.0);
+            if matches!(step, 1 | 3 | 6 | 12) {
+                log_segment_draw_state(&format!("after tick {step}"), &driver);
+            }
+        }
+
+        assert_eq!(state.read(|state| state.segment), 1);
+        for _ in 0..48 {
+            driver.runtime_mut().tick_animations(1.0 / 60.0);
+        }
+        log_segment_draw_state("after settle", &driver);
+        let indicator = rect_draw(driver.runtime(), "interactions.segment.indicator")
+            .expect("segment indicator should draw after settling");
+        let odd_hit = driver
+            .find("interactions.segment.hit.1")
+            .expect("odd segment hit rect should exist after settling")
+            .frame;
+        assert!(
+            indicator.frame.x > odd_hit.x && indicator.frame.x < odd_hit.right(),
+            "indicator highlight should be drawn over odd: indicator={:?} odd_hit={odd_hit:?}",
+            indicator.frame
+        );
+    }
+
+    fn rect_draw_x(runtime: &Runtime, id: &str) -> Option<f32> {
+        rect_draw(runtime, id).map(|rect| rect.frame.x)
+    }
+
+    fn rect_draw(runtime: &Runtime, id: &str) -> Option<sky_engine::ui::neo::expert::UiRectDraw> {
+        runtime.draw_list().commands().iter().find_map(|command| {
+            if let sky_engine::ui::neo::expert::UiDrawCommand::Rect(rect) = command {
+                (rect.id == format!("stress-lab.{id}")).then_some(rect.clone())
+            } else {
+                None
+            }
+        })
+    }
+
+    fn text_draw_color(runtime: &Runtime, id: &str) -> Option<Color> {
+        runtime.draw_list().commands().iter().find_map(|command| {
+            if let sky_engine::ui::neo::expert::UiDrawCommand::Text(text) = command {
+                (text.id == format!("stress-lab.{id}")).then_some(text.color)
+            } else {
+                None
+            }
+        })
+    }
+
+    fn log_segment_draw_state(label: &str, driver: &UiTestDriver) {
+        let runtime = driver.runtime();
+        let target = driver
+            .find("interactions.segment.indicator")
+            .map(|element| element.frame);
+        let indicator = rect_draw(runtime, "interactions.segment.indicator");
+        let mild = text_draw_color(runtime, "interactions.segment.label.0");
+        let odd = text_draw_color(runtime, "interactions.segment.label.1");
+        let loud = text_draw_color(runtime, "interactions.segment.label.2");
+        let snapshot = runtime.debug_snapshot_current();
+        eprintln!(
+            "[segment draw] {label}: target={target:?} indicator_frame={:?} indicator_color={:?} label_colors mild={mild:?} odd={odd:?} loud={loud:?} active_animations={} needs_render={} layout={:?}",
+            indicator.as_ref().map(|rect| rect.frame),
+            indicator.as_ref().map(|rect| rect.color),
+            snapshot.active_animation_count,
+            snapshot.needs_render,
+            snapshot.layout_mode
+        );
+    }
+
+    #[test]
+    fn live_scopes_rebuild_without_state_dirty() {
+        let state = State::new(LabState::default());
+        let mut runtime = Runtime::new("stress-lab");
+
+        compose_lab(&mut runtime, &state, Vec::new());
+        compose_lab(&mut runtime, &state, Vec::new());
+
+        assert!(runtime.scope_compose_stats().built >= 2);
+        assert!(runtime.scope_compose_stats().reused >= 1);
+    }
 }

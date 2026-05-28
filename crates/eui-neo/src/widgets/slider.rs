@@ -8,7 +8,7 @@ use rustc_hash::FxHashMap;
 use crate::Color;
 
 use super::super::{
-    AnimProperty, Binding, DragEvent, LayoutRect, PointerEvent, Response, Transition, Ui,
+    AnimProperty, DragEvent, LayoutRect, PointerEvent, Response, Signal, Transition, Ui,
 };
 use super::theme::{self, ThemeColorTokens};
 
@@ -81,9 +81,9 @@ impl<'ui> SliderBuilder<'ui> {
         self
     }
 
-    pub fn value_bind<T: 'static>(self, binding: Binding<T, f32>) -> Self {
-        let value = binding.get();
-        self.value(value).on_change(move |next| binding.set(next))
+    pub fn signal<T: 'static>(self, signal: Signal<T, f32>) -> Self {
+        let value = signal.watch(self.ui);
+        self.value(value).on_change(move |next| signal.set(next))
     }
 
     pub fn style(mut self, value: SliderStyle) -> Self {

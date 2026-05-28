@@ -14,6 +14,7 @@ pub mod image;
 pub mod input;
 pub(crate) mod layout;
 pub mod line_chart;
+pub mod nav_group;
 pub mod panel;
 pub mod pie_chart;
 pub mod popover;
@@ -44,6 +45,7 @@ pub use dropdown::{dropdown, DropdownBuilder, DropdownStyle};
 pub use image::{image, image_with_style, image_with_theme, ImageStyle};
 pub use input::{input, InputBuilder, InputStyle};
 pub use line_chart::{line_chart, LineChartBuilder, LineChartStyle};
+pub use nav_group::{nav_group, BoundNavGroupBuilder, NavGroupBuilder};
 pub use panel::{panel, panel_with_style, panel_with_theme, PanelStyle};
 pub use pie_chart::{pie_chart, PieChartBuilder, PieChartStyle};
 pub use popover::{popover, PopoverBuilder, PopoverPlacement};
@@ -75,14 +77,14 @@ mod tests {
     use super::scroll::scrollbar;
     use super::{
         badge, button, checkbox, context_menu, date_picker, dialog, dropdown, image_with_style,
-        input, popover, progress, radio, segmented, skin_button, slider, switch, tabs, time_picker,
-        toast, PopoverPlacement,
+        input, nav_group, popover, progress, radio, segmented, skin_button, slider, switch, tabs,
+        time_picker, toast, PopoverPlacement,
     };
     use crate::expert::UiDrawCommand;
     use crate::Color;
     use crate::{
-        ButtonSkin, EdgeInsets, FontRef, ImageFit, ImageRef, KeyboardEvent, NeoSkin, NeoState,
-        PointerEvent, Runtime, ScrollEvent, Size, Slice,
+        ButtonSkin, EdgeInsets, FontRef, ImageFit, ImageRef, KeyboardEvent, NeoSkin, PointerEvent,
+        Runtime, ScrollEvent, Size, Slice, State,
     };
     use std::cell::Cell;
     use std::rc::Rc;
@@ -122,6 +124,22 @@ mod tests {
         assert_eq!(runtime.find("filter").unwrap().frame.width, 96.0);
         assert_eq!(runtime.find("primary").unwrap().frame.width, 312.0);
         assert_eq!(runtime.find("primary.bg").unwrap().frame.width, 312.0);
+    }
+
+    #[test]
+    fn button_selected_promotes_secondary_theme_to_primary_visual_target() {
+        let tokens = super::theme::dark_theme_colors();
+        let mut runtime = Runtime::new("page");
+        runtime.compose(240.0, 80.0, move |ui, _| {
+            button(ui, "page")
+                .size(120.0, 40.0)
+                .text("Page")
+                .secondary_theme(tokens)
+                .selected(true)
+                .build();
+        });
+
+        assert_eq!(runtime.find("page.bg").unwrap().color, tokens.primary);
     }
 
     #[test]
@@ -230,17 +248,17 @@ mod tests {
     }
 
     #[test]
-    fn checkbox_binding_writes_clicked_value_to_state() {
-        let state = NeoState::new(BoundWidgetState::default());
+    fn checkbox_signal_writes_clicked_value_to_state() {
+        let state = State::new(BoundWidgetState::default());
         let compose_state = state.clone();
         let mut runtime = Runtime::new("page");
         runtime.compose(240.0, 80.0, move |ui, _| {
-            let checked =
-                compose_state.bind(|state| state.checked, |state, value| state.checked = value);
-            checkbox(ui, "sound")
-                .checked_bind(checked)
-                .text("Sound")
-                .build();
+            let checked = compose_state.signal(
+                "test.signal",
+                |state| state.checked,
+                |state, value| state.checked = value,
+            );
+            checkbox(ui, "sound").signal(checked).text("Sound").build();
         });
 
         runtime.update_pointer(PointerEvent::pressed_at(2.0, 2.0));
@@ -250,17 +268,17 @@ mod tests {
     }
 
     #[test]
-    fn switch_binding_writes_clicked_value_to_state() {
-        let state = NeoState::new(BoundWidgetState::default());
+    fn switch_signal_writes_clicked_value_to_state() {
+        let state = State::new(BoundWidgetState::default());
         let compose_state = state.clone();
         let mut runtime = Runtime::new("page");
         runtime.compose(240.0, 80.0, move |ui, _| {
-            let checked =
-                compose_state.bind(|state| state.checked, |state, value| state.checked = value);
-            switch(ui, "night")
-                .checked_bind(checked)
-                .label("Night")
-                .build();
+            let checked = compose_state.signal(
+                "test.signal",
+                |state| state.checked,
+                |state, value| state.checked = value,
+            );
+            switch(ui, "night").signal(checked).label("Night").build();
         });
 
         runtime.update_pointer(PointerEvent::pressed_at(2.0, 2.0));
@@ -270,16 +288,19 @@ mod tests {
     }
 
     #[test]
-    fn slider_binding_writes_pressed_value_to_state() {
-        let state = NeoState::new(BoundWidgetState::default());
+    fn slider_signal_writes_pressed_value_to_state() {
+        let state = State::new(BoundWidgetState::default());
         let compose_state = state.clone();
         let mut runtime = Runtime::new("page");
         runtime.compose(320.0, 80.0, move |ui, _| {
-            let slider_value =
-                compose_state.bind(|state| state.slider, |state, value| state.slider = value);
+            let slider_value = compose_state.signal(
+                "test.signal",
+                |state| state.slider,
+                |state, value| state.slider = value,
+            );
             slider(ui, "volume")
                 .size(200.0, 20.0)
-                .value_bind(slider_value)
+                .signal(slider_value)
                 .build();
         });
 
@@ -289,16 +310,17 @@ mod tests {
     }
 
     #[test]
-    fn input_binding_writes_text_events_to_state() {
-        let state = NeoState::new(BoundWidgetState::default());
+    fn input_signal_writes_text_events_to_state() {
+        let state = State::new(BoundWidgetState::default());
         let compose_state = state.clone();
         let mut runtime = Runtime::new("page");
         runtime.compose(320.0, 120.0, move |ui, _| {
-            let text = compose_state.bind_clone(
+            let text = compose_state.signal(
+                "test.signal",
                 |state| state.text.clone(),
                 |state, value| state.text = value,
             );
-            input(ui, "name").text_bind(text).build();
+            input(ui, "name").text_signal(text).build();
         });
 
         runtime.update_pointer(PointerEvent::pressed_at(4.0, 4.0));
@@ -365,20 +387,23 @@ mod tests {
     }
 
     #[test]
-    fn scroll_y_binding_writes_wheel_offset_to_state() {
-        let state = NeoState::new(BoundWidgetState {
+    fn scroll_y_signal_writes_wheel_offset_to_state() {
+        let state = State::new(BoundWidgetState {
             offset: 24.0,
             ..BoundWidgetState::default()
         });
         let compose_state = state.clone();
         let mut runtime = Runtime::new("page");
         runtime.compose(160.0, 120.0, move |ui, _| {
-            let offset =
-                compose_state.bind(|state| state.offset, |state, value| state.offset = value);
+            let offset = compose_state.signal(
+                "test.signal",
+                |state| state.offset,
+                |state, value| state.offset = value,
+            );
             ui.scroll_y("list")
                 .size(120.0, 80.0)
                 .content_height(200.0)
-                .offset_bind(offset)
+                .offset_signal(offset)
                 .step(10.0)
                 .content(|ui| {
                     ui.rect("row.a").size(Size::fill(), 30.0).build();
@@ -677,19 +702,20 @@ mod tests {
     }
 
     #[test]
-    fn segmented_binding_writes_selected_index_to_state() {
-        let state = NeoState::new(BoundWidgetState::default());
+    fn segmented_signal_writes_selected_index_to_state() {
+        let state = State::new(BoundWidgetState::default());
         let compose_state = state.clone();
         let mut runtime = Runtime::new("page");
         runtime.compose(320.0, 80.0, move |ui, _| {
-            let selected = compose_state.bind(
+            let selected = compose_state.signal(
+                "test.signal",
                 |state| state.selected,
                 |state, value| state.selected = value,
             );
             segmented(ui, "mode")
                 .size(180.0, 30.0)
                 .items(["A", "B", "C"])
-                .selected_bind(selected)
+                .signal(selected)
                 .build();
         });
 
@@ -700,19 +726,20 @@ mod tests {
     }
 
     #[test]
-    fn tabs_binding_writes_selected_index_to_state() {
-        let state = NeoState::new(BoundWidgetState::default());
+    fn tabs_signal_writes_selected_index_to_state() {
+        let state = State::new(BoundWidgetState::default());
         let compose_state = state.clone();
         let mut runtime = Runtime::new("page");
         runtime.compose(360.0, 80.0, move |ui, _| {
-            let selected = compose_state.bind(
+            let selected = compose_state.signal(
+                "test.signal",
                 |state| state.selected,
                 |state, value| state.selected = value,
             );
             tabs(ui, "tabs")
                 .size(240.0, 40.0)
                 .items(["Home", "Logs", "About"])
-                .selected_bind(selected)
+                .signal(selected)
                 .build();
         });
 
@@ -723,12 +750,40 @@ mod tests {
     }
 
     #[test]
-    fn radio_binding_writes_selected_value_to_state() {
-        let state = NeoState::new(BoundWidgetState::default());
+    fn nav_group_signal_writes_selected_value_to_state() {
+        let state = State::new(BoundWidgetState::default());
+        let compose_state = state.clone();
+        let mut runtime = Runtime::new("page");
+        runtime.compose(260.0, 220.0, move |ui, _| {
+            let selected = compose_state.signal(
+                "test.nav",
+                |state| state.selected,
+                |state, value| state.selected = value,
+            );
+            nav_group(ui, "nav")
+                .size(180.0, 150.0)
+                .signal(selected)
+                .item(0, "Overview")
+                .item(1, "Tasks")
+                .item(2, "Settings")
+                .build();
+        });
+
+        runtime.update_pointer(PointerEvent::pressed_at(8.0, 74.0));
+        runtime.update_pointer(PointerEvent::released_at(8.0, 74.0));
+
+        assert_eq!(state.read(|state| state.selected), 1);
+        assert_eq!(state.dirty_scopes(), vec!["page".to_string()]);
+    }
+
+    #[test]
+    fn radio_signal_writes_selected_value_to_state() {
+        let state = State::new(BoundWidgetState::default());
         let compose_state = state.clone();
         let mut runtime = Runtime::new("page");
         runtime.compose(240.0, 80.0, move |ui, _| {
-            let selected = compose_state.bind(
+            let selected = compose_state.signal(
+                "test.signal",
                 |state| state.selected == 2,
                 |state, value| {
                     if value {
@@ -738,7 +793,7 @@ mod tests {
             );
             radio(ui, "choice.c")
                 .size(120.0, 28.0)
-                .selected_bind(selected)
+                .signal(selected)
                 .text("Choice C")
                 .build();
         });
@@ -750,8 +805,8 @@ mod tests {
     }
 
     #[test]
-    fn dropdown_bindings_write_open_and_selection_to_state() {
-        let state = NeoState::new(BoundWidgetState {
+    fn dropdown_signals_write_open_and_selection_to_state() {
+        let state = State::new(BoundWidgetState {
             open: true,
             selected: 0,
             ..BoundWidgetState::default()
@@ -759,15 +814,20 @@ mod tests {
         let compose_state = state.clone();
         let mut runtime = Runtime::new("page");
         runtime.compose(320.0, 220.0, move |ui, _| {
-            let selected = compose_state.bind(
+            let selected = compose_state.signal(
+                "test.signal",
                 |state| state.selected,
                 |state, value| state.selected = value,
             );
-            let open = compose_state.bind(|state| state.open, |state, value| state.open = value);
+            let open = compose_state.signal(
+                "test.signal",
+                |state| state.open,
+                |state, value| state.open = value,
+            );
             dropdown(ui, "quality")
                 .items(["Low", "Medium", "High"])
-                .selected_bind(selected)
-                .open_bind(open)
+                .value_signal(selected)
+                .open_signal(open)
                 .build();
         });
 
@@ -873,8 +933,8 @@ mod tests {
     }
 
     #[test]
-    fn date_picker_binding_writes_done_value_to_state() {
-        let state = NeoState::new(BoundWidgetState {
+    fn date_picker_signal_writes_done_value_to_state() {
+        let state = State::new(BoundWidgetState {
             open: true,
             date: [2026, 4, 28],
             ..BoundWidgetState::default()
@@ -882,11 +942,19 @@ mod tests {
         let compose_state = state.clone();
         let mut runtime = Runtime::new("page");
         runtime.compose(480.0, 360.0, move |ui, _| {
-            let open = compose_state.bind(|state| state.open, |state, value| state.open = value);
-            let date = compose_state.bind(|state| state.date, |state, value| state.date = value);
+            let open = compose_state.signal(
+                "test.signal",
+                |state| state.open,
+                |state, value| state.open = value,
+            );
+            let date = compose_state.signal(
+                "test.signal",
+                |state| state.date,
+                |state, value| state.date = value,
+            );
             date_picker(ui, "date")
-                .open_bind(open)
-                .date_bind(date)
+                .open_signal(open)
+                .value_signal(date)
                 .screen(480.0, 360.0)
                 .build();
         });
@@ -901,8 +969,8 @@ mod tests {
     }
 
     #[test]
-    fn time_picker_binding_writes_done_value_to_state() {
-        let state = NeoState::new(BoundWidgetState {
+    fn time_picker_signal_writes_done_value_to_state() {
+        let state = State::new(BoundWidgetState {
             open: true,
             time: [9, 30],
             ..BoundWidgetState::default()
@@ -910,11 +978,19 @@ mod tests {
         let compose_state = state.clone();
         let mut runtime = Runtime::new("page");
         runtime.compose(420.0, 340.0, move |ui, _| {
-            let open = compose_state.bind(|state| state.open, |state, value| state.open = value);
-            let time = compose_state.bind(|state| state.time, |state, value| state.time = value);
+            let open = compose_state.signal(
+                "test.signal",
+                |state| state.open,
+                |state, value| state.open = value,
+            );
+            let time = compose_state.signal(
+                "test.signal",
+                |state| state.time,
+                |state, value| state.time = value,
+            );
             time_picker(ui, "time")
-                .open_bind(open)
-                .time_bind(time)
+                .open_signal(open)
+                .value_signal(time)
                 .screen(420.0, 340.0)
                 .build();
         });

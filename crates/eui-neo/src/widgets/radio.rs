@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use crate::Color;
 
-use super::super::{AnimProperty, Binding, Response, Transition, Ui, VerticalAlign};
+use super::super::{AnimProperty, Response, Signal, Transition, Ui, VerticalAlign};
 use super::text::measure_text_width;
 use super::theme::{self, ThemeColorTokens};
 
@@ -89,18 +89,14 @@ impl<'ui> RadioBuilder<'ui> {
         self
     }
 
-    pub fn selected_bind<T: 'static>(self, binding: Binding<T, bool>) -> Self {
-        let selected = binding.get();
+    pub fn signal<T: 'static>(self, signal: Signal<T, bool>) -> Self {
+        let selected = signal.watch(self.ui);
         self.selected(selected)
-            .on_change(move |next| binding.set(next))
+            .on_change(move |next| signal.set(next))
     }
 
     pub fn checked(self, value: bool) -> Self {
         self.selected(value)
-    }
-
-    pub fn checked_bind<T: 'static>(self, binding: Binding<T, bool>) -> Self {
-        self.selected_bind(binding)
     }
 
     pub fn text(mut self, value: impl Into<String>) -> Self {

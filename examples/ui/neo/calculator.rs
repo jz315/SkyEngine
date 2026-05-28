@@ -14,7 +14,7 @@ use sky_engine::render::{
 };
 use sky_engine::ui::neo::widgets;
 use sky_engine::ui::neo::widgets::theme;
-use sky_engine::ui::neo::{Align, Color, HorizontalAlign, NeoState, Size, Ui};
+use sky_engine::ui::neo::{Align, Color, HorizontalAlign, Size, State, Ui};
 
 const WINDOW_W: u32 = 520;
 const WINDOW_H: u32 = 720;
@@ -25,7 +25,7 @@ const KEY_H: f32 = 66.0;
 const KEY_GAP: f32 = 10.0;
 
 struct NeoCalculatorDemo {
-    state: NeoState<CalculatorState>,
+    state: State<CalculatorState>,
     screenshot: ScreenshotProbe,
 }
 
@@ -60,7 +60,7 @@ struct CalculatorState {
 impl Default for NeoCalculatorDemo {
     fn default() -> Self {
         Self {
-            state: NeoState::new(CalculatorState::default()),
+            state: State::new(CalculatorState::default()),
             screenshot: ScreenshotProbe::default(),
         }
     }
@@ -259,7 +259,7 @@ fn draw_calculator(
     ui: &mut Ui,
     screen_width: f32,
     screen_height: f32,
-    state: &NeoState<CalculatorState>,
+    state: &State<CalculatorState>,
     snapshot: &CalculatorSnapshot,
 ) {
     ui.rect("background")
@@ -333,7 +333,7 @@ fn display_panel(ui: &mut Ui, snapshot: &CalculatorSnapshot) {
     });
 }
 
-fn key_grid(ui: &mut Ui, state: &NeoState<CalculatorState>, pending: Option<Operator>) {
+fn key_grid(ui: &mut Ui, state: &State<CalculatorState>, pending: Option<Operator>) {
     let rows: [[Key; 4]; 5] = [
         [
             Key::Action("C", CalcAction::Clear),
@@ -401,7 +401,7 @@ enum CalcAction {
     Backspace,
 }
 
-fn draw_key(ui: &mut Ui, state: &NeoState<CalculatorState>, key: Key, pending: Option<Operator>) {
+fn draw_key(ui: &mut Ui, state: &State<CalculatorState>, key: Key, pending: Option<Operator>) {
     let id = match key {
         Key::Digit(value) => format!("key.{value}"),
         Key::Operator(label, _) | Key::Action(label, _) => format!("key.{label}"),

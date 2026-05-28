@@ -18,7 +18,7 @@ use sky_engine::render::{
 };
 use sky_engine::ui::neo::widgets;
 use sky_engine::ui::neo::{
-    AnimProperty, Color, Ease, HorizontalAlign, NeoState, Transition, Ui, VerticalAlign,
+    AnimProperty, Color, Ease, HorizontalAlign, State, Transition, Ui, VerticalAlign,
 };
 
 const WINDOW_W: u32 = 1280;
@@ -26,7 +26,7 @@ const WINDOW_H: u32 = 720;
 
 struct NeoGameHudDemo {
     time: f32,
-    state: NeoState<GameUiState>,
+    state: State<GameUiState>,
     screenshot: ScreenshotProbe,
 }
 
@@ -50,7 +50,7 @@ impl Default for NeoGameHudDemo {
     fn default() -> Self {
         Self {
             time: 0.0,
-            state: NeoState::new(GameUiState::default()),
+            state: State::new(GameUiState::default()),
             screenshot: ScreenshotProbe::default(),
         }
     }
@@ -128,7 +128,7 @@ fn draw_demo(
     screen_w: f32,
     screen_h: f32,
     time: f32,
-    state: &NeoState<GameUiState>,
+    state: &State<GameUiState>,
     snapshot: &GameSnapshot,
 ) {
     draw_scene_backdrop(ui, screen_w, screen_h, time);
@@ -199,7 +199,7 @@ fn draw_scene_backdrop(ui: &mut Ui, screen_w: f32, screen_h: f32, time: f32) {
         .build();
 }
 
-fn draw_view_switch(ui: &mut Ui, screen_w: f32, state: &NeoState<GameUiState>, page: i32) {
+fn draw_view_switch(ui: &mut Ui, screen_w: f32, state: &State<GameUiState>, page: i32) {
     let switch_state = state.clone();
     ui.stack("switch.wrap")
         .position((screen_w - 292.0) * 0.5, 24.0)
@@ -221,7 +221,7 @@ fn draw_hud(
     screen_w: f32,
     screen_h: f32,
     _time: f32,
-    state: &NeoState<GameUiState>,
+    state: &State<GameUiState>,
     snapshot: &GameSnapshot,
 ) {
     draw_minimap(ui);
@@ -336,7 +336,7 @@ fn quest_line(ui: &mut Ui, id: &str, y: f32, text: &str, active: bool) {
         .build();
 }
 
-fn draw_party(ui: &mut Ui, screen_w: f32, state: &NeoState<GameUiState>, active: usize) {
+fn draw_party(ui: &mut Ui, screen_w: f32, state: &State<GameUiState>, active: usize) {
     const MEMBERS: [(&str, &str, Color); 4] = [
         ("Astra", "Anemo", c(0.340, 0.900, 0.780, 1.0)),
         ("Lyra", "Pyro", c(1.000, 0.470, 0.300, 1.0)),
@@ -511,7 +511,7 @@ fn draw_commands(
     ui: &mut Ui,
     screen_w: f32,
     screen_h: f32,
-    state: &NeoState<GameUiState>,
+    state: &State<GameUiState>,
     snapshot: &GameSnapshot,
 ) {
     ui.stack("commands")
@@ -565,7 +565,7 @@ fn command_button(
     key: &str,
     label: &str,
     ready: bool,
-    state: &NeoState<GameUiState>,
+    state: &State<GameUiState>,
 ) {
     let click_state = state.clone();
     let scale = if ready { 1.06 } else { 1.0 };
@@ -625,7 +625,7 @@ fn draw_inventory(
     ui: &mut Ui,
     screen_w: f32,
     screen_h: f32,
-    state: &NeoState<GameUiState>,
+    state: &State<GameUiState>,
     snapshot: &GameSnapshot,
 ) {
     let panel_w = (screen_w - 96.0).min(980.0);

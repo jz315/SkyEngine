@@ -20,7 +20,7 @@ pub mod eui {
     pub use eui_neo::*;
 }
 
-pub use api::{compose, open_window, register_skin};
+pub use api::{compose, compose_state, open_window, register_skin};
 pub use backend::NeoUiBackend;
 pub use config::{IntoNeoClearColor, NeoUiConfig, NeoWindowConfig};
 pub use eui_neo::expert;

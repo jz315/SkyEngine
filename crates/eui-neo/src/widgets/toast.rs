@@ -6,7 +6,7 @@ use std::rc::Rc;
 use crate::Color;
 
 use super::super::{
-    AnimProperty, Binding, HorizontalAlign, Response, Shadow, Transition, Ui, VerticalAlign,
+    AnimProperty, HorizontalAlign, Response, Shadow, Signal, Transition, Ui, VerticalAlign,
 };
 use super::theme::{self, ThemeColorTokens};
 
@@ -93,13 +93,12 @@ impl<'ui> ToastBuilder<'ui> {
         self
     }
 
-    pub fn visible_bind<T: 'static>(self, binding: Binding<T, bool>) -> Self {
-        self.visible(binding.get())
-            .on_dismiss({
-                let binding = binding.clone();
-                move || binding.set(false)
-            })
-            .on_auto_dismiss(move || binding.set(false))
+    pub fn visible_signal<T: 'static>(self, signal: Signal<T, bool>) -> Self {
+        let value = signal.watch(self.ui);
+        let dismiss_signal = signal.clone();
+        self.visible(value)
+            .on_dismiss(move || dismiss_signal.set(false))
+            .on_auto_dismiss(move || signal.set(false))
     }
 
     pub fn screen(mut self, width: f32, height: f32) -> Self {

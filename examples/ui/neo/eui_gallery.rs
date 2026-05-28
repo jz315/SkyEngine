@@ -23,8 +23,8 @@ use sky_engine::render::{
 use sky_engine::ui::neo::widgets;
 use sky_engine::ui::neo::widgets::theme::{self, PageVisualTokens, ThemeColorTokens};
 use sky_engine::ui::neo::{
-    bind, bind_array, bind_clamped, bind_clone, bind_eq, bind_max, open_window, Align,
-    AnimProperty, Binding, Color, Ease, HorizontalAlign, NeoState, NeoWindowConfig, Transition, Ui,
+    open_window, Align, AnimProperty, Color, Ease, HorizontalAlign, NeoWindowConfig, Signal, State,
+    Transition, Ui,
 };
 
 const WINDOW_W: u32 = 1600;
@@ -43,6 +43,73 @@ const PAGE_TITLES: [&str; 6] = [
     "About",
 ];
 
+macro_rules! signal {
+    ($state:expr, $field:ident) => {
+        $state.signal(
+            concat!("eui-gallery.", stringify!($field)),
+            |state| state.$field,
+            |state, value| state.$field = value,
+        )
+    };
+}
+
+macro_rules! clone_signal {
+    ($state:expr, $field:ident) => {
+        $state.signal(
+            concat!("eui-gallery.", stringify!($field)),
+            |state| state.$field.clone(),
+            |state, value| state.$field = value,
+        )
+    };
+}
+
+macro_rules! clamped_signal {
+    ($state:expr, $field:ident, $min:expr, $max:expr) => {
+        $state.signal(
+            concat!("eui-gallery.", stringify!($field)),
+            |state| state.$field,
+            |state, value| state.$field = value.clamp($min, $max),
+        )
+    };
+}
+
+macro_rules! max_signal {
+    ($state:expr, $field:ident, $min:expr) => {
+        $state.signal(
+            concat!("eui-gallery.", stringify!($field)),
+            |state| state.$field,
+            |state, value| state.$field = value.max($min),
+        )
+    };
+}
+
+macro_rules! eq_signal {
+    ($state:expr, $field:ident, $value:expr) => {
+        $state.signal(
+            concat!("eui-gallery.", stringify!($field), ".", stringify!($value)),
+            move |state| state.$field == $value,
+            move |state, selected| {
+                if selected {
+                    state.$field = $value;
+                }
+            },
+        )
+    };
+}
+
+macro_rules! array_signal {
+    ($state:expr, [$($field:ident),+ $(,)?]) => {
+        $state.signal(
+            concat!("eui-gallery.", stringify!($($field),+)),
+            |state| [$(state.$field),+],
+            |state, value| {
+                let [$($field),+] = value;
+                $(state.$field = $field;)+
+            },
+        )
+    };
+}
+
 const PAGE_SUBTITLES: [&str; 6] = [
     "Basic controls, states and visual properties in one surface.",
     "Text scales, icon text and theme color tokens for developers.",
@@ -53,7 +120,7 @@ const PAGE_SUBTITLES: [&str; 6] = [
 ];
 
 struct EuiNeoGallery {
-    state: NeoState<GalleryState>,
+    state: State<GalleryState>,
     bing_text_rx: Option<Receiver<String>>,
     screenshot: ScreenshotProbe,
 }
@@ -103,7 +170,7 @@ struct GalleryState {
 impl Default for EuiNeoGallery {
     fn default() -> Self {
         Self {
-            state: NeoState::new(GalleryState::default()),
+            state: State::new(GalleryState::default()),
             bing_text_rx: None,
             screenshot: ScreenshotProbe::default(),
         }
@@ -273,7 +340,7 @@ struct GallerySnapshot {
 }
 
 impl GallerySnapshot {
-    fn from_state(value: &NeoState<GalleryState>) -> Self {
+    fn from_state(value: &State<GalleryState>) -> Self {
         value.read(Self::from_gallery_state)
     }
 
@@ -306,8 +373,9 @@ impl GallerySnapshot {
     }
 }
 
-fn bind_page_scroll(state: &NeoState<GalleryState>, page: usize) -> Binding<GalleryState, f32> {
-    state.bind(
+fn page_scroll_signal(state: &State<GalleryState>, page: usize) -> Signal<GalleryState, f32> {
+    state.signal(
+        format!("eui-gallery.page-scroll.{page}"),
         move |state| state.page_scroll[page],
         move |state, value| state.page_scroll[page] = value.max(0.0),
     )
@@ -317,7 +385,7 @@ fn draw_gallery(
     ui: &mut Ui,
     screen_width: f32,
     screen_height: f32,
-    state_store: &NeoState<GalleryState>,
+    state_store: &State<GalleryState>,
     state: &GallerySnapshot,
 ) {
     let tokens = theme_tokens(state);
@@ -389,7 +457,7 @@ fn draw_background(ui: &mut Ui, width: f32, height: f32, tokens: ThemeColorToken
 fn draw_sidebar(
     ui: &mut Ui,
     screen_height: f32,
-    state_store: &NeoState<GalleryState>,
+    state_store: &State<GalleryState>,
     state: &GallerySnapshot,
     tokens: ThemeColorTokens,
     motion: Transition,
@@ -537,7 +605,7 @@ fn draw_sidebar(
                         .shadow(12.0, 0.0, 4.0, shadow_color(tokens, 0.18, 0.08))
                         .transition(motion)
                         .on_click({
-                            let option_night = bind!(state_store, option_night);
+                            let option_night = signal!(state_store, option_night);
                             let next = !state.option_night;
                             move || option_night.set(next)
                         })
@@ -555,7 +623,7 @@ fn nav_item(
     state: &GallerySnapshot,
     tokens: ThemeColorTokens,
     motion: Transition,
-    state_store: &NeoState<GalleryState>,
+    state_store: &State<GalleryState>,
 ) {
     let selected = state.selected_page == page;
     let active_accent = tokens.primary;
@@ -601,7 +669,7 @@ fn nav_item(
         .shadow(12.0, 0.0, 4.0, shadow_color(tokens, 0.18, 0.08))
         .transition(motion)
         .on_click({
-            let selected_page = bind_clamped!(state_store, selected_page, 0, 5);
+            let selected_page = clamped_signal!(state_store, selected_page, 0, 5);
             move || selected_page.set(page)
         })
         .build();
@@ -611,7 +679,7 @@ fn draw_content(
     ui: &mut Ui,
     width: f32,
     height: f32,
-    state_store: &NeoState<GalleryState>,
+    state_store: &State<GalleryState>,
     state: &GallerySnapshot,
     tokens: ThemeColorTokens,
     page: PageVisualTokens,
@@ -626,7 +694,7 @@ fn draw_content(
     let content_height =
         page_body_content_height(state.selected_page, state.option_dense, body_height);
     let page_index = state.selected_page.clamp(0, 5) as usize;
-    let page_scroll = bind_page_scroll(state_store, page_index);
+    let page_scroll = page_scroll_signal(state_store, page_index);
     let max_scroll = (content_height - body_height).max(0.0);
     let scrollable = max_scroll > 0.0;
     let scroll_width = if scrollable { 8.0 } else { 0.0 };
@@ -680,7 +748,7 @@ fn draw_content(
                     .scrollbar_width(scroll_width)
                     .scrollbar_gap(scroll_gap)
                     .theme(tokens)
-                    .offset_bind(page_scroll.clone())
+                    .offset_signal(page_scroll.clone())
                     .content(|ui| match state.selected_page {
                         0 => draw_controls_page(
                             ui,
@@ -735,7 +803,7 @@ fn draw_content(
 fn draw_controls_page(
     ui: &mut Ui,
     width: f32,
-    state_store: &NeoState<GalleryState>,
+    state_store: &State<GalleryState>,
     state: &GallerySnapshot,
     tokens: ThemeColorTokens,
     page: PageVisualTokens,
@@ -747,7 +815,7 @@ fn draw_controls_page(
 fn draw_controls_page_originalish(
     ui: &mut Ui,
     width: f32,
-    state_store: &NeoState<GalleryState>,
+    state_store: &State<GalleryState>,
     state: &GallerySnapshot,
     tokens: ThemeColorTokens,
     page: PageVisualTokens,
@@ -833,7 +901,7 @@ fn draw_controls_page_originalish(
 
     widgets::input(ui, "control.input")
         .size(field_width, 44.0)
-        .text_bind(bind_clone!(state_store, sample_input))
+        .text_signal(clone_signal!(state_store, sample_input))
         .placeholder("Type here")
         .theme(tokens)
         .build();
@@ -848,14 +916,14 @@ fn draw_controls_page_originalish(
                 .content(|ui| {
                     widgets::checkbox(ui, "control.checkbox")
                         .size(component_card_width, 30.0)
-                        .checked_bind(bind!(state_store, sample_checked))
+                        .signal(signal!(state_store, sample_checked))
                         .text("Checkbox")
                         .theme(tokens)
                         .transition(motion)
                         .build();
                     widgets::switch(ui, "control.switch")
                         .size(component_card_width, 32.0)
-                        .checked_bind(bind!(state_store, sample_switch))
+                        .signal(signal!(state_store, sample_switch))
                         .text("Switch")
                         .theme(tokens)
                         .transition(motion)
@@ -872,7 +940,7 @@ fn draw_controls_page_originalish(
                         .text("Radio A")
                         .theme(tokens)
                         .transition(motion)
-                        .selected_bind(bind_eq!(state_store, sample_radio_a, true))
+                        .signal(eq_signal!(state_store, sample_radio_a, true))
                         .build();
                     widgets::radio(ui, "control.radio.b")
                         .size(component_card_width, 30.0)
@@ -880,7 +948,7 @@ fn draw_controls_page_originalish(
                         .text("Radio B")
                         .theme(tokens)
                         .transition(motion)
-                        .selected_bind(bind_eq!(state_store, sample_radio_a, false))
+                        .signal(eq_signal!(state_store, sample_radio_a, false))
                         .build();
                 });
         });
@@ -894,7 +962,7 @@ fn draw_controls_page_originalish(
 
     widgets::slider(ui, "control.slider")
         .size(field_width, 32.0)
-        .value_bind(bind_clamped!(state_store, sample_slider, 0.0, 1.0))
+        .signal(clamped_signal!(state_store, sample_slider, 0.0, 1.0))
         .theme(tokens)
         .transition(motion)
         .build();
@@ -907,14 +975,14 @@ fn draw_controls_page_originalish(
             widgets::segmented(ui, "control.segmented")
                 .size(((field_width - 18.0) * 0.5).max(180.0), 38.0)
                 .items(["Small", "Medium", "Large"])
-                .selected_bind(bind_max!(state_store, sample_segment, 0))
+                .signal(max_signal!(state_store, sample_segment, 0))
                 .theme(tokens)
                 .transition(motion)
                 .build();
             widgets::tabs(ui, "control.tabs")
                 .size(((field_width - 18.0) * 0.5).max(180.0), 42.0)
                 .items(["Overview", "Details", "Logs"])
-                .selected_bind(bind_max!(state_store, sample_tab, 0))
+                .signal(max_signal!(state_store, sample_tab, 0))
                 .theme(tokens)
                 .transition(motion)
                 .build();
@@ -1110,8 +1178,8 @@ fn draw_controls_page_originalish(
             widgets::dropdown(ui, "control.dropdown")
                 .size(dropdown_width, 44.0)
                 .items(["Draft", "Review", "Published", "Archived"])
-                .selected_bind(bind_max!(state_store, sample_dropdown, 0))
-                .open_bind(bind!(state_store, sample_dropdown_open))
+                .value_signal(max_signal!(state_store, sample_dropdown, 0))
+                .open_signal(signal!(state_store, sample_dropdown_open))
                 .theme(tokens)
                 .transition(motion)
                 .on_open_change({
@@ -1538,7 +1606,7 @@ fn draw_style_page(
 fn draw_animation_page(
     ui: &mut Ui,
     width: f32,
-    state_store: &NeoState<GalleryState>,
+    state_store: &State<GalleryState>,
     state: &GallerySnapshot,
     tokens: ThemeColorTokens,
 ) {
@@ -1577,7 +1645,7 @@ fn draw_animation_page(
                 page,
                 motion,
                 {
-                    let action = bind!(state_store, animation_moved);
+                    let action = signal!(state_store, animation_moved);
                     let next = !state.animation_moved;
                     move || action.set(next)
                 },
@@ -1593,7 +1661,7 @@ fn draw_animation_page(
                 page,
                 motion,
                 {
-                    let action = bind!(state_store, animation_rotated);
+                    let action = signal!(state_store, animation_rotated);
                     let next = !state.animation_rotated;
                     move || action.set(next)
                 },
@@ -1609,7 +1677,7 @@ fn draw_animation_page(
                 page,
                 motion,
                 {
-                    let action = bind!(state_store, animation_faded);
+                    let action = signal!(state_store, animation_faded);
                     let next = !state.animation_faded;
                     move || action.set(next)
                 },
@@ -1631,7 +1699,7 @@ fn draw_animation_page(
                 page,
                 motion,
                 {
-                    let action = bind!(state_store, animation_scaled);
+                    let action = signal!(state_store, animation_scaled);
                     let next = !state.animation_scaled;
                     move || action.set(next)
                 },
@@ -1647,7 +1715,7 @@ fn draw_animation_page(
                 page,
                 motion,
                 {
-                    let action = bind!(state_store, animation_rounded);
+                    let action = signal!(state_store, animation_rounded);
                     let next = !state.animation_rounded;
                     move || action.set(next)
                 },
@@ -1663,7 +1731,7 @@ fn draw_animation_page(
                 page,
                 motion,
                 {
-                    let action = bind!(state_store, animation_glowing);
+                    let action = signal!(state_store, animation_glowing);
                     let next = !state.animation_glowing;
                     move || action.set(next)
                 },
@@ -1738,7 +1806,7 @@ fn draw_animation_page(
 fn draw_settings_page(
     ui: &mut Ui,
     width: f32,
-    state_store: &NeoState<GalleryState>,
+    state_store: &State<GalleryState>,
     state: &GallerySnapshot,
     tokens: ThemeColorTokens,
     page: PageVisualTokens,
@@ -1759,7 +1827,7 @@ fn draw_settings_page(
                 tokens,
                 page,
                 motion,
-                bind!(state_store, option_dense),
+                signal!(state_store, option_dense),
             );
             setting_row(
                 ui,
@@ -1771,7 +1839,7 @@ fn draw_settings_page(
                 tokens,
                 page,
                 motion,
-                bind!(state_store, option_glass),
+                signal!(state_store, option_glass),
             );
             setting_row(
                 ui,
@@ -1783,7 +1851,7 @@ fn draw_settings_page(
                 tokens,
                 page,
                 motion,
-                bind!(state_store, option_motion),
+                signal!(state_store, option_motion),
             );
             setting_row(
                 ui,
@@ -1795,7 +1863,7 @@ fn draw_settings_page(
                 tokens,
                 page,
                 motion,
-                bind!(state_store, option_unlock_fps),
+                signal!(state_store, option_unlock_fps),
             );
             setting_row(
                 ui,
@@ -1807,7 +1875,7 @@ fn draw_settings_page(
                 tokens,
                 page,
                 motion,
-                bind!(state_store, option_night),
+                signal!(state_store, option_night),
             );
         });
 }
@@ -2160,12 +2228,12 @@ fn draw_overlays(
     ui: &mut Ui,
     screen_width: f32,
     screen_height: f32,
-    state_store: &NeoState<GalleryState>,
+    state_store: &State<GalleryState>,
     state: &GallerySnapshot,
     tokens: ThemeColorTokens,
 ) {
     widgets::dialog(ui, "feedback.dialog")
-        .open_bind(bind!(state_store, sample_dialog_open))
+        .open_signal(signal!(state_store, sample_dialog_open))
         .screen(screen_width, screen_height)
         .size(430.0, 228.0)
         .title("Dialog Component")
@@ -2174,8 +2242,8 @@ fn draw_overlays(
         .secondary_text("Cancel")
         .theme(tokens)
         .on_primary({
-            let dialog = bind!(state_store, sample_dialog_open);
-            let toast = bind!(state_store, sample_toast_visible);
+            let dialog = signal!(state_store, sample_dialog_open);
+            let toast = signal!(state_store, sample_toast_visible);
             let feedback_state = state_store.clone();
             move || {
                 dialog.set(false);
@@ -2184,7 +2252,7 @@ fn draw_overlays(
             }
         })
         .on_secondary({
-            let dialog = bind!(state_store, sample_dialog_open);
+            let dialog = signal!(state_store, sample_dialog_open);
             let feedback_state = state_store.clone();
             move || {
                 dialog.set(false);
@@ -2192,7 +2260,7 @@ fn draw_overlays(
             }
         })
         .on_close({
-            let dialog = bind!(state_store, sample_dialog_open);
+            let dialog = signal!(state_store, sample_dialog_open);
             let feedback_state = state_store.clone();
             move || {
                 dialog.set(false);
@@ -2202,7 +2270,7 @@ fn draw_overlays(
         .build();
 
     widgets::context_menu(ui, "feedback.context")
-        .open_bind(bind!(state_store, sample_context_menu_open))
+        .open_signal(signal!(state_store, sample_context_menu_open))
         .screen(screen_width, screen_height)
         .position(
             state.sample_context_menu_pos[0],
@@ -2211,8 +2279,8 @@ fn draw_overlays(
         .items(["Inspect", "Duplicate", "Copy Token", "Dismiss"])
         .theme(tokens)
         .on_select({
-            let open = bind!(state_store, sample_context_menu_open);
-            let toast = bind!(state_store, sample_toast_visible);
+            let open = signal!(state_store, sample_context_menu_open);
+            let toast = signal!(state_store, sample_toast_visible);
             let feedback_state = state_store.clone();
             move |index| {
                 open.set(false);
@@ -2230,7 +2298,7 @@ fn draw_overlays(
             }
         })
         .on_dismiss({
-            let open = bind!(state_store, sample_context_menu_open);
+            let open = signal!(state_store, sample_context_menu_open);
             let feedback_state = state_store.clone();
             move || {
                 open.set(false);
@@ -2241,10 +2309,10 @@ fn draw_overlays(
         .build();
 
     widgets::date_picker(ui, "feedback.datepicker")
-        .open_bind(bind!(state_store, sample_date_open))
+        .open_signal(signal!(state_store, sample_date_open))
         .screen(screen_width, screen_height)
         .size(420.0, 270.0)
-        .date_bind(bind_array!(
+        .value_signal(array_signal!(
             state_store,
             [sample_year, sample_month, sample_day]
         ))
@@ -2260,10 +2328,10 @@ fn draw_overlays(
         .build();
 
     widgets::time_picker(ui, "feedback.timepicker")
-        .open_bind(bind!(state_store, sample_time_open))
+        .open_signal(signal!(state_store, sample_time_open))
         .screen(screen_width, screen_height)
         .size(330.0, 264.0)
-        .time_bind(bind_array!(state_store, [sample_hour, sample_minute]))
+        .value_signal(array_signal!(state_store, [sample_hour, sample_minute]))
         .minute_step(5)
         .theme(tokens)
         .transition(page_transition(state.option_motion))
@@ -2277,10 +2345,10 @@ fn draw_overlays(
         .build();
 
     widgets::color_picker(ui, "feedback.colorpicker")
-        .open_bind(bind!(state_store, sample_color_open))
+        .open_signal(signal!(state_store, sample_color_open))
         .screen(screen_width, screen_height)
         .size(420.0, 320.0)
-        .value_bind(bind!(state_store, sample_color))
+        .value_signal(signal!(state_store, sample_color))
         .theme(tokens)
         .transition(page_transition(state.option_motion))
         .z(1200)
@@ -2293,7 +2361,7 @@ fn draw_overlays(
         .build();
 
     widgets::toast(ui, "feedback.toast")
-        .visible_bind(bind!(state_store, sample_toast_visible))
+        .visible_signal(signal!(state_store, sample_toast_visible))
         .screen(screen_width, screen_height)
         .duration(3.0)
         .title("Gallery Feedback")
@@ -2611,7 +2679,7 @@ fn setting_row(
     tokens: ThemeColorTokens,
     page: PageVisualTokens,
     motion: Transition,
-    binding: Binding<GalleryState, bool>,
+    signal: Signal<GalleryState, bool>,
 ) {
     let toggle_x = (width - 80.0).max(0.0);
     let text_width = (width - 132.0).max(0.0);
@@ -2634,8 +2702,8 @@ fn setting_row(
             .radius(16.0)
             .transition(motion)
             .on_click({
-                let binding = binding.clone();
-                move || binding.set(!enabled)
+                let signal = signal.clone();
+                move || signal.set(!enabled)
             })
             .build();
 
@@ -2667,7 +2735,7 @@ fn setting_row(
                 widgets::switch(ui, format!("{id}.switch"))
                     .size(46.0, 26.0)
                     .track_size(46.0, 26.0)
-                    .checked_bind(binding.clone())
+                    .signal(signal.clone())
                     .style(switch_style)
                     .transition(motion)
                     .build();

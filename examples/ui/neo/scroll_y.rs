@@ -16,13 +16,13 @@ use sky_engine::render::{
     Transform, TransparentPhase,
 };
 use sky_engine::ui::neo::widgets;
-use sky_engine::ui::neo::{Align, Color, NeoState, Size};
+use sky_engine::ui::neo::{Align, Color, Size, State};
 
 const WINDOW_W: u32 = 980;
 const WINDOW_H: u32 = 680;
 
 struct NeoScrollColumnDemo {
-    state: NeoState<DemoState>,
+    state: State<DemoState>,
     screenshot: ScreenshotProbe,
 }
 
@@ -34,7 +34,7 @@ struct DemoState {
 impl Default for NeoScrollColumnDemo {
     fn default() -> Self {
         Self {
-            state: NeoState::new(DemoState::default()),
+            state: State::new(DemoState::default()),
             screenshot: ScreenshotProbe::default(),
         }
     }
@@ -57,7 +57,8 @@ impl AppState for NeoScrollColumnDemo {
     fn update(&mut self, ctx: &mut FrameContext<'_>) {
         let state = self.state.clone();
         sky_engine::ui::neo::compose(ctx, move |ui, screen| {
-            let activity_scroll = state.bind(
+            let activity_scroll = state.signal(
+                "scroll-y.activity-scroll",
                 |state| state.activity_scroll,
                 |state, value| state.activity_scroll = value.max(0.0),
             );
@@ -119,7 +120,7 @@ impl AppState for NeoScrollColumnDemo {
                                 .content_padding_xy(16.0, 16.0)
                                 .gap(10.0)
                                 .scrollbar_gap(10.0)
-                                .offset_bind(activity_scroll)
+                                .offset_signal(activity_scroll)
                                 .content(|ui| {
                                     activity_row(
                                         ui,

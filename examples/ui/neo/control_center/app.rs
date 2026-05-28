@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use sky_engine::app::{AppState, FrameContext, SetupContext};
 use sky_engine::render::{CameraMarker, MainCamera, Projection, RenderSettings, Transform};
-use sky_engine::ui::neo::NeoState;
+use sky_engine::ui::neo::State;
 
 use crate::locale;
 use crate::model::{AppModel, Page};
@@ -11,7 +11,7 @@ use crate::view::{self, RuntimeInfo};
 
 #[derive(Debug)]
 pub struct NeoControlCenter {
-    state: NeoState<AppModel>,
+    state: State<AppModel>,
     uptime_seconds: f32,
     frame_count: u64,
     screenshot: ScreenshotProbe,
@@ -22,7 +22,7 @@ impl Default for NeoControlCenter {
         let mut model = AppModel::default();
         apply_screenshot_overrides(&mut model);
         Self {
-            state: NeoState::new(model),
+            state: State::new(model),
             uptime_seconds: 0.0,
             frame_count: 0,
             screenshot: ScreenshotProbe::default(),
@@ -84,18 +84,18 @@ impl AppState for NeoControlCenter {
         self.uptime_seconds += ctx.dt();
         self.frame_count = self.frame_count.saturating_add(1);
 
-        let snapshot = self.state.read(Clone::clone);
         let runtime = RuntimeInfo {
             uptime_seconds: self.uptime_seconds,
             frame_count: self.frame_count,
         };
         let ui_state = self.state.clone();
-        let view_snapshot = snapshot.clone();
 
-        sky_engine::ui::neo::compose(ctx, move |ui, screen| {
-            view::render(ui, screen, &ui_state, &view_snapshot, runtime);
+        sky_engine::ui::neo::compose_state(ctx, &self.state, move |ui, screen| {
+            let snapshot = ui_state.read(Clone::clone);
+            view::render(ui, screen, &ui_state, &snapshot, runtime);
         });
 
+        let snapshot = self.state.read(Clone::clone);
         ctx.set_title(&locale::window_title(
             snapshot.locale,
             &snapshot.project_name,

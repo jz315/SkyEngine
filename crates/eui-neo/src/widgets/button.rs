@@ -67,6 +67,9 @@ pub struct ButtonBuilder<'ui> {
     text: String,
     icon: String,
     style: ButtonStyle,
+    theme_tokens: Option<ThemeColorTokens>,
+    theme_primary: bool,
+    selected: bool,
     transition: Transition,
     on_click: Option<Box<dyn FnMut()>>,
     on_context_menu: Option<Box<dyn FnMut(PointerEvent, LayoutRect)>>,
@@ -87,6 +90,9 @@ impl<'ui> ButtonBuilder<'ui> {
             text: "Button".to_string(),
             icon: String::new(),
             style: ButtonStyle::default(),
+            theme_tokens: Some(theme::dark_theme_colors()),
+            theme_primary: true,
+            selected: false,
             transition: Transition::responsive(),
             on_click: None,
             on_context_menu: None,
@@ -197,11 +203,14 @@ impl<'ui> ButtonBuilder<'ui> {
 
     pub fn style(mut self, value: ButtonStyle) -> Self {
         self.style = value;
+        self.theme_tokens = None;
         self
     }
 
     pub fn theme(mut self, tokens: ThemeColorTokens, primary: bool) -> Self {
-        self.style = ButtonStyle::new(tokens, primary);
+        self.theme_tokens = Some(tokens);
+        self.theme_primary = primary;
+        self.apply_theme_style();
         self
     }
 
@@ -224,6 +233,12 @@ impl<'ui> ButtonBuilder<'ui> {
 
     pub fn opacity(mut self, value: f32) -> Self {
         self.style.opacity = value.clamp(0.0, 1.0);
+        self
+    }
+
+    pub fn selected(mut self, value: bool) -> Self {
+        self.selected = value;
+        self.apply_theme_style();
         self
     }
 
@@ -313,6 +328,12 @@ impl<'ui> ButtonBuilder<'ui> {
     {
         self.on_context_menu = Some(Box::new(callback));
         self
+    }
+
+    fn apply_theme_style(&mut self) {
+        if let Some(tokens) = self.theme_tokens {
+            self.style = ButtonStyle::new(tokens, self.theme_primary || self.selected);
+        }
     }
 
     pub fn build(mut self) -> Response {

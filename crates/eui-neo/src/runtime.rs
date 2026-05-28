@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::hash::{Hash, Hasher};
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -10,13 +10,17 @@ use smallvec::SmallVec;
 use super::dsl::UiCallbacks;
 use super::event::InteractionState;
 use super::fonts::FontRef;
-use super::layout::layout_roots_with_text_system;
+use super::layout::{layout_element_in_frame_with_text_system, layout_roots_with_text_system};
+use super::retained::{
+    begin_scope_frame, structurally_incompatible_dirty_scopes, FullLayoutReason, LayoutMode,
+    ScopeComposeEvent, ScopeComposeStats, ScopeRoots, ScopeSet,
+};
 use super::skin::{NeoSkin, SkinRegistry};
 use super::text_measure::{DefaultTextSystem, TextSystem};
 use super::Color;
 use super::{
-    AnimProperty, AnimatedValue, Border, DragEvent, Element, ElementKind, KeyboardEvent,
-    LayoutRect, Lerp, Motion, PointerEvent, Response, Screen, ScrollEvent, Shadow, SmoothedValue,
+    AnimProperty, AnimatedValue, Border, CacheCell, DragEvent, Element, ElementKind, KeyboardEvent,
+    LayoutRect, Motion, PointerEvent, Response, Screen, ScrollEvent, Shadow, SmoothedValue,
     Transform, Transition, Ui, UiClip,
 };
 /// Compact structure snapshot used to detect tree-level changes.
@@ -29,6 +33,45 @@ pub struct ElementSnapshot {
     pub clip_radius_bits: u32,
     pub child_count: usize,
     pub signature: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UiDebugSnapshot {
+    pub frame_index: u64,
+    pub screen: Screen,
+    pub dirty_scopes: Vec<String>,
+    pub live_scopes: Vec<String>,
+    pub scope_events: Vec<ScopeComposeEvent>,
+    pub scope_stats: ScopeComposeStats,
+    pub layout_mode: LayoutMode,
+    pub needs_render: bool,
+    pub needs_compose: bool,
+    pub full_redraw: bool,
+    pub focused_id: Option<String>,
+    pub active_id: Option<String>,
+    pub hovered_id: Option<String>,
+    pub active_animation_count: usize,
+}
+
+impl Default for UiDebugSnapshot {
+    fn default() -> Self {
+        Self {
+            frame_index: 0,
+            screen: Screen::default(),
+            dirty_scopes: Vec::new(),
+            live_scopes: Vec::new(),
+            scope_events: Vec::new(),
+            scope_stats: ScopeComposeStats::default(),
+            layout_mode: LayoutMode::Full(FullLayoutReason::ScopeReuseUnavailable),
+            needs_render: false,
+            needs_compose: false,
+            full_redraw: false,
+            focused_id: None,
+            active_id: None,
+            hovered_id: None,
+            active_animation_count: 0,
+        }
+    }
 }
 
 /// Complete host-provided input snapshot for one UI frame.
@@ -103,6 +146,8 @@ impl<R> FrameResult<R> {
 pub struct Runtime {
     page_id: String,
     roots: Vec<Element>,
+    scope_roots: ScopeRoots,
+    live_scopes: ScopeSet,
     structure: Vec<ElementSnapshot>,
     screen: Screen,
     interactions: FxHashMap<String, InteractionState>,
@@ -120,7 +165,11 @@ pub struct Runtime {
     needs_compose: bool,
     full_redraw: bool,
     text_system: Box<dyn TextSystem>,
-    draw_cache: RefCell<DrawListCache>,
+    draw_cache_revision: Cell<u64>,
+    draw_cache: RefCell<CacheCell<DrawListCacheKey, super::draw::UiDrawList>>,
+    scope_stats: ScopeComposeStats,
+    frame_index: u64,
+    debug_snapshot: UiDebugSnapshot,
 }
 
 impl std::fmt::Debug for Runtime {
@@ -173,17 +222,9 @@ struct ElementAnimation {
     transform: Option<AnimatedValue<Transform>>,
 }
 
-#[derive(Debug, Default)]
-struct DrawListCache {
-    valid: bool,
-    draw_list: super::draw::UiDrawList,
-}
-
-impl DrawListCache {
-    fn clear(&mut self) {
-        self.valid = false;
-        self.draw_list = super::draw::UiDrawList::default();
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DrawListCacheKey {
+    revision: u64,
 }
 
 impl ElementAnimation {
@@ -232,6 +273,8 @@ impl Runtime {
         Self {
             page_id: page_id.into(),
             roots: Vec::new(),
+            scope_roots: FxHashMap::default(),
+            live_scopes: FxHashSet::default(),
             structure: Vec::new(),
             screen: Screen::default(),
             interactions: FxHashMap::default(),
@@ -249,7 +292,11 @@ impl Runtime {
             needs_compose: false,
             full_redraw: true,
             text_system: Box::new(text_system),
-            draw_cache: RefCell::new(DrawListCache::default()),
+            draw_cache_revision: Cell::new(0),
+            draw_cache: RefCell::new(CacheCell::default()),
+            scope_stats: ScopeComposeStats::default(),
+            frame_index: 0,
+            debug_snapshot: UiDebugSnapshot::default(),
         }
     }
 
@@ -258,7 +305,9 @@ impl Runtime {
     }
 
     fn invalidate_draw_cache(&self) {
-        self.draw_cache.borrow_mut().clear();
+        self.draw_cache_revision
+            .set(self.draw_cache_revision.get().wrapping_add(1));
+        self.draw_cache.borrow_mut().invalidate();
     }
 
     fn request_render(&mut self) {
@@ -324,18 +373,20 @@ impl Runtime {
     }
 
     pub fn draw_list(&self) -> super::draw::UiDrawList {
-        {
-            let cache = self.draw_cache.borrow();
-            if cache.valid {
-                return cache.draw_list.clone();
-            }
-        }
-
-        let draw_list = super::draw::build_draw_list(self);
         let mut cache = self.draw_cache.borrow_mut();
-        cache.valid = true;
-        cache.draw_list = draw_list.clone();
-        draw_list
+        cache.get_or_rebuild(
+            DrawListCacheKey {
+                revision: self.draw_cache_revision.get(),
+            },
+            |draw_list| {
+                *draw_list = super::draw::build_draw_list(self);
+            },
+        );
+        cache.value().clone()
+    }
+
+    pub fn draw_debug_trace(&self) -> super::diagnostics::UiDrawDebugTrace {
+        super::diagnostics::UiDrawDebugTrace::from_runtime(self)
     }
 
     pub fn needs_render(&self) -> bool {
@@ -352,6 +403,30 @@ impl Runtime {
 
     pub fn clear_needs_compose(&mut self) {
         self.needs_compose = false;
+    }
+
+    pub fn scope_compose_stats(&self) -> ScopeComposeStats {
+        self.scope_stats
+    }
+
+    pub fn debug_snapshot(&self) -> &UiDebugSnapshot {
+        &self.debug_snapshot
+    }
+
+    pub fn debug_snapshot_current(&self) -> UiDebugSnapshot {
+        let mut snapshot = self.debug_snapshot.clone();
+        snapshot.needs_render = self.needs_render;
+        snapshot.needs_compose = self.needs_compose;
+        snapshot.full_redraw = self.full_redraw;
+        snapshot.focused_id = self.focused_id.clone();
+        snapshot.active_id = self.active_id.clone();
+        snapshot.hovered_id = hovered_id(&self.interactions);
+        snapshot.active_animation_count = self
+            .animations
+            .values()
+            .filter(|animation| animation.is_active())
+            .count();
+        snapshot
     }
 
     pub fn focused_id(&self) -> Option<&str> {
@@ -381,15 +456,57 @@ impl Runtime {
     }
 
     pub fn compose(&mut self, width: f32, height: f32, compose: impl FnOnce(&mut Ui, Screen)) {
+        self.compose_internal(width, height, None, compose);
+    }
+
+    pub fn compose_scoped(
+        &mut self,
+        width: f32,
+        height: f32,
+        dirty_scopes: impl IntoIterator<Item = String>,
+        compose: impl FnOnce(&mut Ui, Screen),
+    ) {
+        self.compose_internal(
+            width,
+            height,
+            Some(dirty_scopes.into_iter().collect()),
+            compose,
+        );
+    }
+
+    fn compose_internal(
+        &mut self,
+        width: f32,
+        height: f32,
+        dirty_scopes: Option<FxHashSet<String>>,
+        compose: impl FnOnce(&mut Ui, Screen),
+    ) {
         let profile = neo_profile_enabled();
         let total_start = profile.then(Instant::now);
         self.needs_compose = false;
         let screen = Screen { width, height };
+        let can_reuse_scopes = dirty_scopes.is_some() && self.screen == screen;
+        let scope_frame = begin_scope_frame(
+            can_reuse_scopes,
+            dirty_scopes,
+            &mut self.scope_roots,
+            &mut self.live_scopes,
+        );
         let mut ui = Ui::new(self.page_id.clone());
         ui.set_skins(self.skins.clone());
         ui.set_focused_id(self.focused_id.clone());
         let previous_roots_start = profile.then(Instant::now);
-        ui.set_previous_roots(std::mem::take(&mut self.roots));
+        let previous_roots = std::mem::take(&mut self.roots);
+        let previous_roots_for_layout =
+            scope_frame.can_reuse_scopes.then(|| previous_roots.clone());
+        ui.set_previous_roots(previous_roots);
+        if scope_frame.can_reuse_scopes {
+            ui.set_scope_reuse(
+                scope_frame.previous_scope_roots.clone(),
+                scope_frame.dirty_scopes.clone(),
+                std::mem::take(&mut self.callbacks),
+            );
+        }
         let previous_roots_ms = elapsed_ms(previous_roots_start);
         for (id, response) in &self.responses {
             ui.set_response(id.clone(), *response);
@@ -397,9 +514,45 @@ impl Runtime {
         let build_start = profile.then(Instant::now);
         compose(&mut ui, screen);
         let build_ms = elapsed_ms(build_start);
-        let (mut roots, callbacks) = ui.into_parts();
+        let (mut roots, callbacks, mut scope_roots, live_scopes, mut scope_stats, scope_events) =
+            ui.into_parts();
         let layout_start = profile.then(Instant::now);
-        layout_roots_with_text_system(&mut roots, width, height, self.text_system.as_mut());
+        let partial_layout_blocker = scope_frame.partial_layout_blocker().or_else(|| {
+            let scopes = structurally_incompatible_dirty_scopes(
+                &scope_frame.dirty_scopes,
+                &scope_frame.previous_scope_roots,
+                &scope_roots,
+            );
+            (!scopes.is_empty()).then_some(FullLayoutReason::StructureChanged { scopes })
+        });
+        let partial_layout = partial_layout_blocker.is_none();
+        let mut used_partial_layout = false;
+        if partial_layout {
+            if let Some(previous_roots_for_layout) = previous_roots_for_layout.as_deref() {
+                copy_previous_frames(&mut roots, previous_roots_for_layout);
+                used_partial_layout = layout_dirty_scopes_with_text_system(
+                    &mut roots,
+                    &scope_frame.dirty_scopes,
+                    &scope_frame.previous_scope_roots,
+                    self.text_system.as_mut(),
+                );
+            }
+        }
+        let layout_mode = if used_partial_layout {
+            LayoutMode::Partial
+        } else if partial_layout {
+            LayoutMode::Full(FullLayoutReason::DirtyScopeLayoutFailed)
+        } else {
+            LayoutMode::Full(
+                partial_layout_blocker.expect("full layout blocker should be known here"),
+            )
+        };
+        if !used_partial_layout {
+            layout_roots_with_text_system(&mut roots, width, height, self.text_system.as_mut());
+        }
+        scope_stats.partial_layout = used_partial_layout;
+        scope_stats.full_layout = !used_partial_layout;
+        refresh_scope_roots_from_tree(&mut scope_roots, &roots);
         let layout_ms = elapsed_ms(layout_start);
         let structure_start = profile.then(Instant::now);
         let next_structure = collect_structure(&roots, self.structure.len());
@@ -410,16 +563,45 @@ impl Runtime {
         self.structure = next_structure;
         self.screen = screen;
         self.roots = roots;
+        self.scope_roots = scope_roots;
+        self.live_scopes = live_scopes;
         self.callbacks = callbacks;
+        self.scope_stats = scope_stats;
+        self.frame_index = self.frame_index.saturating_add(1);
+        self.debug_snapshot = UiDebugSnapshot {
+            frame_index: self.frame_index,
+            screen: self.screen,
+            dirty_scopes: sorted_scope_set(&scope_frame.dirty_scopes),
+            live_scopes: sorted_scope_set(&self.live_scopes),
+            scope_events,
+            scope_stats: self.scope_stats,
+            layout_mode,
+            needs_render: self.needs_render,
+            needs_compose: self.needs_compose,
+            full_redraw: self.full_redraw,
+            focused_id: self.focused_id.clone(),
+            active_id: self.active_id.clone(),
+            hovered_id: hovered_id(&self.interactions),
+            active_animation_count: self
+                .animations
+                .values()
+                .filter(|animation| animation.is_active())
+                .count(),
+        };
+        if neo_debug_trace_enabled() {
+            trace_debug_snapshot(&self.debug_snapshot);
+        }
         if profile {
             eprintln!(
-                "[eui-neo] compose total={:.3}ms previous_roots={:.3}ms build={:.3}ms layout={:.3}ms structure={:.3}ms elements={}",
+                "[eui-neo] compose total={:.3}ms previous_roots={:.3}ms build={:.3}ms layout={:.3}ms structure={:.3}ms elements={} scopes_built={} scopes_reused={}",
                 elapsed_ms(total_start),
                 previous_roots_ms,
                 build_ms,
                 layout_ms,
                 structure_ms,
-                self.structure.len()
+                self.structure.len(),
+                self.scope_stats.built,
+                self.scope_stats.reused
             );
         }
     }
@@ -881,10 +1063,11 @@ impl Runtime {
                 frame: element.frame,
                 seen: true,
             });
-        let changed = !LayoutRect::close_enough(entry.frame, element.frame);
+        let moved = (entry.frame.x - element.frame.x).abs() > 0.001
+            || (entry.frame.y - element.frame.y).abs() > 0.001;
         entry.frame = element.frame;
         entry.seen = true;
-        changed
+        moved
     }
 
     fn tick_element_animation(
@@ -1174,6 +1357,30 @@ fn neo_profile_enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var_os("SKY_NEO_PROFILE").is_some())
 }
 
+fn neo_debug_trace_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("SKY_NEO_DEBUG_TRACE").is_some())
+}
+
+fn trace_debug_snapshot(snapshot: &UiDebugSnapshot) {
+    eprintln!(
+        "[eui-neo debug] frame={} layout={:?} dirty={:?} live={:?} built={} reused={} animations={} focused={:?} hovered={:?} active={:?}",
+        snapshot.frame_index,
+        snapshot.layout_mode,
+        snapshot.dirty_scopes,
+        snapshot.live_scopes,
+        snapshot.scope_stats.built,
+        snapshot.scope_stats.reused,
+        snapshot.active_animation_count,
+        snapshot.focused_id,
+        snapshot.hovered_id,
+        snapshot.active_id,
+    );
+    for event in &snapshot.scope_events {
+        eprintln!("[eui-neo scope] {:?} {}", event.action, event.scope);
+    }
+}
+
 fn elapsed_ms(start: Option<Instant>) -> f32 {
     start
         .map(|start| start.elapsed().as_secs_f32() * 1000.0)
@@ -1291,6 +1498,18 @@ fn collect_structure(roots: &[Element], previous_len: usize) -> Vec<ElementSnaps
     snapshots
 }
 
+fn sorted_scope_set(scopes: &ScopeSet) -> Vec<String> {
+    let mut scopes: Vec<_> = scopes.iter().cloned().collect();
+    scopes.sort();
+    scopes
+}
+
+fn hovered_id(interactions: &FxHashMap<String, InteractionState>) -> Option<String> {
+    interactions
+        .iter()
+        .find_map(|(id, state)| state.hovered.then(|| id.clone()))
+}
+
 fn collect_element_structure(element: &Element, snapshots: &mut Vec<ElementSnapshot>) {
     snapshots.push(ElementSnapshot {
         id: element.id.clone(),
@@ -1306,6 +1525,56 @@ fn collect_element_structure(element: &Element, snapshots: &mut Vec<ElementSnaps
     }
 }
 
+fn layout_dirty_scopes_with_text_system(
+    roots: &mut [Element],
+    dirty_scopes: &FxHashSet<String>,
+    previous_scope_roots: &FxHashMap<String, Vec<Element>>,
+    text_system: &mut dyn TextSystem,
+) -> bool {
+    for scope in dirty_scopes {
+        let Some(previous_roots) = previous_scope_roots.get(scope) else {
+            return false;
+        };
+        for previous in previous_roots {
+            let Some(current) = find_element_mut(roots, &previous.id) else {
+                return false;
+            };
+            if !layout_element_in_frame_with_text_system(current, previous.frame, text_system) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn refresh_scope_roots_from_tree(
+    scope_roots: &mut FxHashMap<String, Vec<Element>>,
+    roots: &[Element],
+) {
+    for elements in scope_roots.values_mut() {
+        for element in elements {
+            if let Some(updated) = find_element_in_slice(roots, &element.id) {
+                *element = updated.clone();
+            }
+        }
+    }
+}
+
+fn copy_previous_frames(elements: &mut [Element], previous_roots: &[Element]) {
+    for element in elements {
+        if let Some(previous) = find_element_in_slice(previous_roots, &element.id) {
+            element.frame = previous.frame;
+        }
+        copy_previous_frames(&mut element.children, previous_roots);
+    }
+}
+
+fn find_element_in_slice<'a>(elements: &'a [Element], id: &str) -> Option<&'a Element> {
+    elements
+        .iter()
+        .find_map(|element| find_element(element, id))
+}
+
 fn find_element<'a>(element: &'a Element, id: &str) -> Option<&'a Element> {
     if element.id == id {
         return Some(element);
@@ -1314,6 +1583,18 @@ fn find_element<'a>(element: &'a Element, id: &str) -> Option<&'a Element> {
         .children
         .iter()
         .find_map(|child| find_element(child, id))
+}
+
+fn find_element_mut<'a>(elements: &'a mut [Element], id: &str) -> Option<&'a mut Element> {
+    for element in elements {
+        if element.id == id {
+            return Some(element);
+        }
+        if let Some(found) = find_element_mut(&mut element.children, id) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 fn hit_test_interactive(elements: &[Element], position: Option<[f32; 2]>) -> Option<String> {
@@ -1641,9 +1922,9 @@ mod tests {
     use crate::expert::{UiDrawCommand, UiRectDraw};
     use crate::widgets::{button, panel, text};
     use crate::{
-        Align, AnimProperty, Ease, FontRef, FrameInput, HorizontalAlign, KeyboardEvent, LayoutRect,
-        PointerEvent, Screen, ScrollEvent, Size, TextMeasure, TextMeasureRequest, TextSystem,
-        Transition,
+        Align, AnimProperty, Ease, FontRef, FrameInput, FullLayoutReason, HorizontalAlign,
+        KeyboardEvent, LayoutMode, LayoutRect, PointerEvent, Screen, ScrollEvent, Size, State,
+        TextMeasure, TextMeasureRequest, TextSystem, Transition,
     };
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
@@ -1733,6 +2014,259 @@ mod tests {
         assert_eq!(result.frame.screen.width, 320.0);
         assert!(!result.frame.draw_list().is_empty());
         assert!(result.frame.needs_render);
+    }
+
+    #[test]
+    fn scoped_compose_rebuilds_dirty_scope_and_reuses_clean_sibling_with_callbacks() {
+        #[derive(Default)]
+        struct AppModel {
+            selected: i32,
+        }
+
+        let state = State::new(AppModel::default());
+        let left_builds = Rc::new(Cell::new(0));
+        let right_builds = Rc::new(Cell::new(0));
+        let right_clicks = Rc::new(Cell::new(0));
+        let mut runtime = Runtime::new("page");
+
+        let compose = |runtime: &mut Runtime, dirty_scopes: Vec<String>| {
+            let state = state.clone();
+            let left_builds = left_builds.clone();
+            let right_builds = right_builds.clone();
+            let right_clicks = right_clicks.clone();
+            runtime.compose_scoped(240.0, 80.0, dirty_scopes, move |ui, _| {
+                ui.row("root").size(240.0, 40.0).content(|ui| {
+                    ui.scope("left", |ui| {
+                        left_builds.set(left_builds.get() + 1);
+                        let selected = state
+                            .signal(
+                                "selected",
+                                |state| state.selected,
+                                |state, value| state.selected = value,
+                            )
+                            .watch(ui);
+                        ui.text("left.label")
+                            .size(100.0, 40.0)
+                            .text(format!("left {selected}"))
+                            .build();
+                    });
+                    ui.scope("right", |ui| {
+                        right_builds.set(right_builds.get() + 1);
+                        let right_clicks = right_clicks.clone();
+                        button(ui, "right.button")
+                            .size(100.0, 40.0)
+                            .text("right")
+                            .on_click(move || right_clicks.set(right_clicks.get() + 1))
+                            .build();
+                    });
+                });
+            });
+        };
+
+        compose(&mut runtime, Vec::new());
+        assert_eq!(left_builds.get(), 1);
+        assert_eq!(right_builds.get(), 1);
+
+        let selected = state.signal(
+            "selected",
+            |state| state.selected,
+            |state, value| state.selected = value,
+        );
+        selected.set(1);
+        compose(&mut runtime, state.take_dirty_scopes());
+
+        assert_eq!(left_builds.get(), 2);
+        assert_eq!(right_builds.get(), 1);
+        assert_eq!(runtime.find("left.label").unwrap().text, "left 1");
+        assert!(runtime.find("right.button.bg").is_some());
+        assert_eq!(runtime.scope_compose_stats().built, 1);
+        assert_eq!(runtime.scope_compose_stats().reused, 1);
+        assert!(runtime.scope_compose_stats().partial_layout);
+        assert!(!runtime.scope_compose_stats().full_layout);
+
+        let frame = runtime.find("right.button.bg").unwrap().frame;
+        runtime.update_pointer(PointerEvent::pressed_at(frame.x + 1.0, frame.y + 1.0));
+        runtime.update_pointer(PointerEvent::released_at(frame.x + 1.0, frame.y + 1.0));
+        assert_eq!(right_clicks.get(), 1);
+    }
+
+    #[test]
+    fn live_scope_rebuilds_on_next_scoped_compose_without_state_dirty() {
+        let mut runtime = Runtime::new("page");
+        let live_builds = Rc::new(Cell::new(0));
+        let static_builds = Rc::new(Cell::new(0));
+
+        let compose = |runtime: &mut Runtime, dirty_scopes: Vec<String>| {
+            let live_builds = live_builds.clone();
+            let static_builds = static_builds.clone();
+            runtime.compose_scoped(240.0, 80.0, dirty_scopes, move |ui, _| {
+                ui.row("root").size(240.0, 40.0).content(|ui| {
+                    ui.live_scope("live", |ui| {
+                        live_builds.set(live_builds.get() + 1);
+                        ui.text("live.label")
+                            .size(100.0, 40.0)
+                            .text(format!("live {}", live_builds.get()))
+                            .build();
+                    });
+                    ui.scope("static", |ui| {
+                        static_builds.set(static_builds.get() + 1);
+                        ui.text("static.label")
+                            .size(100.0, 40.0)
+                            .text("static")
+                            .build();
+                    });
+                });
+            });
+        };
+
+        compose(&mut runtime, Vec::new());
+        compose(&mut runtime, Vec::new());
+
+        assert_eq!(live_builds.get(), 2);
+        assert_eq!(static_builds.get(), 1);
+        assert_eq!(runtime.find("live.label").unwrap().text, "live 2");
+        assert_eq!(runtime.scope_compose_stats().built, 1);
+        assert_eq!(runtime.scope_compose_stats().reused, 1);
+        assert!(runtime.scope_compose_stats().partial_layout);
+        assert!(!runtime.scope_compose_stats().full_layout);
+    }
+
+    #[test]
+    fn partial_layout_preserves_parent_assigned_grow_frame_for_live_scope_root() {
+        let mut runtime = Runtime::new("page");
+        let live_builds = Rc::new(Cell::new(0));
+
+        let compose = |runtime: &mut Runtime, dirty_scopes: Vec<String>| {
+            let live_builds = live_builds.clone();
+            runtime.compose_scoped(500.0, 100.0, dirty_scopes, move |ui, _| {
+                ui.row("root").size(500.0, 80.0).gap(20.0).content(|ui| {
+                    ui.stack("left").size(100.0, 80.0).build();
+                    ui.live_scope("live", |ui| {
+                        live_builds.set(live_builds.get() + 1);
+                        ui.stack("center")
+                            .size(120.0, 80.0)
+                            .grow(1.0)
+                            .min_width(120.0)
+                            .content(|ui| {
+                                ui.stack("viewport")
+                                    .size(Size::fill(), Size::fill())
+                                    .clip()
+                                    .content(|ui| {
+                                        ui.stack("child").size(Size::fill(), 40.0).build();
+                                    });
+                            });
+                    });
+                    ui.stack("right").size(100.0, 80.0).build();
+                });
+            });
+        };
+
+        compose(&mut runtime, Vec::new());
+        let first_center = runtime.find("center").unwrap().frame;
+        let first_viewport = runtime.find("viewport").unwrap().frame;
+        assert_frame(first_center, 120.0, 0.0, 260.0, 80.0);
+        assert_frame(first_viewport, 120.0, 0.0, 260.0, 80.0);
+
+        compose(&mut runtime, Vec::new());
+        let second_center = runtime.find("center").unwrap().frame;
+        let second_viewport = runtime.find("viewport").unwrap().frame;
+        assert_frame(second_center, 120.0, 0.0, 260.0, 80.0);
+        assert_frame(second_viewport, 120.0, 0.0, 260.0, 80.0);
+        assert_eq!(live_builds.get(), 2);
+        assert!(runtime.scope_compose_stats().partial_layout);
+    }
+
+    #[test]
+    fn dirty_scope_with_same_structure_uses_partial_layout() {
+        let mut runtime = Runtime::new("page");
+        let mut value = 0;
+
+        runtime.compose_scoped(240.0, 80.0, Vec::<String>::new(), |ui, _| {
+            ui.scope("body", |ui| {
+                ui.text("label")
+                    .size(100.0, 40.0)
+                    .text(format!("value {value}"))
+                    .build();
+            });
+        });
+
+        value = 1;
+        runtime.compose_scoped(240.0, 80.0, ["page.body".to_string()], |ui, _| {
+            ui.scope("body", |ui| {
+                ui.text("label")
+                    .size(100.0, 40.0)
+                    .text(format!("value {value}"))
+                    .build();
+            });
+        });
+
+        assert_eq!(runtime.find("label").unwrap().text, "value 1");
+        assert!(runtime.scope_compose_stats().partial_layout);
+        assert!(!runtime.scope_compose_stats().full_layout);
+        assert_eq!(runtime.debug_snapshot().layout_mode, LayoutMode::Partial);
+        assert_eq!(
+            runtime.debug_snapshot().dirty_scopes,
+            vec!["page.body".to_string()]
+        );
+    }
+
+    #[test]
+    fn dirty_scope_with_changed_structure_uses_full_layout_fallback() {
+        let mut runtime = Runtime::new("page");
+
+        runtime.compose_scoped(240.0, 80.0, Vec::<String>::new(), |ui, _| {
+            ui.scope("body", |ui| {
+                ui.text("motion").size(100.0, 40.0).text("motion").build();
+            });
+        });
+
+        runtime.compose_scoped(240.0, 80.0, ["page.body".to_string()], |ui, _| {
+            ui.scope("body", |ui| {
+                ui.row("chart").size(120.0, 40.0).content(|ui| {
+                    ui.text("bar").size(60.0, 40.0).text("bar").build();
+                    ui.text("pie").size(60.0, 40.0).text("pie").build();
+                });
+            });
+        });
+
+        assert!(runtime.find("chart").is_some());
+        assert!(!runtime.scope_compose_stats().partial_layout);
+        assert!(runtime.scope_compose_stats().full_layout);
+        assert_eq!(
+            runtime.debug_snapshot().layout_mode,
+            LayoutMode::Full(FullLayoutReason::StructureChanged {
+                scopes: vec!["page.body".to_string()]
+            })
+        );
+    }
+
+    #[test]
+    fn root_dirty_scope_without_retained_scope_roots_uses_full_layout_fallback() {
+        let mut runtime = Runtime::new("page");
+        runtime.compose(240.0, 80.0, |ui, _| {
+            ui.row("root").size(240.0, 40.0).content(|ui| {
+                for index in 0..8 {
+                    button(ui, format!("button.{index}"))
+                        .size(24.0, 24.0)
+                        .text(index.to_string())
+                        .build();
+                }
+            });
+        });
+
+        runtime.compose_scoped(240.0, 80.0, ["page".to_string()], |ui, _| {
+            ui.row("root").size(240.0, 40.0).content(|ui| {
+                for index in 0..8 {
+                    button(ui, format!("button.{index}"))
+                        .size(24.0, 24.0)
+                        .text(index.to_string())
+                        .build();
+                }
+            });
+        });
+
+        assert!(!runtime.scope_compose_stats().partial_layout);
+        assert!(runtime.scope_compose_stats().full_layout);
     }
 
     #[test]
@@ -1899,12 +2433,10 @@ mod tests {
     fn cached_draw_list_invalidates_when_visuals_change() {
         let mut runtime = Runtime::new("demo");
         runtime.compose(100.0, 100.0, |ui, _| {
-            ui.rect("panel")
-                .size(40.0, 20.0)
-                .color(Color::RED)
-                .build();
+            ui.rect("panel").size(40.0, 20.0).color(Color::RED).build();
         });
         let first = runtime.draw_list();
+        let first_cached = runtime.draw_list();
         let first_color = first
             .commands()
             .iter()
@@ -1912,13 +2444,11 @@ mod tests {
             .find(|draw| draw.id == "demo.panel")
             .map(|draw| draw.color)
             .expect("panel rect should draw");
+        assert_eq!(first.revision(), first_cached.revision());
         assert_eq!(first_color, Color::RED);
 
         runtime.compose(100.0, 100.0, |ui, _| {
-            ui.rect("panel")
-                .size(40.0, 20.0)
-                .color(Color::BLUE)
-                .build();
+            ui.rect("panel").size(40.0, 20.0).color(Color::BLUE).build();
         });
         let second = runtime.draw_list();
         let second_color = second
@@ -1929,6 +2459,7 @@ mod tests {
             .map(|draw| draw.color)
             .expect("panel rect should draw");
 
+        assert_ne!(first.revision(), second.revision());
         assert_eq!(second_color, Color::BLUE);
     }
 

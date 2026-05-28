@@ -12,13 +12,13 @@ use sky_engine::render::{
     CameraMarker, MainCamera, Projection, RenderPipelineAsset, RenderSettings, SpriteFeature,
     Transform, TransparentPhase,
 };
-use sky_engine::ui::neo::{widgets, Align, Color, NeoState, Size};
+use sky_engine::ui::neo::{widgets, Align, Color, Size, State};
 
 const WINDOW_W: u32 = 980;
 const WINDOW_H: u32 = 520;
 
 struct NeoScrollXDemo {
-    state: NeoState<DemoState>,
+    state: State<DemoState>,
     screenshot: ScreenshotProbe,
 }
 
@@ -30,7 +30,7 @@ struct DemoState {
 impl Default for NeoScrollXDemo {
     fn default() -> Self {
         Self {
-            state: NeoState::new(DemoState::default()),
+            state: State::new(DemoState::default()),
             screenshot: ScreenshotProbe::default(),
         }
     }
@@ -53,7 +53,8 @@ impl AppState for NeoScrollXDemo {
     fn update(&mut self, ctx: &mut FrameContext<'_>) {
         let state = self.state.clone();
         sky_engine::ui::neo::compose(ctx, move |ui, screen| {
-            let strip_scroll = state.bind(
+            let strip_scroll = state.signal(
+                "scroll-x.strip-scroll",
                 |state| state.strip_scroll,
                 |state, value| state.strip_scroll = value.max(0.0),
             );
@@ -111,7 +112,7 @@ impl AppState for NeoScrollXDemo {
                                 .gap(16.0)
                                 .scrollbar_height(8.0)
                                 .scrollbar_gap(12.0)
-                                .offset_bind(strip_scroll)
+                                .offset_signal(strip_scroll)
                                 .content(|ui| {
                                     for index in 0..8 {
                                         feature_card(ui, index);

@@ -6,7 +6,7 @@ use std::rc::Rc;
 use super::layout::WidgetLayout;
 use super::scroll::{scrollbar, ScrollbarStyle};
 use super::theme::ThemeColorTokens;
-use crate::{Align, Binding, EdgeInsets, Response, Size, Ui};
+use crate::{Align, EdgeInsets, Response, Signal, Size, Ui};
 
 type ChangeCallback = Rc<RefCell<Box<dyn FnMut(f32)>>>;
 
@@ -243,17 +243,13 @@ impl<'ui> VirtualListBuilder<'ui> {
         self
     }
 
-    pub fn offset_bind<T: 'static>(self, binding: Binding<T, f32>) -> Self {
-        let value = binding.get();
-        self.offset(value).on_change(move |next| binding.set(next))
+    pub fn offset_signal<T: 'static>(self, signal: Signal<T, f32>) -> Self {
+        let value = signal.watch(self.ui);
+        self.offset(value).on_change(move |next| signal.set(next))
     }
 
     pub fn value(self, value: f32) -> Self {
         self.offset(value)
-    }
-
-    pub fn value_bind<T: 'static>(self, binding: Binding<T, f32>) -> Self {
-        self.offset_bind(binding)
     }
 
     pub fn step(mut self, value: f32) -> Self {
@@ -409,7 +405,7 @@ fn item_bottom(index: usize, item_height: f32, stride: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{virtual_list, VirtualListRange};
-    use crate::{EdgeInsets, NeoState, PointerEvent, Runtime, ScrollEvent, Size};
+    use crate::{EdgeInsets, PointerEvent, Runtime, ScrollEvent, Size, State};
 
     #[derive(Default)]
     struct ListState {
@@ -462,19 +458,22 @@ mod tests {
     }
 
     #[test]
-    fn virtual_list_binding_writes_wheel_offset_to_state() {
-        let state = NeoState::new(ListState { offset: 24.0 });
+    fn virtual_list_signal_writes_wheel_offset_to_state() {
+        let state = State::new(ListState { offset: 24.0 });
         let compose_state = state.clone();
         let mut runtime = Runtime::new("page");
         runtime.compose(240.0, 120.0, move |ui, _| {
-            let offset =
-                compose_state.bind(|state| state.offset, |state, value| state.offset = value);
+            let offset = compose_state.signal(
+                "test.signal",
+                |state| state.offset,
+                |state, value| state.offset = value,
+            );
             virtual_list(ui, "list")
                 .size(160.0, 80.0)
                 .item_count(100)
                 .item_height(20.0)
                 .gap(4.0)
-                .offset_bind(offset)
+                .offset_signal(offset)
                 .step(10.0)
                 .content(|ui, item| {
                     ui.rect(format!("row.{}", item.index))

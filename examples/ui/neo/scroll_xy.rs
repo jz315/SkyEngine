@@ -12,13 +12,13 @@ use sky_engine::render::{
     CameraMarker, MainCamera, Projection, RenderPipelineAsset, RenderSettings, SpriteFeature,
     Transform, TransparentPhase,
 };
-use sky_engine::ui::neo::{widgets, Align, Color, NeoState, Size};
+use sky_engine::ui::neo::{widgets, Align, Color, Size, State};
 
 const WINDOW_W: u32 = 980;
 const WINDOW_H: u32 = 620;
 
 struct NeoScrollXYDemo {
-    state: NeoState<DemoState>,
+    state: State<DemoState>,
     screenshot: ScreenshotProbe,
 }
 
@@ -30,7 +30,7 @@ struct DemoState {
 impl Default for NeoScrollXYDemo {
     fn default() -> Self {
         Self {
-            state: NeoState::new(DemoState::default()),
+            state: State::new(DemoState::default()),
             screenshot: ScreenshotProbe::default(),
         }
     }
@@ -53,7 +53,8 @@ impl AppState for NeoScrollXYDemo {
     fn update(&mut self, ctx: &mut FrameContext<'_>) {
         let state = self.state.clone();
         sky_engine::ui::neo::compose(ctx, move |ui, screen| {
-            let canvas_scroll = state.bind(
+            let canvas_scroll = state.signal(
+                "scroll-xy.canvas-scroll",
                 |state| state.canvas_scroll,
                 |state, value| state.canvas_scroll = (value.0.max(0.0), value.1.max(0.0)),
             );
@@ -105,7 +106,7 @@ impl AppState for NeoScrollXYDemo {
                                 .content_padding(18.0)
                                 .scrollbar_size(8.0)
                                 .scrollbar_gap(12.0)
-                                .offset_bind(canvas_scroll)
+                                .offset_signal(canvas_scroll)
                                 .content(|ui| {
                                     draw_canvas(ui);
                                 });

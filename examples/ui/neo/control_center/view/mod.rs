@@ -4,7 +4,7 @@ mod pages;
 mod scroll_panel;
 mod shell;
 
-use sky_engine::ui::neo::{NeoState, Screen, Ui};
+use sky_engine::ui::neo::{Screen, State, Ui};
 
 use crate::model::AppModel;
 
@@ -17,7 +17,7 @@ pub struct RuntimeInfo {
 pub fn render(
     ui: &mut Ui,
     screen: Screen,
-    state_store: &NeoState<AppModel>,
+    state_store: &State<AppModel>,
     model: &AppModel,
     runtime: RuntimeInfo,
 ) {

@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use crate::Color;
 
-use super::super::{AnimProperty, Binding, Response, Transition, Ui, VerticalAlign};
+use super::super::{AnimProperty, Response, Signal, Transition, Ui, VerticalAlign};
 use super::text::measure_text_width;
 use super::theme::{self, ThemeColorTokens};
 
@@ -98,9 +98,9 @@ impl<'ui> CheckboxBuilder<'ui> {
         self
     }
 
-    pub fn checked_bind<T: 'static>(self, binding: Binding<T, bool>) -> Self {
-        let value = binding.get();
-        self.checked(value).on_change(move |next| binding.set(next))
+    pub fn signal<T: 'static>(self, signal: Signal<T, bool>) -> Self {
+        let value = signal.watch(self.ui);
+        self.checked(value).on_change(move |next| signal.set(next))
     }
 
     pub fn text(mut self, value: impl Into<String>) -> Self {

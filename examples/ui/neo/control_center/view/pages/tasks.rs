@@ -1,5 +1,5 @@
 use sky_engine::ui::neo::widgets;
-use sky_engine::ui::neo::{Align, NeoState, Size, Ui};
+use sky_engine::ui::neo::{Align, Size, State, Ui};
 
 use crate::actions;
 use crate::locale;
@@ -11,7 +11,7 @@ pub fn render(
     ui: &mut Ui,
     width: f32,
     height: f32,
-    state_store: &NeoState<AppModel>,
+    state_store: &State<AppModel>,
     model: &AppModel,
     app_theme: AppTheme,
 ) {
@@ -29,7 +29,7 @@ pub fn render(
         height,
         content_h,
         model.tasks_scroll,
-        actions::bind_tasks_scroll(state_store),
+        actions::tasks_scroll_signal(state_store),
         |ui, body_w| {
             ui.column("tasks.page")
                 .size(body_w, content_h)
@@ -121,7 +121,7 @@ fn task_card(
     ui: &mut Ui,
     width: f32,
     height: f32,
-    state_store: &NeoState<AppModel>,
+    state_store: &State<AppModel>,
     locale_id: Locale,
     task: &TaskItem,
     app_theme: AppTheme,

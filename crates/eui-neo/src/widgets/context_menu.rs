@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use crate::Color;
 
-use super::super::{AnimProperty, Binding, Response, Shadow, Transition, Ui};
+use super::super::{AnimProperty, Response, Shadow, Signal, Transition, Ui};
 use super::theme::{self, ThemeColorTokens};
 
 type SelectCallback = Rc<RefCell<Box<dyn FnMut(i32)>>>;
@@ -92,8 +92,9 @@ impl<'ui> ContextMenuBuilder<'ui> {
         self
     }
 
-    pub fn open_bind<T: 'static>(self, binding: Binding<T, bool>) -> Self {
-        self.open(binding.get())
+    pub fn open_signal<T: 'static>(self, signal: Signal<T, bool>) -> Self {
+        let value = signal.watch(self.ui);
+        self.open(value)
     }
 
     pub fn screen(mut self, width: f32, height: f32) -> Self {

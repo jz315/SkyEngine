@@ -1,13 +1,13 @@
 use sky_engine::ui::neo::widgets;
 use sky_engine::ui::neo::Color;
-use sky_engine::ui::neo::{Align, NeoState, Screen, Size, Ui};
+use sky_engine::ui::neo::{Align, Screen, Size, State, Ui};
 
 use crate::actions;
 use crate::locale;
 use crate::model::AppModel;
 use crate::theme::{self, AppTheme};
 
-pub fn render(ui: &mut Ui, screen: Screen, state_store: &NeoState<AppModel>, model: &AppModel) {
+pub fn render(ui: &mut Ui, screen: Screen, state_store: &State<AppModel>, model: &AppModel) {
     let app_theme = theme::resolve(model.theme_mode);
     render_new_task_sheet(ui, screen, state_store, model, app_theme);
     render_ship_dialog(ui, screen, state_store, model, app_theme);
@@ -17,7 +17,7 @@ pub fn render(ui: &mut Ui, screen: Screen, state_store: &NeoState<AppModel>, mod
 fn render_new_task_sheet(
     ui: &mut Ui,
     screen: Screen,
-    state_store: &NeoState<AppModel>,
+    state_store: &State<AppModel>,
     model: &AppModel,
     app_theme: AppTheme,
 ) {
@@ -86,7 +86,9 @@ fn render_new_task_sheet(
                                         .content(|ui| {
                                             widgets::input(ui, "overlays.task-sheet.form.title")
                                                 .size(Size::fill(), 42.0)
-                                                .text_bind(actions::bind_draft_title(state_store))
+                                                .text_signal(actions::draft_title_signal(
+                                                    state_store,
+                                                ))
                                                 .placeholder(locale::task_title_placeholder(
                                                     model.locale,
                                                 ))
@@ -99,17 +101,13 @@ fn render_new_task_sheet(
                                             )
                                             .size(width - 48.0, 38.0)
                                             .items(locale::priority_items(model.locale))
-                                            .selected_bind(actions::bind_draft_priority(
-                                                state_store,
-                                            ))
+                                            .signal(actions::draft_priority_signal(state_store))
                                             .theme(app_theme.tokens)
                                             .build();
 
                                             widgets::switch(ui, "overlays.task-sheet.form.urgent")
                                                 .size(width - 48.0, 34.0)
-                                                .checked_bind(actions::bind_draft_urgent(
-                                                    state_store,
-                                                ))
+                                                .signal(actions::draft_urgent_signal(state_store))
                                                 .text(locale::mark_urgent_label(model.locale))
                                                 .theme(app_theme.tokens)
                                                 .build();
@@ -161,7 +159,7 @@ fn render_new_task_sheet(
 fn render_ship_dialog(
     ui: &mut Ui,
     screen: Screen,
-    state_store: &NeoState<AppModel>,
+    state_store: &State<AppModel>,
     model: &AppModel,
     app_theme: AppTheme,
 ) {
@@ -188,7 +186,7 @@ fn render_ship_dialog(
 fn render_toast(
     ui: &mut Ui,
     screen: Screen,
-    state_store: &NeoState<AppModel>,
+    state_store: &State<AppModel>,
     model: &AppModel,
     app_theme: AppTheme,
 ) {
@@ -197,7 +195,7 @@ fn render_toast(
         .title(model.toast.title.clone())
         .message(model.toast.message.clone())
         .theme(app_theme.tokens)
-        .visible_bind(actions::bind_toast_visible(state_store))
+        .visible_signal(actions::toast_visible_signal(state_store))
         .duration(2.8)
         .build();
 }

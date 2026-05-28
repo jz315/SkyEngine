@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use sky_engine::ui::neo::{
-    widgets, Align, AnimProperty, Color, HorizontalAlign, MotionPreset, NeoState, PointerEvent,
-    Runtime, Size, VerticalAlign,
+    widgets, Align, AnimProperty, Color, HorizontalAlign, MotionPreset, PointerEvent, Runtime,
+    Size, State, VerticalAlign,
 };
 
 #[path = "../examples/ui/neo/control_center/actions.rs"]
@@ -162,13 +162,13 @@ fn compose_common_controls(runtime: &mut Runtime) {
     });
 }
 
-fn control_center_state(page: model::Page) -> NeoState<model::AppModel> {
+fn control_center_state(page: model::Page) -> State<model::AppModel> {
     let mut model = model::AppModel::default();
     model.page = page;
-    NeoState::new(model)
+    State::new(model)
 }
 
-fn compose_control_center(runtime: &mut Runtime, state: &NeoState<model::AppModel>) {
+fn compose_control_center(runtime: &mut Runtime, state: &State<model::AppModel>) {
     let runtime_info = view::RuntimeInfo {
         uptime_seconds: 42.0,
         frame_count: 2_400,

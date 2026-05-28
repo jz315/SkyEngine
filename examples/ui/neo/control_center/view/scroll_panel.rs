@@ -1,4 +1,4 @@
-use sky_engine::ui::neo::{Binding, Size, Ui};
+use sky_engine::ui::neo::{Signal, Size, Ui};
 
 pub fn scroll_panel<T: 'static>(
     ui: &mut Ui,
@@ -7,7 +7,7 @@ pub fn scroll_panel<T: 'static>(
     height: f32,
     content_height: f32,
     scroll_offset: f32,
-    scroll: Binding<T, f32>,
+    scroll: Signal<T, f32>,
     content: impl FnOnce(&mut Ui, f32),
 ) {
     let body_w = (width - 24.0).max(0.0);

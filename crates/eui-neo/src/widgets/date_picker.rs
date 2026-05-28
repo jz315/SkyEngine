@@ -8,8 +8,8 @@ use rustc_hash::FxHashMap;
 use crate::Color;
 
 use super::super::{
-    AnimProperty, Binding, DragEvent, HorizontalAlign, LayoutRect, PointerEvent, Response,
-    ScrollEvent, Shadow, Transition, Ui, VerticalAlign,
+    AnimProperty, DragEvent, HorizontalAlign, LayoutRect, PointerEvent, Response, ScrollEvent,
+    Shadow, Signal, Transition, Ui, VerticalAlign,
 };
 use super::theme::{self, ThemeColorTokens};
 
@@ -150,9 +150,10 @@ impl<'ui> DatePickerBuilder<'ui> {
         self
     }
 
-    pub fn open_bind<T: 'static>(self, binding: Binding<T, bool>) -> Self {
-        self.open(binding.get())
-            .on_open_change(move |next| binding.set(next))
+    pub fn open_signal<T: 'static>(self, signal: Signal<T, bool>) -> Self {
+        let value = signal.watch(self.ui);
+        self.open(value)
+            .on_open_change(move |next| signal.set(next))
     }
 
     pub fn screen(mut self, width: f32, height: f32) -> Self {
@@ -174,10 +175,10 @@ impl<'ui> DatePickerBuilder<'ui> {
         self
     }
 
-    pub fn date_bind<T: 'static>(self, binding: Binding<T, [i32; 3]>) -> Self {
-        let [year, month, day] = binding.get();
+    pub fn value_signal<T: 'static>(self, signal: Signal<T, [i32; 3]>) -> Self {
+        let [year, month, day] = signal.watch(self.ui);
         self.date(year, month, day)
-            .on_change(move |year, month, day| binding.set([year, month, day]))
+            .on_change(move |year, month, day| signal.set([year, month, day]))
     }
 
     pub fn style(mut self, value: DatePickerStyle) -> Self {

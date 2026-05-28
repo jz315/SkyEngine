@@ -6,8 +6,7 @@ use std::rc::Rc;
 use crate::Color;
 
 use super::super::{
-    Align, AnimProperty, Binding, CursorShape, DragEvent, EdgeInsets, Response, Size, Transition,
-    Ui,
+    Align, AnimProperty, CursorShape, DragEvent, EdgeInsets, Response, Signal, Size, Transition, Ui,
 };
 use super::layout::WidgetLayout;
 use super::theme::{self, ThemeColorTokens};
@@ -685,17 +684,13 @@ macro_rules! scroll_area_common_methods {
             self
         }
 
-        pub fn offset_bind<T: 'static>(self, binding: Binding<T, f32>) -> Self {
-            let value = binding.get();
-            self.offset(value).on_change(move |next| binding.set(next))
+        pub fn offset_signal<T: 'static>(self, signal: Signal<T, f32>) -> Self {
+            let value = signal.watch(self.inner.ui);
+            self.offset(value).on_change(move |next| signal.set(next))
         }
 
         pub fn value(self, value: f32) -> Self {
             self.offset(value)
-        }
-
-        pub fn value_bind<T: 'static>(self, binding: Binding<T, f32>) -> Self {
-            self.offset_bind(binding)
         }
 
         pub fn step(mut self, value: f32) -> Self {
@@ -1130,18 +1125,14 @@ impl<'ui> ScrollXYBuilder<'ui> {
         self
     }
 
-    pub fn offset_bind<T: 'static>(self, binding: Binding<T, (f32, f32)>) -> Self {
-        let (x, y) = binding.get();
+    pub fn offset_signal<T: 'static>(self, signal: Signal<T, (f32, f32)>) -> Self {
+        let (x, y) = signal.watch(self.ui);
         self.offset(x, y)
-            .on_change(move |next_x, next_y| binding.set((next_x, next_y)))
+            .on_change(move |next_x, next_y| signal.set((next_x, next_y)))
     }
 
     pub fn value(self, x: f32, y: f32) -> Self {
         self.offset(x, y)
-    }
-
-    pub fn value_bind<T: 'static>(self, binding: Binding<T, (f32, f32)>) -> Self {
-        self.offset_bind(binding)
     }
 
     pub fn step(mut self, value: f32) -> Self {

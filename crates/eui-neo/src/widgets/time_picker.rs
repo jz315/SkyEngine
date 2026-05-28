@@ -8,7 +8,7 @@ use rustc_hash::FxHashMap;
 use crate::Color;
 
 use super::super::{
-    AnimProperty, Binding, HorizontalAlign, LayoutRect, PointerEvent, Response, Shadow, Transition,
+    AnimProperty, HorizontalAlign, LayoutRect, PointerEvent, Response, Shadow, Signal, Transition,
     Ui, VerticalAlign,
 };
 use super::theme::{self, ThemeColorTokens};
@@ -138,9 +138,10 @@ impl<'ui> TimePickerBuilder<'ui> {
         self
     }
 
-    pub fn open_bind<T: 'static>(self, binding: Binding<T, bool>) -> Self {
-        self.open(binding.get())
-            .on_open_change(move |next| binding.set(next))
+    pub fn open_signal<T: 'static>(self, signal: Signal<T, bool>) -> Self {
+        let value = signal.watch(self.ui);
+        self.open(value)
+            .on_open_change(move |next| signal.set(next))
     }
 
     pub fn screen(mut self, width: f32, height: f32) -> Self {
@@ -161,10 +162,10 @@ impl<'ui> TimePickerBuilder<'ui> {
         self
     }
 
-    pub fn time_bind<T: 'static>(self, binding: Binding<T, [i32; 2]>) -> Self {
-        let [hour, minute] = binding.get();
+    pub fn value_signal<T: 'static>(self, signal: Signal<T, [i32; 2]>) -> Self {
+        let [hour, minute] = signal.watch(self.ui);
         self.time(hour, minute)
-            .on_change(move |hour, minute| binding.set([hour, minute]))
+            .on_change(move |hour, minute| signal.set([hour, minute]))
     }
 
     pub fn minute_step(mut self, value: i32) -> Self {

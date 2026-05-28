@@ -8,7 +8,7 @@ use rustc_hash::FxHashMap;
 use crate::Color;
 
 use super::super::{
-    AnimProperty, Binding, HorizontalAlign, Response, Shadow, Transition, Ui, VerticalAlign,
+    AnimProperty, HorizontalAlign, Response, Shadow, Signal, Transition, Ui, VerticalAlign,
 };
 use super::slider::{slider, SliderStyle};
 use super::theme::{self, ThemeColorTokens};
@@ -122,9 +122,10 @@ impl<'ui> ColorPickerBuilder<'ui> {
         self
     }
 
-    pub fn open_bind<T: 'static>(self, binding: Binding<T, bool>) -> Self {
-        self.open(binding.get())
-            .on_open_change(move |next| binding.set(next))
+    pub fn open_signal<T: 'static>(self, signal: Signal<T, bool>) -> Self {
+        let value = signal.watch(self.ui);
+        self.open(value)
+            .on_open_change(move |next| signal.set(next))
     }
 
     pub fn screen(mut self, width: f32, height: f32) -> Self {
@@ -144,9 +145,9 @@ impl<'ui> ColorPickerBuilder<'ui> {
         self
     }
 
-    pub fn value_bind<T: 'static>(self, binding: Binding<T, Color>) -> Self {
-        self.value(binding.get())
-            .on_change(move |next| binding.set(next))
+    pub fn value_signal<T: 'static>(self, signal: Signal<T, Color>) -> Self {
+        let value = signal.watch(self.ui);
+        self.value(value).on_change(move |next| signal.set(next))
     }
 
     pub fn colors<I>(mut self, value: I) -> Self

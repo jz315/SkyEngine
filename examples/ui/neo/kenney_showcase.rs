@@ -16,7 +16,7 @@ use sky_engine::ui::neo::widgets;
 use sky_engine::ui::neo::NeoUiPlugin;
 use sky_engine::ui::neo::{
     ButtonSkin, CheckboxSkin, Color, EdgeInsets, FontRef, HorizontalAlign, ImageRef, NeoSkin,
-    NeoState, PanelSkin, Slice, SliderSkin, Ui, VerticalAlign,
+    PanelSkin, Slice, SliderSkin, State, Ui, VerticalAlign,
 };
 
 const WINDOW_W: u32 = 1280;
@@ -98,7 +98,7 @@ struct DemoSnapshot {
 
 struct KenneyNeoUiShowcase {
     time: f32,
-    state: NeoState<DemoState>,
+    state: State<DemoState>,
     screenshot: ScreenshotProbe,
 }
 
@@ -106,7 +106,7 @@ impl Default for KenneyNeoUiShowcase {
     fn default() -> Self {
         Self {
             time: 0.0,
-            state: NeoState::new(DemoState::default()),
+            state: State::new(DemoState::default()),
             screenshot: ScreenshotProbe::default(),
         }
     }
@@ -342,7 +342,7 @@ fn draw_showcase(
     screen_w: f32,
     screen_h: f32,
     time: f32,
-    state: &NeoState<DemoState>,
+    state: &State<DemoState>,
     snapshot: DemoSnapshot,
 ) {
     draw_backdrop(ui, screen_w, screen_h, time);
@@ -424,7 +424,7 @@ fn draw_title(
     ui: &mut Ui,
     screen_w: f32,
     screen_h: f32,
-    state: &NeoState<DemoState>,
+    state: &State<DemoState>,
     snapshot: DemoSnapshot,
 ) {
     let panel_w = 520.0;
@@ -523,7 +523,7 @@ fn draw_hud(
     screen_w: f32,
     screen_h: f32,
     _time: f32,
-    state: &NeoState<DemoState>,
+    state: &State<DemoState>,
     snapshot: DemoSnapshot,
 ) {
     draw_top_hud(ui, screen_w, state, snapshot);
@@ -533,7 +533,7 @@ fn draw_hud(
     draw_minimap(ui, screen_w);
 }
 
-fn draw_top_hud(ui: &mut Ui, screen_w: f32, state: &NeoState<DemoState>, snapshot: DemoSnapshot) {
+fn draw_top_hud(ui: &mut Ui, screen_w: f32, state: &State<DemoState>, snapshot: DemoSnapshot) {
     widgets::skin_panel(ui, "hud.top.left")
         .skin("kenney.panel.input")
         .tint(c(13, 22, 31, 220))
@@ -576,12 +576,7 @@ fn draw_top_hud(ui: &mut Ui, screen_w: f32, state: &NeoState<DemoState>, snapsho
         .build();
 }
 
-fn draw_status_bars(
-    ui: &mut Ui,
-    screen_w: f32,
-    state: &NeoState<DemoState>,
-    snapshot: DemoSnapshot,
-) {
+fn draw_status_bars(ui: &mut Ui, screen_w: f32, state: &State<DemoState>, snapshot: DemoSnapshot) {
     let x = screen_w - 390.0;
     widgets::skin_panel(ui, "hud.status.panel")
         .skin("kenney.panel.input")
@@ -657,12 +652,7 @@ fn draw_status_bars(
         .build();
 }
 
-fn draw_mission_card(
-    ui: &mut Ui,
-    screen_h: f32,
-    state: &NeoState<DemoState>,
-    snapshot: DemoSnapshot,
-) {
+fn draw_mission_card(ui: &mut Ui, screen_h: f32, state: &State<DemoState>, snapshot: DemoSnapshot) {
     let y = (screen_h - 270.0) * 0.5;
     widgets::skin_panel(ui, "mission.panel")
         .skin("kenney.panel.input")
@@ -721,7 +711,7 @@ fn draw_mission_card(
         .build();
 }
 
-fn draw_action_bar(ui: &mut Ui, screen_w: f32, screen_h: f32, state: &NeoState<DemoState>) {
+fn draw_action_bar(ui: &mut Ui, screen_w: f32, screen_h: f32, state: &State<DemoState>) {
     let bar_w = 560.0;
     let x = (screen_w - bar_w) * 0.5;
     let y = screen_h - 106.0;
@@ -807,7 +797,7 @@ fn draw_loadout(
     ui: &mut Ui,
     screen_w: f32,
     screen_h: f32,
-    state: &NeoState<DemoState>,
+    state: &State<DemoState>,
     snapshot: DemoSnapshot,
 ) {
     draw_hud(ui, screen_w, screen_h, 0.0, state, snapshot);
@@ -928,7 +918,7 @@ fn draw_settings(
     ui: &mut Ui,
     screen_w: f32,
     screen_h: f32,
-    state: &NeoState<DemoState>,
+    state: &State<DemoState>,
     snapshot: DemoSnapshot,
 ) {
     draw_hud(ui, screen_w, screen_h, 0.0, state, snapshot);

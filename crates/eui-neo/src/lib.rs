@@ -6,31 +6,32 @@
 //! rendering live in adapter crates or engine integration layers.
 
 mod animation;
-mod binding;
 mod builder;
+mod cache;
 mod color;
+mod diagnostics;
 mod draw;
 mod dsl;
 mod element;
 mod event;
 mod fonts;
 mod layout;
+mod retained;
 mod runtime;
+mod signal;
 mod skin;
+pub mod testing;
 mod text_measure;
 pub mod widgets;
 
-pub use crate::{
-    neo_bind as bind, neo_bind_array as bind_array, neo_bind_clamped as bind_clamped,
-    neo_bind_clone as bind_clone, neo_bind_eq as bind_eq, neo_bind_max as bind_max,
-};
 pub use animation::{
     apply_ease, has_anim_property, AnimProperty, AnimatedValue, Ease, Lerp, Motion, MotionPreset,
     SmoothedValue, SpringMotion, Transition,
 };
-pub use binding::{Binding, NeoState};
 pub use builder::{ElementBuilder, Response};
+pub use cache::{CacheAccess, CacheCell, CacheStats};
 pub use color::Color;
+pub use diagnostics::{UiDrawDebugCommand, UiDrawDebugTrace};
 pub use dsl::{Screen, Ui};
 pub use element::{
     Align, Border, CenterMode, CursorShape, EdgeInsets, EdgeMode, Element, ElementKind, Gradient,
@@ -39,28 +40,36 @@ pub use element::{
 };
 pub use event::{DragEvent, KeyboardEvent, PointerEvent, ScrollEvent};
 pub use fonts::FontRef;
-pub use runtime::{Frame, FrameInput, FrameResult, Runtime};
+pub use retained::{
+    FullLayoutReason, LayoutMode, ScopeComposeAction, ScopeComposeEvent, ScopeComposeStats,
+};
+pub use runtime::{Frame, FrameInput, FrameResult, Runtime, UiDebugSnapshot};
+pub use signal::{DirtyFlags, Signal, SignalKey, State};
 pub use skin::{ButtonSkin, CheckboxSkin, NeoSkin, PanelSkin, SkinRegistry, SliderSkin};
+pub use testing::{TargetPoint, UiActionTrace, UiTestDriver, UiTestError};
 pub use text_measure::{DefaultTextSystem, TextMeasure, TextMeasureRequest, TextSystem};
 
 /// Common imports for application code using `eui-neo`.
 pub mod prelude {
     pub use crate::widgets::PopoverPlacement;
     pub use crate::{
-        bind, bind_array, bind_clamped, bind_clone, bind_eq, bind_max, widgets, Align,
-        AnimProperty, Binding, Border, ButtonSkin, CenterMode, CheckboxSkin, Color, CursorShape,
-        DefaultTextSystem, DragEvent, Ease, EdgeInsets, EdgeMode, FontRef, Frame, FrameInput,
-        FrameResult, Gradient, GradientDirection, HorizontalAlign, ImageFit, ImageRef,
-        ImageRefKind, Insets, IntoPolygonPoints, KeyboardEvent, LayoutRect, Lerp, Motion,
-        MotionPreset, NeoSkin, NeoState, PanelSkin, PointerEvent, Response, Runtime, Screen,
-        ScrollEvent, Shadow, Size, SkinRegistry, Slice, SliderSkin, SmoothedValue, SpringMotion,
-        TextMeasure, TextMeasureRequest, TextSystem, Transform, Transition, Ui, UiClip, Vec2,
-        VerticalAlign,
+        widgets, Align, AnimProperty, Border, ButtonSkin, CenterMode, CheckboxSkin, Color,
+        CursorShape, DefaultTextSystem, DragEvent, Ease, EdgeInsets, EdgeMode, FontRef, Frame,
+        FrameInput, FrameResult, FullLayoutReason, Gradient, GradientDirection, HorizontalAlign,
+        ImageFit, ImageRef, ImageRefKind, Insets, IntoPolygonPoints, KeyboardEvent, LayoutMode,
+        LayoutRect, Lerp, Motion, MotionPreset, NeoSkin, PanelSkin, PointerEvent, Response,
+        Runtime, ScopeComposeAction, ScopeComposeEvent, ScopeComposeStats, Screen, ScrollEvent,
+        Shadow, Signal, SignalKey, Size, SkinRegistry, Slice, SliderSkin, SmoothedValue,
+        SpringMotion, State, TargetPoint, TextMeasure, TextMeasureRequest, TextSystem, Transform,
+        Transition, Ui, UiActionTrace, UiClip, UiDebugSnapshot, UiDrawDebugCommand,
+        UiDrawDebugTrace, UiTestDriver, UiTestError, Vec2, VerticalAlign,
     };
 }
 
 /// Lower-level surface for renderers, tooling, and diagnostics.
 pub mod expert {
+    pub use crate::cache::{CacheAccess, CacheCell, CacheStats};
+    pub use crate::diagnostics::{UiDrawDebugCommand, UiDrawDebugTrace};
     pub use crate::draw::{
         UiDrawCommand, UiDrawList, UiImageDraw, UiNineSliceDraw, UiPolygonDraw, UiRectDraw,
         UiTextDraw,

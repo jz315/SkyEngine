@@ -6,7 +6,7 @@ use std::rc::Rc;
 use crate::Color;
 
 use super::super::{
-    AnimProperty, Binding, HorizontalAlign, Response, Transition, Ui, VerticalAlign,
+    AnimProperty, HorizontalAlign, Response, Signal, Transition, Ui, VerticalAlign,
 };
 use super::theme::{self, ThemeColorTokens};
 
@@ -88,10 +88,9 @@ impl<'ui> TabsBuilder<'ui> {
         self
     }
 
-    pub fn selected_bind<T: 'static>(self, binding: Binding<T, i32>) -> Self {
-        let value = binding.get();
-        self.selected(value)
-            .on_change(move |next| binding.set(next))
+    pub fn signal<T: 'static>(self, signal: Signal<T, i32>) -> Self {
+        let value = signal.watch(self.ui);
+        self.selected(value).on_change(move |next| signal.set(next))
     }
 
     pub fn font_size(mut self, value: f32) -> Self {

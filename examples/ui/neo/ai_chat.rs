@@ -14,7 +14,7 @@ use sky_engine::render::{
 };
 use sky_engine::ui::neo::widgets;
 use sky_engine::ui::neo::widgets::theme;
-use sky_engine::ui::neo::{Align, Color, HorizontalAlign, NeoState, Size, Ui, VerticalAlign};
+use sky_engine::ui::neo::{Align, Color, HorizontalAlign, Size, State, Ui, VerticalAlign};
 
 const WINDOW_W: u32 = 1280;
 const WINDOW_H: u32 = 800;
@@ -25,14 +25,14 @@ const TOP_BAR_H: f32 = 76.0;
 const COMPOSER_H: f32 = 118.0;
 
 struct NeoAiChatDemo {
-    state: NeoState<ChatState>,
+    state: State<ChatState>,
     screenshot: ScreenshotProbe,
 }
 
 impl Default for NeoAiChatDemo {
     fn default() -> Self {
         Self {
-            state: NeoState::new(ChatState::default()),
+            state: State::new(ChatState::default()),
             screenshot: ScreenshotProbe::default(),
         }
     }
@@ -167,7 +167,7 @@ fn draw_chat_app(
     ui: &mut Ui,
     screen_width: f32,
     screen_height: f32,
-    state: &NeoState<ChatState>,
+    state: &State<ChatState>,
     snapshot: &ChatSnapshot,
 ) {
     let shell_w = (screen_width - 56.0).clamp(760.0, SHELL_MAX_W);
@@ -243,7 +243,7 @@ fn draw_sidebar(
     ui: &mut Ui,
     width: f32,
     height: f32,
-    state: &NeoState<ChatState>,
+    state: &State<ChatState>,
     snapshot: &ChatSnapshot,
 ) {
     ui.stack("sidebar").size(width, Size::fill()).content(|ui| {
@@ -331,7 +331,7 @@ fn draw_brand(ui: &mut Ui) {
         });
 }
 
-fn draw_new_chat_button(ui: &mut Ui, state: &NeoState<ChatState>) {
+fn draw_new_chat_button(ui: &mut Ui, state: &State<ChatState>) {
     let click_state = state.clone();
     widgets::button(ui, "new.chat")
         .size(Size::fill(), 44.0)
@@ -349,7 +349,7 @@ fn draw_new_chat_button(ui: &mut Ui, state: &NeoState<ChatState>) {
         .build();
 }
 
-fn draw_thread_item(ui: &mut Ui, state: &NeoState<ChatState>, index: usize, active: bool) {
+fn draw_thread_item(ui: &mut Ui, state: &State<ChatState>, index: usize, active: bool) {
     let (title, subtitle, tone) = thread_info(index);
     let click_state = state.clone();
     let normal = if active {
@@ -474,7 +474,7 @@ fn draw_main_panel(
     main_w: f32,
     shell_h: f32,
     bubble_w: f32,
-    state: &NeoState<ChatState>,
+    state: &State<ChatState>,
     snapshot: &ChatSnapshot,
 ) {
     let messages_h = (shell_h - TOP_BAR_H - COMPOSER_H).max(260.0);
@@ -563,10 +563,11 @@ fn draw_message_stream(
     main_w: f32,
     height: f32,
     bubble_w: f32,
-    state: &NeoState<ChatState>,
+    state: &State<ChatState>,
     snapshot: &ChatSnapshot,
 ) {
-    let scroll = state.bind(
+    let scroll = state.signal(
+        "ai-chat.chat-scroll",
         |state| state.chat_scroll,
         |state, value| state.chat_scroll = value.max(0.0),
     );
@@ -585,7 +586,7 @@ fn draw_message_stream(
                 .padding_xy(6.0, 8.0)
                 .gap(14.0)
                 .scrollbar_gap(10.0)
-                .offset_bind(scroll)
+                .offset_signal(scroll)
                 .content(|ui| {
                     draw_day_divider(ui);
                     for (index, message) in snapshot.messages.iter().enumerate() {
@@ -792,8 +793,9 @@ fn draw_typing_preview(ui: &mut Ui, bubble_w: f32) {
         });
 }
 
-fn draw_composer(ui: &mut Ui, main_w: f32, state: &NeoState<ChatState>, snapshot: &ChatSnapshot) {
-    let draft = state.bind(
+fn draw_composer(ui: &mut Ui, main_w: f32, state: &State<ChatState>, snapshot: &ChatSnapshot) {
+    let draft = state.signal(
+        "ai-chat.draft",
         |state| state.draft.clone(),
         |state, value| state.draft = value,
     );
@@ -828,7 +830,7 @@ fn draw_composer(ui: &mut Ui, main_w: f32, state: &NeoState<ChatState>, snapshot
                                 .font_size(16.0)
                                 .inset(16.0)
                                 .style(input_style())
-                                .text_bind(draft)
+                                .text_signal(draft)
                                 .on_enter(move || enter_state.update(ChatState::send_draft))
                                 .build();
 
@@ -845,7 +847,7 @@ fn draw_composer(ui: &mut Ui, main_w: f32, state: &NeoState<ChatState>, snapshot
         });
 }
 
-fn draw_prompt_chips(ui: &mut Ui, state: &NeoState<ChatState>) {
+fn draw_prompt_chips(ui: &mut Ui, state: &State<ChatState>) {
     ui.row("prompt.chips")
         .size(Size::fill(), 22.0)
         .gap(8.0)
@@ -857,7 +859,7 @@ fn draw_prompt_chips(ui: &mut Ui, state: &NeoState<ChatState>) {
         });
 }
 
-fn prompt_chip(ui: &mut Ui, state: &NeoState<ChatState>, index: usize, label: &'static str) {
+fn prompt_chip(ui: &mut Ui, state: &State<ChatState>, index: usize, label: &'static str) {
     let click_state = state.clone();
     ui.stack(format!("prompt.{index}"))
         .size(124.0, 22.0)

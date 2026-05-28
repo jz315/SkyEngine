@@ -1,11 +1,15 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::{
     ButtonSkin, CheckboxSkin, DragEvent, Element, ElementBuilder, ElementKind, KeyboardEvent,
     LayoutRect, PanelSkin, PointerEvent, Response, ScrollEvent, SkinRegistry, SliderSkin,
+};
+use crate::retained::{
+    scope_has_dirty_descendant, ScopeComposeAction, ScopeComposeEvent, ScopeComposeStats,
+    ScopeRoots, ScopeSet,
 };
 
 /// Logical screen size supplied to neo composition.
@@ -27,13 +31,22 @@ pub struct Ui {
     page_id: String,
     roots: Vec<Element>,
     previous_roots: Vec<Element>,
+    previous_scope_roots: ScopeRoots,
     previous_frame_cache: RefCell<FxHashMap<String, Option<LayoutRect>>>,
     path: Vec<usize>,
+    scope_stack: Vec<String>,
+    scope_roots: ScopeRoots,
+    dirty_scopes: ScopeSet,
+    live_scopes: ScopeSet,
+    scope_reuse_enabled: bool,
     responses: FxHashMap<String, Response>,
     callbacks: UiCallbacks,
+    previous_callbacks: UiCallbacks,
     skins: SkinRegistry,
     generated_id: usize,
     focused_id: Option<String>,
+    scope_stats: ScopeComposeStats,
+    scope_events: Vec<ScopeComposeEvent>,
 }
 
 #[derive(Default)]
@@ -63,19 +76,61 @@ impl std::fmt::Debug for UiCallbacks {
     }
 }
 
+impl UiCallbacks {
+    fn transfer_for_elements(&mut self, previous: &mut UiCallbacks, elements: &[Element]) {
+        let mut ids = FxHashSet::default();
+        collect_element_ids(elements, &mut ids);
+        for id in ids {
+            if let Some(callback) = previous.on_click.remove(&id) {
+                self.on_click.insert(id.clone(), callback);
+            }
+            if let Some(callback) = previous.on_press.remove(&id) {
+                self.on_press.insert(id.clone(), callback);
+            }
+            if let Some(callback) = previous.on_context_menu.remove(&id) {
+                self.on_context_menu.insert(id.clone(), callback);
+            }
+            if let Some(callback) = previous.on_focus_changed.remove(&id) {
+                self.on_focus_changed.insert(id.clone(), callback);
+            }
+            if let Some(callback) = previous.on_text_input.remove(&id) {
+                self.on_text_input.insert(id.clone(), callback);
+            }
+            if let Some(callback) = previous.on_scroll.remove(&id) {
+                self.on_scroll.insert(id.clone(), callback);
+            }
+            if let Some(callback) = previous.on_drag.remove(&id) {
+                self.on_drag.insert(id.clone(), callback);
+            }
+            if let Some(callback) = previous.on_timer.remove(&id) {
+                self.on_timer.insert(id, callback);
+            }
+        }
+    }
+}
+
 impl Ui {
     pub fn new(page_id: impl Into<String>) -> Self {
         Self {
             page_id: page_id.into(),
             roots: Vec::new(),
             previous_roots: Vec::new(),
+            previous_scope_roots: ScopeRoots::default(),
             previous_frame_cache: RefCell::new(FxHashMap::default()),
             path: Vec::new(),
+            scope_stack: Vec::new(),
+            scope_roots: ScopeRoots::default(),
+            dirty_scopes: FxHashSet::default(),
+            live_scopes: FxHashSet::default(),
+            scope_reuse_enabled: false,
             responses: FxHashMap::default(),
             callbacks: UiCallbacks::default(),
+            previous_callbacks: UiCallbacks::default(),
             skins: SkinRegistry::default(),
             generated_id: 0,
             focused_id: None,
+            scope_stats: ScopeComposeStats::default(),
+            scope_events: Vec::new(),
         }
     }
 
@@ -91,8 +146,24 @@ impl Ui {
         &mut self.roots
     }
 
-    pub(crate) fn into_parts(self) -> (Vec<Element>, UiCallbacks) {
-        (self.roots, self.callbacks)
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        Vec<Element>,
+        UiCallbacks,
+        ScopeRoots,
+        ScopeSet,
+        ScopeComposeStats,
+        Vec<ScopeComposeEvent>,
+    ) {
+        (
+            self.roots,
+            self.callbacks,
+            self.scope_roots,
+            self.live_scopes,
+            self.scope_stats,
+            self.scope_events,
+        )
     }
 
     pub fn into_roots(self) -> Vec<Element> {
@@ -157,6 +228,18 @@ impl Ui {
     pub(crate) fn set_previous_roots(&mut self, roots: Vec<Element>) {
         self.previous_roots = roots;
         self.previous_frame_cache.borrow_mut().clear();
+    }
+
+    pub(crate) fn set_scope_reuse(
+        &mut self,
+        previous_scope_roots: ScopeRoots,
+        dirty_scopes: ScopeSet,
+        previous_callbacks: UiCallbacks,
+    ) {
+        self.previous_scope_roots = previous_scope_roots;
+        self.dirty_scopes = dirty_scopes;
+        self.previous_callbacks = previous_callbacks;
+        self.scope_reuse_enabled = true;
     }
 
     pub(crate) fn with_root_layer<R>(&mut self, build: impl FnOnce(&mut Ui) -> R) -> R {
@@ -226,6 +309,65 @@ impl Ui {
         self.element(ElementKind::Polygon, id)
     }
 
+    pub fn scope(&mut self, id: impl Into<String>, build: impl FnOnce(&mut Ui)) {
+        let id = self.resolve_scope_id(&id.into());
+        self.build_scope(id, build);
+    }
+
+    /// Retained scope that is rebuilt on every scoped compose.
+    ///
+    /// Use this for frame-time or procedural animation. App data should still
+    /// flow through [`State`](crate::State) / [`Signal`](crate::Signal); this is
+    /// only the retention boundary's "do not reuse me next frame" marker.
+    pub fn live_scope(&mut self, id: impl Into<String>, build: impl FnOnce(&mut Ui)) {
+        let id = self.resolve_scope_id(&id.into());
+        self.live_scopes.insert(id.clone());
+        self.build_scope(id, build);
+    }
+
+    fn build_scope(&mut self, id: String, build: impl FnOnce(&mut Ui)) {
+        // Reusing a scope transfers its previous elements and callbacks as a
+        // unit. If the scope itself or any nested scope is dirty, rebuild it so
+        // signal reads and callbacks capture fresh state.
+        if self.scope_reuse_enabled && !scope_has_dirty_descendant(&self.dirty_scopes, &id) {
+            if let Some(elements) = self.previous_scope_roots.get(&id).cloned() {
+                self.callbacks
+                    .transfer_for_elements(&mut self.previous_callbacks, &elements);
+                let children = children_at_path_mut(&mut self.roots, &self.path);
+                children.extend(elements.clone());
+                self.scope_events.push(ScopeComposeEvent {
+                    scope: id.clone(),
+                    action: ScopeComposeAction::Reused,
+                });
+                self.scope_roots.insert(id, elements);
+                self.scope_stats.reused += 1;
+                return;
+            }
+        }
+
+        self.scope_stack.push(id);
+        let start = children_at_path_mut(&mut self.roots, &self.path).len();
+        build(self);
+        let id = self
+            .scope_stack
+            .pop()
+            .expect("scope stack should contain active scope");
+        let roots = children_at_path_mut(&mut self.roots, &self.path)[start..].to_vec();
+        self.scope_events.push(ScopeComposeEvent {
+            scope: id.clone(),
+            action: ScopeComposeAction::Built,
+        });
+        self.scope_roots.insert(id, roots);
+        self.scope_stats.built += 1;
+    }
+
+    pub fn active_scope_id(&self) -> Option<String> {
+        self.scope_stack
+            .last()
+            .cloned()
+            .or_else(|| (!self.page_id.is_empty()).then(|| self.page_id.clone()))
+    }
+
     pub(crate) fn push_element(&mut self, element: Element) -> usize {
         let children = children_at_path_mut(&mut self.roots, &self.path);
         let index = children.len();
@@ -253,6 +395,21 @@ impl Ui {
 
     pub(crate) fn resolve_id(&self, id: &str) -> String {
         self.resolve_id_ref(id).into_owned()
+    }
+
+    fn resolve_scope_id(&self, id: &str) -> String {
+        if id.is_empty() || self.page_id.is_empty() || is_resolved_id(id, &self.page_id) {
+            return self.resolve_id(id);
+        }
+        if let Some(parent) = self.scope_stack.last() {
+            if is_resolved_id(id, parent) || id == parent {
+                id.to_string()
+            } else {
+                format!("{parent}.{id}")
+            }
+        } else {
+            self.resolve_id(id)
+        }
     }
 
     fn resolve_id_ref<'a>(&self, id: &'a str) -> Cow<'a, str> {
@@ -360,6 +517,13 @@ fn find_frame(elements: &[Element], id: &str) -> Option<LayoutRect> {
     None
 }
 
+fn collect_element_ids(elements: &[Element], ids: &mut FxHashSet<String>) {
+    for element in elements {
+        ids.insert(element.id.clone());
+        collect_element_ids(&element.children, ids);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::Ui;
@@ -392,4 +556,15 @@ mod tests {
         assert_eq!(ui.roots()[2].id, "page.__rect.0");
     }
 
+    #[test]
+    fn nested_scopes_extend_the_parent_scope_id() {
+        let mut ui = Ui::new("page");
+
+        ui.scope("nav", |ui| {
+            assert_eq!(ui.active_scope_id().as_deref(), Some("page.nav"));
+            ui.scope("selection", |ui| {
+                assert_eq!(ui.active_scope_id().as_deref(), Some("page.nav.selection"));
+            });
+        });
+    }
 }

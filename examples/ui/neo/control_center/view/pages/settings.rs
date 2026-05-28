@@ -1,5 +1,5 @@
 use sky_engine::ui::neo::widgets;
-use sky_engine::ui::neo::{NeoState, Size, Ui};
+use sky_engine::ui::neo::{Size, State, Ui};
 
 use crate::actions;
 use crate::locale;
@@ -11,7 +11,7 @@ pub fn render(
     ui: &mut Ui,
     width: f32,
     height: f32,
-    state_store: &NeoState<AppModel>,
+    state_store: &State<AppModel>,
     model: &AppModel,
     app_theme: AppTheme,
 ) {
@@ -32,7 +32,7 @@ pub fn render(
         height,
         content_h,
         model.settings_scroll,
-        actions::bind_settings_scroll(state_store),
+        actions::settings_scroll_signal(state_store),
         |ui, body_w| {
             let half_w = ((body_w - gap) * 0.5).max(220.0);
 
@@ -66,7 +66,7 @@ fn workspace_section(
     ui: &mut Ui,
     width: f32,
     height: f32,
-    state_store: &NeoState<AppModel>,
+    state_store: &State<AppModel>,
     locale_id: Locale,
     app_theme: AppTheme,
 ) {
@@ -85,7 +85,7 @@ fn workspace_section(
                 .content(|ui| {
                     widgets::input(ui, "settings.workspace.name")
                         .size(body_w, 42.0)
-                        .text_bind(actions::bind_project_name(state_store))
+                        .text_signal(actions::project_name_signal(state_store))
                         .placeholder(locale::project_name_placeholder(locale_id))
                         .theme(app_theme.tokens)
                         .build();
@@ -101,7 +101,7 @@ fn workspace_section(
                     widgets::segmented(ui, "settings.workspace.language")
                         .size(body_w, 38.0)
                         .items(locale::language_items(locale_id))
-                        .selected_bind(actions::bind_locale(state_store))
+                        .signal(actions::locale_signal(state_store))
                         .theme(app_theme.tokens)
                         .build();
 
@@ -116,8 +116,8 @@ fn workspace_section(
                     widgets::dropdown(ui, "settings.workspace.quality")
                         .size(body_w, 42.0)
                         .items(locale::quality_preset_items(locale_id))
-                        .selected_bind(actions::bind_quality_preset(state_store))
-                        .open_bind(actions::bind_quality_preset_open(state_store))
+                        .value_signal(actions::quality_preset_signal(state_store))
+                        .open_signal(actions::quality_preset_open_signal(state_store))
                         .theme(app_theme.tokens)
                         .build();
                 });
@@ -129,7 +129,7 @@ fn sound_section(
     ui: &mut Ui,
     width: f32,
     height: f32,
-    state_store: &NeoState<AppModel>,
+    state_store: &State<AppModel>,
     model: &AppModel,
     app_theme: AppTheme,
 ) {
@@ -158,7 +158,7 @@ fn sound_section(
                         .build();
                     widgets::slider(ui, "settings.sound.scale.slider")
                         .size(body_w, 32.0)
-                        .value_bind(actions::bind_ui_scale(state_store))
+                        .signal(actions::ui_scale_signal(state_store))
                         .theme(app_theme.tokens)
                         .build();
 
@@ -174,7 +174,7 @@ fn sound_section(
                         .build();
                     widgets::slider(ui, "settings.sound.volume.slider")
                         .size(body_w, 32.0)
-                        .value_bind(actions::bind_volume(state_store))
+                        .signal(actions::volume_signal(state_store))
                         .theme(app_theme.tokens)
                         .build();
                 });
@@ -186,7 +186,7 @@ fn preference_section(
     ui: &mut Ui,
     width: f32,
     height: f32,
-    state_store: &NeoState<AppModel>,
+    state_store: &State<AppModel>,
     model: &AppModel,
     app_theme: AppTheme,
 ) {
@@ -201,14 +201,14 @@ fn preference_section(
         |ui, body_w, _| {
             widgets::switch(ui, "settings.preferences.notifications")
                 .size(body_w, 34.0)
-                .checked_bind(actions::bind_notifications(state_store))
+                .signal(actions::notifications_signal(state_store))
                 .text(locale::notifications_label(model.locale))
                 .theme(app_theme.tokens)
                 .build();
 
             widgets::checkbox(ui, "settings.preferences.autosave")
                 .size(body_w, 30.0)
-                .checked_bind(actions::bind_auto_save(state_store))
+                .signal(actions::auto_save_signal(state_store))
                 .text(locale::auto_save_label(model.locale))
                 .theme(app_theme.tokens)
                 .build();
@@ -234,7 +234,7 @@ fn appearance_section(
     ui: &mut Ui,
     width: f32,
     height: f32,
-    state_store: &NeoState<AppModel>,
+    state_store: &State<AppModel>,
     model: &AppModel,
     app_theme: AppTheme,
 ) {
@@ -250,14 +250,14 @@ fn appearance_section(
             widgets::segmented(ui, "settings.appearance.theme")
                 .size(body_w, 38.0)
                 .items(locale::theme_mode_items(model.locale))
-                .selected_bind(actions::bind_theme_mode(state_store))
+                .signal(actions::theme_mode_signal(state_store))
                 .theme(app_theme.tokens)
                 .build();
 
             widgets::segmented(ui, "settings.appearance.focus")
                 .size(body_w, 38.0)
                 .items(locale::focus_mode_items(model.locale))
-                .selected_bind(actions::bind_focus_mode(state_store))
+                .signal(actions::focus_mode_signal(state_store))
                 .theme(app_theme.tokens)
                 .build();
 

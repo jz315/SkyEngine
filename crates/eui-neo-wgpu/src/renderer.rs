@@ -12,8 +12,8 @@ use eui_neo::expert::{
     UiDrawCommand, UiDrawList, UiImageDraw, UiNineSliceDraw, UiPolygonDraw, UiRectDraw, UiTextDraw,
 };
 use eui_neo::{
-    Color, FontRef, Frame, GradientDirection, HorizontalAlign, ImageFit, ImageRef, LayoutRect,
-    Screen, Transform, UiClip, VerticalAlign,
+    CacheCell, Color, FontRef, Frame, GradientDirection, HorizontalAlign, ImageFit, ImageRef,
+    LayoutRect, Screen, Transform, UiClip, VerticalAlign,
 };
 use glyphon::cosmic_text::Align as TextAlign;
 use glyphon::{
@@ -48,9 +48,19 @@ pub struct TargetTexture<'a> {
 
 struct WgpuVertexBuffer {
     buffer: wgpu::Buffer,
-    used: u64,
     capacity: u64,
+    upload_cache: CacheCell<UploadCacheKey, UploadState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UploadCacheKey {
+    used: u64,
     content_hash: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct UploadState {
+    used: u64,
 }
 
 impl WgpuVertexBuffer {
@@ -63,7 +73,8 @@ impl WgpuVertexBuffer {
     ) {
         if data.is_empty() {
             if let Some(buffer) = slot {
-                buffer.used = 0;
+                buffer.upload_cache.value_mut().used = 0;
+                buffer.upload_cache.invalidate();
             }
             return;
         }
@@ -82,34 +93,30 @@ impl WgpuVertexBuffer {
             });
             *slot = Some(Self {
                 buffer,
-                used,
                 capacity,
-                content_hash: 0,
+                upload_cache: CacheCell::default(),
             });
-        } else if let Some(buffer) = slot {
-            if buffer.used == used && buffer.content_hash == content_hash {
-                return;
-            }
-            buffer.used = used;
         }
 
-        let Some(buffer) = slot.as_ref() else {
+        let Some(buffer) = slot.as_mut() else {
             return;
         };
-        queue.write_buffer(&buffer.buffer, 0, bytes);
-        if let Some(buffer) = slot {
-            buffer.content_hash = content_hash;
-        }
+        buffer
+            .upload_cache
+            .get_or_rebuild(UploadCacheKey { used, content_hash }, |state| {
+                queue.write_buffer(&buffer.buffer, 0, bytes);
+                state.used = used;
+            });
     }
 
     #[inline]
     fn slice(&self) -> wgpu::BufferSlice<'_> {
-        self.buffer.slice(0..self.used)
+        self.buffer.slice(0..self.upload_cache.value().used)
     }
 
     #[inline]
     fn ready(&self) -> Option<&Self> {
-        (self.used > 0).then_some(self)
+        (self.upload_cache.value().used > 0).then_some(self)
     }
 }
 
@@ -282,7 +289,6 @@ struct PrimitiveOp {
 
 #[derive(Default)]
 struct RenderScratch {
-    key: Option<DrawCollectKey>,
     rect_vertices: Vec<NeoRectVertex>,
     polygon_vertices: Vec<NeoPolygonVertex>,
     image_vertices: Vec<NeoImageVertex>,
@@ -296,6 +302,7 @@ struct RenderScratch {
 struct DrawCollectKey {
     draw_ptr: usize,
     draw_len: usize,
+    draw_revision: u64,
     logical_width_bits: u32,
     logical_height_bits: u32,
     surface_is_srgb: bool,
@@ -304,7 +311,6 @@ struct DrawCollectKey {
 
 impl RenderScratch {
     fn clear(&mut self) {
-        self.key = None;
         self.rect_vertices.clear();
         self.polygon_vertices.clear();
         self.image_vertices.clear();
@@ -334,7 +340,7 @@ pub struct WgpuRenderer {
     rect_vertex_buffer: Option<WgpuVertexBuffer>,
     polygon_vertex_buffer: Option<WgpuVertexBuffer>,
     image_vertex_buffer: Option<WgpuVertexBuffer>,
-    scratch: RenderScratch,
+    draw_collect_cache: CacheCell<DrawCollectKey, RenderScratch>,
     frames_since_atlas_trim: u32,
     default_text_family: Option<String>,
     default_icon_family: Option<String>,
@@ -390,7 +396,7 @@ impl WgpuRenderer {
             rect_vertex_buffer: None,
             polygon_vertex_buffer: None,
             image_vertex_buffer: None,
-            scratch: RenderScratch::default(),
+            draw_collect_cache: CacheCell::default(),
             frames_since_atlas_trim: 0,
             default_text_family: None,
             default_icon_family: None,
@@ -488,20 +494,20 @@ impl WgpuRenderer {
         let profile = neo_profile_enabled();
         let total_start = profile.then(Instant::now);
         let logical_rect = LayoutRect::new(0.0, 0.0, screen.width, screen.height);
-        let mut scratch = std::mem::take(&mut self.scratch);
+        let mut draw_collect_cache = std::mem::take(&mut self.draw_collect_cache);
         let surface_is_srgb = self.format.is_srgb();
         let collect_start = profile.then(Instant::now);
-        let (draw_ptr, draw_len) = draw_list.cache_key();
+        let (draw_ptr, draw_len, _) = draw_list.cache_key();
         let collect_key = DrawCollectKey {
             draw_ptr,
             draw_len,
+            draw_revision: draw_list.revision(),
             logical_width_bits: screen.width.to_bits(),
             logical_height_bits: screen.height.to_bits(),
             surface_is_srgb,
             image_cache_revision: self.image_cache_revision,
         };
-        let collect_hit = scratch.key == Some(collect_key);
-        if !collect_hit {
+        let collect_access = draw_collect_cache.get_or_rebuild(collect_key, |scratch| {
             scratch.clear();
             collect_draw_items(
                 draw_list,
@@ -516,16 +522,16 @@ impl WgpuRenderer {
                 &mut scratch.image_items,
                 &mut scratch.render_ops,
             );
-            scratch.key = Some(collect_key);
-        }
+        });
         let collect_ms = elapsed_ms(collect_start);
+        let scratch = draw_collect_cache.value();
 
         if scratch.rect_vertices.is_empty()
             && scratch.polygon_vertices.is_empty()
             && scratch.image_vertices.is_empty()
             && scratch.text_items.is_empty()
         {
-            self.scratch = scratch;
+            self.draw_collect_cache = draw_collect_cache;
             return RenderStatus {
                 pending_images,
                 ..RenderStatus::default()
@@ -615,14 +621,17 @@ impl WgpuRenderer {
             }
         }
         if profile {
+            let cache_stats = draw_collect_cache.stats();
             eprintln!(
-                "[eui-neo-wgpu] render total={:.3}ms collect={:.3}ms upload={:.3}ms text={:.3}ms render_ops={:.3}ms collect_hit={} rect_v={} poly_v={} image_v={} text_items={} ops={}",
+                "[eui-neo-wgpu] render total={:.3}ms collect={:.3}ms upload={:.3}ms text={:.3}ms render_ops={:.3}ms collect_hit={} collect_hits={} collect_misses={} rect_v={} poly_v={} image_v={} text_items={} ops={}",
                 elapsed_ms(total_start),
                 collect_ms,
                 upload_ms,
                 text_ms,
                 render_ms,
-                collect_hit,
+                collect_access.is_hit(),
+                cache_stats.hits,
+                cache_stats.misses,
                 scratch.rect_vertices.len(),
                 scratch.polygon_vertices.len(),
                 scratch.image_vertices.len(),
@@ -630,7 +639,7 @@ impl WgpuRenderer {
                 scratch.render_ops.len()
             );
         }
-        self.scratch = scratch;
+        self.draw_collect_cache = draw_collect_cache;
         RenderStatus {
             pending_images,
             ..RenderStatus::default()
@@ -1687,6 +1696,7 @@ fn push_rect(
     if count == 0 {
         return false;
     }
+    dump_rect_collect(draw, clip, start, count, &vertices[start as usize..]);
     ops.push(PrimitiveOp {
         kind: PrimitiveKind::Rect,
         start,
@@ -1696,6 +1706,64 @@ fn push_rect(
         backdrop_blur: draw.blur.max(0.0),
     });
     true
+}
+
+fn dump_rect_collect(
+    draw: &UiRectDraw,
+    clip: UiClip,
+    start: u32,
+    count: u32,
+    vertices: &[NeoRectVertex],
+) {
+    static FILTER: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    let filter = FILTER.get_or_init(|| std::env::var("SKY_NEO_WGPU_DUMP_FILTER").ok());
+    let Some(filter) = filter.as_deref() else {
+        return;
+    };
+    if !draw.id.contains(filter) {
+        return;
+    }
+
+    eprintln!(
+        "[eui-neo-wgpu rect] id={} frame=({:.1},{:.1},{:.1},{:.1}) radius={:.1} border={:.1} opacity={:.3} clip=({:.1},{:.1},{:.1},{:.1}) start={} count={}",
+        draw.id,
+        draw.frame.x,
+        draw.frame.y,
+        draw.frame.width,
+        draw.frame.height,
+        draw.radius,
+        draw.border.width,
+        draw.opacity,
+        clip.rect.x,
+        clip.rect.y,
+        clip.rect.width,
+        clip.rect.height,
+        start,
+        count
+    );
+    for (i, vertex) in vertices.iter().enumerate() {
+        eprintln!(
+            "[eui-neo-wgpu rect vertex] id={} i={} pos=({:.1},{:.1}) local=({:.1},{:.1}) rect=({:.1},{:.1},{:.1},{:.1}) clip=({:.1},{:.1},{:.1},{:.1}) params=({:.1},{:.1},{:.3},{:.1})",
+            draw.id,
+            i,
+            vertex.position[0],
+            vertex.position[1],
+            vertex.local_pos[0],
+            vertex.local_pos[1],
+            vertex.rect[0],
+            vertex.rect[1],
+            vertex.rect[2],
+            vertex.rect[3],
+            vertex.clip_rect[0],
+            vertex.clip_rect[1],
+            vertex.clip_rect[2],
+            vertex.clip_rect[3],
+            vertex.params[0],
+            vertex.params[1],
+            vertex.params[2],
+            vertex.params[3]
+        );
+    }
 }
 
 fn push_rect_fill_vertices(

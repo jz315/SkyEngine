@@ -2,7 +2,7 @@ mod overview;
 mod settings;
 mod tasks;
 
-use sky_engine::ui::neo::{NeoState, Ui};
+use sky_engine::ui::neo::{State, Ui};
 
 use crate::model::{AppModel, Page};
 use crate::theme::AppTheme;
@@ -12,7 +12,7 @@ pub fn render(
     ui: &mut Ui,
     width: f32,
     height: f32,
-    state_store: &NeoState<AppModel>,
+    state_store: &State<AppModel>,
     model: &AppModel,
     runtime: RuntimeInfo,
     app_theme: AppTheme,

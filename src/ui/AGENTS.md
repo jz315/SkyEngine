@@ -45,8 +45,9 @@
   - `neo::install_neo_ui_backend`
   - `neo::NeoUiBackend`
   - `neo::Runtime`
-  - `neo::Ui`, `neo::NeoState`, `neo::Binding`, and `neo::widgets`
+  - `neo::Ui`, `neo::State`, `neo::Signal`, `neo::SignalKey`, and `neo::widgets`
   - `neo::compose`
+  - `neo::compose_state`
   - `neo::open_window`
   - Common layout-safe widget helpers live in `eui_neo::widgets`: `scroll_y`, `popover`, and rounded clipping through `.rounded_clip(...)` / `.clip_to_radius()`.
 

@@ -1,5 +1,5 @@
 use sky_engine::ui::neo::widgets;
-use sky_engine::ui::neo::{Align, NeoState, Size, Ui};
+use sky_engine::ui::neo::{Align, Size, State, Ui};
 
 use crate::actions;
 use crate::locale;
@@ -12,7 +12,7 @@ pub fn render(
     ui: &mut Ui,
     width: f32,
     height: f32,
-    state_store: &NeoState<AppModel>,
+    state_store: &State<AppModel>,
     model: &AppModel,
     runtime: RuntimeInfo,
     app_theme: AppTheme,
@@ -29,7 +29,7 @@ pub fn render(
         height,
         content_h,
         model.overview_scroll,
-        actions::bind_overview_scroll(state_store),
+        actions::overview_scroll_signal(state_store),
         |ui, body_w| {
             let card_width = ((body_w - gap * 2.0) / 3.0).max(120.0);
             let hero_w = (body_w * 0.62).max(320.0);
@@ -95,7 +95,7 @@ pub fn render(
 fn draw_launchpad(
     ui: &mut Ui,
     width: f32,
-    state_store: &NeoState<AppModel>,
+    state_store: &State<AppModel>,
     model: &AppModel,
     _runtime: RuntimeInfo,
     app_theme: AppTheme,

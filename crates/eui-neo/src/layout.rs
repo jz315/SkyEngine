@@ -51,6 +51,26 @@ pub(crate) fn layout_roots_with_text_system(
     }
 }
 
+pub(crate) fn layout_element_in_frame_with_text_system(
+    element: &mut Element,
+    frame: LayoutRect,
+    text_system: &mut dyn TextSystem,
+) -> bool {
+    let measured = measure_node(element, frame.width, frame.height, text_system);
+    let same_size = (measured.width - frame.width).abs() <= 0.001
+        && (measured.height - frame.height).abs() <= 0.001;
+    let requires_parent_reflow =
+        matches!(element.width, Size::WrapContent) || matches!(element.height, Size::WrapContent);
+    if requires_parent_reflow && !same_size {
+        return false;
+    }
+    let mut assigned = measured;
+    assigned.width = frame.width;
+    assigned.height = frame.height;
+    layout_element(element, &assigned, frame.x, frame.y, text_system);
+    true
+}
+
 fn measure_node(
     element: &Element,
     available_width: f32,
@@ -164,9 +184,8 @@ fn measure_text_node(
 ) -> MeasuredNode {
     let needs_text_measure =
         matches!(element.width, Size::WrapContent) || matches!(element.height, Size::WrapContent);
-    let text_measure = needs_text_measure.then(|| {
-        measure_text_leaf(element, available_width, text_system)
-    });
+    let text_measure =
+        needs_text_measure.then(|| measure_text_leaf(element, available_width, text_system));
     let content_width = match element.width {
         Size::Fixed(value) => value,
         Size::Fill => available_width,

@@ -38,6 +38,14 @@ impl Page {
         }
     }
 
+    pub fn from_index(value: i32) -> Self {
+        match value {
+            1 => Self::Tasks,
+            2 => Self::Settings,
+            _ => Self::Overview,
+        }
+    }
+
     pub fn icon(self) -> u32 {
         match self {
             Self::Overview => 0xF201,

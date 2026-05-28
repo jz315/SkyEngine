@@ -8,7 +8,7 @@ use rustc_hash::FxHashMap;
 use crate::Color;
 
 use super::super::{
-    AnimProperty, Binding, KeyboardEvent, LayoutRect, PointerEvent, Response, Shadow, Size,
+    AnimProperty, KeyboardEvent, LayoutRect, PointerEvent, Response, Shadow, Signal, Size,
     Transition, Ui, VerticalAlign,
 };
 use super::layout::WidgetLayout;
@@ -160,18 +160,14 @@ impl<'ui> InputBuilder<'ui> {
         self
     }
 
-    pub fn text_bind<T: 'static>(self, binding: Binding<T, String>) -> Self {
-        let value = binding.get();
+    pub fn text_signal<T: 'static>(self, signal: Signal<T, String>) -> Self {
+        let value = signal.watch(self.ui);
         self.text(value)
-            .on_change(move |next| binding.set(next.to_string()))
+            .on_change(move |next| signal.set(next.to_string()))
     }
 
     pub fn value(self, value: impl Into<String>) -> Self {
         self.text(value)
-    }
-
-    pub fn value_bind<T: 'static>(self, binding: Binding<T, String>) -> Self {
-        self.text_bind(binding)
     }
 
     pub fn placeholder(mut self, value: impl Into<String>) -> Self {
