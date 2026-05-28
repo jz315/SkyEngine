@@ -109,27 +109,6 @@ fn merge_live_scopes(dirty_scopes: &mut ScopeSet, live_scopes: &mut ScopeSet) ->
     live_dirty_scopes
 }
 
-pub(crate) fn scope_contains_id(scope: &str, id: &str) -> bool {
-    scope == id || is_resolved_id(id, scope)
-}
-
-pub(crate) fn scope_parent<'a>(
-    scope: &str,
-    scopes: impl IntoIterator<Item = &'a String>,
-) -> Option<String> {
-    scopes
-        .into_iter()
-        .filter(|candidate| candidate.as_str() != scope && scope_contains_id(candidate, scope))
-        .max_by_key(|candidate| scope_depth(candidate))
-        .cloned()
-}
-
-pub(crate) fn scope_has_dirty_descendant(dirty_scopes: &ScopeSet, scope: &str) -> bool {
-    dirty_scopes
-        .iter()
-        .any(|dirty| dirty == scope || is_resolved_id(dirty, scope))
-}
-
 pub(crate) fn structurally_incompatible_dirty_scopes(
     dirty_scopes: &ScopeSet,
     previous_scope_roots: &ScopeRoots,
@@ -151,11 +130,7 @@ pub(crate) fn normalize_dirty_scopes_with_roots(
     previous_scope_roots: &ScopeRoots,
 ) -> ScopeSet {
     let mut scopes: Vec<_> = dirty_scopes.iter().cloned().collect();
-    scopes.sort_by(|left, right| {
-        scope_depth(left)
-            .cmp(&scope_depth(right))
-            .then_with(|| left.cmp(right))
-    });
+    scopes.sort();
 
     let mut normalized = ScopeSet::default();
     for scope in scopes {
@@ -222,20 +197,6 @@ fn elements_are_structurally_compatible(previous: &Element, next: &Element) -> b
         && previous.clip == next.clip
         && previous.children.len() == next.children.len()
         && element_lists_are_structurally_compatible(&previous.children, &next.children)
-}
-
-fn is_resolved_id(id: &str, parent: &str) -> bool {
-    id.len() > parent.len()
-        && id.starts_with(parent)
-        && id.as_bytes().get(parent.len()) == Some(&b'.')
-}
-
-fn scope_depth(scope: &str) -> usize {
-    scope
-        .as_bytes()
-        .iter()
-        .filter(|byte| **byte == b'.')
-        .count()
 }
 
 #[cfg(test)]

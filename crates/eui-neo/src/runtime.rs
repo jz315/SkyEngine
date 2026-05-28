@@ -12,9 +12,9 @@ use super::event::InteractionState;
 use super::fonts::FontRef;
 use super::layout::{layout_element_in_frame_with_text_system, layout_roots_with_text_system};
 use super::retained::{
-    begin_scope_frame, normalize_dirty_scopes_with_roots, scope_contains_id, scope_parent,
-    structurally_incompatible_dirty_scopes, FullLayoutReason, LayoutMode, RetainedComposeAction,
-    RetainedComposeEvent, RetainedComposeStats, ScopeRoots, ScopeSet,
+    begin_scope_frame, normalize_dirty_scopes_with_roots, structurally_incompatible_dirty_scopes,
+    FullLayoutReason, LayoutMode, RetainedComposeAction, RetainedComposeEvent,
+    RetainedComposeStats, ScopeRoots, ScopeSet,
 };
 use super::skin::{NeoSkin, SkinRegistry};
 use super::text_measure::{DefaultTextSystem, TextSystem};
@@ -1705,12 +1705,7 @@ fn collect_scope_debug_records(
         .iter()
         .map(|record| (record.id.as_str(), record))
         .collect();
-    let mut scope_ids_sorted = sorted_scope_set(&scope_ids);
-    scope_ids_sorted.sort_by(|left, right| {
-        scope_depth(left)
-            .cmp(&scope_depth(right))
-            .then_with(|| left.cmp(right))
-    });
+    let scope_ids_sorted = sorted_scope_set(&scope_ids);
 
     scope_ids_sorted
         .into_iter()
@@ -1724,7 +1719,7 @@ fn collect_scope_debug_records(
                 .and_then(|roots| roots.first());
             let current_record = first_current_root.and_then(|id| element_by_id.get(id).copied());
             RetainedDebugRecord {
-                parent_id: scope_parent(&scope, scope_ids.iter()),
+                parent_id: retained_parent_for_scope(&scope, current_scope_roots, &element_by_id),
                 dirty: dirty_ids.contains(&scope),
                 raw_dirty: input_dirty_ids.contains(&scope),
                 normalized_dirty_root: normalized_dirty_ids.contains(&scope),
@@ -1750,6 +1745,20 @@ fn collect_scope_debug_records(
             }
         })
         .collect()
+}
+
+fn retained_parent_for_scope(
+    scope: &str,
+    current_scope_roots: &ScopeRoots,
+    element_by_id: &FxHashMap<&str, &ElementDebugRecord>,
+) -> Option<String> {
+    let root_id = current_scope_roots
+        .get(scope)
+        .and_then(|roots| roots.first())
+        .map(|element| element.id.as_str())?;
+    let parent_id = element_by_id.get(root_id)?.parent.as_deref()?;
+    let parent_boundary = element_by_id.get(parent_id)?.retained_boundary.as_deref()?;
+    (parent_boundary != scope).then(|| parent_boundary.to_string())
 }
 
 fn dirty_reasons_for_scope(
@@ -1779,14 +1788,15 @@ fn collect_element_debug_records(
     animations: &FxHashMap<String, ElementAnimation>,
 ) -> Vec<ElementDebugRecord> {
     let mut records = Vec::new();
-    let scope_ids: Vec<_> = scope_roots.keys().cloned().collect();
+    let scope_by_root_id = scope_by_root_id(scope_roots);
     for root in roots {
         collect_element_debug_record(
             root,
             None,
             None,
             None,
-            &scope_ids,
+            None,
+            &scope_by_root_id,
             callbacks,
             animations,
             &mut records,
@@ -1801,12 +1811,16 @@ fn collect_element_debug_record(
     parent: Option<&str>,
     scroll_ancestor: Option<&str>,
     clip_ancestor: Option<&str>,
-    scope_ids: &[String],
+    retained_boundary: Option<&str>,
+    scope_by_root_id: &FxHashMap<String, String>,
     callbacks: &UiCallbacks,
     animations: &FxHashMap<String, ElementAnimation>,
     records: &mut Vec<ElementDebugRecord>,
 ) {
-    let retained_boundary = nearest_scope_for_id(&element.id, scope_ids);
+    let retained_boundary = scope_by_root_id
+        .get(&element.id)
+        .map(String::as_str)
+        .or(retained_boundary);
     let draw_frame = animations
         .get(&element.id)
         .and_then(|animation| animation.frame.as_ref())
@@ -1815,7 +1829,7 @@ fn collect_element_debug_record(
     records.push(ElementDebugRecord {
         id: element.id.clone(),
         parent: parent.map(str::to_string),
-        retained_boundary,
+        retained_boundary: retained_boundary.map(str::to_string),
         scroll_ancestor: scroll_ancestor.map(str::to_string),
         clip_ancestor: clip_ancestor.map(str::to_string),
         target_frame: element.frame,
@@ -1838,7 +1852,8 @@ fn collect_element_debug_record(
             Some(&element.id),
             next_scroll_ancestor,
             next_clip_ancestor,
-            scope_ids,
+            retained_boundary,
+            scope_by_root_id,
             callbacks,
             animations,
             records,
@@ -1846,20 +1861,32 @@ fn collect_element_debug_record(
     }
 }
 
-fn nearest_scope_for_id(id: &str, scope_ids: &[String]) -> Option<String> {
-    scope_ids
-        .iter()
-        .filter(|scope| scope_contains_id(scope, id))
-        .max_by_key(|scope| scope_depth(scope))
-        .cloned()
-}
-
-fn scope_depth(scope: &str) -> usize {
-    scope
-        .as_bytes()
-        .iter()
-        .filter(|byte| **byte == b'.')
-        .count()
+fn scope_by_root_id(scope_roots: &ScopeRoots) -> FxHashMap<String, String> {
+    let mut candidates: FxHashMap<String, Vec<String>> = FxHashMap::default();
+    for (scope, roots) in scope_roots {
+        for root in roots {
+            candidates
+                .entry(root.id.clone())
+                .or_default()
+                .push(scope.clone());
+        }
+    }
+    let mut map = FxHashMap::default();
+    for (root_id, mut scopes) in candidates {
+        scopes.sort();
+        let owner = scopes
+            .iter()
+            .find(|scope| *scope == &root_id)
+            .cloned()
+            .unwrap_or_else(|| {
+                scopes
+                    .into_iter()
+                    .next()
+                    .expect("scope root candidate list should not be empty")
+            });
+        map.insert(root_id, owner);
+    }
+    map
 }
 
 fn collect_element_structure(element: &Element, snapshots: &mut Vec<ElementSnapshot>) {
@@ -2624,7 +2651,10 @@ mod tests {
             .iter()
             .find(|scope| scope.id == "page.panel.child")
             .expect("child scope should be reported");
-        assert_eq!(child_record.parent_id.as_deref(), Some("page.panel"));
+        assert_eq!(
+            child_record.parent_id.as_deref(),
+            Some("page.panel.scroll")
+        );
         assert_eq!(child_record.current_roots, 1);
         assert_eq!(child_record.action, Some(RetainedComposeAction::Built));
 
@@ -2638,6 +2668,74 @@ mod tests {
         assert_eq!(leaf.scroll_ancestor.as_deref(), Some("page.panel.scroll"));
         assert_eq!(leaf.clip_ancestor.as_deref(), Some("page.panel.scroll"));
         assert_eq!(leaf.draw_frame, Some(leaf.target_frame));
+    }
+
+    #[test]
+    fn debug_snapshot_uses_tree_ancestry_for_non_prefixed_scope_ids() {
+        let mut runtime = Runtime::new("page");
+
+        runtime.compose(240.0, 120.0, |ui, _| {
+            ui.retained_scope("panel", |ui| {
+                ui.stack("host").size(200.0, 100.0).content(|ui| {
+                    ui.retained_scope("page.live", |ui| {
+                        ui.rect("live.leaf").size(40.0, 20.0).build();
+                    });
+                });
+            });
+        });
+
+        let snapshot = runtime.debug_snapshot();
+        let live_record = snapshot
+            .retained
+            .iter()
+            .find(|scope| scope.id == "page.live")
+            .expect("non-prefixed child scope should be reported");
+        assert_eq!(live_record.parent_id.as_deref(), Some("page.host"));
+
+        let leaf = snapshot
+            .elements
+            .iter()
+            .find(|element| element.id == "page.live.leaf")
+            .expect("non-prefixed child leaf should be reported");
+        assert_eq!(leaf.parent.as_deref(), Some("page.host"));
+        assert_eq!(leaf.retained_boundary.as_deref(), Some("page.live"));
+    }
+
+    #[test]
+    fn dirty_non_prefixed_child_scope_prevents_parent_reuse_by_tree() {
+        let mut runtime = Runtime::new("page");
+        let parent_builds = Rc::new(Cell::new(0));
+        let child_builds = Rc::new(Cell::new(0));
+
+        let compose = |runtime: &mut Runtime, dirty_ids: Vec<String>| {
+            let parent_builds = parent_builds.clone();
+            let child_builds = child_builds.clone();
+            runtime.compose_incremental(240.0, 120.0, dirty_ids, move |ui, _| {
+                ui.retained_scope("panel", |ui| {
+                    parent_builds.set(parent_builds.get() + 1);
+                    ui.stack("host").size(200.0, 100.0).content(|ui| {
+                        ui.retained_scope("page.live", |ui| {
+                            child_builds.set(child_builds.get() + 1);
+                            ui.text("live.label")
+                                .size(120.0, 24.0)
+                                .text(format!("child {}", child_builds.get()))
+                                .build();
+                        });
+                    });
+                });
+            });
+        };
+
+        compose(&mut runtime, Vec::new());
+        compose(&mut runtime, vec!["page.live".to_string()]);
+
+        assert_eq!(parent_builds.get(), 2);
+        assert_eq!(child_builds.get(), 2);
+        assert_eq!(runtime.find("live.label").unwrap().text, "child 2");
+        assert_eq!(
+            runtime.debug_snapshot().normalized_dirty_ids,
+            vec!["page.live".to_string()]
+        );
     }
 
     #[test]

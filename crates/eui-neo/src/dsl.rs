@@ -9,8 +9,7 @@ use super::{
     LayoutRect, PanelSkin, PointerEvent, Response, ScrollEvent, SkinRegistry, SliderSkin,
 };
 use crate::retained::{
-    scope_has_dirty_descendant, RetainedComposeAction, RetainedComposeEvent, RetainedComposeStats,
-    ScopeRoots, ScopeSet,
+    RetainedComposeAction, RetainedComposeEvent, RetainedComposeStats, ScopeRoots, ScopeSet,
 };
 
 /// Logical screen size supplied to neo composition.
@@ -377,7 +376,13 @@ impl Ui {
         // Reusing a scope transfers its previous elements and callbacks as a
         // unit. If the scope itself or any nested scope is dirty, rebuild it so
         // signal reads and callbacks capture fresh state.
-        if self.scope_reuse_enabled && !scope_has_dirty_descendant(&self.dirty_scopes, &id) {
+        if self.scope_reuse_enabled
+            && !retained_element_has_dirty_dependency(
+                &self.dirty_scopes,
+                &self.previous_scope_roots,
+                &id,
+            )
+        {
             if let Some(elements) = self.previous_scope_roots.get(&id).cloned() {
                 self.callbacks
                     .transfer_for_elements(&mut self.previous_callbacks, &elements);
@@ -648,9 +653,6 @@ fn retained_element_has_dirty_dependency(
     previous_scope_roots: &ScopeRoots,
     id: &str,
 ) -> bool {
-    if scope_has_dirty_descendant(dirty_scopes, id) {
-        return true;
-    }
     let Some(elements) = previous_scope_roots.get(id) else {
         return false;
     };
