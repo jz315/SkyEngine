@@ -198,6 +198,7 @@ impl<'ui> BarChartBuilder<'ui> {
                 for (index, raw_value) in values.iter().copied().enumerate() {
                     let value = raw_value.clamp(0.0, 1.0);
                     let bar_height = 8.0_f32.max(value * plot_height);
+                    let bar_scale = bar_height / plot_height;
                     let x = plot_x + index as f32 * slot_width + (slot_width - bar_width) * 0.5;
                     let y = bottom_y - bar_height;
                     let color = if palette.is_empty() {
@@ -209,17 +210,19 @@ impl<'ui> BarChartBuilder<'ui> {
 
                     ui.rect(bar_id.clone())
                         .x(x)
-                        .y(y)
-                        .size(bar_width, bar_height)
+                        .y(plot_y)
+                        .size(bar_width, plot_height)
                         .states(
                             color,
                             theme::mix_color(color, theme::color(1.0, 1.0, 1.0, 1.0), 0.18),
                             theme::mix_color(color, theme::color(0.0, 0.0, 0.0, 1.0), 0.12),
                         )
                         .radius(10.0_f32.min(bar_width * 0.34))
+                        .scale_xy(1.0, bar_scale)
+                        .transform_origin(0.5, 1.0)
                         .instant_states()
                         .transition(self.transition)
-                        .animate(AnimProperty::FRAME | AnimProperty::COLOR)
+                        .animate(AnimProperty::TRANSFORM | AnimProperty::COLOR)
                         .on_click(|| {})
                         .build();
 

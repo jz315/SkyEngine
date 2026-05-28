@@ -28,6 +28,11 @@ use crate::fonts::{
 };
 
 const ATLAS_TRIM_INTERVAL_FRAMES: u32 = 120;
+const TEXT_BUFFER_CACHE_BUDGET_BYTES: usize = 8 * 1024 * 1024;
+const TEXT_BUFFER_CACHE_MAX_ENTRIES: usize = 512;
+const TEXT_BUFFER_CACHE_ADMIT_AFTER_SEEN: u8 = 2;
+const TEXT_BUFFER_CACHE_VOLATILE_STREAK: u8 = 2;
+const TEXT_BUFFER_CACHE_HISTORY_MAX_AGE_FRAMES: u64 = 600;
 
 /// Current wgpu render target supplied by the host application.
 pub struct Target<'a> {
@@ -140,6 +145,7 @@ fn hash_bytes(bytes: &[u8]) -> u64 {
 
 #[derive(Clone)]
 struct TextItem {
+    id: String,
     text: String,
     font: FontRef,
     frame: LayoutRect,
@@ -235,7 +241,7 @@ impl TextLayer {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct TextBufferKey {
     text: String,
     font: FontRef,
@@ -246,6 +252,25 @@ struct TextBufferKey {
     height: u32,
     wrap: bool,
     horizontal_align: HorizontalAlign,
+}
+
+struct CachedTextBuffer {
+    buffer: Buffer,
+    last_used_frame: u64,
+    byte_cost: usize,
+}
+
+struct TextKeyHistory {
+    seen_count: u8,
+    last_seen_frame: u64,
+}
+
+#[derive(Default)]
+struct TextIdentityHistory {
+    last_key: Option<TextBufferKey>,
+    changed_streak: u8,
+    stable_streak: u8,
+    last_seen_frame: u64,
 }
 
 struct TextBufferMetrics {
@@ -337,6 +362,16 @@ pub struct WgpuRenderer {
     viewport: Viewport,
     atlas: TextAtlas,
     text_layers: Vec<TextLayer>,
+    text_buffer_cache: FxHashMap<TextBufferKey, CachedTextBuffer>,
+    text_buffer_cache_bytes: usize,
+    text_buffer_cache_frame: u64,
+    text_buffer_cache_hits: usize,
+    text_buffer_cache_misses: usize,
+    text_buffer_cache_bypasses: usize,
+    text_buffer_create_ms: f32,
+    text_renderer_prepare_ms: f32,
+    text_buffer_key_history: FxHashMap<TextBufferKey, TextKeyHistory>,
+    text_buffer_identity_history: FxHashMap<String, TextIdentityHistory>,
     rect_vertex_buffer: Option<WgpuVertexBuffer>,
     polygon_vertex_buffer: Option<WgpuVertexBuffer>,
     image_vertex_buffer: Option<WgpuVertexBuffer>,
@@ -393,6 +428,16 @@ impl WgpuRenderer {
             viewport,
             atlas,
             text_layers: Vec::new(),
+            text_buffer_cache: FxHashMap::default(),
+            text_buffer_cache_bytes: 0,
+            text_buffer_cache_frame: 0,
+            text_buffer_cache_hits: 0,
+            text_buffer_cache_misses: 0,
+            text_buffer_cache_bypasses: 0,
+            text_buffer_create_ms: 0.0,
+            text_renderer_prepare_ms: 0.0,
+            text_buffer_key_history: FxHashMap::default(),
+            text_buffer_identity_history: FxHashMap::default(),
             rect_vertex_buffer: None,
             polygon_vertex_buffer: None,
             image_vertex_buffer: None,
@@ -440,6 +485,10 @@ impl WgpuRenderer {
     }
 
     fn invalidate_text_buffers(&mut self) {
+        self.text_buffer_cache.clear();
+        self.text_buffer_cache_bytes = 0;
+        self.text_buffer_key_history.clear();
+        self.text_buffer_identity_history.clear();
         for layer in &mut self.text_layers {
             layer.buffers.clear();
             layer.buffer_keys.clear();
@@ -578,6 +627,12 @@ impl WgpuRenderer {
         let upload_ms = elapsed_ms(upload_start);
 
         let text_start = profile.then(Instant::now);
+        self.text_buffer_cache_frame = self.text_buffer_cache_frame.wrapping_add(1);
+        self.text_buffer_cache_hits = 0;
+        self.text_buffer_cache_misses = 0;
+        self.text_buffer_cache_bypasses = 0;
+        self.text_buffer_create_ms = 0.0;
+        self.text_renderer_prepare_ms = 0.0;
         self.prepare_text_layers(
             ctx,
             &scratch.render_ops,
@@ -620,18 +675,27 @@ impl WgpuRenderer {
                 layer.area_keys.clear();
             }
         }
+        self.evict_text_buffer_cache();
         if profile {
             let cache_stats = draw_collect_cache.stats();
             eprintln!(
-                "[eui-neo-wgpu] render total={:.3}ms collect={:.3}ms upload={:.3}ms text={:.3}ms render_ops={:.3}ms collect_hit={} collect_hits={} collect_misses={} rect_v={} poly_v={} image_v={} text_items={} ops={}",
+                "[eui-neo-wgpu] render total={:.3}ms collect={:.3}ms upload={:.3}ms text={:.3}ms text_create={:.3}ms text_prepare={:.3}ms render_ops={:.3}ms collect_hit={} collect_hits={} collect_misses={} text_cache_hits={} text_cache_misses={} text_cache_bypasses={} text_cache_entries={} text_cache_kb={} text_history={} rect_v={} poly_v={} image_v={} text_items={} ops={}",
                 elapsed_ms(total_start),
                 collect_ms,
                 upload_ms,
                 text_ms,
+                self.text_buffer_create_ms,
+                self.text_renderer_prepare_ms,
                 render_ms,
                 collect_access.is_hit(),
                 cache_stats.hits,
                 cache_stats.misses,
+                self.text_buffer_cache_hits,
+                self.text_buffer_cache_misses,
+                self.text_buffer_cache_bypasses,
+                self.text_buffer_cache.len(),
+                self.text_buffer_cache_bytes / 1024,
+                self.text_buffer_key_history.len(),
                 scratch.rect_vertices.len(),
                 scratch.polygon_vertices.len(),
                 scratch.image_vertices.len(),
@@ -799,30 +863,50 @@ impl WgpuRenderer {
         logical_size: [f32; 2],
         physical_size: [u32; 2],
     ) {
+        let profile = neo_profile_enabled();
+        let text_spike_threshold = neo_text_spike_threshold_ms();
+        let text_timing = profile || text_spike_threshold.is_some();
+        let layer_start = text_timing.then(Instant::now);
+        let create_ms_before = self.text_buffer_create_ms;
+        let prepare_ms_before = self.text_renderer_prepare_ms;
         let scale_x = physical_size[0] as f32 / logical_size[0].max(1.0);
         let scale_y = physical_size[1] as f32 / logical_size[1].max(1.0);
         let text_scale = scale_x.min(scale_y).max(0.01);
         let default_text_family = self.default_text_family.clone();
         let default_icon_family = self.default_icon_family.clone();
-        let layer = &mut self.text_layers[layer_index];
-        let mut buffers_changed = layer.buffer_keys.len() != text_items.len();
+        let previous_keys = self.text_layers[layer_index].buffer_keys.clone();
+        let mut buffers_changed = previous_keys.len() != text_items.len();
+        let mut replacements = Vec::new();
 
         for (index, item) in text_items.iter().enumerate() {
             let metrics = text_buffer_metrics(item, logical_size, text_scale, scale_x, scale_y);
             let key = text_buffer_key(item, &metrics);
-            if layer.buffer_keys.get(index) == Some(&key) {
+            if previous_keys.get(index) == Some(&key) {
                 continue;
             }
             buffers_changed = true;
+            let cache_admitted = text_buffer_cache_admitted(
+                &mut self.text_buffer_key_history,
+                &mut self.text_buffer_identity_history,
+                self.text_buffer_cache_frame,
+                &item.id,
+                &key,
+            );
 
-            let buffer = create_text_buffer(
-                &mut self.font_system,
-                &self.registered_fonts,
-                default_text_family.as_deref(),
-                default_icon_family.as_deref(),
+            let buffer = self.cached_text_buffer(
+                &key,
                 item,
                 &metrics,
+                default_text_family.as_deref(),
+                default_icon_family.as_deref(),
+                cache_admitted,
             );
+            replacements.push((index, key, buffer));
+        }
+        let replacements_len = replacements.len();
+
+        let layer = &mut self.text_layers[layer_index];
+        for (index, key, buffer) in replacements {
             if index < layer.buffers.len() {
                 layer.buffers[index] = buffer;
                 layer.buffer_keys[index] = key;
@@ -875,6 +959,7 @@ impl WgpuRenderer {
             return;
         }
 
+        let prepare_start = text_timing.then(Instant::now);
         match layer.renderer.prepare(
             ctx.device,
             ctx.queue,
@@ -892,6 +977,132 @@ impl WgpuRenderer {
                 eprintln!("[eui-neo-wgpu] text prepare failed: {error}");
             }
         }
+        let prepare_ms = elapsed_ms(prepare_start);
+        self.text_renderer_prepare_ms += prepare_ms;
+
+        let layer_ms = elapsed_ms(layer_start);
+        let should_log_profile_layer = profile && layer_ms > 20.0;
+        let should_log_spike = text_spike_threshold.is_some_and(|threshold| prepare_ms > threshold);
+        if should_log_profile_layer || should_log_spike {
+            let ids = text_items
+                .iter()
+                .map(|item| format!("{}={}", item.id, item.text))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let label = if should_log_spike {
+                "text prepare spike"
+            } else {
+                "slow text layer"
+            };
+            eprintln!(
+                "[eui-neo-wgpu] {} index={} total={:.3}ms create={:.3}ms prepare={:.3}ms items={} replacements={} buffers_changed={} cache_entries={} history={} ids=[{}]",
+                label,
+                layer_index,
+                layer_ms,
+                self.text_buffer_create_ms - create_ms_before,
+                self.text_renderer_prepare_ms - prepare_ms_before,
+                text_items.len(),
+                replacements_len,
+                buffers_changed,
+                self.text_buffer_cache.len(),
+                self.text_buffer_key_history.len(),
+                ids
+            );
+        }
+    }
+
+    fn cached_text_buffer(
+        &mut self,
+        key: &TextBufferKey,
+        item: &TextItem,
+        metrics: &TextBufferMetrics,
+        default_text_family: Option<&str>,
+        default_icon_family: Option<&str>,
+        cache_admitted: bool,
+    ) -> Buffer {
+        if cache_admitted {
+            if let Some(cached) = self.text_buffer_cache.get_mut(key) {
+                cached.last_used_frame = self.text_buffer_cache_frame;
+                self.text_buffer_cache_hits += 1;
+                return cached.buffer.clone();
+            }
+        } else {
+            self.text_buffer_cache_bypasses += 1;
+            let create_start = neo_text_timing_enabled().then(Instant::now);
+            let buffer = create_text_buffer(
+                &mut self.font_system,
+                &self.registered_fonts,
+                default_text_family,
+                default_icon_family,
+                item,
+                metrics,
+            );
+            self.text_buffer_create_ms += elapsed_ms(create_start);
+            return buffer;
+        }
+
+        self.text_buffer_cache_misses += 1;
+        let create_start = neo_text_timing_enabled().then(Instant::now);
+        let buffer = create_text_buffer(
+            &mut self.font_system,
+            &self.registered_fonts,
+            default_text_family,
+            default_icon_family,
+            item,
+            metrics,
+        );
+        self.text_buffer_create_ms += elapsed_ms(create_start);
+        let cached = CachedTextBuffer {
+            buffer: buffer.clone(),
+            last_used_frame: self.text_buffer_cache_frame,
+            byte_cost: text_buffer_cost(key),
+        };
+        self.text_buffer_cache_bytes = self
+            .text_buffer_cache_bytes
+            .saturating_add(cached.byte_cost);
+        self.text_buffer_cache.insert(key.clone(), cached);
+        buffer
+    }
+
+    fn evict_text_buffer_cache(&mut self) {
+        self.prune_text_buffer_histories();
+        if self.text_buffer_cache_bytes <= TEXT_BUFFER_CACHE_BUDGET_BYTES
+            && self.text_buffer_cache.len() <= TEXT_BUFFER_CACHE_MAX_ENTRIES
+        {
+            return;
+        }
+
+        let mut entries: Vec<_> = self
+            .text_buffer_cache
+            .iter()
+            .map(|(key, cached)| (key.clone(), cached.last_used_frame))
+            .collect();
+        entries.sort_by_key(|(_, frame)| *frame);
+
+        for (key, _) in entries {
+            if self.text_buffer_cache_bytes <= TEXT_BUFFER_CACHE_BUDGET_BYTES
+                && self.text_buffer_cache.len() <= TEXT_BUFFER_CACHE_MAX_ENTRIES
+            {
+                break;
+            }
+            if let Some(cached) = self.text_buffer_cache.remove(&key) {
+                self.text_buffer_cache_bytes = self
+                    .text_buffer_cache_bytes
+                    .saturating_sub(cached.byte_cost);
+            }
+        }
+    }
+
+    fn prune_text_buffer_histories(&mut self) {
+        let frame = self.text_buffer_cache_frame;
+        self.text_buffer_key_history.retain(|_, history| {
+            frame.saturating_sub(history.last_seen_frame)
+                <= TEXT_BUFFER_CACHE_HISTORY_MAX_AGE_FRAMES
+        });
+        self.text_buffer_identity_history.retain(|_, history| {
+            frame.saturating_sub(history.last_seen_frame)
+                <= TEXT_BUFFER_CACHE_HISTORY_MAX_AGE_FRAMES
+        });
     }
 }
 
@@ -951,6 +1162,48 @@ fn text_buffer_key(item: &TextItem, metrics: &TextBufferMetrics) -> TextBufferKe
         wrap: item.wrap,
         horizontal_align: item.horizontal_align,
     }
+}
+
+fn text_buffer_cache_admitted(
+    key_history: &mut FxHashMap<TextBufferKey, TextKeyHistory>,
+    identity_history: &mut FxHashMap<String, TextIdentityHistory>,
+    frame: u64,
+    id: &str,
+    key: &TextBufferKey,
+) -> bool {
+    let identity = identity_history
+        .entry(id.to_string())
+        .or_insert_with(TextIdentityHistory::default);
+    let changed = identity.last_key.as_ref() != Some(key);
+    if changed {
+        identity.changed_streak = identity.changed_streak.saturating_add(1);
+        identity.stable_streak = 0;
+        identity.last_key = Some(key.clone());
+    } else {
+        identity.changed_streak = 0;
+        identity.stable_streak = identity.stable_streak.saturating_add(1);
+    }
+    identity.last_seen_frame = frame;
+
+    let key_history = key_history.entry(key.clone()).or_insert(TextKeyHistory {
+        seen_count: 0,
+        last_seen_frame: frame,
+    });
+    key_history.seen_count = key_history.seen_count.saturating_add(1);
+    key_history.last_seen_frame = frame;
+
+    let volatile = identity.changed_streak >= TEXT_BUFFER_CACHE_VOLATILE_STREAK;
+    let repeated_key = key_history.seen_count >= TEXT_BUFFER_CACHE_ADMIT_AFTER_SEEN;
+    let stable_identity = !changed && identity.stable_streak > 0;
+    repeated_key || (!volatile && stable_identity)
+}
+
+fn text_buffer_cost(key: &TextBufferKey) -> usize {
+    let text_bytes = key.text.len();
+    let font_bytes = std::mem::size_of_val(&key.font);
+    256usize
+        .saturating_add(text_bytes.saturating_mul(4))
+        .saturating_add(font_bytes)
 }
 
 fn create_text_buffer(
@@ -2336,6 +2589,7 @@ fn push_text(
     };
     let frame = LayoutRect::new(frame.x, frame.y, max_width, frame.height);
     text_items.push(TextItem {
+        id: draw.id.clone(),
         text: draw.text.clone(),
         font: draw.font.clone(),
         frame,
@@ -2390,6 +2644,19 @@ fn transform_point(point: [f32; 2], frame: LayoutRect, transform: Transform) -> 
 fn neo_profile_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var_os("SKY_NEO_PROFILE").is_some())
+}
+
+fn neo_text_timing_enabled() -> bool {
+    neo_profile_enabled() || neo_text_spike_threshold_ms().is_some()
+}
+
+fn neo_text_spike_threshold_ms() -> Option<f32> {
+    static THRESHOLD: OnceLock<Option<f32>> = OnceLock::new();
+    *THRESHOLD.get_or_init(|| {
+        std::env::var("SKY_NEO_TEXT_SPIKE_MS")
+            .ok()
+            .map(|value| value.parse::<f32>().unwrap_or(2.0).max(0.0))
+    })
 }
 
 fn elapsed_ms(start: Option<Instant>) -> f32 {
@@ -2516,7 +2783,8 @@ fn laid_out_text_height(buffer: &Buffer) -> Option<f32> {
 mod tests {
     use super::{
         backdrop_blur_primitive_index, backdrop_capture_rect, collect_draw_items,
-        image_rect_and_uv, output_color, srgb_to_linear, PrimitiveKind, PrimitiveOp, RenderOp,
+        image_rect_and_uv, output_color, srgb_to_linear, text_buffer_cache_admitted, PrimitiveKind,
+        PrimitiveOp, RenderOp, TextBufferKey, TextIdentityHistory, TextKeyHistory,
     };
     use eui_neo::expert::{UiDrawCommand, UiDrawList, UiRectDraw, UiTextDraw};
     use eui_neo::{
@@ -2595,6 +2863,95 @@ mod tests {
             RenderOp::Text { start: 0, count: 1 }
         ));
         assert!(matches!(render_ops[2], RenderOp::Primitive(1)));
+    }
+
+    #[test]
+    fn consecutive_text_draws_stay_batched_for_render_order_efficiency() {
+        let draw_list = UiDrawList::new(vec![
+            UiDrawCommand::Text(text_draw("page.static")),
+            UiDrawCommand::Text(text_draw("page.live")),
+        ]);
+        let mut rect_vertices = Vec::new();
+        let mut polygon_vertices = Vec::new();
+        let mut image_vertices = Vec::new();
+        let mut primitive_ops = Vec::new();
+        let mut text_items = Vec::new();
+        let mut image_items = Vec::new();
+        let mut render_ops = Vec::new();
+
+        collect_draw_items(
+            &draw_list,
+            LayoutRect::new(0.0, 0.0, 320.0, 200.0),
+            false,
+            &FxHashMap::default(),
+            &mut rect_vertices,
+            &mut polygon_vertices,
+            &mut image_vertices,
+            &mut primitive_ops,
+            &mut text_items,
+            &mut image_items,
+            &mut render_ops,
+        );
+
+        assert_eq!(text_items.len(), 2);
+        assert!(matches!(
+            render_ops.as_slice(),
+            [RenderOp::Text { start: 0, count: 2 }]
+        ));
+    }
+
+    #[test]
+    fn text_buffer_cache_admission_requires_reuse_and_rejects_volatile_ids() {
+        let mut key_history: FxHashMap<TextBufferKey, TextKeyHistory> = FxHashMap::default();
+        let mut identity_history: FxHashMap<String, TextIdentityHistory> = FxHashMap::default();
+        let stable = text_key("Ready");
+
+        assert!(!text_buffer_cache_admitted(
+            &mut key_history,
+            &mut identity_history,
+            1,
+            "status",
+            &stable,
+        ));
+        assert!(text_buffer_cache_admitted(
+            &mut key_history,
+            &mut identity_history,
+            2,
+            "status",
+            &stable,
+        ));
+
+        let one = text_key("1");
+        let two = text_key("2");
+        let three = text_key("3");
+        assert!(!text_buffer_cache_admitted(
+            &mut key_history,
+            &mut identity_history,
+            3,
+            "counter",
+            &one,
+        ));
+        assert!(!text_buffer_cache_admitted(
+            &mut key_history,
+            &mut identity_history,
+            4,
+            "counter",
+            &two,
+        ));
+        assert!(!text_buffer_cache_admitted(
+            &mut key_history,
+            &mut identity_history,
+            5,
+            "counter",
+            &three,
+        ));
+        assert!(text_buffer_cache_admitted(
+            &mut key_history,
+            &mut identity_history,
+            6,
+            "counter",
+            &two,
+        ));
     }
 
     #[test]
@@ -2762,6 +3119,20 @@ mod tests {
             line_height: 20.0,
             opacity: 1.0,
             transform: Transform::default(),
+        }
+    }
+
+    fn text_key(text: &str) -> TextBufferKey {
+        TextBufferKey {
+            text: text.to_string(),
+            font: FontRef::DefaultText,
+            font_size: 16.0f32.to_bits(),
+            font_weight: 400,
+            line_height: 20.0f32.to_bits(),
+            width: 100.0f32.to_bits(),
+            height: 24.0f32.to_bits(),
+            wrap: false,
+            horizontal_align: HorizontalAlign::Left,
         }
     }
 }

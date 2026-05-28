@@ -12,9 +12,9 @@ use super::event::InteractionState;
 use super::fonts::FontRef;
 use super::layout::{layout_element_in_frame_with_text_system, layout_roots_with_text_system};
 use super::retained::{
-    begin_scope_frame, normalize_dirty_scopes_with_roots, structurally_incompatible_dirty_scopes,
-    FullLayoutReason, LayoutMode, RetainedComposeAction, RetainedComposeEvent,
-    RetainedComposeStats, ScopeRoots, ScopeSet,
+    begin_scope_frame, normalize_dirty_scopes_with_roots, structural_incompatibility_reports,
+    structurally_incompatible_dirty_scopes, FullLayoutReason, LayoutMode, RetainedComposeAction,
+    RetainedComposeEvent, RetainedComposeStats, ScopeComposeRecord, ScopeRoots, ScopeSet,
 };
 use super::skin::{NeoSkin, SkinRegistry};
 use super::text_measure::{DefaultTextSystem, TextSystem};
@@ -41,6 +41,7 @@ pub enum DirtyReason {
     External,
     Live,
     Clock,
+    Descendant,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -81,6 +82,7 @@ pub struct UiDebugSnapshot {
     pub retained: Vec<RetainedDebugRecord>,
     pub elements: Vec<ElementDebugRecord>,
     pub retained_events: Vec<RetainedComposeEvent>,
+    pub scope_compose: Vec<ScopeComposeRecord>,
     pub retained_stats: RetainedComposeStats,
     pub layout_mode: LayoutMode,
     pub needs_render: bool,
@@ -104,6 +106,7 @@ impl std::fmt::Debug for UiDebugSnapshot {
             .field("retained", &self.retained)
             .field("element_count", &self.elements.len())
             .field("retained_events", &self.retained_events)
+            .field("scope_compose", &self.scope_compose)
             .field("retained_stats", &self.retained_stats)
             .field("layout_mode", &self.layout_mode)
             .field("needs_render", &self.needs_render)
@@ -129,6 +132,7 @@ impl Default for UiDebugSnapshot {
             retained: Vec::new(),
             elements: Vec::new(),
             retained_events: Vec::new(),
+            scope_compose: Vec::new(),
             retained_stats: RetainedComposeStats::default(),
             layout_mode: LayoutMode::Full(FullLayoutReason::RetainedReuseUnavailable),
             needs_render: false,
@@ -554,7 +558,9 @@ impl Runtime {
         compose: impl FnOnce(&mut Ui, Screen),
     ) {
         let profile = neo_profile_enabled();
-        let total_start = profile.then(Instant::now);
+        let scope_profile = neo_scope_profile_enabled();
+        let timed = profile || scope_profile;
+        let total_start = timed.then(Instant::now);
         self.needs_compose = false;
         let screen = Screen { width, height };
         let can_reuse_scopes = dirty_ids.is_some() && self.screen == screen;
@@ -565,19 +571,22 @@ impl Runtime {
             &mut self.scope_roots,
             &mut self.live_ids,
         );
+        let can_reuse_scopes = scope_frame.can_reuse_scopes;
+        let input_dirty_scopes = scope_frame.input_dirty_scopes;
+        let live_dirty_scopes = scope_frame.live_dirty_scopes;
+        let dirty_scopes = scope_frame.dirty_scopes;
+        let previous_scope_roots = scope_frame.previous_scope_roots;
         let mut ui = Ui::new(self.page_id.clone());
         ui.set_skins(self.skins.clone());
         ui.set_focused_id(self.focused_id.clone());
         ui.set_clock(self.clock_seconds, self.frame_index);
-        let previous_roots_start = profile.then(Instant::now);
+        let previous_roots_start = timed.then(Instant::now);
         let previous_roots = std::mem::take(&mut self.roots);
-        let previous_roots_for_layout =
-            scope_frame.can_reuse_scopes.then(|| previous_roots.clone());
         ui.set_previous_roots(previous_roots);
-        if scope_frame.can_reuse_scopes {
+        if can_reuse_scopes {
             ui.set_scope_reuse(
-                scope_frame.previous_scope_roots.clone(),
-                scope_frame.dirty_scopes.clone(),
+                previous_scope_roots,
+                dirty_scopes.clone(),
                 std::mem::take(&mut self.callbacks),
             );
         }
@@ -585,7 +594,7 @@ impl Runtime {
         for (id, response) in &self.responses {
             ui.set_response(id.clone(), *response);
         }
-        let build_start = profile.then(Instant::now);
+        let build_start = timed.then(Instant::now);
         compose(&mut ui, screen);
         let build_ms = elapsed_ms(build_start);
         let (
@@ -596,31 +605,44 @@ impl Runtime {
             clock_ids,
             mut retained_stats,
             retained_events,
+            scope_compose_records,
+            previous_scope_roots,
+            previous_roots_for_layout,
         ) = ui.into_parts();
-        let layout_start = profile.then(Instant::now);
-        let normalized_dirty_ids = normalize_dirty_scopes_with_roots(
-            &scope_frame.dirty_scopes,
-            &scope_frame.previous_scope_roots,
-        );
-        let partial_layout_blocker = scope_frame
-            .partial_layout_blocker(&normalized_dirty_ids)
-            .or_else(|| {
-                let scopes = structurally_incompatible_dirty_scopes(
+        let layout_start = timed.then(Instant::now);
+        let normalized_dirty_ids =
+            normalize_dirty_scopes_with_roots(&dirty_scopes, &previous_scope_roots);
+        let partial_layout_blocker = partial_layout_blocker(
+            can_reuse_scopes,
+            &normalized_dirty_ids,
+            &previous_scope_roots,
+        )
+        .or_else(|| {
+            let scopes = structurally_incompatible_dirty_scopes(
+                &normalized_dirty_ids,
+                &previous_scope_roots,
+                &scope_roots,
+            );
+            if !scopes.is_empty() && neo_structure_trace_enabled() {
+                for report in structural_incompatibility_reports(
                     &normalized_dirty_ids,
-                    &scope_frame.previous_scope_roots,
+                    &previous_scope_roots,
                     &scope_roots,
-                );
-                (!scopes.is_empty()).then_some(FullLayoutReason::StructureChanged { ids: scopes })
-            });
+                ) {
+                    eprintln!("[eui-neo structure] {report}");
+                }
+            }
+            (!scopes.is_empty()).then_some(FullLayoutReason::StructureChanged { ids: scopes })
+        });
         let partial_layout = partial_layout_blocker.is_none();
         let mut used_partial_layout = false;
         if partial_layout {
-            if let Some(previous_roots_for_layout) = previous_roots_for_layout.as_deref() {
-                copy_previous_frames(&mut roots, previous_roots_for_layout);
+            if can_reuse_scopes {
+                copy_previous_frames(&mut roots, &previous_roots_for_layout);
                 used_partial_layout = layout_dirty_ids_with_text_system(
                     &mut roots,
                     &normalized_dirty_ids,
-                    &scope_frame.previous_scope_roots,
+                    &previous_scope_roots,
                     self.text_system.as_mut(),
                 );
             }
@@ -641,7 +663,7 @@ impl Runtime {
         retained_stats.full_layout = !used_partial_layout;
         refresh_scope_roots_from_tree(&mut scope_roots, &roots);
         let layout_ms = elapsed_ms(layout_start);
-        let structure_start = profile.then(Instant::now);
+        let structure_start = timed.then(Instant::now);
         let next_structure = collect_structure(&roots, self.structure.len());
         if next_structure != self.structure || self.screen != screen {
             self.mark_full_redraw_dirty();
@@ -664,11 +686,11 @@ impl Runtime {
         );
         let scope_debug_records = collect_scope_debug_records(
             &self.scope_roots,
-            &scope_frame.previous_scope_roots,
-            &scope_frame.input_dirty_scopes,
-            &scope_frame.live_dirty_scopes,
+            &previous_scope_roots,
+            &input_dirty_scopes,
+            &live_dirty_scopes,
             &previous_clock_ids,
-            &scope_frame.dirty_scopes,
+            &dirty_scopes,
             &normalized_dirty_ids,
             &element_debug_records,
             &retained_events,
@@ -676,13 +698,14 @@ impl Runtime {
         self.debug_snapshot = UiDebugSnapshot {
             frame_index: self.frame_index,
             screen: self.screen,
-            dirty_ids: sorted_scope_set(&scope_frame.dirty_scopes),
+            dirty_ids: sorted_scope_set(&dirty_scopes),
             normalized_dirty_ids: sorted_scope_set(&normalized_dirty_ids),
             live_ids: sorted_scope_set(&self.live_ids),
             clock_ids: sorted_scope_set(&self.clock_ids),
             retained: scope_debug_records,
             elements: element_debug_records,
             retained_events,
+            scope_compose: scope_compose_records,
             retained_stats: self.retained_stats,
             layout_mode,
             needs_render: self.needs_render,
@@ -699,6 +722,15 @@ impl Runtime {
         };
         if neo_debug_trace_enabled() {
             trace_debug_snapshot(&self.debug_snapshot);
+        }
+        if scope_profile {
+            trace_scope_profile(
+                &self.debug_snapshot,
+                elapsed_ms(total_start),
+                build_ms,
+                layout_ms,
+                structure_ms,
+            );
         }
         if profile {
             eprintln!(
@@ -1472,6 +1504,16 @@ fn neo_debug_trace_enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var_os("SKY_NEO_DEBUG_TRACE").is_some())
 }
 
+fn neo_scope_profile_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("SKY_NEO_SCOPE_PROFILE").is_some())
+}
+
+fn neo_structure_trace_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("SKY_NEO_STRUCTURE_TRACE").is_some())
+}
+
 fn trace_debug_snapshot(snapshot: &UiDebugSnapshot) {
     eprintln!(
         "[eui-neo debug] frame={} layout={:?} dirty={:?} normalized_dirty={:?} live={:?} clock={:?} built={} reused={} animations={} focused={:?} hovered={:?} active={:?}",
@@ -1492,6 +1534,60 @@ fn trace_debug_snapshot(snapshot: &UiDebugSnapshot) {
         eprintln!("[eui-neo retained] {:?} {}", event.action, event.id);
     }
     trace_debug_filters(snapshot);
+}
+
+fn trace_scope_profile(
+    snapshot: &UiDebugSnapshot,
+    total_ms: f32,
+    build_ms: f32,
+    layout_ms: f32,
+    structure_ms: f32,
+) {
+    let mut records = snapshot.scope_compose.clone();
+    records.sort_by(|left, right| {
+        right
+            .build_ms
+            .partial_cmp(&left.build_ms)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    let limit = std::env::var("SKY_NEO_SCOPE_PROFILE_TOP")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(8);
+    eprintln!(
+        "[eui-neo scope-profile] frame={} total={:.3}ms build={:.3}ms layout={:.3}ms structure={:.3}ms mode={:?} dirty={:?} normalized={:?} live={:?} built={} reused={} scopes={}",
+        snapshot.frame_index,
+        total_ms,
+        build_ms,
+        layout_ms,
+        structure_ms,
+        snapshot.layout_mode,
+        snapshot.dirty_ids,
+        snapshot.normalized_dirty_ids,
+        snapshot.live_ids,
+        snapshot.retained_stats.built,
+        snapshot.retained_stats.reused,
+        snapshot.scope_compose.len(),
+    );
+    for record in records.iter().take(limit) {
+        let reasons = snapshot
+            .retained
+            .iter()
+            .find(|retained| retained.id == record.id)
+            .map(|retained| retained.dirty_reasons.as_slice())
+            .unwrap_or(&[]);
+        eprintln!(
+            "[eui-neo scope-profile]   {:?} {:<48} build={:.3}ms reasons={:?} roots={}->{} elements={}",
+            record.action,
+            record.id,
+            record.build_ms,
+            reasons,
+            record.previous_roots,
+            record.current_roots,
+            record.element_count,
+        );
+    }
 }
 
 fn trace_debug_filters(snapshot: &UiDebugSnapshot) {
@@ -1728,6 +1824,8 @@ fn collect_scope_debug_records(
                     input_dirty_ids,
                     live_dirty_ids,
                     previous_clock_ids,
+                    dirty_ids,
+                    previous_scope_roots,
                 ),
                 action: action_by_scope.get(&scope).copied(),
                 previous_roots: previous_scope_roots
@@ -1766,6 +1864,8 @@ fn dirty_reasons_for_scope(
     input_dirty_ids: &ScopeSet,
     live_dirty_ids: &ScopeSet,
     previous_clock_ids: &ScopeSet,
+    dirty_ids: &ScopeSet,
+    previous_scope_roots: &ScopeRoots,
 ) -> Vec<DirtyReason> {
     let mut reasons = Vec::new();
     if input_dirty_ids.contains(scope) {
@@ -1778,7 +1878,35 @@ fn dirty_reasons_for_scope(
             reasons.push(DirtyReason::Live);
         }
     }
+    if !dirty_ids.contains(scope)
+        && scope_contains_dirty_dependency(scope, dirty_ids, previous_scope_roots)
+    {
+        reasons.push(DirtyReason::Descendant);
+    }
     reasons
+}
+
+fn scope_contains_dirty_dependency(
+    scope: &str,
+    dirty_ids: &ScopeSet,
+    previous_scope_roots: &ScopeRoots,
+) -> bool {
+    let Some(scope_roots) = previous_scope_roots.get(scope) else {
+        return false;
+    };
+    dirty_ids.iter().any(|dirty| {
+        previous_scope_roots.get(dirty).is_some_and(|dirty_roots| {
+            dirty_roots
+                .iter()
+                .any(|root| elements_contain_id(scope_roots, &root.id))
+        })
+    })
+}
+
+fn elements_contain_id(elements: &[Element], id: &str) -> bool {
+    elements
+        .iter()
+        .any(|element| element.id == id || elements_contain_id(&element.children, id))
 }
 
 fn collect_element_debug_records(
@@ -1924,6 +2052,23 @@ fn layout_dirty_ids_with_text_system(
         }
     }
     true
+}
+
+fn partial_layout_blocker(
+    can_reuse_scopes: bool,
+    layout_dirty_scopes: &ScopeSet,
+    previous_scope_roots: &ScopeRoots,
+) -> Option<FullLayoutReason> {
+    if !can_reuse_scopes {
+        return Some(FullLayoutReason::RetainedReuseUnavailable);
+    }
+    if layout_dirty_scopes.is_empty() {
+        return Some(FullLayoutReason::NoDirtyIds);
+    }
+    layout_dirty_scopes.iter().find_map(|scope| {
+        (!previous_scope_roots.contains_key(scope))
+            .then(|| FullLayoutReason::MissingPreviousRetainedRoot { id: scope.clone() })
+    })
 }
 
 fn refresh_scope_roots_from_tree(
@@ -2651,10 +2796,7 @@ mod tests {
             .iter()
             .find(|scope| scope.id == "page.panel.child")
             .expect("child scope should be reported");
-        assert_eq!(
-            child_record.parent_id.as_deref(),
-            Some("page.panel.scroll")
-        );
+        assert_eq!(child_record.parent_id.as_deref(), Some("page.panel.scroll"));
         assert_eq!(child_record.current_roots, 1);
         assert_eq!(child_record.action, Some(RetainedComposeAction::Built));
 

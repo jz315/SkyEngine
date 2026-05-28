@@ -88,11 +88,13 @@ impl<'ui> ProgressBuilder<'ui> {
                     .build();
 
                 ui.rect(format!("{id}.fill"))
-                    .size(self.width * self.value, self.height)
+                    .size(self.width, self.height)
                     .color(self.style.fill)
                     .radius(self.height * 0.5)
+                    .scale_xy(self.value, 1.0)
+                    .transform_origin(0.0, 0.5)
                     .transition(self.transition)
-                    .animate(AnimProperty::FRAME | AnimProperty::COLOR)
+                    .animate(AnimProperty::TRANSFORM | AnimProperty::COLOR)
                     .build();
             })
     }

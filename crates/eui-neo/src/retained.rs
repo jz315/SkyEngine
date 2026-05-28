@@ -6,6 +6,7 @@
 //! be reused.
 
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::sync::OnceLock;
 
 use crate::Element;
 
@@ -39,6 +40,16 @@ pub enum RetainedComposeAction {
 pub struct RetainedComposeEvent {
     pub id: ScopeId,
     pub action: RetainedComposeAction,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScopeComposeRecord {
+    pub id: ScopeId,
+    pub action: RetainedComposeAction,
+    pub build_ms: f32,
+    pub previous_roots: usize,
+    pub current_roots: usize,
+    pub element_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,24 +94,6 @@ pub(crate) fn begin_scope_frame(
     }
 }
 
-impl ScopeFrame {
-    pub fn partial_layout_blocker(
-        &self,
-        layout_dirty_scopes: &ScopeSet,
-    ) -> Option<FullLayoutReason> {
-        if !self.can_reuse_scopes {
-            return Some(FullLayoutReason::RetainedReuseUnavailable);
-        }
-        if layout_dirty_scopes.is_empty() {
-            return Some(FullLayoutReason::NoDirtyIds);
-        }
-        layout_dirty_scopes.iter().find_map(|scope| {
-            (!self.previous_scope_roots.contains_key(scope))
-                .then(|| FullLayoutReason::MissingPreviousRetainedRoot { id: scope.clone() })
-        })
-    }
-}
-
 /// Live scopes are intentionally dirty on every scoped compose. They cover
 /// frame-time/procedural animation without pretending that time is app state.
 fn merge_live_scopes(dirty_scopes: &mut ScopeSet, live_scopes: &mut ScopeSet) -> ScopeSet {
@@ -125,6 +118,28 @@ pub(crate) fn structurally_incompatible_dirty_scopes(
     scopes
 }
 
+pub(crate) fn structural_incompatibility_reports(
+    dirty_scopes: &ScopeSet,
+    previous_scope_roots: &ScopeRoots,
+    next_scope_roots: &ScopeRoots,
+) -> Vec<String> {
+    structurally_incompatible_dirty_scopes(dirty_scopes, previous_scope_roots, next_scope_roots)
+        .into_iter()
+        .map(|scope| {
+            let reason = match (
+                previous_scope_roots.get(&scope),
+                next_scope_roots.get(&scope),
+            ) {
+                (Some(previous), Some(next)) => first_element_list_mismatch(previous, next)
+                    .unwrap_or_else(|| "unknown structural mismatch".to_string()),
+                (None, _) => "missing previous roots".to_string(),
+                (_, None) => "missing current roots".to_string(),
+            };
+            format!("{scope}: {reason}")
+        })
+        .collect()
+}
+
 pub(crate) fn normalize_dirty_scopes_with_roots(
     dirty_scopes: &ScopeSet,
     previous_scope_roots: &ScopeRoots,
@@ -135,10 +150,8 @@ pub(crate) fn normalize_dirty_scopes_with_roots(
     let mut normalized = ScopeSet::default();
     for scope in scopes {
         if dirty_scopes.iter().any(|candidate| {
-            candidate != &scope
-                && dirty_scope_contains(candidate, &scope, previous_scope_roots)
-        })
-        {
+            candidate != &scope && dirty_scope_contains(candidate, &scope, previous_scope_roots)
+        }) {
             continue;
         }
         normalized.insert(scope);
@@ -200,6 +213,117 @@ fn elements_are_structurally_compatible(previous: &Element, next: &Element) -> b
         && element_lists_are_structurally_compatible(&previous.children, &next.children)
 }
 
+fn first_element_list_mismatch(previous: &[Element], next: &[Element]) -> Option<String> {
+    if previous.len() != next.len() {
+        return Some(format!(
+            "root count changed {} -> {}",
+            previous.len(),
+            next.len()
+        ));
+    }
+    previous
+        .iter()
+        .zip(next)
+        .find_map(|(previous, next)| first_element_mismatch(previous, next))
+}
+
+fn first_element_mismatch(previous: &Element, next: &Element) -> Option<String> {
+    if previous.id != next.id {
+        return Some(format!("id changed {} -> {}", previous.id, next.id));
+    }
+    if previous.kind != next.kind {
+        return Some(format!(
+            "{} kind changed {:?} -> {:?}",
+            previous.id, previous.kind, next.kind
+        ));
+    }
+    if previous.z_index != next.z_index {
+        return Some(format!(
+            "{} z_index changed {} -> {}",
+            previous.id, previous.z_index, next.z_index
+        ));
+    }
+    if previous.clip != next.clip {
+        return Some(format!(
+            "{} clip changed {} -> {}",
+            previous.id, previous.clip, next.clip
+        ));
+    }
+    if previous.clip_radius.to_bits() != next.clip_radius.to_bits() {
+        return Some(format!(
+            "{} clip_radius changed {} -> {}",
+            previous.id, previous.clip_radius, next.clip_radius
+        ));
+    }
+    first_parent_layout_input_mismatch(previous, next).or_else(|| {
+        if previous.children.len() != next.children.len() {
+            return Some(format!(
+                "{} child count changed {} -> {}",
+                previous.id,
+                previous.children.len(),
+                next.children.len()
+            ));
+        }
+        previous
+            .children
+            .iter()
+            .zip(&next.children)
+            .find_map(|(previous, next)| first_element_mismatch(previous, next))
+    })
+}
+
+fn first_parent_layout_input_mismatch(previous: &Element, next: &Element) -> Option<String> {
+    if previous.width != next.width {
+        return Some(format!(
+            "{} width changed {:?} -> {:?}",
+            previous.id, previous.width, next.width
+        ));
+    }
+    if previous.height != next.height {
+        return Some(format!(
+            "{} height changed {:?} -> {:?}",
+            previous.id, previous.height, next.height
+        ));
+    }
+    if !same_edge_insets(previous.margin, next.margin) {
+        return Some(format!(
+            "{} margin changed {:?} -> {:?}",
+            previous.id, previous.margin, next.margin
+        ));
+    }
+    if !same_f32(previous.min_width, next.min_width) {
+        return Some(format!(
+            "{} min_width changed {} -> {}",
+            previous.id, previous.min_width, next.min_width
+        ));
+    }
+    if !same_f32(previous.max_layout_width, next.max_layout_width) {
+        return Some(format!(
+            "{} max_layout_width changed {} -> {}",
+            previous.id, previous.max_layout_width, next.max_layout_width
+        ));
+    }
+    if !same_f32(previous.min_height, next.min_height) {
+        return Some(format!(
+            "{} min_height changed {} -> {}",
+            previous.id, previous.min_height, next.min_height
+        ));
+    }
+    if !same_f32(previous.max_height, next.max_height) {
+        return Some(format!(
+            "{} max_height changed {} -> {}",
+            previous.id, previous.max_height, next.max_height
+        ));
+    }
+    if !same_f32(previous.grow, next.grow) {
+        return Some(format!(
+            "{} grow changed {} -> {}",
+            previous.id, previous.grow, next.grow
+        ));
+    }
+    None
+}
+
 fn element_parent_layout_inputs_are_compatible(previous: &Element, next: &Element) -> bool {
     same_size(previous.width, next.width)
         && same_size(previous.height, next.height)
@@ -229,6 +353,11 @@ fn same_edge_insets(previous: crate::EdgeInsets, next: crate::EdgeInsets) -> boo
 
 fn same_f32(previous: f32, next: f32) -> bool {
     previous.to_bits() == next.to_bits()
+}
+
+pub(crate) fn scope_profile_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("SKY_NEO_SCOPE_PROFILE").is_some())
 }
 
 #[cfg(test)]
@@ -269,11 +398,7 @@ mod tests {
     #[test]
     fn dirty_normalization_keeps_all_ids_without_tree_containment() {
         let normalized = normalize_dirty_scopes_with_roots(
-            &scopes(&[
-                "page.panel",
-                "page.panel_extra.child",
-                "page.panel.child",
-            ]),
+            &scopes(&["page.panel", "page.panel_extra.child", "page.panel.child"]),
             &ScopeRoots::default(),
         );
 

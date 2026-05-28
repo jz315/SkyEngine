@@ -200,8 +200,18 @@ fn draw_workspace(
         .min_width(420.0)
         .gap(18.0)
         .content(|ui| {
-            draw_header(ui, state_store, model, runtime, app_theme);
-            pages::render(ui, width, body_h, state_store, model, runtime, app_theme);
+            let page = Page::from_index(actions::page_signal(state_store).watch(ui));
+            draw_header(ui, state_store, model, page, runtime, app_theme);
+            pages::render(
+                ui,
+                width,
+                body_h,
+                state_store,
+                model,
+                page,
+                runtime,
+                app_theme,
+            );
         });
 }
 
@@ -209,6 +219,7 @@ fn draw_header(
     ui: &mut Ui,
     state_store: &State<AppModel>,
     model: &AppModel,
+    page: Page,
     runtime: RuntimeInfo,
     app_theme: AppTheme,
 ) {
@@ -217,8 +228,8 @@ fn draw_header(
         "control-center.header",
         Size::fill(),
         HEADER_H,
-        locale::page_label(model.locale, model.page),
-        locale::page_subtitle(model.locale, model.page),
+        locale::page_label(model.locale, page),
+        locale::page_subtitle(model.locale, page),
         app_theme,
         |ui, _, _| {
             ui.row("control-center.header.meta")

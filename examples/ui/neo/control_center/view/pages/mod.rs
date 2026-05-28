@@ -14,10 +14,11 @@ pub fn render(
     height: f32,
     state_store: &State<AppModel>,
     model: &AppModel,
+    page: Page,
     runtime: RuntimeInfo,
     app_theme: AppTheme,
 ) {
-    match model.page {
+    match page {
         Page::Overview => {
             overview::render(ui, width, height, state_store, model, runtime, app_theme)
         }

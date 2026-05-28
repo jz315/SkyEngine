@@ -102,9 +102,14 @@ impl NeoUiBackend {
     ) {
         let screen = self.screen;
         self.update_pending_events();
+        let force_full_compose = self.runtime.needs_compose();
         let dirty_ids = dirty_ids();
-        self.runtime
-            .compose_incremental(screen.width, screen.height, dirty_ids, compose);
+        if force_full_compose && dirty_ids.is_empty() {
+            self.runtime.compose(screen.width, screen.height, compose);
+        } else {
+            self.runtime
+                .compose_incremental(screen.width, screen.height, dirty_ids, compose);
+        }
         self.runtime.tick_animations(self.delta_seconds);
         self.refresh_capture();
     }
@@ -581,6 +586,61 @@ mod tests {
         assert_eq!(
             backend.runtime.find("tabs.indicator").unwrap().frame.x,
             backend.runtime.find("tabs.hit.1").unwrap().frame.x + 10.0
+        );
+    }
+
+    #[test]
+    fn backend_incremental_compose_rebuilds_fully_after_untracked_click_callback() {
+        let page = Rc::new(Cell::new(0));
+        let builds = Rc::new(Cell::new(0));
+        let mut backend = NeoUiBackend::new(NeoUiConfig {
+            page_id: "page".to_string(),
+        });
+        backend.screen = Screen {
+            width: 160.0,
+            height: 80.0,
+        };
+
+        let compose_button = |backend: &mut NeoUiBackend| {
+            let page_for_compose = page.clone();
+            let page_for_click = page.clone();
+            let builds = builds.clone();
+            backend.compose_incremental(Vec::new, move |ui, _| {
+                ui.column("panel").size(160.0, 80.0).content(|ui| {
+                    builds.set(builds.get() + 1);
+                    let selected = page_for_compose.get();
+                    let page_for_click = page_for_click.clone();
+                    eui_neo::widgets::button(ui, "panel.button")
+                        .size(120.0, 40.0)
+                        .text(format!("Page {selected}"))
+                        .on_click(move || page_for_click.set(1))
+                        .build();
+                });
+            });
+        };
+
+        compose_button(&mut backend);
+        assert_eq!(builds.get(), 1);
+        let frame = backend.runtime.find("panel.button.bg").unwrap().frame;
+        let point = [frame.x + frame.width * 0.5, frame.y + frame.height * 0.5];
+        backend
+            .pending_pointer_events
+            .push(PointerEvent::pressed_at(point[0], point[1]));
+        backend
+            .pending_pointer_events
+            .push(PointerEvent::released_at(point[0], point[1]));
+
+        compose_button(&mut backend);
+
+        assert_eq!(page.get(), 1);
+        assert_eq!(builds.get(), 2);
+        assert_eq!(
+            backend.runtime.debug_snapshot().layout_mode,
+            eui_neo::LayoutMode::Full(eui_neo::FullLayoutReason::RetainedReuseUnavailable)
+        );
+        assert_eq!(
+            backend.runtime.find("panel.button.text").unwrap().text,
+            "Page 1"
         );
     }
 }

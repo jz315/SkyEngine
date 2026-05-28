@@ -1,4 +1,5 @@
 use super::Color;
+use std::time::Instant;
 
 use super::DragEvent;
 use super::{
@@ -771,6 +772,7 @@ impl<'ui> ElementBuilder<'ui> {
         if self.ui.reuse_retained_element(&self.element.id) {
             return response;
         }
+        let build_start = crate::retained::scope_profile_enabled().then(Instant::now);
         let id = self.element.id.clone();
         let index = self.ui.push_element(self.element);
         self.ui.push_path(index);
@@ -780,7 +782,10 @@ impl<'ui> ElementBuilder<'ui> {
             self.ui.pop_dirty_owner();
         }
         self.ui.pop_path();
-        self.ui.record_retained_element(id, index);
+        let build_ms = build_start
+            .map(|start| start.elapsed().as_secs_f32() * 1000.0)
+            .unwrap_or(0.0);
+        self.ui.record_retained_element(id, index, build_ms);
         response
     }
 }

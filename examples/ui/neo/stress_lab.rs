@@ -63,6 +63,8 @@ struct LabState {
     tab: i32,
     segment: i32,
     radio: i32,
+    control_dropdown_open: bool,
+    control_dropdown_selected: i32,
     dropdown_open: bool,
     dropdown_selected: i32,
     dialog_open: bool,
@@ -105,6 +107,8 @@ impl Default for LabState {
             tab: 0,
             segment: 1,
             radio: 0,
+            control_dropdown_open: false,
+            control_dropdown_selected: 0,
             dropdown_open: false,
             dropdown_selected: 1,
             dialog_open: env_flag("SKY_NEO_LAB_DIALOG_OPEN"),
@@ -151,17 +155,11 @@ impl AppState for NeoUiStressLab {
             self.title_timer = 0.0;
         }
 
-        // The lab is a fullscreen UI workload. The UI background is opaque and
-        // covers the whole surface, so running an empty scene render first only
-        // measures app overhead rather than Neo UI throughput.
-        let render_ms = 0.0;
-
         let overlay_start = Instant::now();
         ctx.ui().render_overlays();
         let overlay_ms = elapsed_ms(overlay_start);
 
-        self.frame_monitor
-            .record_phases(compose_ms, render_ms, overlay_ms);
+        self.frame_monitor.record_phases(compose_ms, overlay_ms);
         self.screenshot.update(ctx);
         let signature = self.state.read(LabSignature::from_state);
         self.frame_monitor.observe_signature(signature);
@@ -278,6 +276,8 @@ struct LabSignature {
     tab: i32,
     segment: i32,
     radio: i32,
+    control_dropdown_open: bool,
+    control_dropdown_selected: i32,
     dropdown_open: bool,
     dropdown_selected: i32,
     dialog_open: bool,
@@ -297,6 +297,8 @@ impl LabSignature {
             tab: value.tab,
             segment: value.segment,
             radio: value.radio,
+            control_dropdown_open: value.control_dropdown_open,
+            control_dropdown_selected: value.control_dropdown_selected,
             dropdown_open: value.dropdown_open,
             dropdown_selected: value.dropdown_selected,
             dialog_open: value.dialog_open,
@@ -315,7 +317,6 @@ struct PerfSnapshot {
     avg_ms: f32,
     lifetime_worst_ms: f32,
     compose_ms: f32,
-    render_ms: f32,
     overlay_ms: f32,
     rest_ms: f32,
     stutter_count: u32,
@@ -335,7 +336,6 @@ struct FrameMonitor {
     sample_sum_ms: f32,
     lifetime_worst_ms: f32,
     compose_ms: f32,
-    render_ms: f32,
     overlay_ms: f32,
     stutter_count: u32,
     trigger_stutter_count: u32,
@@ -356,7 +356,6 @@ impl Default for FrameMonitor {
             sample_sum_ms: 0.0,
             lifetime_worst_ms: 0.0,
             compose_ms: 0.0,
-            render_ms: 0.0,
             overlay_ms: 0.0,
             stutter_count: 0,
             trigger_stutter_count: 0,
@@ -414,7 +413,7 @@ impl FrameMonitor {
             frame_ms
         };
         let fps = if avg_ms > 0.0 { 1000.0 / avg_ms } else { 0.0 };
-        let measured_ms = self.compose_ms + self.render_ms + self.overlay_ms;
+        let measured_ms = self.compose_ms + self.overlay_ms;
         let rest_ms = (frame_ms - measured_ms).max(0.0);
 
         PerfSnapshot {
@@ -424,7 +423,6 @@ impl FrameMonitor {
             avg_ms,
             lifetime_worst_ms: self.lifetime_worst_ms,
             compose_ms: self.compose_ms,
-            render_ms: self.render_ms,
             overlay_ms: self.overlay_ms,
             rest_ms,
             stutter_count: self.stutter_count,
@@ -435,9 +433,8 @@ impl FrameMonitor {
         }
     }
 
-    fn record_phases(&mut self, compose_ms: f32, render_ms: f32, overlay_ms: f32) {
+    fn record_phases(&mut self, compose_ms: f32, overlay_ms: f32) {
         self.compose_ms = compose_ms.clamp(0.0, 250.0);
-        self.render_ms = render_ms.clamp(0.0, 250.0);
         self.overlay_ms = overlay_ms.clamp(0.0, 250.0);
     }
 
@@ -466,6 +463,8 @@ fn trigger_label(previous: LabSignature, next: LabSignature) -> &'static str {
         "reveal layout"
     } else if previous.dropdown_open != next.dropdown_open
         || previous.dropdown_selected != next.dropdown_selected
+        || previous.control_dropdown_open != next.control_dropdown_open
+        || previous.control_dropdown_selected != next.control_dropdown_selected
     {
         "dropdown"
     } else if previous.dialog_open != next.dialog_open {
@@ -568,6 +567,22 @@ fn radio_value_signal(state: &State<LabState>, value: i32) -> Signal<LabState, b
                 state.radio = value.max(0);
             }
         },
+    )
+}
+
+fn control_dropdown_open_signal(state: &State<LabState>) -> Signal<LabState, bool> {
+    state.signal(
+        "stress-lab.control-dropdown-open",
+        |state| state.control_dropdown_open,
+        |state, value| state.control_dropdown_open = value,
+    )
+}
+
+fn control_dropdown_selected_signal(state: &State<LabState>) -> Signal<LabState, i32> {
+    state.signal(
+        "stress-lab.control-dropdown-selected",
+        |state| state.control_dropdown_selected,
+        |state, value| state.control_dropdown_selected = value.max(0),
     )
 }
 
@@ -724,16 +739,6 @@ fn draw_header(
     ui.stack("header")
         .size(Size::fill(), HEADER_H)
         .content(|ui| {
-            let time = ui.clock().seconds();
-            let clicks = clicks_signal(state_store).watch(ui);
-            let mode = mode_signal(state_store).watch(ui);
-            let glass = glass_signal(state_store).watch(ui);
-            let lock = lock_signal(state_store).watch(ui);
-            let reveal = reveal_signal(state_store).watch(ui);
-            let alarm = alarm_signal(state_store).watch(ui);
-            let density = density_signal(state_store).watch(ui);
-            let scan = (time * (0.22 + density * 0.72)).fract();
-
             widgets::panel(ui, "header.bg")
                 .fill()
                 .radius(18.0)
@@ -748,106 +753,126 @@ fn draw_header(
                 .gap(18.0)
                 .align_items(Align::Center)
                 .content(|ui| {
-                    ui.column("header.copy")
-                        .size(300.0, Size::fill())
-                        .grow(1.0)
-                        .justify_content(Align::Center)
-                        .gap(4.0)
-                        .content(|ui| {
-                            ui.text("header.title")
-                                .size(Size::fill(), 34.0)
-                                .text("Neo UI Stress Lab")
-                                .font_size(28.0)
-                                .line_height(34.0)
-                                .color(c(0.945, 0.970, 1.0, 1.0))
-                                .build();
-
-                            ui.text("header.status")
-                                .size(Size::fill(), 22.0)
-                                .text(format!(
-                                    "mode {}  clicks {}  glass {}  lock {}  reveal {}  pointer {}  keyboard {}",
-                                    mode,
-                                    clicks,
-                                    on_off(glass),
-                                    on_off(lock),
-                                    on_off(reveal),
-                                    on_off(pointer_owned),
-                                    on_off(keyboard_owned),
-                                ))
-                                .font_size(13.0)
-                                .line_height(18.0)
-                                .wrap(true)
-                                .color(c(0.660, 0.740, 0.840, 0.88))
-                                .build();
-                        });
-
-                    ui.column("header.meters")
-                        .size(240.0, Size::fill())
-                        .justify_content(Align::Center)
-                        .gap(7.0)
-                        .content(|ui| {
-                            compact_meter(
-                                ui,
-                                "header.scan",
-                                "scan",
-                                scan,
-                                c(0.300, 0.780, 0.580, 1.0),
-                            );
-                            compact_meter(
-                                ui,
-                                "header.alarm",
-                                "alarm",
-                                alarm,
-                                c(0.980, 0.520, 0.350, 1.0),
-                            );
-                        });
-
+                    draw_header_copy(ui, state_store, pointer_owned, keyboard_owned);
+                    draw_header_meters(ui, state_store);
                     draw_perf_monitor(ui, perf);
-
-                    ui.row("header.actions")
-                        .size(188.0, 44.0)
-                        .gap(10.0)
-                        .content(|ui| {
-                            widgets::button(ui, "header.mode")
-                                .height(42.0)
-                                .min_width(86.0)
-                                .grow(1.0)
-                                .text("Mode")
-                                .font_size(14.0)
-                                .radius(12.0)
-                                .on_click({
-                                    let clicks = clicks_signal(state_store);
-                                    let mode = mode_signal(state_store);
-                                    move || {
-                                        clicks.update(|clicks| clicks.wrapping_add(1));
-                                        mode.update(|mode| (mode + 1).rem_euclid(4));
-                                    }
-                                })
-                                .build();
-
-                            widgets::button(ui, "header.panic")
-                                .height(42.0)
-                                .min_width(92.0)
-                                .grow(1.0)
-                                .text("Panic")
-                                .font_size(14.0)
-                                .colors(
-                                    c(0.650, 0.210, 0.310, 1.0),
-                                    c(0.850, 0.280, 0.420, 1.0),
-                                    c(0.440, 0.120, 0.200, 1.0),
-                                )
-                                .radius(12.0)
-                                .on_click({
-                                    let clicks = clicks_signal(state_store);
-                                    let alarm = alarm_signal(state_store);
-                                    move || {
-                                        clicks.update(|clicks| clicks.wrapping_add(1));
-                                        alarm.update(|alarm| (alarm + 0.22).fract());
-                                    }
-                                })
-                                .build();
-                        });
+                    draw_header_actions(ui, state_store);
                 });
+        });
+}
+
+fn draw_header_copy(
+    ui: &mut Ui,
+    state_store: &State<LabState>,
+    pointer_owned: bool,
+    keyboard_owned: bool,
+) {
+    ui.column("header.copy")
+        .size(300.0, Size::fill())
+        .grow(1.0)
+        .justify_content(Align::Center)
+        .gap(4.0)
+        .content(|ui| {
+            let _frame = ui.clock().frame_index();
+            let clicks = clicks_signal(state_store).watch(ui);
+            let mode = mode_signal(state_store).watch(ui);
+            let glass = glass_signal(state_store).watch(ui);
+            let lock = lock_signal(state_store).watch(ui);
+            let reveal = reveal_signal(state_store).watch(ui);
+
+            ui.text("header.title")
+                .size(Size::fill(), 34.0)
+                .text("Neo UI Stress Lab")
+                .font_size(28.0)
+                .line_height(34.0)
+                .color(c(0.945, 0.970, 1.0, 1.0))
+                .build();
+
+            ui.text("header.status")
+                .size(Size::fill(), 22.0)
+                .text(format!(
+                    "mode {}  clicks {}  glass {}  lock {}  reveal {}  pointer {}  keyboard {}",
+                    mode,
+                    clicks,
+                    on_off(glass),
+                    on_off(lock),
+                    on_off(reveal),
+                    on_off(pointer_owned),
+                    on_off(keyboard_owned),
+                ))
+                .font_size(13.0)
+                .line_height(18.0)
+                .wrap(true)
+                .color(c(0.660, 0.740, 0.840, 0.88))
+                .build();
+        });
+}
+
+fn draw_header_meters(ui: &mut Ui, state_store: &State<LabState>) {
+    ui.column("header.meters")
+        .size(240.0, Size::fill())
+        .justify_content(Align::Center)
+        .gap(7.0)
+        .content(|ui| {
+            let time = ui.clock().seconds();
+            let density = density_signal(state_store).watch(ui);
+            let alarm = alarm_signal(state_store).watch(ui);
+            let scan = (time * (0.22 + density * 0.72)).fract();
+
+            compact_meter(ui, "header.scan", "scan", scan, c(0.300, 0.780, 0.580, 1.0));
+            compact_meter(
+                ui,
+                "header.alarm",
+                "alarm",
+                alarm,
+                c(0.980, 0.520, 0.350, 1.0),
+            );
+        });
+}
+
+fn draw_header_actions(ui: &mut Ui, state_store: &State<LabState>) {
+    ui.row("header.actions")
+        .size(188.0, 44.0)
+        .gap(10.0)
+        .content(|ui| {
+            widgets::button(ui, "header.mode")
+                .height(42.0)
+                .min_width(86.0)
+                .grow(1.0)
+                .text("Mode")
+                .font_size(14.0)
+                .radius(12.0)
+                .on_click({
+                    let clicks = clicks_signal(state_store);
+                    let mode = mode_signal(state_store);
+                    move || {
+                        clicks.update(|clicks| clicks.wrapping_add(1));
+                        mode.update(|mode| (mode + 1).rem_euclid(4));
+                    }
+                })
+                .build();
+
+            widgets::button(ui, "header.panic")
+                .height(42.0)
+                .min_width(92.0)
+                .grow(1.0)
+                .text("Panic")
+                .font_size(14.0)
+                .colors(
+                    c(0.650, 0.210, 0.310, 1.0),
+                    c(0.850, 0.280, 0.420, 1.0),
+                    c(0.440, 0.120, 0.200, 1.0),
+                )
+                .radius(12.0)
+                .on_click({
+                    let clicks = clicks_signal(state_store);
+                    let alarm = alarm_signal(state_store);
+                    move || {
+                        clicks.update(|clicks| clicks.wrapping_add(1));
+                        alarm.update(|alarm| (alarm + 0.22).fract());
+                    }
+                })
+                .build();
         });
 }
 
@@ -856,6 +881,7 @@ fn draw_control_panel(ui: &mut Ui, state_store: &State<LabState>, motion: Transi
         let wobble = wobble_signal(state_store).watch(ui);
         let density = density_signal(state_store).watch(ui);
         let alarm = alarm_signal(state_store).watch(ui);
+        let control_preset = control_dropdown_selected_signal(state_store).watch(ui);
 
         panel_shell(
             ui,
@@ -934,12 +960,19 @@ fn draw_control_panel(ui: &mut Ui, state_store: &State<LabState>, motion: Transi
                         radio_item(ui, state_store, "controls.radio.c", "C", 2);
                     });
 
+                widgets::dropdown(ui, "controls.preset.dropdown")
+                    .size(CONTROL_FIELD_W, 42.0)
+                    .items(["Drift", "Burst", "Quiet"])
+                    .value_signal(control_dropdown_selected_signal(state_store))
+                    .open_signal(control_dropdown_open_signal(state_store))
+                    .build();
+
                 ui.column("controls.log")
                     .size(Size::fill(), 312.0)
                     .gap(8.0)
                     .content(|ui| {
                         for index in 0..10 {
-                            dense_row(ui, index, alarm, density, motion);
+                            dense_row(ui, index, alarm, density, control_preset, motion);
                         }
                     });
             });
@@ -952,15 +985,6 @@ fn draw_signal_panel(ui: &mut Ui, state_store: &State<LabState>, motion: Transit
         .grow(1.0)
         .min_width(360.0)
         .content(|ui| {
-            let time = ui.clock().seconds();
-            let pulse = time.sin() * 0.5 + 0.5;
-            let wobble = wobble_signal(state_store).watch(ui);
-            let density = density_signal(state_store).watch(ui);
-            let alarm = alarm_signal(state_store).watch(ui);
-            let glass = glass_signal(state_store).watch(ui);
-            let tab = tab_signal(state_store).watch(ui);
-            let scan = (time * (0.22 + density * 0.72)).fract();
-
             panel_shell(
                 ui,
                 "signals.bg",
@@ -984,9 +1008,9 @@ fn draw_signal_panel(ui: &mut Ui, state_store: &State<LabState>, motion: Transit
                         .signal(tab_signal(state_store))
                         .build();
 
-                    draw_stage(ui, glass, alarm, wobble, time, pulse, scan, motion);
-                    draw_metric_strip(ui, wobble, pulse, scan);
-                    draw_tab_body(ui, state_store, tab, wobble, density, alarm, pulse, scan);
+                    draw_stage(ui, state_store, motion);
+                    draw_metric_strip(ui, state_store);
+                    draw_tab_body(ui, state_store);
 
                     widgets::button(ui, "signals.context.button")
                         .height(40.0)
@@ -1019,20 +1043,19 @@ fn draw_signal_panel(ui: &mut Ui, state_store: &State<LabState>, motion: Transit
         });
 }
 
-fn draw_stage(
-    ui: &mut Ui,
-    glass: bool,
-    alarm: f32,
-    wobble: f32,
-    time: f32,
-    pulse: f32,
-    scan: f32,
-    motion: Transition,
-) {
+fn draw_stage(ui: &mut Ui, state_store: &State<LabState>, motion: Transition) {
     ui.stack("signals.stage")
         .size(Size::fill(), 132.0)
         .align(Align::Center, Align::Center)
         .content(|ui| {
+            let time = ui.clock().seconds();
+            let pulse = time.sin() * 0.5 + 0.5;
+            let wobble = wobble_signal(state_store).watch(ui);
+            let density = density_signal(state_store).watch(ui);
+            let alarm = alarm_signal(state_store).watch(ui);
+            let glass = glass_signal(state_store).watch(ui);
+            let scan = (time * (0.22 + density * 0.72)).fract();
+
             widgets::panel(ui, "signals.stage.bg")
                 .fill()
                 .radius(16.0)
@@ -1106,11 +1129,17 @@ fn draw_stage(
         });
 }
 
-fn draw_metric_strip(ui: &mut Ui, wobble: f32, pulse: f32, scan: f32) {
+fn draw_metric_strip(ui: &mut Ui, state_store: &State<LabState>) {
     ui.row("signals.metrics")
         .size(Size::fill(), 100.0)
         .gap(12.0)
         .content(|ui| {
+            let time = ui.clock().seconds();
+            let pulse = time.sin() * 0.5 + 0.5;
+            let wobble = wobble_signal(state_store).watch(ui);
+            let density = density_signal(state_store).watch(ui);
+            let scan = (time * (0.22 + density * 0.72)).fract();
+
             metric_card(
                 ui,
                 "signals.metric.wobble",
@@ -1138,21 +1167,24 @@ fn draw_metric_strip(ui: &mut Ui, wobble: f32, pulse: f32, scan: f32) {
         });
 }
 
-fn draw_tab_body(
-    ui: &mut Ui,
-    state_store: &State<LabState>,
-    tab: i32,
-    wobble: f32,
-    density: f32,
-    alarm: f32,
-    pulse: f32,
-    scan: f32,
-) {
-    match tab.rem_euclid(3) {
-        1 => draw_chart_tab(ui, wobble, density, alarm, pulse, scan),
-        2 => draw_motion_tab(ui, wobble, density, alarm, pulse, scan),
-        _ => draw_signal_tab(ui, state_store, wobble, density, alarm, pulse, scan),
-    }
+fn draw_tab_body(ui: &mut Ui, state_store: &State<LabState>) {
+    ui.stack("signals.tab.body")
+        .size(Size::fill(), 132.0)
+        .content(|ui| {
+            let time = ui.clock().seconds();
+            let pulse = time.sin() * 0.5 + 0.5;
+            let wobble = wobble_signal(state_store).watch(ui);
+            let density = density_signal(state_store).watch(ui);
+            let alarm = alarm_signal(state_store).watch(ui);
+            let tab = tab_signal(state_store).watch(ui);
+            let scan = (time * (0.22 + density * 0.72)).fract();
+
+            match tab.rem_euclid(3) {
+                1 => draw_chart_tab(ui, wobble, density, alarm, pulse, scan),
+                2 => draw_motion_tab(ui, wobble, density, alarm, pulse, scan),
+                _ => draw_signal_tab(ui, state_store, wobble, density, alarm, pulse, scan),
+            }
+        });
 }
 
 fn draw_signal_tab(
@@ -1581,19 +1613,23 @@ fn radio_item(ui: &mut Ui, state_store: &State<LabState>, id: &str, label: &str,
         .build();
 }
 
-fn dense_row(ui: &mut Ui, index: usize, alarm: f32, density: f32, motion: Transition) {
+fn dense_row(ui: &mut Ui, index: usize, alarm: f32, density: f32, preset: i32, motion: Transition) {
     let t = index as f32 / 9.0;
+    let preset_shift = preset.rem_euclid(3) as f32 * 0.08;
     ui.row(format!("controls.log.row.{index}"))
         .size(Size::fill(), 24.0)
         .gap(8.0)
         .align_items(Align::Center)
         .content(|ui| {
             widgets::badge(ui, format!("controls.log.badge.{index}"))
-                .text(format!("row {:02}", index + 1))
+                .text(format!(
+                    "row {:02}",
+                    index + 1 + preset.rem_euclid(3) as usize * 10
+                ))
                 .accent(mix(
                     c(0.280, 0.760, 0.560, 1.0),
                     c(0.980, 0.420, 0.520, 1.0),
-                    alarm * t,
+                    (alarm * (t + preset_shift)).fract(),
                 ))
                 .min_width(82.0)
                 .height(24.0)
@@ -1608,16 +1644,19 @@ fn dense_row(ui: &mut Ui, index: usize, alarm: f32, density: f32, motion: Transi
                         .radius(999.0)
                         .color(c(0.080, 0.110, 0.150, 0.90))
                         .build();
+                    let fill_width = (48.0 + 118.0 * t + density * 18.0).min(178.0);
                     ui.rect(format!("controls.log.fill.{index}"))
-                        .size((48.0 + 118.0 * t + density * 18.0).min(178.0), 12.0)
+                        .size(178.0, 12.0)
                         .radius(999.0)
                         .color(mix(
                             c(0.260, 0.780, 0.540, 0.78),
                             c(0.950, 0.320, 0.520, 0.84),
-                            alarm * t,
+                            (alarm * (t + preset_shift)).fract(),
                         ))
+                        .scale_xy(fill_width / 178.0, 1.0)
+                        .transform_origin(0.0, 0.5)
                         .transition(motion)
-                        .animate(AnimProperty::FRAME | AnimProperty::COLOR)
+                        .animate(AnimProperty::TRANSFORM | AnimProperty::COLOR)
                         .build();
                 });
         });
@@ -1658,6 +1697,8 @@ fn draw_perf_monitor(ui: &mut Ui, perf: &PerfSnapshot) {
     };
 
     ui.stack("header.perf").size(232.0, 62.0).content(|ui| {
+        let _frame = ui.clock().frame_index();
+
         ui.rect("header.perf.bg")
             .fill()
             .radius(14.0)
@@ -1714,9 +1755,11 @@ fn draw_perf_monitor(ui: &mut Ui, perf: &PerfSnapshot) {
                             .color(c(0.070, 0.095, 0.120, 0.96))
                             .build();
                         ui.rect("header.perf.budget.fill")
-                            .size(198.0 * budget, 5.0)
+                            .size(198.0, 5.0)
                             .radius(999.0)
                             .color(severity)
+                            .scale_xy(budget, 1.0)
+                            .transform_origin(0.0, 0.5)
                             .build();
                     });
 
@@ -1733,21 +1776,21 @@ fn draw_perf_monitor(ui: &mut Ui, perf: &PerfSnapshot) {
                             .color(phase_color(perf.compose_ms))
                             .build();
 
-                        ui.text("header.perf.render")
-                            .size(62.0, 16.0)
-                            .text(format!("ren {:>4.1}", perf.render_ms))
-                            .font_size(11.0)
-                            .line_height(16.0)
-                            .color(phase_color(perf.render_ms))
-                            .build();
-
                         ui.text("header.perf.overlay")
-                            .size(58.0, 16.0)
+                            .size(62.0, 16.0)
                             .text(format!("ov {:>4.1}", perf.overlay_ms))
                             .font_size(11.0)
                             .line_height(16.0)
-                            .horizontal_align(HorizontalAlign::Right)
                             .color(phase_color(perf.overlay_ms))
+                            .build();
+
+                        ui.text("header.perf.rest")
+                            .size(58.0, 16.0)
+                            .text(format!("oth {:>4.1}", perf.rest_ms))
+                            .font_size(11.0)
+                            .line_height(16.0)
+                            .horizontal_align(HorizontalAlign::Right)
+                            .color(phase_color(perf.rest_ms))
                             .build();
                     });
 
@@ -1813,14 +1856,13 @@ fn stage_tile(ui: &mut Ui, id: &str, label: &str, value: f32, color: Color, moti
                                 .border(1.0, c(0.360, 0.480, 0.620, 0.32))
                                 .build();
                             ui.rect(format!("{id}.orb.fill"))
-                                .size(
-                                    16.0 + value.clamp(0.0, 1.0) * 32.0,
-                                    16.0 + value.clamp(0.0, 1.0) * 32.0,
-                                )
+                                .size(48.0, 48.0)
                                 .radius(999.0)
                                 .color(color)
+                                .scale((16.0 + value.clamp(0.0, 1.0) * 32.0) / 48.0)
+                                .transform_origin(0.5, 0.5)
                                 .transition(motion)
-                                .animate(AnimProperty::FRAME | AnimProperty::COLOR)
+                                .animate(AnimProperty::TRANSFORM | AnimProperty::COLOR)
                                 .build();
                         });
                     ui.text(format!("{id}.label"))
@@ -1938,11 +1980,13 @@ fn motion_card(ui: &mut Ui, id: &str, title: &str, value: f32, color: Color) {
                         .color(c(0.780, 0.850, 0.930, 0.88))
                         .build();
                     ui.rect(format!("{id}.bar"))
-                        .size(Size::fill(), 22.0 + value.clamp(0.0, 1.0) * 34.0)
+                        .size(Size::fill(), 56.0)
                         .radius(12.0)
                         .color(color)
+                        .scale_xy(1.0, (22.0 + value.clamp(0.0, 1.0) * 34.0) / 56.0)
+                        .transform_origin(0.5, 1.0)
                         .transition(Transition::ease(0.22, Ease::OutCubic))
-                        .animate(AnimProperty::FRAME | AnimProperty::COLOR)
+                        .animate(AnimProperty::TRANSFORM | AnimProperty::COLOR)
                         .build();
                 });
         });
@@ -2309,7 +2353,6 @@ mod tests {
             avg_ms: 16.0,
             lifetime_worst_ms: 16.0,
             compose_ms: 0.0,
-            render_ms: 0.0,
             overlay_ms: 0.0,
             rest_ms: 0.0,
             stutter_count: 0,
@@ -2318,6 +2361,19 @@ mod tests {
             trigger_label: "idle".to_string(),
             trigger_age_ms: 0.0,
         }
+    }
+
+    #[test]
+    fn frame_monitor_accounts_only_measured_ui_phases() {
+        let mut monitor = FrameMonitor::default();
+        monitor.record_phases(4.0, 3.0);
+
+        let perf = monitor.update(0.020);
+
+        assert!((perf.compose_ms - 4.0).abs() < 0.001, "{perf:?}");
+        assert!((perf.overlay_ms - 3.0).abs() < 0.001, "{perf:?}");
+        assert!((perf.rest_ms - 13.0).abs() < 0.001, "{perf:?}");
+        assert!((perf.frame_ms - 20.0).abs() < 0.001, "{perf:?}");
     }
 
     fn compose_lab(runtime: &mut Runtime, state: &State<LabState>, dirty_ids: Vec<String>) {
@@ -2363,7 +2419,7 @@ mod tests {
     }
 
     #[test]
-    fn signals_tab_click_uses_driver_and_rebuilds_signals_owner() {
+    fn signals_tab_click_uses_driver_and_rebuilds_precise_signal_owners() {
         let state = State::new(LabState::default());
         let mut driver = UiTestDriver::new("stress-lab", WINDOW_W as f32, WINDOW_H as f32);
 
@@ -2383,8 +2439,11 @@ mod tests {
         assert!(trace.point.is_some_and(|[x, y]| label.contains([x, y])));
         let dirty_ids = state.take_dirty_ids();
         assert!(
-            dirty_ids.iter().any(|id| id == "stress-lab.signals"),
-            "signals panel should be dirty after tab click: dirty={dirty_ids:?} trace={trace}"
+            dirty_ids.iter().any(|id| id == "stress-lab.signals.tabs")
+                && dirty_ids
+                    .iter()
+                    .any(|id| id == "stress-lab.signals.tab.body"),
+            "tab click should dirty only the tab controls and tab body: dirty={dirty_ids:?} trace={trace}"
         );
         compose_lab_driver(&mut driver, &state, dirty_ids);
 
@@ -2415,7 +2474,7 @@ mod tests {
     }
 
     #[test]
-    fn signals_tab_hit_rect_click_uses_driver_and_rebuilds_signals_owner() {
+    fn signals_tab_hit_rect_click_uses_driver_and_rebuilds_precise_signal_owners() {
         let state = State::new(LabState::default());
         let mut driver = UiTestDriver::new("stress-lab", WINDOW_W as f32, WINDOW_H as f32);
 
@@ -2427,10 +2486,11 @@ mod tests {
         assert_eq!(state.read(|state| state.tab), 1, "{trace}");
         let dirty_ids = state.take_dirty_ids();
         assert!(
-            dirty_ids
-                .iter()
-                .any(|id| id == "stress-lab.signals"),
-            "signals panel should be dirty after tab hit rect click: dirty={dirty_ids:?} trace={trace}"
+            dirty_ids.iter().any(|id| id == "stress-lab.signals.tabs")
+                && dirty_ids
+                    .iter()
+                    .any(|id| id == "stress-lab.signals.tab.body"),
+            "tab hit rect should dirty only the tab controls and tab body: dirty={dirty_ids:?} trace={trace}"
         );
         compose_lab_driver(&mut driver, &state, dirty_ids);
 
@@ -2459,10 +2519,11 @@ mod tests {
         let mut driver = UiTestDriver::new("stress-lab", WINDOW_W as f32, WINDOW_H as f32);
 
         compose_lab_driver_at(&mut driver, &state, Vec::new(), 0.0);
-        let before_orb = driver
+        let before_orb_scale = driver
             .find("signals.stage.a.orb.fill")
             .expect("pulse orb fill should exist before tab switch")
-            .frame;
+            .transform
+            .scale[0];
 
         let trace = driver
             .click("signals.tabs.hit.1")
@@ -2479,9 +2540,10 @@ mod tests {
         driver.runtime_mut().tick_animations(1.0);
         let before_bar = rect_draw(driver.runtime(), "signals.chart.bar.bar.3")
             .expect("pulse chart bar should draw after switching to charts")
-            .frame;
+            .transform
+            .scale[1];
         eprintln!(
-            "[signal->charts] after click settled: tab={} pulse_bar_draw={before_bar:?} snapshot={:?}",
+            "[signal->charts] after click settled: tab={} pulse_bar_scale={before_bar:?} snapshot={:?}",
             state.read(|state| state.tab),
             driver.runtime().debug_snapshot_current()
         );
@@ -2491,51 +2553,67 @@ mod tests {
             .find("signals.stage.a.orb.fill")
             .expect("pulse orb fill should still exist on charts tab")
             .frame;
+        let after_orb_scale = driver
+            .find("signals.stage.a.orb.fill")
+            .expect("pulse orb fill should still exist on charts tab")
+            .transform
+            .scale[0];
         let after_bar_target = driver
             .find("signals.chart.bar.bar.3")
             .expect("pulse chart bar should still exist on charts tab")
-            .frame;
+            .transform
+            .scale[1];
         let after_compose_bar = rect_draw(driver.runtime(), "signals.chart.bar.bar.3")
             .expect("pulse chart bar should draw immediately after live compose")
-            .frame;
+            .transform
+            .scale[1];
         let mut sampled_bars = Vec::new();
         for step in 1..=18 {
             driver.runtime_mut().tick_animations(1.0 / 60.0);
             if matches!(step, 1 | 6 | 12 | 18) {
-                let frame = rect_draw(driver.runtime(), "signals.chart.bar.bar.3")
+                let scale = rect_draw(driver.runtime(), "signals.chart.bar.bar.3")
                     .expect("pulse chart bar should draw during animation ticks")
-                    .frame;
-                sampled_bars.push((step, frame));
+                    .transform
+                    .scale[1];
+                sampled_bars.push((step, scale));
             }
         }
         let after_tick_bar = sampled_bars
             .last()
-            .map(|(_, frame)| *frame)
+            .map(|(_, scale)| *scale)
             .expect("pulse chart bar should draw after animation tick");
         let snapshot = driver.debug_snapshot();
         eprintln!(
-            "[signal->charts] after live compose: orb_target={after_orb:?} pulse_bar_target={after_bar_target:?} pulse_bar_draw={after_compose_bar:?} sampled_ticks={sampled_bars:?} snapshot={:?}",
+            "[signal->charts] after live compose: orb_frame={after_orb:?} orb_scale={after_orb_scale:?} pulse_bar_target_scale={after_bar_target:?} pulse_bar_draw_scale={after_compose_bar:?} sampled_ticks={sampled_bars:?} snapshot={:?}",
             driver.runtime().debug_snapshot_current()
         );
 
         assert!(
-            after_orb.width > before_orb.width + 8.0,
-            "live pulse target should advance after switching to charts: before={before_orb:?} after={after_orb:?} snapshot={snapshot:?}"
+            (after_orb.width - 48.0).abs() < 0.001,
+            "pulse orb layout should stay stable while visual scale changes: after={after_orb:?} snapshot={snapshot:?}"
         );
         assert!(
-            after_bar_target.height > before_bar.height + 8.0,
-            "charts tab should receive live pulse values: before_bar={before_bar:?} after_target={after_bar_target:?} snapshot={snapshot:?}"
+            after_orb_scale > before_orb_scale + 0.2,
+            "live pulse target scale should advance after switching to charts: before_scale={before_orb_scale:?} after_scale={after_orb_scale:?} snapshot={snapshot:?}"
         );
         assert!(
-            after_tick_bar.height > after_compose_bar.height,
-            "charts bar draw frame should animate after a tick: after_compose={after_compose_bar:?} after_tick={after_tick_bar:?}"
+            after_bar_target > before_bar + 0.2,
+            "charts tab should receive live pulse scale values: before_bar_scale={before_bar:?} after_target_scale={after_bar_target:?} snapshot={snapshot:?}"
+        );
+        assert!(
+            after_tick_bar > after_compose_bar,
+            "charts bar draw scale should animate after a tick: after_compose={after_compose_bar:?} after_tick={after_tick_bar:?}"
         );
         assert!(
             snapshot
                 .dirty_ids
                 .iter()
-                .any(|id| id == "stress-lab.signals"),
-            "signals live owner should be dirty on the post-switch frame: {snapshot:?}"
+                .any(|id| id == "stress-lab.signals.stage")
+                && snapshot
+                    .dirty_ids
+                    .iter()
+                    .any(|id| id == "stress-lab.signals.tab.body"),
+            "specific live signal owners should be dirty on the post-switch frame: {snapshot:?}"
         );
     }
 

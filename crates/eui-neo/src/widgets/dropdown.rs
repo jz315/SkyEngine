@@ -6,8 +6,7 @@ use std::rc::Rc;
 use crate::Color;
 
 use super::super::{
-    AnimProperty, HorizontalAlign, Response, Shadow, Signal, Transition, Ui,
-    VerticalAlign,
+    AnimProperty, HorizontalAlign, Response, Shadow, Signal, Transition, Ui, VerticalAlign,
 };
 use super::popover::{popover, PopoverPlacement};
 use super::theme::{self, ThemeColorTokens};

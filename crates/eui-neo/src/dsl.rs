@@ -1,6 +1,8 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -9,7 +11,8 @@ use super::{
     LayoutRect, PanelSkin, PointerEvent, Response, ScrollEvent, SkinRegistry, SliderSkin,
 };
 use crate::retained::{
-    RetainedComposeAction, RetainedComposeEvent, RetainedComposeStats, ScopeRoots, ScopeSet,
+    RetainedComposeAction, RetainedComposeEvent, RetainedComposeStats, ScopeComposeRecord,
+    ScopeRoots, ScopeSet,
 };
 
 /// Logical screen size supplied to neo composition.
@@ -51,6 +54,7 @@ pub struct Ui {
     focused_id: Option<String>,
     retained_stats: RetainedComposeStats,
     retained_events: Vec<RetainedComposeEvent>,
+    scope_compose_records: Vec<ScopeComposeRecord>,
     clock_seconds: f64,
     clock_frame_index: u64,
 }
@@ -157,6 +161,7 @@ impl Ui {
             focused_id: None,
             retained_stats: RetainedComposeStats::default(),
             retained_events: Vec::new(),
+            scope_compose_records: Vec::new(),
             clock_seconds: 0.0,
             clock_frame_index: 0,
         }
@@ -184,6 +189,9 @@ impl Ui {
         ScopeSet,
         RetainedComposeStats,
         Vec<RetainedComposeEvent>,
+        Vec<ScopeComposeRecord>,
+        ScopeRoots,
+        Vec<Element>,
     ) {
         (
             self.roots,
@@ -193,6 +201,9 @@ impl Ui {
             self.clock_ids,
             self.retained_stats,
             self.retained_events,
+            self.scope_compose_records,
+            self.previous_scope_roots,
+            self.previous_roots,
         )
     }
 
@@ -392,6 +403,14 @@ impl Ui {
                     id: id.clone(),
                     action: RetainedComposeAction::Reused,
                 });
+                self.scope_compose_records.push(ScopeComposeRecord {
+                    id: id.clone(),
+                    action: RetainedComposeAction::Reused,
+                    build_ms: 0.0,
+                    previous_roots: elements.len(),
+                    current_roots: elements.len(),
+                    element_count: count_elements(&elements),
+                });
                 self.scope_roots.insert(id, elements);
                 self.retained_stats.reused += 1;
                 return;
@@ -401,7 +420,9 @@ impl Ui {
         let pushed_dirty_owner = self.push_dirty_owner_if_exact_dirty(&id);
         self.scope_stack.push(id);
         let start = children_at_path_mut(&mut self.roots, &self.path).len();
+        let build_start = crate::retained::scope_profile_enabled().then(Instant::now);
         build(self);
+        let build_ms = elapsed_ms(build_start);
         let id = self
             .scope_stack
             .pop()
@@ -415,6 +436,17 @@ impl Ui {
         self.retained_events.push(RetainedComposeEvent {
             id: id.clone(),
             action: RetainedComposeAction::Built,
+        });
+        self.scope_compose_records.push(ScopeComposeRecord {
+            id: id.clone(),
+            action: RetainedComposeAction::Built,
+            build_ms,
+            previous_roots: self
+                .previous_scope_roots
+                .get(&id)
+                .map_or(0, |roots| roots.len()),
+            current_roots: roots.len(),
+            element_count: count_elements(&roots),
         });
         self.scope_roots.insert(id, roots);
         self.retained_stats.built += 1;
@@ -480,18 +512,38 @@ impl Ui {
             id: id.to_string(),
             action: RetainedComposeAction::Reused,
         });
+        self.scope_compose_records.push(ScopeComposeRecord {
+            id: id.to_string(),
+            action: RetainedComposeAction::Reused,
+            build_ms: 0.0,
+            previous_roots: elements.len(),
+            current_roots: elements.len(),
+            element_count: count_elements(&elements),
+        });
         self.scope_roots.insert(id.to_string(), elements);
         self.retained_stats.reused += 1;
         true
     }
 
-    pub(crate) fn record_retained_element(&mut self, id: String, index: usize) {
+    pub(crate) fn record_retained_element(&mut self, id: String, index: usize, build_ms: f32) {
         let element = children_at_path_mut(&mut self.roots, &self.path)[index].clone();
         self.retained_events.push(RetainedComposeEvent {
             id: id.clone(),
             action: RetainedComposeAction::Built,
         });
-        self.scope_roots.insert(id, vec![element]);
+        let roots = vec![element];
+        self.scope_compose_records.push(ScopeComposeRecord {
+            id: id.clone(),
+            action: RetainedComposeAction::Built,
+            build_ms,
+            previous_roots: self
+                .previous_scope_roots
+                .get(&id)
+                .map_or(0, |roots| roots.len()),
+            current_roots: roots.len(),
+            element_count: count_elements(&roots),
+        });
+        self.scope_roots.insert(id, roots);
         self.retained_stats.built += 1;
     }
 
@@ -716,6 +768,20 @@ fn collect_element_ids(elements: &[Element], ids: &mut FxHashSet<String>) {
         ids.insert(element.id.clone());
         collect_element_ids(&element.children, ids);
     }
+}
+
+fn count_elements(elements: &[Element]) -> usize {
+    elements
+        .iter()
+        .map(|element| 1 + count_elements(&element.children))
+        .sum()
+}
+
+#[cfg(test)]
+fn elapsed_ms(start: Option<Instant>) -> f32 {
+    start
+        .map(|start| start.elapsed().as_secs_f32() * 1000.0)
+        .unwrap_or(0.0)
 }
 
 #[cfg(test)]

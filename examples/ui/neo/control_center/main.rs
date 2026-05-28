@@ -47,6 +47,28 @@ mod tests {
         });
     }
 
+    fn compose_control_center_incremental(
+        runtime: &mut Runtime,
+        state: &sky_engine::ui::neo::State<AppModel>,
+    ) {
+        let snapshot = state.read(Clone::clone);
+        let force_full_compose = runtime.needs_compose();
+        let dirty_ids = state.take_dirty_ids();
+        let runtime_info = RuntimeInfo {
+            uptime_seconds: 0.0,
+            frame_count: 0,
+        };
+        if force_full_compose && dirty_ids.is_empty() {
+            runtime.compose(1440.0, 920.0, |ui, screen| {
+                view::render(ui, screen, state, &snapshot, runtime_info);
+            });
+        } else {
+            runtime.compose_incremental(1440.0, 920.0, dirty_ids, |ui, screen| {
+                view::render(ui, screen, state, &snapshot, runtime_info);
+            });
+        }
+    }
+
     fn click(runtime: &mut Runtime, x: f32, y: f32) {
         runtime.update_pointer(PointerEvent::pressed_at(x, y));
         runtime.update_pointer(PointerEvent::released_at(x, y));
@@ -119,6 +141,55 @@ mod tests {
             overview_frame.y + overview_frame.height * 0.5,
         );
         assert_eq!(state.read(|model| model.page), Page::Overview);
+    }
+
+    #[test]
+    fn sidebar_nav_buttons_switch_pages_through_incremental_compose() {
+        let state = sky_engine::ui::neo::State::new(AppModel::default());
+        let mut runtime = Runtime::new("neo");
+
+        compose_control_center_incremental(&mut runtime, &state);
+        let tasks_frame = runtime.find("control-center.nav.1.bg").unwrap().frame;
+        click(
+            &mut runtime,
+            tasks_frame.x + tasks_frame.width * 0.5,
+            tasks_frame.y + tasks_frame.height * 0.5,
+        );
+        assert_eq!(state.read(|model| model.page), Page::Tasks);
+        assert!(
+            runtime.needs_compose(),
+            "nav click should mark the runtime dirty before incremental compose"
+        );
+
+        compose_control_center_incremental(&mut runtime, &state);
+        assert_eq!(
+            runtime.debug_snapshot().layout_mode,
+            sky_engine::ui::neo::LayoutMode::Full(
+                sky_engine::ui::neo::FullLayoutReason::StructureChanged {
+                    ids: vec!["neo.control-center.workspace".to_string()]
+                }
+            )
+        );
+        assert_eq!(
+            runtime.debug_snapshot().dirty_ids,
+            vec![
+                "neo.control-center.nav".to_string(),
+                "neo.control-center.workspace".to_string(),
+            ]
+        );
+        let theme = theme::resolve(state.read(|model| model.theme_mode));
+        let frame = runtime.current_frame();
+        let overview_to_primary = color_distance(nav_color(&frame, 0), theme.tokens.primary);
+        let tasks_to_primary = color_distance(nav_color(&frame, 1), theme.tokens.primary);
+        assert!(
+            tasks_to_primary < overview_to_primary,
+            "incremental compose should repaint selected Tasks nav; \
+             overview_distance={overview_to_primary}, tasks_distance={tasks_to_primary}"
+        );
+        assert_eq!(
+            runtime.find("control-center.header.title").unwrap().text,
+            "Tasks"
+        );
     }
 
     #[test]
