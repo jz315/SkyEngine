@@ -2179,10 +2179,10 @@ fn dump_runtime_layout(label: &str, runtime: &sky_engine::ui::neo::Runtime) {
         "[neo layout dump] {label}: screen={:?} layout={:?} dirty={:?} live={:?} built={} reused={} active_animations={} needs_render={} needs_compose={} full_redraw={}",
         snapshot.screen,
         snapshot.layout_mode,
-        snapshot.dirty_scopes,
-        snapshot.live_scopes,
-        snapshot.scope_stats.built,
-        snapshot.scope_stats.reused,
+        snapshot.dirty_ids,
+        snapshot.live_ids,
+        snapshot.retained_stats.built,
+        snapshot.retained_stats.reused,
         snapshot.active_animation_count,
         snapshot.needs_render,
         snapshot.needs_compose,
@@ -2265,8 +2265,8 @@ fn trace_chart_runtime(label: &str, tab: i32, time: f32, runtime: &sky_engine::u
         "[neo chart trace] {label} app_time={time:.3} tab={tab} runtime_frame={} layout={:?} dirty={:?} live={:?} target={target:?} draw={draw:?} active_animations={} needs_render={} full_redraw={}",
         snapshot.frame_index,
         snapshot.layout_mode,
-        snapshot.dirty_scopes,
-        snapshot.live_scopes,
+        snapshot.dirty_ids,
+        snapshot.live_ids,
         snapshot.active_animation_count,
         snapshot.needs_render,
         snapshot.full_redraw
@@ -2320,13 +2320,13 @@ mod tests {
         }
     }
 
-    fn compose_lab(runtime: &mut Runtime, state: &State<LabState>, dirty_scopes: Vec<String>) {
+    fn compose_lab(runtime: &mut Runtime, state: &State<LabState>, dirty_ids: Vec<String>) {
         let perf = perf_snapshot();
         let state = state.clone();
-        runtime.compose_scoped(
+        runtime.compose_incremental(
             WINDOW_W as f32,
             WINDOW_H as f32,
-            dirty_scopes,
+            dirty_ids,
             move |ui, screen| {
                 draw_lab(ui, screen.width, screen.height, &state, &perf, false, false);
             },
@@ -2336,15 +2336,15 @@ mod tests {
     fn compose_lab_driver(
         driver: &mut UiTestDriver,
         state: &State<LabState>,
-        dirty_scopes: Vec<String>,
+        dirty_ids: Vec<String>,
     ) {
-        compose_lab_driver_at(driver, state, dirty_scopes, 0.0);
+        compose_lab_driver_at(driver, state, dirty_ids, 0.0);
     }
 
     fn compose_lab_driver_at(
         driver: &mut UiTestDriver,
         state: &State<LabState>,
-        dirty_scopes: Vec<String>,
+        dirty_ids: Vec<String>,
         time: f32,
     ) {
         if time > 0.0 {
@@ -2357,13 +2357,13 @@ mod tests {
         }
         let perf = perf_snapshot();
         let state = state.clone();
-        driver.compose_scoped(dirty_scopes, move |ui, screen| {
+        driver.compose_incremental(dirty_ids, move |ui, screen| {
             draw_lab(ui, screen.width, screen.height, &state, &perf, false, false);
         });
     }
 
     #[test]
-    fn signals_tab_click_uses_driver_and_rebuilds_signals_scope() {
+    fn signals_tab_click_uses_driver_and_rebuilds_signals_owner() {
         let state = State::new(LabState::default());
         let mut driver = UiTestDriver::new("stress-lab", WINDOW_W as f32, WINDOW_H as f32);
 
@@ -2381,22 +2381,20 @@ mod tests {
 
         assert_eq!(state.read(|state| state.tab), 1, "{trace}");
         assert!(trace.point.is_some_and(|[x, y]| label.contains([x, y])));
-        let dirty_scopes = state.take_dirty_scopes();
+        let dirty_ids = state.take_dirty_ids();
         assert!(
-            dirty_scopes
-                .iter()
-                .any(|scope| scope == "stress-lab.signals"),
-            "signals panel should be dirty after tab click: dirty={dirty_scopes:?} trace={trace}"
+            dirty_ids.iter().any(|id| id == "stress-lab.signals"),
+            "signals panel should be dirty after tab click: dirty={dirty_ids:?} trace={trace}"
         );
-        compose_lab_driver(&mut driver, &state, dirty_scopes);
+        compose_lab_driver(&mut driver, &state, dirty_ids);
 
-        assert!(driver.runtime().scope_compose_stats().built >= 1);
-        assert!(driver.runtime().scope_compose_stats().reused >= 1);
+        assert!(driver.runtime().retained_compose_stats().built >= 1);
+        assert!(driver.runtime().retained_compose_stats().reused >= 1);
         assert!(driver
             .debug_snapshot()
-            .scope_events
+            .retained_events
             .iter()
-            .any(|event| { event.scope.as_str() == "stress-lab.signals" }));
+            .any(|event| { event.id.as_str() == "stress-lab.signals" }));
         let indicator = driver
             .find("signals.tabs.indicator")
             .expect("tabs indicator should exist")
@@ -2408,16 +2406,16 @@ mod tests {
         assert!(indicator.x > charts_hit.x);
         assert!(indicator.x < charts_hit.x + charts_hit.width);
 
-        compose_lab_driver(&mut driver, &state, state.take_dirty_scopes());
+        compose_lab_driver(&mut driver, &state, state.take_dirty_ids());
         assert!(
-            driver.runtime().scope_compose_stats().partial_layout,
+            driver.runtime().retained_compose_stats().partial_layout,
             "stable post-tab frame should return to partial layout: {:?}",
             driver.debug_snapshot()
         );
     }
 
     #[test]
-    fn signals_tab_hit_rect_click_uses_driver_and_rebuilds_signals_scope() {
+    fn signals_tab_hit_rect_click_uses_driver_and_rebuilds_signals_owner() {
         let state = State::new(LabState::default());
         let mut driver = UiTestDriver::new("stress-lab", WINDOW_W as f32, WINDOW_H as f32);
 
@@ -2427,22 +2425,22 @@ mod tests {
             .expect("charts tab hit rect should exist");
 
         assert_eq!(state.read(|state| state.tab), 1, "{trace}");
-        let dirty_scopes = state.take_dirty_scopes();
+        let dirty_ids = state.take_dirty_ids();
         assert!(
-            dirty_scopes
+            dirty_ids
                 .iter()
-                .any(|scope| scope == "stress-lab.signals"),
-            "signals panel should be dirty after tab hit rect click: dirty={dirty_scopes:?} trace={trace}"
+                .any(|id| id == "stress-lab.signals"),
+            "signals panel should be dirty after tab hit rect click: dirty={dirty_ids:?} trace={trace}"
         );
-        compose_lab_driver(&mut driver, &state, dirty_scopes);
+        compose_lab_driver(&mut driver, &state, dirty_ids);
 
-        assert!(driver.runtime().scope_compose_stats().built >= 1);
-        assert!(driver.runtime().scope_compose_stats().reused >= 1);
+        assert!(driver.runtime().retained_compose_stats().built >= 1);
+        assert!(driver.runtime().retained_compose_stats().reused >= 1);
         assert!(driver
             .debug_snapshot()
-            .scope_events
+            .retained_events
             .iter()
-            .any(|event| { event.scope.as_str() == "stress-lab.signals" }));
+            .any(|event| { event.id.as_str() == "stress-lab.signals" }));
         let indicator = driver
             .find("signals.tabs.indicator")
             .expect("tabs indicator should exist")
@@ -2471,8 +2469,8 @@ mod tests {
             .expect("charts tab hit rect should exist");
         assert_eq!(state.read(|state| state.tab), 1, "{trace}");
 
-        let dirty_scopes = state.take_dirty_scopes();
-        compose_lab_driver_at(&mut driver, &state, dirty_scopes, 0.0);
+        let dirty_ids = state.take_dirty_ids();
+        compose_lab_driver_at(&mut driver, &state, dirty_ids, 0.0);
         assert!(
             driver.find("signals.tab.charts").is_some(),
             "charts body should be present after tab switch: {:?}",
@@ -2488,7 +2486,7 @@ mod tests {
             driver.runtime().debug_snapshot_current()
         );
 
-        compose_lab_driver_at(&mut driver, &state, state.take_dirty_scopes(), 1.570_796_4);
+        compose_lab_driver_at(&mut driver, &state, state.take_dirty_ids(), 1.570_796_4);
         let after_orb = driver
             .find("signals.stage.a.orb.fill")
             .expect("pulse orb fill should still exist on charts tab")
@@ -2534,10 +2532,10 @@ mod tests {
         );
         assert!(
             snapshot
-                .dirty_scopes
+                .dirty_ids
                 .iter()
-                .any(|scope| scope == "stress-lab.signals"),
-            "signals live scope should be dirty on the post-switch frame: {snapshot:?}"
+                .any(|id| id == "stress-lab.signals"),
+            "signals live owner should be dirty on the post-switch frame: {snapshot:?}"
         );
     }
 
@@ -2558,9 +2556,9 @@ mod tests {
             let trace = driver
                 .click(hit_id)
                 .expect("target tab hit rect should exist");
-            let dirty_scopes = state.take_dirty_scopes();
-            assert!(!dirty_scopes.is_empty(), "{trace}");
-            compose_lab_driver_at(&mut driver, &state, dirty_scopes, 0.0);
+            let dirty_ids = state.take_dirty_ids();
+            assert!(!dirty_ids.is_empty(), "{trace}");
+            compose_lab_driver_at(&mut driver, &state, dirty_ids, 0.0);
             driver.runtime_mut().tick_animations(0.0);
             let after_compose_draw = rect_draw_x(driver.runtime(), "signals.tabs.indicator")
                 .expect("tabs indicator should draw after click");
@@ -2616,15 +2614,15 @@ mod tests {
             .click("interactions.segment.hit.1")
             .expect("odd segment hit rect should exist");
         assert_eq!(state.read(|state| state.segment), 1, "{trace}");
-        let dirty_scopes = state.take_dirty_scopes();
+        let dirty_ids = state.take_dirty_ids();
         assert!(
-            dirty_scopes
+            dirty_ids
                 .iter()
-                .any(|scope| scope == "stress-lab.interactions"),
-            "interactions panel should be dirty after segment click: dirty={dirty_scopes:?} trace={trace}"
+                .any(|id| id == "stress-lab.interactions"),
+            "interactions panel should be dirty after segment click: dirty={dirty_ids:?} trace={trace}"
         );
 
-        compose_lab_driver(&mut driver, &state, dirty_scopes);
+        compose_lab_driver(&mut driver, &state, dirty_ids);
         driver.runtime_mut().tick_animations(0.0);
         let next_target = driver
             .find("interactions.segment.indicator")
@@ -2682,9 +2680,9 @@ mod tests {
             state.read(|state| state.segment)
         );
 
-        let dirty_scopes = state.take_dirty_scopes();
-        eprintln!("dirty scopes after click = {dirty_scopes:?}");
-        compose_lab_driver(&mut driver, &state, dirty_scopes);
+        let dirty_ids = state.take_dirty_ids();
+        eprintln!("dirty ids after click = {dirty_ids:?}");
+        compose_lab_driver(&mut driver, &state, dirty_ids);
         driver.runtime_mut().tick_animations(0.0);
         log_segment_draw_state("after compose", &driver);
 
@@ -2758,14 +2756,14 @@ mod tests {
     }
 
     #[test]
-    fn live_scopes_rebuild_without_state_dirty() {
+    fn live_ids_rebuild_without_state_dirty() {
         let state = State::new(LabState::default());
         let mut runtime = Runtime::new("stress-lab");
 
         compose_lab(&mut runtime, &state, Vec::new());
         compose_lab(&mut runtime, &state, Vec::new());
 
-        assert!(runtime.scope_compose_stats().built >= 2);
-        assert!(runtime.scope_compose_stats().reused >= 1);
+        assert!(runtime.retained_compose_stats().built >= 2);
+        assert!(runtime.retained_compose_stats().reused >= 1);
     }
 }

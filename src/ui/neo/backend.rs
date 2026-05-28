@@ -95,16 +95,16 @@ impl NeoUiBackend {
         self.refresh_capture();
     }
 
-    pub fn compose_scoped(
+    pub fn compose_incremental(
         &mut self,
-        dirty_scopes: impl FnOnce() -> Vec<String>,
+        dirty_ids: impl FnOnce() -> Vec<String>,
         compose: impl FnOnce(&mut Ui, Screen),
     ) {
         let screen = self.screen;
         self.update_pending_events();
-        let dirty_scopes = dirty_scopes();
+        let dirty_ids = dirty_ids();
         self.runtime
-            .compose_scoped(screen.width, screen.height, dirty_scopes, compose);
+            .compose_incremental(screen.width, screen.height, dirty_ids, compose);
         self.runtime.tick_animations(self.delta_seconds);
         self.refresh_capture();
     }
@@ -462,7 +462,7 @@ mod tests {
     }
 
     #[test]
-    fn backend_scoped_compose_drains_signal_dirty_scopes_after_event_callbacks() {
+    fn backend_incremental_compose_drains_signal_dirty_ids_after_event_callbacks() {
         #[derive(Default)]
         struct Model {
             page: i32,
@@ -482,8 +482,8 @@ mod tests {
             let dirty_state = state.clone();
             let compose_state = state.clone();
             let builds = builds.clone();
-            backend.compose_scoped(
-                move || dirty_state.take_dirty_scopes(),
+            backend.compose_incremental(
+                move || dirty_state.take_dirty_ids(),
                 move |ui, _| {
                     ui.column("nav").size(160.0, 80.0).content(|ui| {
                         builds.set(builds.get() + 1);
@@ -524,7 +524,7 @@ mod tests {
     }
 
     #[test]
-    fn backend_scoped_compose_flushes_real_window_click_before_dirty_scopes() {
+    fn backend_incremental_compose_flushes_real_window_click_before_dirty_ids() {
         #[derive(Default)]
         struct Model {
             page: i32,
@@ -542,8 +542,8 @@ mod tests {
         let compose_nav = |backend: &mut NeoUiBackend| {
             let dirty_state = state.clone();
             let compose_state = state.clone();
-            backend.compose_scoped(
-                move || dirty_state.take_dirty_scopes(),
+            backend.compose_incremental(
+                move || dirty_state.take_dirty_ids(),
                 move |ui, _| {
                     ui.column("nav").size(240.0, 80.0).content(|ui| {
                         let page = compose_state.signal(

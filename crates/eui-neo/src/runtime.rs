@@ -13,8 +13,8 @@ use super::fonts::FontRef;
 use super::layout::{layout_element_in_frame_with_text_system, layout_roots_with_text_system};
 use super::retained::{
     begin_scope_frame, normalize_dirty_scopes, scope_contains_id, scope_parent,
-    structurally_incompatible_dirty_scopes, FullLayoutReason, LayoutMode, ScopeComposeAction,
-    ScopeComposeEvent, ScopeComposeStats, ScopeRoots, ScopeSet,
+    structurally_incompatible_dirty_scopes, FullLayoutReason, LayoutMode, RetainedComposeAction,
+    RetainedComposeEvent, RetainedComposeStats, ScopeRoots, ScopeSet,
 };
 use super::skin::{NeoSkin, SkinRegistry};
 use super::text_measure::{DefaultTextSystem, TextSystem};
@@ -44,14 +44,14 @@ pub enum DirtyReason {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ScopeDebugRecord {
+pub struct RetainedDebugRecord {
     pub id: String,
-    pub parent_scope: Option<String>,
+    pub parent_id: Option<String>,
     pub dirty: bool,
     pub raw_dirty: bool,
     pub normalized_dirty_root: bool,
     pub dirty_reasons: Vec<DirtyReason>,
-    pub action: Option<ScopeComposeAction>,
+    pub action: Option<RetainedComposeAction>,
     pub previous_roots: usize,
     pub current_roots: usize,
     pub layout_anchor: Option<LayoutRect>,
@@ -74,14 +74,14 @@ pub struct ElementDebugRecord {
 pub struct UiDebugSnapshot {
     pub frame_index: u64,
     pub screen: Screen,
-    pub dirty_scopes: Vec<String>,
-    pub normalized_dirty_scopes: Vec<String>,
-    pub live_scopes: Vec<String>,
-    pub clock_scopes: Vec<String>,
-    pub scopes: Vec<ScopeDebugRecord>,
+    pub dirty_ids: Vec<String>,
+    pub normalized_dirty_ids: Vec<String>,
+    pub live_ids: Vec<String>,
+    pub clock_ids: Vec<String>,
+    pub retained: Vec<RetainedDebugRecord>,
     pub elements: Vec<ElementDebugRecord>,
-    pub scope_events: Vec<ScopeComposeEvent>,
-    pub scope_stats: ScopeComposeStats,
+    pub retained_events: Vec<RetainedComposeEvent>,
+    pub retained_stats: RetainedComposeStats,
     pub layout_mode: LayoutMode,
     pub needs_render: bool,
     pub needs_compose: bool,
@@ -97,14 +97,14 @@ impl std::fmt::Debug for UiDebugSnapshot {
         f.debug_struct("UiDebugSnapshot")
             .field("frame_index", &self.frame_index)
             .field("screen", &self.screen)
-            .field("dirty_scopes", &self.dirty_scopes)
-            .field("normalized_dirty_scopes", &self.normalized_dirty_scopes)
-            .field("live_scopes", &self.live_scopes)
-            .field("clock_scopes", &self.clock_scopes)
-            .field("scopes", &self.scopes)
+            .field("dirty_ids", &self.dirty_ids)
+            .field("normalized_dirty_ids", &self.normalized_dirty_ids)
+            .field("live_ids", &self.live_ids)
+            .field("clock_ids", &self.clock_ids)
+            .field("retained", &self.retained)
             .field("element_count", &self.elements.len())
-            .field("scope_events", &self.scope_events)
-            .field("scope_stats", &self.scope_stats)
+            .field("retained_events", &self.retained_events)
+            .field("retained_stats", &self.retained_stats)
             .field("layout_mode", &self.layout_mode)
             .field("needs_render", &self.needs_render)
             .field("needs_compose", &self.needs_compose)
@@ -122,15 +122,15 @@ impl Default for UiDebugSnapshot {
         Self {
             frame_index: 0,
             screen: Screen::default(),
-            dirty_scopes: Vec::new(),
-            normalized_dirty_scopes: Vec::new(),
-            live_scopes: Vec::new(),
-            clock_scopes: Vec::new(),
-            scopes: Vec::new(),
+            dirty_ids: Vec::new(),
+            normalized_dirty_ids: Vec::new(),
+            live_ids: Vec::new(),
+            clock_ids: Vec::new(),
+            retained: Vec::new(),
             elements: Vec::new(),
-            scope_events: Vec::new(),
-            scope_stats: ScopeComposeStats::default(),
-            layout_mode: LayoutMode::Full(FullLayoutReason::ScopeReuseUnavailable),
+            retained_events: Vec::new(),
+            retained_stats: RetainedComposeStats::default(),
+            layout_mode: LayoutMode::Full(FullLayoutReason::RetainedReuseUnavailable),
             needs_render: false,
             needs_compose: false,
             full_redraw: false,
@@ -215,8 +215,8 @@ pub struct Runtime {
     page_id: String,
     roots: Vec<Element>,
     scope_roots: ScopeRoots,
-    live_scopes: ScopeSet,
-    clock_scopes: ScopeSet,
+    live_ids: ScopeSet,
+    clock_ids: ScopeSet,
     structure: Vec<ElementSnapshot>,
     screen: Screen,
     interactions: FxHashMap<String, InteractionState>,
@@ -236,7 +236,7 @@ pub struct Runtime {
     text_system: Box<dyn TextSystem>,
     draw_cache_revision: Cell<u64>,
     draw_cache: RefCell<CacheCell<DrawListCacheKey, super::draw::UiDrawList>>,
-    scope_stats: ScopeComposeStats,
+    retained_stats: RetainedComposeStats,
     frame_index: u64,
     clock_seconds: f64,
     debug_snapshot: UiDebugSnapshot,
@@ -344,8 +344,8 @@ impl Runtime {
             page_id: page_id.into(),
             roots: Vec::new(),
             scope_roots: FxHashMap::default(),
-            live_scopes: FxHashSet::default(),
-            clock_scopes: FxHashSet::default(),
+            live_ids: FxHashSet::default(),
+            clock_ids: FxHashSet::default(),
             structure: Vec::new(),
             screen: Screen::default(),
             interactions: FxHashMap::default(),
@@ -365,7 +365,7 @@ impl Runtime {
             text_system: Box::new(text_system),
             draw_cache_revision: Cell::new(0),
             draw_cache: RefCell::new(CacheCell::default()),
-            scope_stats: ScopeComposeStats::default(),
+            retained_stats: RetainedComposeStats::default(),
             frame_index: 0,
             clock_seconds: 0.0,
             debug_snapshot: UiDebugSnapshot::default(),
@@ -477,8 +477,8 @@ impl Runtime {
         self.needs_compose = false;
     }
 
-    pub fn scope_compose_stats(&self) -> ScopeComposeStats {
-        self.scope_stats
+    pub fn retained_compose_stats(&self) -> RetainedComposeStats {
+        self.retained_stats
     }
 
     pub fn debug_snapshot(&self) -> &UiDebugSnapshot {
@@ -531,17 +531,17 @@ impl Runtime {
         self.compose_internal(width, height, None, compose);
     }
 
-    pub fn compose_scoped(
+    pub fn compose_incremental(
         &mut self,
         width: f32,
         height: f32,
-        dirty_scopes: impl IntoIterator<Item = String>,
+        dirty_ids: impl IntoIterator<Item = String>,
         compose: impl FnOnce(&mut Ui, Screen),
     ) {
         self.compose_internal(
             width,
             height,
-            Some(dirty_scopes.into_iter().collect()),
+            Some(dirty_ids.into_iter().collect()),
             compose,
         );
     }
@@ -550,20 +550,20 @@ impl Runtime {
         &mut self,
         width: f32,
         height: f32,
-        dirty_scopes: Option<FxHashSet<String>>,
+        dirty_ids: Option<FxHashSet<String>>,
         compose: impl FnOnce(&mut Ui, Screen),
     ) {
         let profile = neo_profile_enabled();
         let total_start = profile.then(Instant::now);
         self.needs_compose = false;
         let screen = Screen { width, height };
-        let can_reuse_scopes = dirty_scopes.is_some() && self.screen == screen;
-        let previous_clock_scopes = self.clock_scopes.clone();
+        let can_reuse_scopes = dirty_ids.is_some() && self.screen == screen;
+        let previous_clock_ids = self.clock_ids.clone();
         let scope_frame = begin_scope_frame(
             can_reuse_scopes,
-            dirty_scopes,
+            dirty_ids,
             &mut self.scope_roots,
-            &mut self.live_scopes,
+            &mut self.live_ids,
         );
         let mut ui = Ui::new(self.page_id.clone());
         ui.set_skins(self.skins.clone());
@@ -592,31 +592,31 @@ impl Runtime {
             mut roots,
             callbacks,
             mut scope_roots,
-            live_scopes,
-            clock_scopes,
-            mut scope_stats,
-            scope_events,
+            live_ids,
+            clock_ids,
+            mut retained_stats,
+            retained_events,
         ) = ui.into_parts();
         let layout_start = profile.then(Instant::now);
-        let normalized_dirty_scopes = normalize_dirty_scopes(&scope_frame.dirty_scopes);
+        let normalized_dirty_ids = normalize_dirty_scopes(&scope_frame.dirty_scopes);
         let partial_layout_blocker = scope_frame
-            .partial_layout_blocker(&normalized_dirty_scopes)
+            .partial_layout_blocker(&normalized_dirty_ids)
             .or_else(|| {
                 let scopes = structurally_incompatible_dirty_scopes(
-                    &normalized_dirty_scopes,
+                    &normalized_dirty_ids,
                     &scope_frame.previous_scope_roots,
                     &scope_roots,
                 );
-                (!scopes.is_empty()).then_some(FullLayoutReason::StructureChanged { scopes })
+                (!scopes.is_empty()).then_some(FullLayoutReason::StructureChanged { ids: scopes })
             });
         let partial_layout = partial_layout_blocker.is_none();
         let mut used_partial_layout = false;
         if partial_layout {
             if let Some(previous_roots_for_layout) = previous_roots_for_layout.as_deref() {
                 copy_previous_frames(&mut roots, previous_roots_for_layout);
-                used_partial_layout = layout_dirty_scopes_with_text_system(
+                used_partial_layout = layout_dirty_ids_with_text_system(
                     &mut roots,
-                    &normalized_dirty_scopes,
+                    &normalized_dirty_ids,
                     &scope_frame.previous_scope_roots,
                     self.text_system.as_mut(),
                 );
@@ -625,7 +625,7 @@ impl Runtime {
         let layout_mode = if used_partial_layout {
             LayoutMode::Partial
         } else if partial_layout {
-            LayoutMode::Full(FullLayoutReason::DirtyScopeLayoutFailed)
+            LayoutMode::Full(FullLayoutReason::DirtyRetainedLayoutFailed)
         } else {
             LayoutMode::Full(
                 partial_layout_blocker.expect("full layout blocker should be known here"),
@@ -634,8 +634,8 @@ impl Runtime {
         if !used_partial_layout {
             layout_roots_with_text_system(&mut roots, width, height, self.text_system.as_mut());
         }
-        scope_stats.partial_layout = used_partial_layout;
-        scope_stats.full_layout = !used_partial_layout;
+        retained_stats.partial_layout = used_partial_layout;
+        retained_stats.full_layout = !used_partial_layout;
         refresh_scope_roots_from_tree(&mut scope_roots, &roots);
         let layout_ms = elapsed_ms(layout_start);
         let structure_start = profile.then(Instant::now);
@@ -648,10 +648,10 @@ impl Runtime {
         self.screen = screen;
         self.roots = roots;
         self.scope_roots = scope_roots;
-        self.live_scopes = live_scopes;
-        self.clock_scopes = clock_scopes;
+        self.live_ids = live_ids;
+        self.clock_ids = clock_ids;
         self.callbacks = callbacks;
-        self.scope_stats = scope_stats;
+        self.retained_stats = retained_stats;
         self.frame_index = self.frame_index.saturating_add(1);
         let element_debug_records = collect_element_debug_records(
             &self.roots,
@@ -664,23 +664,23 @@ impl Runtime {
             &scope_frame.previous_scope_roots,
             &scope_frame.input_dirty_scopes,
             &scope_frame.live_dirty_scopes,
-            &previous_clock_scopes,
+            &previous_clock_ids,
             &scope_frame.dirty_scopes,
-            &normalized_dirty_scopes,
+            &normalized_dirty_ids,
             &element_debug_records,
-            &scope_events,
+            &retained_events,
         );
         self.debug_snapshot = UiDebugSnapshot {
             frame_index: self.frame_index,
             screen: self.screen,
-            dirty_scopes: sorted_scope_set(&scope_frame.dirty_scopes),
-            normalized_dirty_scopes: sorted_scope_set(&normalized_dirty_scopes),
-            live_scopes: sorted_scope_set(&self.live_scopes),
-            clock_scopes: sorted_scope_set(&self.clock_scopes),
-            scopes: scope_debug_records,
+            dirty_ids: sorted_scope_set(&scope_frame.dirty_scopes),
+            normalized_dirty_ids: sorted_scope_set(&normalized_dirty_ids),
+            live_ids: sorted_scope_set(&self.live_ids),
+            clock_ids: sorted_scope_set(&self.clock_ids),
+            retained: scope_debug_records,
             elements: element_debug_records,
-            scope_events,
-            scope_stats: self.scope_stats,
+            retained_events,
+            retained_stats: self.retained_stats,
             layout_mode,
             needs_render: self.needs_render,
             needs_compose: self.needs_compose,
@@ -699,15 +699,15 @@ impl Runtime {
         }
         if profile {
             eprintln!(
-                "[eui-neo] compose total={:.3}ms previous_roots={:.3}ms build={:.3}ms layout={:.3}ms structure={:.3}ms elements={} scopes_built={} scopes_reused={}",
+                "[eui-neo] compose total={:.3}ms previous_roots={:.3}ms build={:.3}ms layout={:.3}ms structure={:.3}ms elements={} retained_built={} retained_reused={}",
                 elapsed_ms(total_start),
                 previous_roots_ms,
                 build_ms,
                 layout_ms,
                 structure_ms,
                 self.structure.len(),
-                self.scope_stats.built,
-                self.scope_stats.reused
+                self.retained_stats.built,
+                self.retained_stats.reused
             );
         }
     }
@@ -1474,57 +1474,57 @@ fn trace_debug_snapshot(snapshot: &UiDebugSnapshot) {
         "[eui-neo debug] frame={} layout={:?} dirty={:?} normalized_dirty={:?} live={:?} clock={:?} built={} reused={} animations={} focused={:?} hovered={:?} active={:?}",
         snapshot.frame_index,
         snapshot.layout_mode,
-        snapshot.dirty_scopes,
-        snapshot.normalized_dirty_scopes,
-        snapshot.live_scopes,
-        snapshot.clock_scopes,
-        snapshot.scope_stats.built,
-        snapshot.scope_stats.reused,
+        snapshot.dirty_ids,
+        snapshot.normalized_dirty_ids,
+        snapshot.live_ids,
+        snapshot.clock_ids,
+        snapshot.retained_stats.built,
+        snapshot.retained_stats.reused,
         snapshot.active_animation_count,
         snapshot.focused_id,
         snapshot.hovered_id,
         snapshot.active_id,
     );
-    for event in &snapshot.scope_events {
-        eprintln!("[eui-neo scope] {:?} {}", event.action, event.scope);
+    for event in &snapshot.retained_events {
+        eprintln!("[eui-neo retained] {:?} {}", event.action, event.id);
     }
     trace_debug_filters(snapshot);
 }
 
 fn trace_debug_filters(snapshot: &UiDebugSnapshot) {
     if std::env::var_os("SKY_NEO_DEBUG_DIRTY").is_some() {
-        for scope in snapshot.scopes.iter().filter(|scope| scope.dirty) {
+        for record in snapshot.retained.iter().filter(|record| record.dirty) {
             eprintln!(
-                "[eui-neo dirty] scope={} raw={} normalized={} reasons={:?} action={:?} roots={}->{} anchor={:?}",
-                scope.id,
-                scope.raw_dirty,
-                scope.normalized_dirty_root,
-                scope.dirty_reasons,
-                scope.action,
-                scope.previous_roots,
-                scope.current_roots,
-                scope.layout_anchor,
+                "[eui-neo dirty] id={} raw={} normalized={} reasons={:?} action={:?} roots={}->{} anchor={:?}",
+                record.id,
+                record.raw_dirty,
+                record.normalized_dirty_root,
+                record.dirty_reasons,
+                record.action,
+                record.previous_roots,
+                record.current_roots,
+                record.layout_anchor,
             );
         }
     }
-    if let Ok(filter) = std::env::var("SKY_NEO_DEBUG_SCOPE") {
-        for scope in snapshot
-            .scopes
+    if let Ok(filter) = std::env::var("SKY_NEO_DEBUG_RETAINED") {
+        for record in snapshot
+            .retained
             .iter()
-            .filter(|scope| scope.id.contains(&filter))
+            .filter(|record| record.id.contains(&filter))
         {
             eprintln!(
-                "[eui-neo scope-debug] id={} parent={:?} dirty={} raw={} normalized={} reasons={:?} action={:?} scroll={:?} clip={:?} anchor={:?}",
-                scope.id,
-                scope.parent_scope,
-                scope.dirty,
-                scope.raw_dirty,
-                scope.normalized_dirty_root,
-                scope.dirty_reasons,
-                scope.action,
-                scope.scroll_ancestor,
-                scope.clip_ancestor,
-                scope.layout_anchor,
+                "[eui-neo retained-debug] id={} parent={:?} dirty={} raw={} normalized={} reasons={:?} action={:?} scroll={:?} clip={:?} anchor={:?}",
+                record.id,
+                record.parent_id,
+                record.dirty,
+                record.raw_dirty,
+                record.normalized_dirty_root,
+                record.dirty_reasons,
+                record.action,
+                record.scroll_ancestor,
+                record.clip_ancestor,
+                record.layout_anchor,
             );
         }
     }
@@ -1680,23 +1680,23 @@ fn hovered_id(interactions: &FxHashMap<String, InteractionState>) -> Option<Stri
 fn collect_scope_debug_records(
     current_scope_roots: &ScopeRoots,
     previous_scope_roots: &ScopeRoots,
-    input_dirty_scopes: &ScopeSet,
-    live_dirty_scopes: &ScopeSet,
-    previous_clock_scopes: &ScopeSet,
-    dirty_scopes: &ScopeSet,
-    normalized_dirty_scopes: &ScopeSet,
+    input_dirty_ids: &ScopeSet,
+    live_dirty_ids: &ScopeSet,
+    previous_clock_ids: &ScopeSet,
+    dirty_ids: &ScopeSet,
+    normalized_dirty_ids: &ScopeSet,
     element_records: &[ElementDebugRecord],
-    scope_events: &[ScopeComposeEvent],
-) -> Vec<ScopeDebugRecord> {
+    retained_events: &[RetainedComposeEvent],
+) -> Vec<RetainedDebugRecord> {
     let mut scope_ids: ScopeSet = ScopeSet::default();
     scope_ids.extend(current_scope_roots.keys().cloned());
     scope_ids.extend(previous_scope_roots.keys().cloned());
-    scope_ids.extend(dirty_scopes.iter().cloned());
-    scope_ids.extend(normalized_dirty_scopes.iter().cloned());
+    scope_ids.extend(dirty_ids.iter().cloned());
+    scope_ids.extend(normalized_dirty_ids.iter().cloned());
 
-    let action_by_scope: FxHashMap<_, _> = scope_events
+    let action_by_scope: FxHashMap<_, _> = retained_events
         .iter()
-        .map(|event| (event.scope.clone(), event.action))
+        .map(|event| (event.id.clone(), event.action))
         .collect();
     let element_by_id: FxHashMap<_, _> = element_records
         .iter()
@@ -1720,16 +1720,16 @@ fn collect_scope_debug_records(
                 .get(&scope)
                 .and_then(|roots| roots.first());
             let current_record = first_current_root.and_then(|id| element_by_id.get(id).copied());
-            ScopeDebugRecord {
-                parent_scope: scope_parent(&scope, scope_ids.iter()),
-                dirty: dirty_scopes.contains(&scope),
-                raw_dirty: input_dirty_scopes.contains(&scope),
-                normalized_dirty_root: normalized_dirty_scopes.contains(&scope),
+            RetainedDebugRecord {
+                parent_id: scope_parent(&scope, scope_ids.iter()),
+                dirty: dirty_ids.contains(&scope),
+                raw_dirty: input_dirty_ids.contains(&scope),
+                normalized_dirty_root: normalized_dirty_ids.contains(&scope),
                 dirty_reasons: dirty_reasons_for_scope(
                     &scope,
-                    input_dirty_scopes,
-                    live_dirty_scopes,
-                    previous_clock_scopes,
+                    input_dirty_ids,
+                    live_dirty_ids,
+                    previous_clock_ids,
                 ),
                 action: action_by_scope.get(&scope).copied(),
                 previous_roots: previous_scope_roots
@@ -1751,16 +1751,16 @@ fn collect_scope_debug_records(
 
 fn dirty_reasons_for_scope(
     scope: &str,
-    input_dirty_scopes: &ScopeSet,
-    live_dirty_scopes: &ScopeSet,
-    previous_clock_scopes: &ScopeSet,
+    input_dirty_ids: &ScopeSet,
+    live_dirty_ids: &ScopeSet,
+    previous_clock_ids: &ScopeSet,
 ) -> Vec<DirtyReason> {
     let mut reasons = Vec::new();
-    if input_dirty_scopes.contains(scope) {
+    if input_dirty_ids.contains(scope) {
         reasons.push(DirtyReason::External);
     }
-    if live_dirty_scopes.contains(scope) {
-        if previous_clock_scopes.contains(scope) {
+    if live_dirty_ids.contains(scope) {
+        if previous_clock_ids.contains(scope) {
             reasons.push(DirtyReason::Clock);
         } else {
             reasons.push(DirtyReason::Live);
@@ -1874,13 +1874,13 @@ fn collect_element_structure(element: &Element, snapshots: &mut Vec<ElementSnaps
     }
 }
 
-fn layout_dirty_scopes_with_text_system(
+fn layout_dirty_ids_with_text_system(
     roots: &mut [Element],
-    dirty_scopes: &FxHashSet<String>,
+    dirty_ids: &FxHashSet<String>,
     previous_scope_roots: &FxHashMap<String, Vec<Element>>,
     text_system: &mut dyn TextSystem,
 ) -> bool {
-    for scope in dirty_scopes {
+    for scope in dirty_ids {
         let Some(previous_roots) = previous_scope_roots.get(scope) else {
             return false;
         };
@@ -2273,7 +2273,7 @@ mod tests {
     use crate::DirtyReason;
     use crate::{
         Align, AnimProperty, Ease, FontRef, FrameInput, FullLayoutReason, HorizontalAlign,
-        KeyboardEvent, LayoutMode, LayoutRect, PointerEvent, ScopeComposeAction, Screen,
+        KeyboardEvent, LayoutMode, LayoutRect, PointerEvent, RetainedComposeAction, Screen,
         ScrollEvent, Size, State, TextMeasure, TextMeasureRequest, TextSystem, Transition,
     };
     use std::cell::{Cell, RefCell};
@@ -2380,12 +2380,12 @@ mod tests {
         let right_clicks = Rc::new(Cell::new(0));
         let mut runtime = Runtime::new("page");
 
-        let compose = |runtime: &mut Runtime, dirty_scopes: Vec<String>| {
+        let compose = |runtime: &mut Runtime, dirty_ids: Vec<String>| {
             let state = state.clone();
             let left_builds = left_builds.clone();
             let right_builds = right_builds.clone();
             let right_clicks = right_clicks.clone();
-            runtime.compose_scoped(240.0, 80.0, dirty_scopes, move |ui, _| {
+            runtime.compose_incremental(240.0, 80.0, dirty_ids, move |ui, _| {
                 ui.row("root").size(240.0, 40.0).content(|ui| {
                     ui.retained_scope("left", |ui| {
                         left_builds.set(left_builds.get() + 1);
@@ -2424,16 +2424,16 @@ mod tests {
             |state, value| state.selected = value,
         );
         selected.set(1);
-        compose(&mut runtime, state.take_dirty_scopes());
+        compose(&mut runtime, state.take_dirty_ids());
 
         assert_eq!(left_builds.get(), 2);
         assert_eq!(right_builds.get(), 1);
         assert_eq!(runtime.find("left.label").unwrap().text, "left 1");
         assert!(runtime.find("right.button.bg").is_some());
-        assert!(runtime.scope_compose_stats().built >= 1);
-        assert!(runtime.scope_compose_stats().reused >= 1);
-        assert!(runtime.scope_compose_stats().partial_layout);
-        assert!(!runtime.scope_compose_stats().full_layout);
+        assert!(runtime.retained_compose_stats().built >= 1);
+        assert!(runtime.retained_compose_stats().reused >= 1);
+        assert!(runtime.retained_compose_stats().partial_layout);
+        assert!(!runtime.retained_compose_stats().full_layout);
 
         let frame = runtime.find("right.button.bg").unwrap().frame;
         runtime.update_pointer(PointerEvent::pressed_at(frame.x + 1.0, frame.y + 1.0));
@@ -2447,10 +2447,10 @@ mod tests {
         let live_builds = Rc::new(Cell::new(0));
         let static_builds = Rc::new(Cell::new(0));
 
-        let compose = |runtime: &mut Runtime, dirty_scopes: Vec<String>| {
+        let compose = |runtime: &mut Runtime, dirty_ids: Vec<String>| {
             let live_builds = live_builds.clone();
             let static_builds = static_builds.clone();
-            runtime.compose_scoped(240.0, 80.0, dirty_scopes, move |ui, _| {
+            runtime.compose_incremental(240.0, 80.0, dirty_ids, move |ui, _| {
                 ui.row("root").size(240.0, 40.0).content(|ui| {
                     ui.retained_live_scope("live", |ui| {
                         live_builds.set(live_builds.get() + 1);
@@ -2476,10 +2476,10 @@ mod tests {
         assert_eq!(live_builds.get(), 2);
         assert_eq!(static_builds.get(), 1);
         assert_eq!(runtime.find("live.label").unwrap().text, "live 2");
-        assert!(runtime.scope_compose_stats().built >= 1);
-        assert!(runtime.scope_compose_stats().reused >= 1);
-        assert!(runtime.scope_compose_stats().partial_layout);
-        assert!(!runtime.scope_compose_stats().full_layout);
+        assert!(runtime.retained_compose_stats().built >= 1);
+        assert!(runtime.retained_compose_stats().reused >= 1);
+        assert!(runtime.retained_compose_stats().partial_layout);
+        assert!(!runtime.retained_compose_stats().full_layout);
     }
 
     #[test]
@@ -2488,35 +2488,34 @@ mod tests {
         let builds = Rc::new(Cell::new(0));
         let mut sampled_seconds = 0.0;
 
-        let compose =
-            |runtime: &mut Runtime, dirty_scopes: Vec<String>, sampled_seconds: &mut f32| {
-                let builds = builds.clone();
-                runtime.compose_scoped(240.0, 80.0, dirty_scopes, move |ui, _| {
-                    ui.retained_scope("clocked", |ui| {
-                        builds.set(builds.get() + 1);
-                        let seconds = ui.clock().seconds();
-                        let tick = ui.clock().every(Duration::from_millis(250));
-                        assert_eq!(tick.period, Duration::from_millis(250));
-                        *sampled_seconds = seconds;
-                        ui.text("label")
-                            .size(100.0, 40.0)
-                            .text(format!("clock {seconds:.1}"))
-                            .build();
-                    });
-                    ui.retained_scope("static", |ui| {
-                        ui.text("static.label")
-                            .size(100.0, 40.0)
-                            .text("static")
-                            .build();
-                    });
+        let compose = |runtime: &mut Runtime, dirty_ids: Vec<String>, sampled_seconds: &mut f32| {
+            let builds = builds.clone();
+            runtime.compose_incremental(240.0, 80.0, dirty_ids, move |ui, _| {
+                ui.retained_scope("clocked", |ui| {
+                    builds.set(builds.get() + 1);
+                    let seconds = ui.clock().seconds();
+                    let tick = ui.clock().every(Duration::from_millis(250));
+                    assert_eq!(tick.period, Duration::from_millis(250));
+                    *sampled_seconds = seconds;
+                    ui.text("label")
+                        .size(100.0, 40.0)
+                        .text(format!("clock {seconds:.1}"))
+                        .build();
                 });
-            };
+                ui.retained_scope("static", |ui| {
+                    ui.text("static.label")
+                        .size(100.0, 40.0)
+                        .text("static")
+                        .build();
+                });
+            });
+        };
 
         compose(&mut runtime, Vec::new(), &mut sampled_seconds);
         assert_eq!(builds.get(), 1);
         assert_eq!(sampled_seconds, 0.0);
         assert_eq!(
-            runtime.debug_snapshot().clock_scopes,
+            runtime.debug_snapshot().clock_ids,
             vec!["page.clocked".to_string()]
         );
 
@@ -2532,28 +2531,28 @@ mod tests {
         assert_eq!(sampled_seconds, 0.5);
         assert_eq!(runtime.find("label").unwrap().text, "clock 0.5");
         assert_eq!(
-            runtime.debug_snapshot().dirty_scopes,
+            runtime.debug_snapshot().dirty_ids,
             vec!["page.clocked".to_string()]
         );
         assert_eq!(
-            runtime.debug_snapshot().clock_scopes,
+            runtime.debug_snapshot().clock_ids,
             vec!["page.clocked".to_string()]
         );
-        let clocked_scope = runtime
+        let clocked_record = runtime
             .debug_snapshot()
-            .scopes
+            .retained
             .iter()
             .find(|scope| scope.id == "page.clocked")
             .expect("clocked scope should be reported");
-        assert_eq!(clocked_scope.dirty_reasons, vec![DirtyReason::Clock]);
-        assert!(runtime.scope_compose_stats().partial_layout);
+        assert_eq!(clocked_record.dirty_reasons, vec![DirtyReason::Clock]);
+        assert!(runtime.retained_compose_stats().partial_layout);
     }
 
     #[test]
     fn clock_read_without_scope_uses_current_element_owner() {
         let mut runtime = Runtime::new("page");
 
-        runtime.compose_scoped(240.0, 80.0, Vec::<String>::new(), |ui, _| {
+        runtime.compose_incremental(240.0, 80.0, Vec::<String>::new(), |ui, _| {
             ui.stack("panel").size(160.0, 40.0).content(|ui| {
                 let seconds = ui.clock().seconds();
                 ui.text("panel.label")
@@ -2564,7 +2563,7 @@ mod tests {
         });
 
         assert_eq!(
-            runtime.debug_snapshot().clock_scopes,
+            runtime.debug_snapshot().clock_ids,
             vec!["page.panel".to_string()]
         );
 
@@ -2574,7 +2573,7 @@ mod tests {
             KeyboardEvent::default(),
             0.25,
         );
-        runtime.compose_scoped(240.0, 80.0, Vec::<String>::new(), |ui, _| {
+        runtime.compose_incremental(240.0, 80.0, Vec::<String>::new(), |ui, _| {
             ui.stack("panel").size(160.0, 40.0).content(|ui| {
                 let seconds = ui.clock().seconds();
                 ui.text("panel.label")
@@ -2585,17 +2584,17 @@ mod tests {
         });
 
         assert_eq!(
-            runtime.debug_snapshot().dirty_scopes,
+            runtime.debug_snapshot().dirty_ids,
             vec!["page.panel".to_string()]
         );
         assert_eq!(runtime.find("panel.label").unwrap().text, "0.25");
-        let panel_scope = runtime
+        let panel_record = runtime
             .debug_snapshot()
-            .scopes
+            .retained
             .iter()
             .find(|scope| scope.id == "page.panel")
             .expect("automatic clock owner should be reported");
-        assert_eq!(panel_scope.dirty_reasons, vec![DirtyReason::Clock]);
+        assert_eq!(panel_record.dirty_reasons, vec![DirtyReason::Clock]);
     }
 
     #[test]
@@ -2617,14 +2616,14 @@ mod tests {
         });
 
         let snapshot = runtime.debug_snapshot();
-        let child_scope = snapshot
-            .scopes
+        let child_record = snapshot
+            .retained
             .iter()
             .find(|scope| scope.id == "page.panel.child")
             .expect("child scope should be reported");
-        assert_eq!(child_scope.parent_scope.as_deref(), Some("page.panel"));
-        assert_eq!(child_scope.current_roots, 1);
-        assert_eq!(child_scope.action, Some(ScopeComposeAction::Built));
+        assert_eq!(child_record.parent_id.as_deref(), Some("page.panel"));
+        assert_eq!(child_record.current_roots, 1);
+        assert_eq!(child_record.action, Some(RetainedComposeAction::Built));
 
         let leaf = snapshot
             .elements
@@ -2644,10 +2643,10 @@ mod tests {
         let parent_builds = Rc::new(Cell::new(0));
         let child_builds = Rc::new(Cell::new(0));
 
-        let compose = |runtime: &mut Runtime, dirty_scopes: Vec<String>| {
+        let compose = |runtime: &mut Runtime, dirty_ids: Vec<String>| {
             let parent_builds = parent_builds.clone();
             let child_builds = child_builds.clone();
-            runtime.compose_scoped(240.0, 80.0, dirty_scopes, move |ui, _| {
+            runtime.compose_incremental(240.0, 80.0, dirty_ids, move |ui, _| {
                 ui.retained_scope("parent", |ui| {
                     parent_builds.set(parent_builds.get() + 1);
                     ui.row("row").size(240.0, 40.0).content(|ui| {
@@ -2670,14 +2669,14 @@ mod tests {
         assert_eq!(child_builds.get(), 2);
         assert_eq!(runtime.find("label").unwrap().text, "child 2");
         assert_eq!(
-            runtime.debug_snapshot().dirty_scopes,
+            runtime.debug_snapshot().dirty_ids,
             vec!["page.parent".to_string(), "page.parent.child".to_string()]
         );
         assert_eq!(
-            runtime.debug_snapshot().normalized_dirty_scopes,
+            runtime.debug_snapshot().normalized_dirty_ids,
             vec!["page.parent".to_string()]
         );
-        assert!(runtime.scope_compose_stats().partial_layout);
+        assert!(runtime.retained_compose_stats().partial_layout);
     }
 
     #[test]
@@ -2685,9 +2684,9 @@ mod tests {
         let mut runtime = Runtime::new("page");
         let live_builds = Rc::new(Cell::new(0));
 
-        let compose = |runtime: &mut Runtime, dirty_scopes: Vec<String>, offset: f32| {
+        let compose = |runtime: &mut Runtime, dirty_ids: Vec<String>, offset: f32| {
             let live_builds = live_builds.clone();
-            runtime.compose_scoped(240.0, 120.0, dirty_scopes, move |ui, _| {
+            runtime.compose_incremental(240.0, 120.0, dirty_ids, move |ui, _| {
                 ui.retained_scope("panel", |ui| {
                     ui.scroll_y("scroll")
                         .size(200.0, 80.0)
@@ -2716,17 +2715,17 @@ mod tests {
             "live child should remain attached to scroll content: first={first:?} second={second:?}"
         );
         assert_eq!(
-            runtime.debug_snapshot().dirty_scopes,
+            runtime.debug_snapshot().dirty_ids,
             vec![
                 "page.panel".to_string(),
                 "page.panel.secret.live".to_string()
             ]
         );
         assert_eq!(
-            runtime.debug_snapshot().normalized_dirty_scopes,
+            runtime.debug_snapshot().normalized_dirty_ids,
             vec!["page.panel".to_string()]
         );
-        assert!(runtime.scope_compose_stats().partial_layout);
+        assert!(runtime.retained_compose_stats().partial_layout);
     }
 
     #[test]
@@ -2734,9 +2733,9 @@ mod tests {
         let mut runtime = Runtime::new("page");
         let live_builds = Rc::new(Cell::new(0));
 
-        let compose = |runtime: &mut Runtime, dirty_scopes: Vec<String>| {
+        let compose = |runtime: &mut Runtime, dirty_ids: Vec<String>| {
             let live_builds = live_builds.clone();
-            runtime.compose_scoped(500.0, 100.0, dirty_scopes, move |ui, _| {
+            runtime.compose_incremental(500.0, 100.0, dirty_ids, move |ui, _| {
                 ui.row("root").size(500.0, 80.0).gap(20.0).content(|ui| {
                     ui.stack("left").size(100.0, 80.0).build();
                     ui.retained_live_scope("live", |ui| {
@@ -2771,7 +2770,7 @@ mod tests {
         assert_frame(second_center, 120.0, 0.0, 260.0, 80.0);
         assert_frame(second_viewport, 120.0, 0.0, 260.0, 80.0);
         assert_eq!(live_builds.get(), 2);
-        assert!(runtime.scope_compose_stats().partial_layout);
+        assert!(runtime.retained_compose_stats().partial_layout);
     }
 
     #[test]
@@ -2779,7 +2778,7 @@ mod tests {
         let mut runtime = Runtime::new("page");
         let mut value = 0;
 
-        runtime.compose_scoped(240.0, 80.0, Vec::<String>::new(), |ui, _| {
+        runtime.compose_incremental(240.0, 80.0, Vec::<String>::new(), |ui, _| {
             ui.retained_scope("body", |ui| {
                 ui.text("label")
                     .size(100.0, 40.0)
@@ -2789,7 +2788,7 @@ mod tests {
         });
 
         value = 1;
-        runtime.compose_scoped(240.0, 80.0, ["page.body".to_string()], |ui, _| {
+        runtime.compose_incremental(240.0, 80.0, ["page.body".to_string()], |ui, _| {
             ui.retained_scope("body", |ui| {
                 ui.text("label")
                     .size(100.0, 40.0)
@@ -2799,11 +2798,11 @@ mod tests {
         });
 
         assert_eq!(runtime.find("label").unwrap().text, "value 1");
-        assert!(runtime.scope_compose_stats().partial_layout);
-        assert!(!runtime.scope_compose_stats().full_layout);
+        assert!(runtime.retained_compose_stats().partial_layout);
+        assert!(!runtime.retained_compose_stats().full_layout);
         assert_eq!(runtime.debug_snapshot().layout_mode, LayoutMode::Partial);
         assert_eq!(
-            runtime.debug_snapshot().dirty_scopes,
+            runtime.debug_snapshot().dirty_ids,
             vec!["page.body".to_string()]
         );
     }
@@ -2812,13 +2811,13 @@ mod tests {
     fn dirty_scope_with_changed_structure_uses_full_layout_fallback() {
         let mut runtime = Runtime::new("page");
 
-        runtime.compose_scoped(240.0, 80.0, Vec::<String>::new(), |ui, _| {
+        runtime.compose_incremental(240.0, 80.0, Vec::<String>::new(), |ui, _| {
             ui.retained_scope("body", |ui| {
                 ui.text("motion").size(100.0, 40.0).text("motion").build();
             });
         });
 
-        runtime.compose_scoped(240.0, 80.0, ["page.body".to_string()], |ui, _| {
+        runtime.compose_incremental(240.0, 80.0, ["page.body".to_string()], |ui, _| {
             ui.retained_scope("body", |ui| {
                 ui.row("chart").size(120.0, 40.0).content(|ui| {
                     ui.text("bar").size(60.0, 40.0).text("bar").build();
@@ -2828,12 +2827,12 @@ mod tests {
         });
 
         assert!(runtime.find("chart").is_some());
-        assert!(!runtime.scope_compose_stats().partial_layout);
-        assert!(runtime.scope_compose_stats().full_layout);
+        assert!(!runtime.retained_compose_stats().partial_layout);
+        assert!(runtime.retained_compose_stats().full_layout);
         assert_eq!(
             runtime.debug_snapshot().layout_mode,
             LayoutMode::Full(FullLayoutReason::StructureChanged {
-                scopes: vec!["page.body".to_string()]
+                ids: vec!["page.body".to_string()]
             })
         );
     }
@@ -2852,7 +2851,7 @@ mod tests {
             });
         });
 
-        runtime.compose_scoped(240.0, 80.0, ["page".to_string()], |ui, _| {
+        runtime.compose_incremental(240.0, 80.0, ["page".to_string()], |ui, _| {
             ui.row("root").size(240.0, 40.0).content(|ui| {
                 for index in 0..8 {
                     button(ui, format!("button.{index}"))
@@ -2863,8 +2862,8 @@ mod tests {
             });
         });
 
-        assert!(!runtime.scope_compose_stats().partial_layout);
-        assert!(runtime.scope_compose_stats().full_layout);
+        assert!(!runtime.retained_compose_stats().partial_layout);
+        assert!(runtime.retained_compose_stats().full_layout);
     }
 
     #[test]

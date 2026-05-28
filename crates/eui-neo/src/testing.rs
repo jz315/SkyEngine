@@ -87,14 +87,14 @@ impl fmt::Display for UiActionTrace {
         writeln!(
             f,
             "  before: layout={:?} dirty={:?} normalized={:?}",
-            self.before.layout_mode, self.before.dirty_scopes, self.before.normalized_dirty_scopes
+            self.before.layout_mode, self.before.dirty_ids, self.before.normalized_dirty_ids
         )?;
         write!(
             f,
             "  after:  layout={:?} dirty={:?} normalized={:?}",
             self.after_input.layout_mode,
-            self.after_input.dirty_scopes,
-            self.after_input.normalized_dirty_scopes
+            self.after_input.dirty_ids,
+            self.after_input.normalized_dirty_ids
         )
     }
 }
@@ -127,13 +127,13 @@ impl UiTestDriver {
             .compose(self.screen.width, self.screen.height, build);
     }
 
-    pub fn compose_scoped(
+    pub fn compose_incremental(
         &mut self,
-        dirty_scopes: impl IntoIterator<Item = String>,
+        dirty_ids: impl IntoIterator<Item = String>,
         build: impl FnOnce(&mut Ui, Screen),
     ) {
         self.runtime
-            .compose_scoped(self.screen.width, self.screen.height, dirty_scopes, build);
+            .compose_incremental(self.screen.width, self.screen.height, dirty_ids, build);
     }
 
     pub fn click(&mut self, id: &str) -> Result<UiActionTrace, UiTestError> {

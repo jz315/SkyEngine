@@ -41,10 +41,10 @@ pub use element::{
 pub use event::{DragEvent, KeyboardEvent, PointerEvent, ScrollEvent};
 pub use fonts::FontRef;
 pub use retained::{
-    FullLayoutReason, LayoutMode, ScopeComposeAction, ScopeComposeEvent, ScopeComposeStats,
+    FullLayoutReason, LayoutMode, RetainedComposeAction, RetainedComposeEvent, RetainedComposeStats,
 };
 pub use runtime::{
-    DirtyReason, ElementDebugRecord, Frame, FrameInput, FrameResult, Runtime, ScopeDebugRecord,
+    DirtyReason, ElementDebugRecord, Frame, FrameInput, FrameResult, RetainedDebugRecord, Runtime,
     UiDebugSnapshot,
 };
 pub use signal::{DirtyFlags, Signal, SignalKey, State};
@@ -61,12 +61,12 @@ pub mod prelude {
         ElementDebugRecord, FontRef, Frame, FrameInput, FrameResult, FullLayoutReason, Gradient,
         GradientDirection, HorizontalAlign, ImageFit, ImageRef, ImageRefKind, Insets,
         IntoPolygonPoints, KeyboardEvent, LayoutMode, LayoutRect, Lerp, Motion, MotionPreset,
-        NeoSkin, PanelSkin, PointerEvent, Response, Runtime, ScopeComposeAction, ScopeComposeEvent,
-        ScopeComposeStats, ScopeDebugRecord, Screen, ScrollEvent, Shadow, Signal, SignalKey, Size,
-        SkinRegistry, Slice, SliderSkin, SmoothedValue, SpringMotion, State, TargetPoint,
-        TextMeasure, TextMeasureRequest, TextSystem, Transform, Transition, Ui, UiActionTrace,
-        UiClip, UiClock, UiDebugSnapshot, UiDrawDebugCommand, UiDrawDebugTrace, UiTestDriver,
-        UiTestError, Vec2, VerticalAlign,
+        NeoSkin, PanelSkin, PointerEvent, Response, RetainedComposeAction, RetainedComposeEvent,
+        RetainedComposeStats, RetainedDebugRecord, Runtime, Screen, ScrollEvent, Shadow, Signal,
+        SignalKey, Size, SkinRegistry, Slice, SliderSkin, SmoothedValue, SpringMotion, State,
+        TargetPoint, TextMeasure, TextMeasureRequest, TextSystem, Transform, Transition, Ui,
+        UiActionTrace, UiClip, UiClock, UiDebugSnapshot, UiDrawDebugCommand, UiDrawDebugTrace,
+        UiTestDriver, UiTestError, Vec2, VerticalAlign,
     };
 }
 

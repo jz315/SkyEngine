@@ -22,7 +22,7 @@ pub(crate) struct ScopeFrame {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ScopeComposeStats {
+pub struct RetainedComposeStats {
     pub built: usize,
     pub reused: usize,
     pub partial_layout: bool,
@@ -30,15 +30,15 @@ pub struct ScopeComposeStats {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScopeComposeAction {
+pub enum RetainedComposeAction {
     Built,
     Reused,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ScopeComposeEvent {
-    pub scope: ScopeId,
-    pub action: ScopeComposeAction,
+pub struct RetainedComposeEvent {
+    pub id: ScopeId,
+    pub action: RetainedComposeAction,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,11 +49,11 @@ pub enum LayoutMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FullLayoutReason {
-    ScopeReuseUnavailable,
-    NoDirtyScopes,
-    MissingPreviousScopeRoot { scope: ScopeId },
-    StructureChanged { scopes: Vec<ScopeId> },
-    DirtyScopeLayoutFailed,
+    RetainedReuseUnavailable,
+    NoDirtyIds,
+    MissingPreviousRetainedRoot { id: ScopeId },
+    StructureChanged { ids: Vec<ScopeId> },
+    DirtyRetainedLayoutFailed,
 }
 
 pub(crate) fn begin_scope_frame(
@@ -89,17 +89,14 @@ impl ScopeFrame {
         layout_dirty_scopes: &ScopeSet,
     ) -> Option<FullLayoutReason> {
         if !self.can_reuse_scopes {
-            return Some(FullLayoutReason::ScopeReuseUnavailable);
+            return Some(FullLayoutReason::RetainedReuseUnavailable);
         }
         if layout_dirty_scopes.is_empty() {
-            return Some(FullLayoutReason::NoDirtyScopes);
+            return Some(FullLayoutReason::NoDirtyIds);
         }
         layout_dirty_scopes.iter().find_map(|scope| {
-            (!self.previous_scope_roots.contains_key(scope)).then(|| {
-                FullLayoutReason::MissingPreviousScopeRoot {
-                    scope: scope.clone(),
-                }
-            })
+            (!self.previous_scope_roots.contains_key(scope))
+                .then(|| FullLayoutReason::MissingPreviousRetainedRoot { id: scope.clone() })
         })
     }
 }

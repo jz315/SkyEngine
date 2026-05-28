@@ -8,13 +8,13 @@ Completed:
 
 - Retained dirty normalization removes descendant dirty roots when an ancestor
   already covers them.
-- Runtime debug snapshots now distinguish raw dirty scopes from normalized
-  dirty layout roots.
+- Runtime debug snapshots now distinguish raw dirty ids from normalized dirty
+  layout roots.
 - `Ui::clock()` / `UiClock` are available and backed by the existing live
   invalidation bridge.
 - Stress Lab's floating `Secret` probe was migrated to `ui.clock()` and renamed
   to `Live Probe`.
-- Debug snapshots now include retained scope records, element ancestry records,
+- Debug snapshots now include retained records, element ancestry records,
   dirty reasons, layout anchors, scroll/clip ancestry, and target vs draw
   frames.
 - `UiActionTrace` prints normalized dirty roots alongside raw dirty roots.
@@ -24,7 +24,7 @@ Completed:
 - Public `Ui::scope(...)` and `Ui::live_scope(...)` were removed from the
   app-facing DSL. Their retained-boundary equivalents are crate-private test
   helpers only.
-- Stress Lab was migrated away from hand-authored cache scopes. Its tab,
+- Stress Lab was migrated away from hand-authored cache boundaries. Its tab,
   segment, chart, and live-animation tests now exercise inferred element
   ownership.
 - Dirty-owner rebuilds conservatively block descendant subtree reuse, preventing
@@ -36,7 +36,7 @@ Still open:
   assumptions.
 - Real-window WGPU probes for filtered rect dumps and screenshot comparison.
 
-This plan replaces the previous reactive signal/scope plan, which presented
+This plan replaces the previous reactive signal/boundary plan, which presented
 `Ui::scope(...)` as the normal app-facing dependency boundary. The retained
 boundary concept is still useful internally, but it should not be the primary
 mental model exposed to UI authors.
@@ -386,14 +386,14 @@ Make retained UI bugs explainable without screenshots and guesses.
 1. Extend `UiDebugSnapshot` with per-boundary diagnostics:
 
    ```rust
-   pub struct ScopeDebugRecord {
+   pub struct RetainedDebugRecord {
        pub id: String,
-       pub parent_scope: Option<String>,
+       pub parent_id: Option<String>,
        pub dirty: bool,
        pub raw_dirty: bool,
        pub normalized_dirty_root: bool,
        pub dirty_reasons: Vec<DirtyReason>,
-       pub action: ScopeComposeAction,
+       pub action: RetainedComposeAction,
        pub previous_roots: usize,
        pub current_roots: usize,
        pub layout_anchor: Option<LayoutRect>,
@@ -420,7 +420,7 @@ Make retained UI bugs explainable without screenshots and guesses.
 
    ```text
    SKY_NEO_DEBUG_ELEMENT=interactions.secret
-   SKY_NEO_DEBUG_SCOPE=interactions
+   SKY_NEO_DEBUG_RETAINED=interactions
    SKY_NEO_DEBUG_DIRTY=1
    ```
 
@@ -436,7 +436,7 @@ Make retained UI bugs explainable without screenshots and guesses.
 - A failed test can print exactly why a boundary was rebuilt or reused.
 - A floating element report shows its parent, scroll ancestor, clip ancestor,
   target frame, and draw frame.
-- Debug output distinguishes raw dirty scopes from normalized layout roots.
+- Debug output distinguishes raw dirty ids from normalized layout roots.
 
 ## Phase 3: Public API Direction
 
@@ -487,7 +487,8 @@ Remove:
 Keep only internally:
 
 - crate-private retained-boundary helpers for focused runtime tests
-- debug snapshot fields that explain retained-boundary behavior
+- debug snapshot fields that explain retained-boundary behavior without asking
+  app authors to manage boundaries
 
 Remove from demos after migration:
 

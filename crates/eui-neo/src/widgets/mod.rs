@@ -773,7 +773,7 @@ mod tests {
         runtime.update_pointer(PointerEvent::released_at(8.0, 74.0));
 
         assert_eq!(state.read(|state| state.selected), 1);
-        assert_eq!(state.dirty_scopes(), vec!["page.nav".to_string()]);
+        assert_eq!(state.dirty_ids(), vec!["page.nav".to_string()]);
     }
 
     #[test]

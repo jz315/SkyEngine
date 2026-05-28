@@ -113,24 +113,24 @@ impl<T> State<T> {
         f(&mut self.inner.borrow_mut())
     }
 
-    pub fn dirty_scopes(&self) -> Vec<String> {
+    pub fn dirty_ids(&self) -> Vec<String> {
         self.graph.borrow().dirty_scopes.iter().cloned().collect()
     }
 
-    pub fn clear_dirty_scopes(&self) {
+    pub fn clear_dirty_ids(&self) {
         let mut graph = self.graph.borrow_mut();
         graph.dirty_scopes.clear();
         graph.dirty_reasons.clear();
         graph.dirty_flags.clear();
     }
 
-    pub fn take_dirty_scopes(&self) -> Vec<String> {
+    pub fn take_dirty_ids(&self) -> Vec<String> {
         let mut graph = self.graph.borrow_mut();
-        let scopes = graph.dirty_scopes.iter().cloned().collect();
+        let ids = graph.dirty_scopes.iter().cloned().collect();
         graph.dirty_scopes.clear();
         graph.dirty_reasons.clear();
         graph.dirty_flags.clear();
-        scopes
+        ids
     }
 
     pub fn signal_dependencies(&self) -> Vec<(SignalKey, Vec<String>)> {
@@ -142,7 +142,7 @@ impl<T> State<T> {
             .collect()
     }
 
-    pub fn dirty_scope_reasons(&self) -> Vec<(String, SignalKey)> {
+    pub fn dirty_id_reasons(&self) -> Vec<(String, SignalKey)> {
         self.graph
             .borrow()
             .dirty_reasons
@@ -151,7 +151,7 @@ impl<T> State<T> {
             .collect()
     }
 
-    pub fn dirty_scope_flags(&self) -> Vec<(String, DirtyFlags)> {
+    pub fn dirty_id_flags(&self) -> Vec<(String, DirtyFlags)> {
         self.graph
             .borrow()
             .dirty_flags
@@ -295,7 +295,7 @@ mod tests {
         });
 
         page.set(0);
-        assert!(state.dirty_scopes().is_empty());
+        assert!(state.dirty_ids().is_empty());
     }
 
     #[test]
@@ -318,11 +318,11 @@ mod tests {
         assert_eq!(dependencies[0].1, vec!["test.nav".to_string()]);
 
         page.set(2);
-        assert_eq!(state.dirty_scopes(), vec!["test.nav".to_string()]);
-        assert_eq!(state.dirty_scope_reasons()[0].0, "test.nav");
-        assert_eq!(state.dirty_scope_reasons()[0].1.as_str(), "page");
+        assert_eq!(state.dirty_ids(), vec!["test.nav".to_string()]);
+        assert_eq!(state.dirty_id_reasons()[0].0, "test.nav");
+        assert_eq!(state.dirty_id_reasons()[0].1.as_str(), "page");
         assert_eq!(
-            state.dirty_scope_flags()[0],
+            state.dirty_id_flags()[0],
             (
                 "test.nav".to_string(),
                 super::DirtyFlags::COMPOSE | super::DirtyFlags::DRAW
@@ -351,7 +351,7 @@ mod tests {
         assert_eq!(dependencies[0].1, vec!["test.panel".to_string()]);
 
         page.set(1);
-        assert_eq!(state.dirty_scopes(), vec!["test.panel".to_string()]);
+        assert_eq!(state.dirty_ids(), vec!["test.panel".to_string()]);
     }
 
     #[test]

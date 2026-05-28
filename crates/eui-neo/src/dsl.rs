@@ -9,7 +9,7 @@ use super::{
     LayoutRect, PanelSkin, PointerEvent, Response, ScrollEvent, SkinRegistry, SliderSkin,
 };
 use crate::retained::{
-    scope_has_dirty_descendant, ScopeComposeAction, ScopeComposeEvent, ScopeComposeStats,
+    scope_has_dirty_descendant, RetainedComposeAction, RetainedComposeEvent, RetainedComposeStats,
     ScopeRoots, ScopeSet,
 };
 
@@ -42,7 +42,7 @@ pub struct Ui {
     scope_roots: ScopeRoots,
     dirty_scopes: ScopeSet,
     live_scopes: ScopeSet,
-    clock_scopes: ScopeSet,
+    clock_ids: ScopeSet,
     scope_reuse_enabled: bool,
     responses: FxHashMap<String, Response>,
     callbacks: UiCallbacks,
@@ -50,8 +50,8 @@ pub struct Ui {
     skins: SkinRegistry,
     generated_id: usize,
     focused_id: Option<String>,
-    scope_stats: ScopeComposeStats,
-    scope_events: Vec<ScopeComposeEvent>,
+    retained_stats: RetainedComposeStats,
+    retained_events: Vec<RetainedComposeEvent>,
     clock_seconds: f64,
     clock_frame_index: u64,
 }
@@ -69,7 +69,7 @@ pub struct UiClock<'ui> {
     frame_index: u64,
     owner: Option<String>,
     live_scopes: &'ui mut ScopeSet,
-    clock_scopes: &'ui mut ScopeSet,
+    clock_ids: &'ui mut ScopeSet,
 }
 
 #[derive(Default)]
@@ -148,7 +148,7 @@ impl Ui {
             scope_roots: ScopeRoots::default(),
             dirty_scopes: FxHashSet::default(),
             live_scopes: FxHashSet::default(),
-            clock_scopes: FxHashSet::default(),
+            clock_ids: FxHashSet::default(),
             scope_reuse_enabled: false,
             responses: FxHashMap::default(),
             callbacks: UiCallbacks::default(),
@@ -156,8 +156,8 @@ impl Ui {
             skins: SkinRegistry::default(),
             generated_id: 0,
             focused_id: None,
-            scope_stats: ScopeComposeStats::default(),
-            scope_events: Vec::new(),
+            retained_stats: RetainedComposeStats::default(),
+            retained_events: Vec::new(),
             clock_seconds: 0.0,
             clock_frame_index: 0,
         }
@@ -183,17 +183,17 @@ impl Ui {
         ScopeRoots,
         ScopeSet,
         ScopeSet,
-        ScopeComposeStats,
-        Vec<ScopeComposeEvent>,
+        RetainedComposeStats,
+        Vec<RetainedComposeEvent>,
     ) {
         (
             self.roots,
             self.callbacks,
             self.scope_roots,
             self.live_scopes,
-            self.clock_scopes,
-            self.scope_stats,
-            self.scope_events,
+            self.clock_ids,
+            self.retained_stats,
+            self.retained_events,
         )
     }
 
@@ -295,7 +295,7 @@ impl Ui {
             frame_index: self.clock_frame_index,
             owner: self.dependency_owner_id(),
             live_scopes: &mut self.live_scopes,
-            clock_scopes: &mut self.clock_scopes,
+            clock_ids: &mut self.clock_ids,
         }
     }
 
@@ -383,12 +383,12 @@ impl Ui {
                     .transfer_for_elements(&mut self.previous_callbacks, &elements);
                 let children = children_at_path_mut(&mut self.roots, &self.path);
                 children.extend(elements.clone());
-                self.scope_events.push(ScopeComposeEvent {
-                    scope: id.clone(),
-                    action: ScopeComposeAction::Reused,
+                self.retained_events.push(RetainedComposeEvent {
+                    id: id.clone(),
+                    action: RetainedComposeAction::Reused,
                 });
                 self.scope_roots.insert(id, elements);
-                self.scope_stats.reused += 1;
+                self.retained_stats.reused += 1;
                 return;
             }
         }
@@ -407,12 +407,12 @@ impl Ui {
                 .expect("dirty owner stack should contain active scope");
         }
         let roots = children_at_path_mut(&mut self.roots, &self.path)[start..].to_vec();
-        self.scope_events.push(ScopeComposeEvent {
-            scope: id.clone(),
-            action: ScopeComposeAction::Built,
+        self.retained_events.push(RetainedComposeEvent {
+            id: id.clone(),
+            action: RetainedComposeAction::Built,
         });
         self.scope_roots.insert(id, roots);
-        self.scope_stats.built += 1;
+        self.retained_stats.built += 1;
     }
 
     #[cfg(test)]
@@ -471,23 +471,23 @@ impl Ui {
             .transfer_for_elements(&mut self.previous_callbacks, &elements);
         let children = children_at_path_mut(&mut self.roots, &self.path);
         children.extend(elements.clone());
-        self.scope_events.push(ScopeComposeEvent {
-            scope: id.to_string(),
-            action: ScopeComposeAction::Reused,
+        self.retained_events.push(RetainedComposeEvent {
+            id: id.to_string(),
+            action: RetainedComposeAction::Reused,
         });
         self.scope_roots.insert(id.to_string(), elements);
-        self.scope_stats.reused += 1;
+        self.retained_stats.reused += 1;
         true
     }
 
     pub(crate) fn record_retained_element(&mut self, id: String, index: usize) {
         let element = children_at_path_mut(&mut self.roots, &self.path)[index].clone();
-        self.scope_events.push(ScopeComposeEvent {
-            scope: id.clone(),
-            action: ScopeComposeAction::Built,
+        self.retained_events.push(RetainedComposeEvent {
+            id: id.clone(),
+            action: RetainedComposeAction::Built,
         });
         self.scope_roots.insert(id, vec![element]);
-        self.scope_stats.built += 1;
+        self.retained_stats.built += 1;
     }
 
     pub(crate) fn push_dirty_owner_if_exact_dirty(&mut self, id: &str) -> bool {
@@ -692,7 +692,7 @@ impl UiClock<'_> {
     fn register_dependency(&mut self) {
         if let Some(owner) = self.owner.as_ref() {
             self.live_scopes.insert(owner.clone());
-            self.clock_scopes.insert(owner.clone());
+            self.clock_ids.insert(owner.clone());
         }
     }
 }

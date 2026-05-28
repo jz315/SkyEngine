@@ -55,10 +55,10 @@ pub fn compose<R>(
     .flatten()
 }
 
-/// Compose an EUI-NEO UI using dirty scopes from a [`State`].
+/// Compose an EUI-NEO UI using incremental invalidation from a [`State`].
 ///
-/// Clean `Ui::scope` subtrees can be retained from the previous frame while
-/// dirty scopes are rebuilt from the supplied closure.
+/// UI authors provide ordinary elements and widgets; the runtime decides which
+/// retained subtrees can be reused from the previous frame.
 pub fn compose_state<T, R>(
     ctx: &mut crate::app::FrameContext<'_>,
     state: &State<T>,
@@ -74,8 +74,8 @@ pub fn compose_state<T, R>(
     ui.with_backend_mut::<NeoUiBackend, _>(|backend| {
         backend.begin_frame_snapshot(&input, logical_surface_size, dt);
         let mut output = None;
-        backend.compose_scoped(
-            || state.take_dirty_scopes(),
+        backend.compose_incremental(
+            || state.take_dirty_ids(),
             |ui, screen| {
                 output = Some(f(ui, screen));
             },
