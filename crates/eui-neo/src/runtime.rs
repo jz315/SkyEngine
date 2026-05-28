@@ -585,6 +585,7 @@ impl Runtime {
         ui.set_skins(self.skins.clone());
         ui.set_focused_id(self.focused_id.clone());
         ui.set_clock(self.clock_seconds, self.frame_index);
+        ui.set_profile_timing(timed);
         let ui_setup_ms = elapsed_ms(ui_setup_start);
         let previous_roots_start = timed.then(Instant::now);
         let previous_roots = std::mem::take(&mut self.roots);
@@ -617,6 +618,7 @@ impl Runtime {
             scope_compose_records,
             previous_scope_roots,
             previous_roots_for_layout,
+            retained_ui_profile,
         ) = ui.into_parts();
         let into_parts_ms = elapsed_ms(into_parts_start);
         let dirty_normalize_start = timed.then(Instant::now);
@@ -778,13 +780,15 @@ impl Runtime {
                 + snapshot_ms;
             let total_ms = elapsed_ms(total_start);
             eprintln!(
-                "[eui-neo] compose total={:.3}ms scope_frame={:.3}ms ui_setup={:.3}ms previous_roots={:.3}ms responses={:.3}ms build={:.3}ms into_parts={:.3}ms layout={:.3}ms layout_normalize={:.3}ms layout_plan={:.3}ms layout_execute={:.3}ms refresh_scopes={:.3}ms structure={:.3}ms commit={:.3}ms element_debug={:.3}ms scope_debug={:.3}ms snapshot={:.3}ms unaccounted={:.3}ms elements={} retained_built={} retained_reused={}",
+                "[eui-neo] compose total={:.3}ms scope_frame={:.3}ms ui_setup={:.3}ms previous_roots={:.3}ms responses={:.3}ms build={:.3}ms retained_lookup={:.3}ms retained_metadata={:.3}ms into_parts={:.3}ms layout={:.3}ms layout_normalize={:.3}ms layout_plan={:.3}ms layout_execute={:.3}ms refresh_scopes={:.3}ms structure={:.3}ms commit={:.3}ms element_debug={:.3}ms scope_debug={:.3}ms snapshot={:.3}ms unaccounted={:.3}ms elements={} retained_built={} retained_reused={}",
                 total_ms,
                 scope_frame_ms,
                 ui_setup_ms,
                 previous_roots_ms,
                 responses_ms,
                 build_ms,
+                retained_ui_profile.lookup_ms,
+                retained_ui_profile.metadata_ms,
                 into_parts_ms,
                 layout_ms,
                 dirty_normalize_ms,

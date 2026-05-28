@@ -1,8 +1,6 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::time::Duration;
-#[cfg(test)]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -53,6 +51,9 @@ pub struct Ui {
     generated_id: usize,
     focused_id: Option<String>,
     retained_stats: RetainedComposeStats,
+    profile_timing: bool,
+    retained_lookup_ms: f32,
+    retained_metadata_ms: f32,
     retained_events: Vec<RetainedComposeEvent>,
     scope_compose_records: Vec<ScopeComposeRecord>,
     clock_seconds: f64,
@@ -64,6 +65,12 @@ pub struct ClockTick {
     pub seconds: f32,
     pub frame_index: u64,
     pub period: Duration,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct RetainedUiProfile {
+    pub lookup_ms: f32,
+    pub metadata_ms: f32,
 }
 
 #[derive(Debug)]
@@ -160,6 +167,9 @@ impl Ui {
             generated_id: 0,
             focused_id: None,
             retained_stats: RetainedComposeStats::default(),
+            profile_timing: false,
+            retained_lookup_ms: 0.0,
+            retained_metadata_ms: 0.0,
             retained_events: Vec::new(),
             scope_compose_records: Vec::new(),
             clock_seconds: 0.0,
@@ -192,7 +202,12 @@ impl Ui {
         Vec<ScopeComposeRecord>,
         ScopeRoots,
         Vec<Element>,
+        RetainedUiProfile,
     ) {
+        let profile = RetainedUiProfile {
+            lookup_ms: self.retained_lookup_ms,
+            metadata_ms: self.retained_metadata_ms,
+        };
         (
             self.roots,
             self.callbacks,
@@ -204,6 +219,7 @@ impl Ui {
             self.scope_compose_records,
             self.previous_scope_roots,
             self.previous_roots,
+            profile,
         )
     }
 
@@ -281,6 +297,10 @@ impl Ui {
         self.dirty_scopes = dirty_scopes;
         self.previous_callbacks = previous_callbacks;
         self.scope_reuse_enabled = true;
+    }
+
+    pub(crate) fn set_profile_timing(&mut self, enabled: bool) {
+        self.profile_timing = enabled;
     }
 
     pub(crate) fn with_root_layer<R>(&mut self, build: impl FnOnce(&mut Ui) -> R) -> R {
@@ -394,9 +414,7 @@ impl Ui {
                 &id,
             )
         {
-            if let Some(elements) =
-                previous_elements_for_scope(&self.previous_roots, &self.previous_scope_roots, &id)
-            {
+            if let Some(elements) = self.previous_elements_for_scope(&id) {
                 self.callbacks
                     .transfer_for_elements(&mut self.previous_callbacks, &elements);
                 let children = children_at_path_mut(&mut self.roots, &self.path);
@@ -503,9 +521,7 @@ impl Ui {
         {
             return false;
         }
-        let Some(elements) =
-            previous_elements_for_scope(&self.previous_roots, &self.previous_scope_roots, id)
-        else {
+        let Some(elements) = self.previous_elements_for_scope(id) else {
             return false;
         };
         self.callbacks
@@ -552,8 +568,18 @@ impl Ui {
     }
 
     fn record_scope_roots(&mut self, id: String, elements: &[Element]) {
-        self.scope_roots
-            .insert(id, RetainedRoot::from_elements(elements));
+        let start = self.profile_timing.then(Instant::now);
+        let roots = RetainedRoot::from_elements(elements);
+        self.retained_metadata_ms += elapsed_ms(start);
+        self.scope_roots.insert(id, roots);
+    }
+
+    fn previous_elements_for_scope(&mut self, id: &str) -> Option<Vec<Element>> {
+        let start = self.profile_timing.then(Instant::now);
+        let elements =
+            previous_elements_for_scope(&self.previous_roots, &self.previous_scope_roots, id);
+        self.retained_lookup_ms += elapsed_ms(start);
+        elements
     }
 
     pub(crate) fn push_dirty_owner_if_exact_dirty(&mut self, id: &str) -> bool {
@@ -811,7 +837,6 @@ fn count_elements(elements: &[Element]) -> usize {
         .sum()
 }
 
-#[cfg(test)]
 fn elapsed_ms(start: Option<Instant>) -> f32 {
     start
         .map(|start| start.elapsed().as_secs_f32() * 1000.0)
