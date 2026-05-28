@@ -112,7 +112,6 @@ pub enum LayoutMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FullLayoutReason {
     RetainedReuseUnavailable,
-    NoDirtyIds,
     MissingPreviousRetainedRoot { id: ScopeId },
     StructureChanged { ids: Vec<ScopeId> },
     DirtyRetainedLayoutFailed,

@@ -2,12 +2,12 @@ use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::hash::{Hash, Hasher};
 use std::sync::OnceLock;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 use smallvec::SmallVec;
 
-use super::dsl::UiCallbacks;
+use super::dsl::{ClockPeriodMap, UiCallbacks};
 use super::event::InteractionState;
 use super::fonts::FontRef;
 use super::layout::{layout_element_in_frame_with_text_system, layout_roots_with_text_system};
@@ -223,6 +223,8 @@ pub struct Runtime {
     scope_roots: ScopeRoots,
     live_ids: ScopeSet,
     clock_ids: ScopeSet,
+    clock_periods: Option<ClockPeriodMap>,
+    clock_period_ticks: Option<FxHashMap<String, u64>>,
     structure: Vec<ElementSnapshot>,
     screen: Screen,
     interactions: FxHashMap<String, InteractionState>,
@@ -352,6 +354,8 @@ impl Runtime {
             scope_roots: FxHashMap::default(),
             live_ids: FxHashSet::default(),
             clock_ids: FxHashSet::default(),
+            clock_periods: None,
+            clock_period_ticks: None,
             structure: Vec::new(),
             screen: Screen::default(),
             interactions: FxHashMap::default(),
@@ -568,6 +572,12 @@ impl Runtime {
         self.needs_compose = false;
         let screen = Screen { width, height };
         let can_reuse_scopes = dirty_ids.is_some() && self.screen == screen;
+        if can_reuse_scopes {
+            self.mark_due_clock_periods();
+        }
+        let previous_clock_periods_for_reuse = can_reuse_scopes
+            .then(|| self.clock_periods.clone())
+            .flatten();
         let previous_clock_ids = if diagnostics_enabled {
             self.clock_ids.clone()
         } else {
@@ -602,6 +612,7 @@ impl Runtime {
                 previous_scope_roots,
                 dirty_scopes.clone(),
                 std::mem::take(&mut self.callbacks),
+                previous_clock_periods_for_reuse,
             );
         }
         let previous_roots_ms = elapsed_ms(previous_roots_start);
@@ -620,6 +631,7 @@ impl Runtime {
             mut scope_roots,
             live_ids,
             clock_ids,
+            clock_periods,
             mut retained_stats,
             retained_events,
             scope_compose_records,
@@ -708,6 +720,12 @@ impl Runtime {
         self.scope_roots = scope_roots;
         self.live_ids = live_ids;
         self.clock_ids = clock_ids;
+        self.clock_periods = clock_periods;
+        sync_clock_period_ticks(
+            self.clock_seconds,
+            self.clock_periods.as_ref(),
+            &mut self.clock_period_ticks,
+        );
         self.callbacks = callbacks;
         self.retained_stats = retained_stats;
         self.frame_index = self.frame_index.saturating_add(1);
@@ -1559,6 +1577,23 @@ impl Runtime {
         self.mark_compose_dirty();
     }
 
+    fn mark_due_clock_periods(&mut self) {
+        let Some(clock_periods) = self.clock_periods.as_ref() else {
+            return;
+        };
+        let ticks = self
+            .clock_period_ticks
+            .get_or_insert_with(FxHashMap::default);
+        for (scope, period) in clock_periods {
+            let next_tick = clock_period_tick(self.clock_seconds, *period);
+            let previous_tick = ticks.entry(scope.clone()).or_insert(next_tick);
+            if *previous_tick != next_tick {
+                *previous_tick = next_tick;
+                self.live_ids.insert(scope.clone());
+            }
+        }
+    }
+
     fn resolve_id_ref<'a>(&self, id: &'a str) -> Cow<'a, str> {
         if id.is_empty() || self.page_id.is_empty() {
             return Cow::Borrowed(id);
@@ -1755,6 +1790,32 @@ fn elapsed_ms(start: Option<Instant>) -> f32 {
     start
         .map(|start| start.elapsed().as_secs_f32() * 1000.0)
         .unwrap_or(0.0)
+}
+
+fn sync_clock_period_ticks(
+    seconds: f64,
+    periods: Option<&ClockPeriodMap>,
+    ticks: &mut Option<FxHashMap<String, u64>>,
+) {
+    let Some(periods) = periods else {
+        *ticks = None;
+        return;
+    };
+    let ticks = ticks.get_or_insert_with(FxHashMap::default);
+    ticks.retain(|scope, _| periods.contains_key(scope));
+    for (scope, period) in periods {
+        ticks
+            .entry(scope.clone())
+            .or_insert_with(|| clock_period_tick(seconds, *period));
+    }
+}
+
+fn clock_period_tick(seconds: f64, period: Duration) -> u64 {
+    if period.is_zero() {
+        return 0;
+    }
+    let period_seconds = period.as_secs_f64().max(f64::EPSILON);
+    (seconds.max(0.0) / period_seconds).floor() as u64
 }
 
 fn sorted_z_indices(elements: &[Element]) -> SmallVec<[usize; 16]> {
@@ -2189,9 +2250,6 @@ fn partial_layout_blocker(
 ) -> Option<FullLayoutReason> {
     if !can_reuse_scopes {
         return Some(FullLayoutReason::RetainedReuseUnavailable);
-    }
-    if layout_dirty_scopes.is_empty() {
-        return Some(FullLayoutReason::NoDirtyIds);
     }
     layout_dirty_scopes.iter().find_map(|scope| {
         (!previous_scope_roots.contains_key(scope))
@@ -2979,6 +3037,56 @@ mod tests {
             .expect("clocked scope should be reported");
         assert_eq!(clocked_record.dirty_reasons, vec![DirtyReason::Clock]);
         assert!(runtime.retained_compose_stats().partial_layout);
+    }
+
+    #[test]
+    fn clock_every_rebuilds_only_when_period_bucket_changes() {
+        let mut runtime = Runtime::new("page");
+        let builds = Rc::new(Cell::new(0));
+
+        let compose = |runtime: &mut Runtime, dirty_ids: Vec<String>| {
+            let builds = builds.clone();
+            runtime.compose_incremental(240.0, 80.0, dirty_ids, move |ui, _| {
+                ui.retained_scope("clocked", |ui| {
+                    builds.set(builds.get() + 1);
+                    let tick = ui.clock().every(Duration::from_millis(250));
+                    ui.text("label")
+                        .size(100.0, 40.0)
+                        .text(format!("tick {}", tick.frame_index))
+                        .build();
+                });
+            });
+        };
+
+        compose(&mut runtime, Vec::new());
+        assert_eq!(builds.get(), 1);
+        assert_eq!(
+            runtime.debug_snapshot().clock_ids,
+            vec!["page.clocked".to_string()]
+        );
+
+        runtime.update_events_and_timers(
+            PointerEvent::default(),
+            ScrollEvent::default(),
+            KeyboardEvent::default(),
+            0.1,
+        );
+        compose(&mut runtime, Vec::new());
+        assert_eq!(builds.get(), 1);
+        assert!(runtime.retained_compose_stats().partial_layout);
+
+        runtime.update_events_and_timers(
+            PointerEvent::default(),
+            ScrollEvent::default(),
+            KeyboardEvent::default(),
+            0.2,
+        );
+        compose(&mut runtime, Vec::new());
+        assert_eq!(builds.get(), 2);
+        assert_eq!(
+            runtime.debug_snapshot().dirty_ids,
+            vec!["page.clocked".to_string()]
+        );
     }
 
     #[test]

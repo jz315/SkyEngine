@@ -33,6 +33,7 @@ pub struct Ui {
     roots: Vec<Element>,
     previous_roots: Vec<Element>,
     previous_scope_roots: ScopeRoots,
+    previous_clock_periods: Option<ClockPeriodMap>,
     previous_frame_cache: RefCell<FxHashMap<String, Option<LayoutRect>>>,
     path: Vec<usize>,
     element_stack: Vec<String>,
@@ -43,6 +44,7 @@ pub struct Ui {
     dirty_scopes: ScopeSet,
     live_scopes: ScopeSet,
     clock_ids: ScopeSet,
+    clock_periods: Option<ClockPeriodMap>,
     scope_reuse_enabled: bool,
     responses: FxHashMap<String, Response>,
     callbacks: UiCallbacks,
@@ -75,6 +77,8 @@ pub(crate) struct RetainedUiProfile {
     pub metadata_ms: f32,
 }
 
+pub(crate) type ClockPeriodMap = FxHashMap<String, Duration>;
+
 #[derive(Debug)]
 pub struct UiClock<'ui> {
     seconds: f64,
@@ -82,6 +86,7 @@ pub struct UiClock<'ui> {
     owner: Option<String>,
     live_scopes: &'ui mut ScopeSet,
     clock_ids: &'ui mut ScopeSet,
+    clock_periods: &'ui mut Option<ClockPeriodMap>,
 }
 
 #[derive(Default)]
@@ -151,6 +156,7 @@ impl Ui {
             roots: Vec::new(),
             previous_roots: Vec::new(),
             previous_scope_roots: ScopeRoots::default(),
+            previous_clock_periods: None,
             previous_frame_cache: RefCell::new(FxHashMap::default()),
             path: Vec::new(),
             element_stack: Vec::new(),
@@ -161,6 +167,7 @@ impl Ui {
             dirty_scopes: FxHashSet::default(),
             live_scopes: FxHashSet::default(),
             clock_ids: FxHashSet::default(),
+            clock_periods: None,
             scope_reuse_enabled: false,
             responses: FxHashMap::default(),
             callbacks: UiCallbacks::default(),
@@ -201,6 +208,7 @@ impl Ui {
         ScopeRoots,
         ScopeSet,
         ScopeSet,
+        Option<ClockPeriodMap>,
         RetainedComposeStats,
         Vec<RetainedComposeEvent>,
         Vec<ScopeComposeRecord>,
@@ -218,6 +226,7 @@ impl Ui {
             self.scope_roots,
             self.live_scopes,
             self.clock_ids,
+            self.clock_periods,
             self.retained_stats,
             self.retained_events,
             self.scope_compose_records,
@@ -296,10 +305,12 @@ impl Ui {
         previous_scope_roots: ScopeRoots,
         dirty_scopes: ScopeSet,
         previous_callbacks: UiCallbacks,
+        previous_clock_periods: Option<ClockPeriodMap>,
     ) {
         self.previous_scope_roots = previous_scope_roots;
         self.dirty_scopes = dirty_scopes;
         self.previous_callbacks = previous_callbacks;
+        self.previous_clock_periods = previous_clock_periods;
         self.scope_reuse_enabled = true;
     }
 
@@ -334,6 +345,7 @@ impl Ui {
             owner: self.dependency_owner_id(),
             live_scopes: &mut self.live_scopes,
             clock_ids: &mut self.clock_ids,
+            clock_periods: &mut self.clock_periods,
         }
     }
 
@@ -425,6 +437,7 @@ impl Ui {
             if let Some(elements) = self.previous_elements_for_scope(&id) {
                 self.callbacks
                     .transfer_for_elements(&mut self.previous_callbacks, &elements);
+                self.preserve_clock_dependencies_for_reused_scope(&id);
                 let children = children_at_path_mut(&mut self.roots, &self.path);
                 children.extend(elements.clone());
                 if self.diagnostics_enabled {
@@ -540,6 +553,7 @@ impl Ui {
         };
         self.callbacks
             .transfer_for_elements(&mut self.previous_callbacks, &elements);
+        self.preserve_clock_dependencies_for_reused_scope(id);
         let children = children_at_path_mut(&mut self.roots, &self.path);
         children.extend(elements.clone());
         if self.diagnostics_enabled {
@@ -606,6 +620,19 @@ impl Ui {
             previous_elements_for_scope(&self.previous_roots, &self.previous_scope_roots, id);
         self.retained_lookup_ms += elapsed_ms(start);
         elements
+    }
+
+    fn preserve_clock_dependencies_for_reused_scope(&mut self, id: &str) {
+        let Some(previous_clock_periods) = self.previous_clock_periods.as_ref() else {
+            return;
+        };
+        let Some(period) = previous_clock_periods.get(id).copied() else {
+            return;
+        };
+        self.clock_ids.insert(id.to_string());
+        self.clock_periods
+            .get_or_insert_with(ClockPeriodMap::default)
+            .insert(id.to_string(), period);
     }
 
     pub(crate) fn begin_scope_timing(&mut self) -> Option<Instant> {
@@ -834,7 +861,7 @@ impl UiClock<'_> {
     }
 
     pub fn every(mut self, period: Duration) -> ClockTick {
-        self.register_dependency();
+        self.register_periodic_dependency(period);
         ClockTick {
             seconds: self.seconds as f32,
             frame_index: self.frame_index,
@@ -846,6 +873,19 @@ impl UiClock<'_> {
         if let Some(owner) = self.owner.as_ref() {
             self.live_scopes.insert(owner.clone());
             self.clock_ids.insert(owner.clone());
+        }
+    }
+
+    fn register_periodic_dependency(&mut self, period: Duration) {
+        if let Some(owner) = self.owner.as_ref() {
+            self.clock_ids.insert(owner.clone());
+            if period.is_zero() {
+                self.live_scopes.insert(owner.clone());
+            } else {
+                self.clock_periods
+                    .get_or_insert_with(ClockPeriodMap::default)
+                    .insert(owner.clone(), period);
+            }
         }
     }
 }
