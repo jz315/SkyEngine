@@ -163,6 +163,7 @@ struct GalleryState {
     sample_inspector_open: bool,
     sample_color: Color,
     sample_feedback: String,
+    sample_probe_scroll: f32,
     bing_api_text: String,
     page_scroll: [f32; 6],
 }
@@ -216,6 +217,7 @@ impl Default for GalleryState {
             sample_inspector_open: false,
             sample_color: c(56.0 / 255.0, 113.0 / 255.0, 224.0 / 255.0, 1.0),
             sample_feedback: "Ready".to_string(),
+            sample_probe_scroll: 0.0,
             bing_api_text: "Loading Bing API text...".to_string(),
             page_scroll: [0.0; 6],
         }
@@ -276,7 +278,10 @@ impl AppState for EuiNeoGallery {
         ctx.ui().render_overlays();
         self.screenshot.update(ctx);
         if self.state.read(|state| {
-            state.option_motion || state.sample_toast_visible || state.selected_page == 4
+            state.option_motion
+                || state.sample_toast_visible
+                || state.selected_page == 2
+                || state.selected_page == 4
         }) {
             ctx.request_redraw();
         }
@@ -378,6 +383,14 @@ fn page_scroll_signal(state: &State<GalleryState>, page: usize) -> Signal<Galler
         format!("eui-gallery.page-scroll.{page}"),
         move |state| state.page_scroll[page],
         move |state, value| state.page_scroll[page] = value.max(0.0),
+    )
+}
+
+fn reactive_probe_scroll_signal(state: &State<GalleryState>) -> Signal<GalleryState, f32> {
+    state.signal(
+        "eui-gallery.reactive-probe-scroll",
+        |state| state.sample_probe_scroll,
+        |state, value| state.sample_probe_scroll = value.max(0.0),
     )
 }
 
@@ -1801,6 +1814,146 @@ fn draw_animation_page(
                 )
                 .build();
         });
+
+    draw_reactive_probe_section(ui, stage_width, state_store, tokens, page, motion);
+}
+
+fn draw_reactive_probe_section(
+    ui: &mut Ui,
+    width: f32,
+    state_store: &State<GalleryState>,
+    tokens: ThemeColorTokens,
+    page: PageVisualTokens,
+    motion: Transition,
+) {
+    let slider_signal = clamped_signal!(state_store, sample_slider, 0.0, 1.0);
+    let scroll_signal = reactive_probe_scroll_signal(state_store);
+
+    ui.column("animation.reactive")
+        .size(width, 326.0)
+        .gap(14.0)
+        .content(|ui| {
+            let signal_value = slider_signal.watch(ui);
+            let seconds = ui.clock().seconds();
+            let pulse = (seconds * 2.4).sin() * 0.5 + 0.5;
+            let accent = theme::mix_color(tokens.primary, c(0.26, 0.86, 0.70, 1.0), pulse);
+
+            ui.text("animation.reactive.title")
+                .size(width, 30.0)
+                .text("Reactive retained probe")
+                .font_size(24.0)
+                .line_height(30.0)
+                .color(page.title_color)
+                .build();
+
+            ui.text("animation.reactive.note")
+                .size(width, 24.0)
+                .text("Signal value, clock pulse, transition target, and clipped live rows share one surface.")
+                .font_size(16.0)
+                .line_height(22.0)
+                .color(page.subtitle_color)
+                .build();
+
+            widgets::slider(ui, "animation.reactive.signal")
+                .size(width.min(520.0), 32.0)
+                .signal(slider_signal.clone())
+                .theme(tokens)
+                .transition(motion)
+                .build();
+
+            ui.stack("animation.reactive.stage")
+                .size(width, 82.0)
+                .content(|ui| {
+                    ui.rect("animation.reactive.stage.bg")
+                        .size(width, 82.0)
+                        .color(tokens.surface)
+                        .radius(18.0)
+                        .border(1.0, tokens.border)
+                        .build();
+
+                    let marker_width = 82.0 + signal_value * 78.0;
+                    let marker_x = 18.0 + (width - marker_width - 36.0).max(0.0) * signal_value;
+                    ui.rect("animation.reactive.marker")
+                        .x(marker_x)
+                        .y(18.0)
+                        .size(marker_width, 46.0)
+                        .color(accent)
+                        .radius(23.0)
+                        .shadow(
+                            24.0 + pulse * 18.0,
+                            0.0,
+                            8.0 + pulse * 8.0,
+                            with_alpha(accent, 0.22),
+                        )
+                        .transition(motion)
+                        .animate(
+                            AnimProperty::FRAME | AnimProperty::COLOR | AnimProperty::SHADOW,
+                        )
+                        .build();
+
+                    ui.text("animation.reactive.value")
+                        .x(30.0)
+                        .y(28.0)
+                        .size((width - 60.0).max(0.0), 26.0)
+                        .text(format!("signal {:.0}%  clock {:.2}", signal_value * 100.0, pulse))
+                        .font_size(17.0)
+                        .line_height(24.0)
+                        .color(if signal_value > 0.62 {
+                            c(0.04, 0.06, 0.10, 1.0)
+                        } else {
+                            page.title_color
+                        })
+                        .build();
+                });
+
+            ui.scroll_y("animation.reactive.scroll")
+                .size(width, 128.0)
+                .content_height(272.0)
+                .gap(8.0)
+                .scrollbar_width(8.0)
+                .scrollbar_gap(12.0)
+                .theme(tokens)
+                .offset_signal(scroll_signal)
+                .content(|ui| {
+                    for index in 0..6 {
+                        let row_y = index as f32 * 44.0;
+                        let row_pulse = ((seconds * 2.0) + index as f32 * 0.58).sin() * 0.5 + 0.5;
+                        let row_color = theme::mix_color(tokens.surface_hover, accent, row_pulse);
+                        ui.stack(format!("animation.reactive.row.{index}"))
+                            .size((width - 28.0).max(0.0), 36.0)
+                            .y(row_y)
+                            .content(|ui| {
+                                ui.rect(format!("animation.reactive.row.{index}.bg"))
+                                    .size((width - 28.0).max(0.0), 36.0)
+                                    .color(row_color)
+                                    .radius(12.0)
+                                    .transition(motion)
+                                    .animate(AnimProperty::COLOR)
+                                    .build();
+
+                                ui.rect(format!("animation.reactive.row.{index}.dot"))
+                                    .x(14.0 + row_pulse * 42.0)
+                                    .y(9.0)
+                                    .size(18.0, 18.0)
+                                    .color(c(0.98, 1.0, 1.0, 0.94))
+                                    .radius(9.0)
+                                    .transition(motion)
+                                    .animate(AnimProperty::FRAME)
+                                    .build();
+
+                                ui.text(format!("animation.reactive.row.{index}.label"))
+                                    .x(76.0)
+                                    .y(7.0)
+                                    .size((width - 122.0).max(0.0), 22.0)
+                                    .text(format!("clipped live row {}", index + 1))
+                                    .font_size(15.0)
+                                    .line_height(21.0)
+                                    .color(page.title_color)
+                                    .build();
+                            });
+                    }
+                });
+        });
 }
 
 fn draw_settings_page(
@@ -2768,7 +2921,7 @@ fn page_body_content_height(page: i32, dense: bool, viewport_height: f32) -> f32
                 + 56.0
         }
         1 => 380.0 + 30.0 + 88.0 + 88.0 + 30.0 + 88.0 + body_gap * 5.0 + 40.0,
-        2 => viewport_height,
+        2 => 58.0 + 58.0 + 268.0 + 326.0 + body_gap * 3.0 + 42.0,
         3 => 430.0,
         4 => 440.0,
         _ => viewport_height,

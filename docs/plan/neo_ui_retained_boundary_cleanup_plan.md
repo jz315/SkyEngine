@@ -2,7 +2,7 @@
 
 ## Status
 
-Implementation in progress.
+Implemented.
 
 Completed:
 
@@ -29,12 +29,18 @@ Completed:
   ownership.
 - Dirty-owner rebuilds conservatively block descendant subtree reuse, preventing
   stale child content when a dirty parent computes values used by descendants.
+- Control Center is on `compose_state`, nav/page selection is signal-bound, and
+  its nav animation regressions are covered by example tests.
+- Gallery now includes a focused reactive retained probe on the Animation page
+  that combines a signal-driven slider, clock-driven live pulse, runtime
+  transition target, and clipped scroll content.
+- Real-window Stress Lab WGPU probes were run with filtered rect dumps and
+  screenshot output. The rendered `signals.tabs.indicator` moved gradually
+  across intermediate x positions instead of snapping.
 
 Still open:
 
-- Control Center and Gallery audit for any remaining old cache-boundary
-  assumptions.
-- Real-window WGPU probes for filtered rect dumps and screenshot comparison.
+- None for this retained-boundary cleanup plan.
 
 This plan replaces the previous reactive signal/boundary plan, which presented
 `Ui::scope(...)` as the normal app-facing dependency boundary. The retained
@@ -564,7 +570,7 @@ signals/widgets and let the runtime decide invalidation.
 
 ### Gallery
 
-Add one section that intentionally demonstrates:
+Added one Animation-page section that intentionally demonstrates:
 
 - signal-driven update
 - clock-driven update
@@ -636,6 +642,11 @@ cargo run --features ui-neo --example ui_neo_stress_lab
 ```
 
 The WGPU rect dump must show gradual movement instead of snapping.
+
+Observed probe result: filtered WGPU output for `signals.tabs.indicator` moved
+through intermediate x positions including `396.0`, `404.6`, `460.7`, `479.9`,
+and `517.1`, and screenshots were saved to `target/neo_probe_1.png` and
+`target/neo_probe_2.png`.
 
 ## Risk Assessment
 
