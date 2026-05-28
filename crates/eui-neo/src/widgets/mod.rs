@@ -452,6 +452,24 @@ mod tests {
     }
 
     #[test]
+    fn scroll_y_fill_viewport_without_previous_frame_does_not_guess_default_track() {
+        let mut runtime = Runtime::new("page");
+        runtime.compose(160.0, 120.0, |ui, _| {
+            ui.stack("root").size(120.0, 80.0).content(|ui| {
+                ui.scroll_y("list")
+                    .size(Size::fill(), Size::fill())
+                    .content_height(150.0)
+                    .content(|ui| {
+                        ui.rect("row").size(Size::fill(), 150.0).build();
+                    });
+            });
+        });
+
+        assert_eq!(runtime.find("list.viewport").unwrap().frame.height, 80.0);
+        assert!(runtime.find("list.scrollbar").is_none());
+    }
+
+    #[test]
     fn scroll_y_inset_keeps_viewport_and_scrollbar_inside_outer_shell() {
         let mut runtime = Runtime::new("page");
         runtime.compose(160.0, 120.0, |ui, _| {

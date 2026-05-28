@@ -429,10 +429,6 @@ impl<'ui> ScrollAreaBuilder<'ui> {
         let viewport_id = format!("{id}.viewport");
         let content_id = format!("{id}.content");
         let axis = self.axis;
-        let fallback_viewport_extent = match axis {
-            ScrollAxis::X => (self.layout.fixed_width_or(320.0) - self.inset.horizontal()).max(0.0),
-            ScrollAxis::Y => (self.layout.fixed_height_or(240.0) - self.inset.vertical()).max(0.0),
-        };
         let viewport_extent = self
             .ui
             .previous_frame(&viewport_id)
@@ -440,7 +436,8 @@ impl<'ui> ScrollAreaBuilder<'ui> {
                 ScrollAxis::X => frame.width,
                 ScrollAxis::Y => frame.height,
             })
-            .unwrap_or(fallback_viewport_extent);
+            .or_else(|| fixed_viewport_extent(self.layout, self.inset, axis))
+            .unwrap_or(0.0);
         let measured_content_extent = self.ui.previous_frame(&content_id).map(|frame| match axis {
             ScrollAxis::X => frame.width,
             ScrollAxis::Y => frame.height,
@@ -452,7 +449,7 @@ impl<'ui> ScrollAreaBuilder<'ui> {
             .max(viewport_extent);
         let max_offset = (content_extent - viewport_extent).max(0.0);
         let offset = self.offset.clamp(0.0, max_offset);
-        let scrollable = max_offset > 0.0;
+        let scrollable = max_offset > 0.0 && viewport_extent > 0.0;
         let scroll_step = self.step;
         let on_wheel_change = self.on_change.clone();
         let on_scrollbar_change = self.on_change.clone();
@@ -935,6 +932,27 @@ pub fn scroll_x(ui: &mut Ui, id: impl Into<String>) -> ScrollXBuilder<'_> {
     ScrollXBuilder::new(ui, id)
 }
 
+fn fixed_viewport_extent(layout: WidgetLayout, inset: EdgeInsets, axis: ScrollAxis) -> Option<f32> {
+    match axis {
+        ScrollAxis::X => fixed_viewport_width(layout, inset),
+        ScrollAxis::Y => fixed_viewport_height(layout, inset),
+    }
+}
+
+fn fixed_viewport_width(layout: WidgetLayout, inset: EdgeInsets) -> Option<f32> {
+    match layout.width {
+        Size::Fixed(width) => Some((width - inset.horizontal()).max(0.0)),
+        Size::WrapContent | Size::Fill => None,
+    }
+}
+
+fn fixed_viewport_height(layout: WidgetLayout, inset: EdgeInsets) -> Option<f32> {
+    match layout.height {
+        Size::Fixed(height) => Some((height - inset.vertical()).max(0.0)),
+        Size::WrapContent | Size::Fill => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ScrollXYMetrics {
     viewport_w: f32,
@@ -955,17 +973,15 @@ struct ScrollXYMetrics {
 
 impl ScrollXYMetrics {
     fn resolve(builder: &ScrollXYBuilder<'_>, viewport_id: &str, content_id: &str) -> Self {
-        let fallback_viewport_w =
-            (builder.layout.fixed_width_or(320.0) - builder.inset.horizontal()).max(0.0);
-        let fallback_viewport_h =
-            (builder.layout.fixed_height_or(240.0) - builder.inset.vertical()).max(0.0);
         let viewport = builder.ui.previous_frame(viewport_id);
         let viewport_w = viewport
             .map(|frame| frame.width)
-            .unwrap_or(fallback_viewport_w);
+            .or_else(|| fixed_viewport_width(builder.layout, builder.inset))
+            .unwrap_or(0.0);
         let viewport_h = viewport
             .map(|frame| frame.height)
-            .unwrap_or(fallback_viewport_h);
+            .or_else(|| fixed_viewport_height(builder.layout, builder.inset))
+            .unwrap_or(0.0);
         let measured_content = builder.ui.previous_frame(content_id);
         let content_w = builder
             .content_width
@@ -981,8 +997,8 @@ impl ScrollXYMetrics {
         let max_y = (content_h - viewport_h).max(0.0);
         let offset_x = builder.offset_x.clamp(0.0, max_x);
         let offset_y = builder.offset_y.clamp(0.0, max_y);
-        let scrollable_x = max_x > 0.0;
-        let scrollable_y = max_y > 0.0;
+        let scrollable_x = max_x > 0.0 && viewport_w > 0.0;
+        let scrollable_y = max_y > 0.0 && viewport_h > 0.0;
         let reserve_right = if scrollable_y {
             builder.scrollbar_width + builder.scrollbar_gap
         } else {
