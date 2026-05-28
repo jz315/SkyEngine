@@ -566,21 +566,25 @@ impl Runtime {
         let screen = Screen { width, height };
         let can_reuse_scopes = dirty_ids.is_some() && self.screen == screen;
         let previous_clock_ids = self.clock_ids.clone();
+        let scope_frame_start = timed.then(Instant::now);
         let scope_frame = begin_scope_frame(
             can_reuse_scopes,
             dirty_ids,
             &mut self.scope_roots,
             &mut self.live_ids,
         );
+        let scope_frame_ms = elapsed_ms(scope_frame_start);
         let can_reuse_scopes = scope_frame.can_reuse_scopes;
         let input_dirty_scopes = scope_frame.input_dirty_scopes;
         let live_dirty_scopes = scope_frame.live_dirty_scopes;
         let dirty_scopes = scope_frame.dirty_scopes;
         let previous_scope_roots = scope_frame.previous_scope_roots;
+        let ui_setup_start = timed.then(Instant::now);
         let mut ui = Ui::new(self.page_id.clone());
         ui.set_skins(self.skins.clone());
         ui.set_focused_id(self.focused_id.clone());
         ui.set_clock(self.clock_seconds, self.frame_index);
+        let ui_setup_ms = elapsed_ms(ui_setup_start);
         let previous_roots_start = timed.then(Instant::now);
         let previous_roots = std::mem::take(&mut self.roots);
         ui.set_previous_roots(previous_roots);
@@ -592,12 +596,15 @@ impl Runtime {
             );
         }
         let previous_roots_ms = elapsed_ms(previous_roots_start);
+        let responses_start = timed.then(Instant::now);
         for (id, response) in &self.responses {
             ui.set_response(id.clone(), *response);
         }
+        let responses_ms = elapsed_ms(responses_start);
         let build_start = timed.then(Instant::now);
         compose(&mut ui, screen);
         let build_ms = elapsed_ms(build_start);
+        let into_parts_start = timed.then(Instant::now);
         let (
             mut roots,
             callbacks,
@@ -610,9 +617,12 @@ impl Runtime {
             previous_scope_roots,
             previous_roots_for_layout,
         ) = ui.into_parts();
-        let layout_start = timed.then(Instant::now);
+        let into_parts_ms = elapsed_ms(into_parts_start);
+        let dirty_normalize_start = timed.then(Instant::now);
         let normalized_dirty_ids =
             normalize_dirty_scopes_with_roots(&dirty_scopes, &previous_scope_roots);
+        let dirty_normalize_ms = elapsed_ms(dirty_normalize_start);
+        let layout_plan_start = timed.then(Instant::now);
         let partial_layout_blocker = partial_layout_blocker(
             can_reuse_scopes,
             &normalized_dirty_ids,
@@ -636,6 +646,8 @@ impl Runtime {
             (!scopes.is_empty()).then_some(FullLayoutReason::StructureChanged { ids: scopes })
         });
         let partial_layout = partial_layout_blocker.is_none();
+        let layout_plan_ms = elapsed_ms(layout_plan_start);
+        let layout_execute_start = timed.then(Instant::now);
         let mut used_partial_layout = false;
         if partial_layout {
             if can_reuse_scopes {
@@ -662,8 +674,12 @@ impl Runtime {
         }
         retained_stats.partial_layout = used_partial_layout;
         retained_stats.full_layout = !used_partial_layout;
+        let layout_execute_ms = elapsed_ms(layout_execute_start);
+        let refresh_scope_roots_start = timed.then(Instant::now);
         refresh_scope_roots_from_tree(&mut scope_roots, &roots);
-        let layout_ms = elapsed_ms(layout_start);
+        let refresh_scope_roots_ms = elapsed_ms(refresh_scope_roots_start);
+        let layout_ms =
+            dirty_normalize_ms + layout_plan_ms + layout_execute_ms + refresh_scope_roots_ms;
         let structure_start = timed.then(Instant::now);
         let next_structure = collect_structure(&roots, self.structure.len());
         let layout_structure_changed =
@@ -675,6 +691,7 @@ impl Runtime {
             self.mark_render_dirty();
         }
         let structure_ms = elapsed_ms(structure_start);
+        let commit_state_start = timed.then(Instant::now);
         self.structure = next_structure;
         self.screen = screen;
         self.roots = roots;
@@ -684,12 +701,16 @@ impl Runtime {
         self.callbacks = callbacks;
         self.retained_stats = retained_stats;
         self.frame_index = self.frame_index.saturating_add(1);
+        let commit_state_ms = elapsed_ms(commit_state_start);
+        let element_debug_start = timed.then(Instant::now);
         let element_debug_records = collect_element_debug_records(
             &self.roots,
             &self.scope_roots,
             &self.callbacks,
             &self.animations,
         );
+        let element_debug_ms = elapsed_ms(element_debug_start);
+        let scope_debug_start = timed.then(Instant::now);
         let scope_debug_records = collect_scope_debug_records(
             &self.scope_roots,
             &previous_scope_roots,
@@ -701,6 +722,8 @@ impl Runtime {
             &element_debug_records,
             &retained_events,
         );
+        let scope_debug_ms = elapsed_ms(scope_debug_start);
+        let snapshot_start = timed.then(Instant::now);
         self.debug_snapshot = UiDebugSnapshot {
             frame_index: self.frame_index,
             screen: self.screen,
@@ -726,6 +749,7 @@ impl Runtime {
                 .filter(|animation| animation.is_active())
                 .count(),
         };
+        let snapshot_ms = elapsed_ms(snapshot_start);
         if neo_debug_trace_enabled() {
             trace_debug_snapshot(&self.debug_snapshot);
         }
@@ -739,13 +763,39 @@ impl Runtime {
             );
         }
         if profile {
+            let accounted_ms = scope_frame_ms
+                + ui_setup_ms
+                + previous_roots_ms
+                + responses_ms
+                + build_ms
+                + into_parts_ms
+                + layout_ms
+                + structure_ms
+                + commit_state_ms
+                + element_debug_ms
+                + scope_debug_ms
+                + snapshot_ms;
+            let total_ms = elapsed_ms(total_start);
             eprintln!(
-                "[eui-neo] compose total={:.3}ms previous_roots={:.3}ms build={:.3}ms layout={:.3}ms structure={:.3}ms elements={} retained_built={} retained_reused={}",
-                elapsed_ms(total_start),
+                "[eui-neo] compose total={:.3}ms scope_frame={:.3}ms ui_setup={:.3}ms previous_roots={:.3}ms responses={:.3}ms build={:.3}ms into_parts={:.3}ms layout={:.3}ms layout_normalize={:.3}ms layout_plan={:.3}ms layout_execute={:.3}ms refresh_scopes={:.3}ms structure={:.3}ms commit={:.3}ms element_debug={:.3}ms scope_debug={:.3}ms snapshot={:.3}ms unaccounted={:.3}ms elements={} retained_built={} retained_reused={}",
+                total_ms,
+                scope_frame_ms,
+                ui_setup_ms,
                 previous_roots_ms,
+                responses_ms,
                 build_ms,
+                into_parts_ms,
                 layout_ms,
+                dirty_normalize_ms,
+                layout_plan_ms,
+                layout_execute_ms,
+                refresh_scope_roots_ms,
                 structure_ms,
+                commit_state_ms,
+                element_debug_ms,
+                scope_debug_ms,
+                snapshot_ms,
+                (total_ms - accounted_ms).max(0.0),
                 self.structure.len(),
                 self.retained_stats.built,
                 self.retained_stats.reused
