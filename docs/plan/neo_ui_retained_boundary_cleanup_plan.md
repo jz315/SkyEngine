@@ -2,8 +2,30 @@
 
 ## Status
 
-Draft plan, created after the Stress Lab tab underline and floating `Secret`
-debugging sessions.
+Implementation in progress.
+
+Completed:
+
+- Retained dirty normalization removes descendant dirty roots when an ancestor
+  already covers them.
+- Runtime debug snapshots now distinguish raw dirty scopes from normalized
+  dirty layout roots.
+- `Ui::clock()` / `UiClock` are available and backed by the existing live
+  invalidation bridge.
+- Stress Lab's floating `Secret` probe was migrated to `ui.clock()` and renamed
+  to `Live Probe`.
+- Debug snapshots now include retained scope records, element ancestry records,
+  dirty reasons, layout anchors, scroll/clip ancestry, and target vs draw
+  frames.
+- `UiActionTrace` prints normalized dirty roots alongside raw dirty roots.
+
+Still open:
+
+- Automatic retained boundary ownership from stable element/widget ids.
+- Public API cleanup for `scope` / `live_scope` once automatic ownership is
+  proven in real examples.
+- Control Center and Gallery migration away from hand-authored cache scopes.
+- Real-window WGPU probes for filtered rect dumps and screenshot comparison.
 
 This plan replaces the previous reactive signal/scope plan, which presented
 `Ui::scope(...)` as the normal app-facing dependency boundary. The retained
