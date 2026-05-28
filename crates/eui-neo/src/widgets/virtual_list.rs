@@ -296,20 +296,35 @@ impl<'ui> VirtualListBuilder<'ui> {
 
     pub fn content(self, mut render_item: impl FnMut(&mut Ui, VirtualListItem)) -> Response {
         let id = self.id.clone();
-        let viewport_h = self.layout.fixed_height_or(240.0);
+        let viewport_id = format!("{id}.viewport");
+        let viewport_h = self
+            .ui
+            .previous_frame(&viewport_id)
+            .map(|frame| frame.height)
+            .or_else(|| fixed_layout_height(self.layout))
+            .unwrap_or(0.0);
         let overscan_px = self.overscan.pixels(self.item_height, self.gap);
-        let range = VirtualListRange::for_fixed_height(
-            self.item_count,
-            self.item_height,
-            self.gap,
-            self.offset,
-            viewport_h,
-            overscan_px,
-            self.padding,
-        );
+        let range = if viewport_h > 0.0 {
+            VirtualListRange::for_fixed_height(
+                self.item_count,
+                self.item_height,
+                self.gap,
+                self.offset,
+                viewport_h,
+                overscan_px,
+                self.padding,
+            )
+        } else {
+            VirtualListRange {
+                start: 0,
+                end: 0,
+                content_height: self.padding.vertical()
+                    + fixed_height_content(self.item_count, self.item_height, self.gap),
+            }
+        };
         let max_offset = (range.content_height - viewport_h).max(0.0);
         let offset = self.offset.clamp(0.0, max_offset);
-        let scrollable = max_offset > 0.0;
+        let scrollable = max_offset > 0.0 && viewport_h > 0.0;
         let scroll_step = self.step;
         let on_wheel_change = self.on_change.clone();
         let on_scrollbar_change = self.on_change.clone();
@@ -327,7 +342,7 @@ impl<'ui> VirtualListBuilder<'ui> {
             )
             .align_items(Align::End)
             .content(|ui| {
-                let mut viewport = ui.stack(format!("{id}.viewport")).fill().clip();
+                let mut viewport = ui.stack(viewport_id).fill().clip();
                 if scrollable {
                     viewport = viewport.on_scroll(move |event| {
                         if let Some(callback) = &on_wheel_change {
@@ -385,6 +400,13 @@ impl<'ui> VirtualListBuilder<'ui> {
 
 pub fn virtual_list(ui: &mut Ui, id: impl Into<String>) -> VirtualListBuilder<'_> {
     VirtualListBuilder::new(ui, id)
+}
+
+fn fixed_layout_height(layout: WidgetLayout) -> Option<f32> {
+    match layout.height {
+        Size::Fixed(height) => Some(height.max(0.0)),
+        Size::WrapContent | Size::Fill => None,
+    }
 }
 
 fn fixed_height_content(item_count: usize, item_height: f32, gap: f32) -> f32 {
@@ -487,5 +509,27 @@ mod tests {
         runtime.update_scroll(ScrollEvent { x: 0.0, y: -2.0 });
 
         assert_eq!(state.read(|state| state.offset), 44.0);
+    }
+
+    #[test]
+    fn fill_virtual_list_without_previous_frame_does_not_guess_default_height() {
+        let mut runtime = Runtime::new("page");
+        runtime.compose(240.0, 120.0, |ui, _| {
+            ui.stack("root").size(160.0, 80.0).content(|ui| {
+                virtual_list(ui, "list")
+                    .size(Size::fill(), Size::fill())
+                    .item_count(100)
+                    .item_height(20.0)
+                    .content(|ui, item| {
+                        ui.rect(format!("row.{}", item.index))
+                            .size(Size::fill(), item.height)
+                            .build();
+                    });
+            });
+        });
+
+        assert_eq!(runtime.find("list.viewport").unwrap().frame.height, 80.0);
+        assert!(runtime.find("list.scrollbar").is_none());
+        assert!(runtime.find("row.0").is_none());
     }
 }
