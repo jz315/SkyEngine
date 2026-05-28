@@ -172,9 +172,6 @@ pub(crate) fn normalize_dirty_scopes_with_roots(
 }
 
 fn dirty_scope_contains(candidate: &str, scope: &str, previous_scope_roots: &ScopeRoots) -> bool {
-    if scope == candidate || is_resolved_id(scope, candidate) {
-        return true;
-    }
     let Some(scope_roots) = previous_scope_roots.get(scope) else {
         return false;
     };
@@ -252,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn dirty_normalization_removes_descendants_covered_by_dirty_ancestors() {
+    fn dirty_normalization_does_not_infer_ancestry_from_id_prefixes() {
         let normalized = normalize_dirty_scopes_with_roots(
             &scopes(&[
                 "page.panel.child.live",
@@ -269,13 +266,15 @@ mod tests {
             vec![
                 "page.other".to_string(),
                 "page.panel".to_string(),
+                "page.panel.child.live".to_string(),
                 "page.sidebar".to_string(),
+                "page.sidebar.item".to_string(),
             ]
         );
     }
 
     #[test]
-    fn dirty_normalization_keeps_siblings_and_prefix_lookalikes() {
+    fn dirty_normalization_keeps_all_ids_without_tree_containment() {
         let normalized = normalize_dirty_scopes_with_roots(
             &scopes(&[
                 "page.panel",
@@ -289,6 +288,7 @@ mod tests {
             sorted(&normalized),
             vec![
                 "page.panel".to_string(),
+                "page.panel.child".to_string(),
                 "page.panel_extra.child".to_string()
             ]
         );
