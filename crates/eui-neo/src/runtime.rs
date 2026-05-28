@@ -1609,9 +1609,15 @@ fn trace_scope_profile(
     let mut records = snapshot.scope_compose.clone();
     records.sort_by(|left, right| {
         right
-            .build_ms
-            .partial_cmp(&left.build_ms)
+            .self_build_ms
+            .partial_cmp(&left.self_build_ms)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                right
+                    .build_ms
+                    .partial_cmp(&left.build_ms)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .then_with(|| left.id.cmp(&right.id))
     });
     let limit = std::env::var("SKY_NEO_SCOPE_PROFILE_TOP")
@@ -1641,9 +1647,10 @@ fn trace_scope_profile(
             .map(|retained| retained.dirty_reasons.as_slice())
             .unwrap_or(&[]);
         eprintln!(
-            "[eui-neo scope-profile]   {:?} {:<48} build={:.3}ms reasons={:?} roots={}->{} elements={}",
+            "[eui-neo scope-profile]   {:?} {:<48} self={:.3}ms total={:.3}ms reasons={:?} roots={}->{} elements={}",
             record.action,
             record.id,
+            record.self_build_ms,
             record.build_ms,
             reasons,
             record.previous_roots,

@@ -97,6 +97,7 @@ pub struct ScopeComposeRecord {
     pub id: ScopeId,
     pub action: RetainedComposeAction,
     pub build_ms: f32,
+    pub self_build_ms: f32,
     pub previous_roots: usize,
     pub current_roots: usize,
     pub element_count: usize,

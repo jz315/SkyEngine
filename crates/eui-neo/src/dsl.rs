@@ -54,6 +54,7 @@ pub struct Ui {
     profile_timing: bool,
     retained_lookup_ms: f32,
     retained_metadata_ms: f32,
+    scope_timing_stack: Vec<f32>,
     retained_events: Vec<RetainedComposeEvent>,
     scope_compose_records: Vec<ScopeComposeRecord>,
     clock_seconds: f64,
@@ -170,6 +171,7 @@ impl Ui {
             profile_timing: false,
             retained_lookup_ms: 0.0,
             retained_metadata_ms: 0.0,
+            scope_timing_stack: Vec::new(),
             retained_events: Vec::new(),
             scope_compose_records: Vec::new(),
             clock_seconds: 0.0,
@@ -427,6 +429,7 @@ impl Ui {
                     id: id.clone(),
                     action: RetainedComposeAction::Reused,
                     build_ms: 0.0,
+                    self_build_ms: 0.0,
                     previous_roots: elements.len(),
                     current_roots: elements.len(),
                     element_count: count_elements(&elements),
@@ -440,9 +443,9 @@ impl Ui {
         let pushed_dirty_owner = self.push_dirty_owner_if_exact_dirty(&id);
         self.scope_stack.push(id);
         let start = children_at_path_mut(&mut self.roots, &self.path).len();
-        let build_start = crate::retained::scope_profile_enabled().then(Instant::now);
+        let build_start = self.begin_scope_timing();
         build(self);
-        let build_ms = elapsed_ms(build_start);
+        let (build_ms, self_build_ms) = self.finish_scope_timing(build_start);
         let id = self
             .scope_stack
             .pop()
@@ -461,6 +464,7 @@ impl Ui {
             id: id.clone(),
             action: RetainedComposeAction::Built,
             build_ms,
+            self_build_ms,
             previous_roots: self
                 .previous_scope_roots
                 .get(&id)
@@ -536,6 +540,7 @@ impl Ui {
             id: id.to_string(),
             action: RetainedComposeAction::Reused,
             build_ms: 0.0,
+            self_build_ms: 0.0,
             previous_roots: elements.len(),
             current_roots: elements.len(),
             element_count: count_elements(&elements),
@@ -545,7 +550,13 @@ impl Ui {
         true
     }
 
-    pub(crate) fn record_retained_element(&mut self, id: String, index: usize, build_ms: f32) {
+    pub(crate) fn record_retained_element(
+        &mut self,
+        id: String,
+        index: usize,
+        build_ms: f32,
+        self_build_ms: f32,
+    ) {
         let element = children_at_path_mut(&mut self.roots, &self.path)[index].clone();
         self.retained_events.push(RetainedComposeEvent {
             id: id.clone(),
@@ -556,6 +567,7 @@ impl Ui {
             id: id.clone(),
             action: RetainedComposeAction::Built,
             build_ms,
+            self_build_ms,
             previous_roots: self
                 .previous_scope_roots
                 .get(&id)
@@ -580,6 +592,31 @@ impl Ui {
             previous_elements_for_scope(&self.previous_roots, &self.previous_scope_roots, id);
         self.retained_lookup_ms += elapsed_ms(start);
         elements
+    }
+
+    pub(crate) fn begin_scope_timing(&mut self) -> Option<Instant> {
+        let enabled = crate::retained::scope_profile_enabled();
+        if enabled {
+            self.scope_timing_stack.push(0.0);
+        }
+        enabled.then(Instant::now)
+    }
+
+    pub(crate) fn finish_scope_timing(&mut self, start: Option<Instant>) -> (f32, f32) {
+        let build_ms = elapsed_ms(start);
+        let child_ms = if start.is_some() {
+            self.scope_timing_stack
+                .pop()
+                .expect("scope timing stack should contain active scope")
+        } else {
+            0.0
+        };
+        if start.is_some() {
+            if let Some(parent_child_ms) = self.scope_timing_stack.last_mut() {
+                *parent_child_ms += build_ms;
+            }
+        }
+        (build_ms, (build_ms - child_ms).max(0.0))
     }
 
     pub(crate) fn push_dirty_owner_if_exact_dirty(&mut self, id: &str) -> bool {
