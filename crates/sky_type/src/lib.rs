@@ -6,8 +6,8 @@
 //! engine modules.
 
 use rustc_hash::FxHashMap;
-use std::any::{type_name, TypeId};
 use std::alloc::Layout;
+use std::any::{type_name, TypeId};
 use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;

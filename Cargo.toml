@@ -14,6 +14,7 @@ rustc-hash = "2.1.2"
 sky_ecs = { path = "crates/sky_ecs" }
 sky_math = { path = "crates/sky_math" }
 sky_reflect = { path = "crates/sky_reflect" }
+sky_profile = { path = "crates/sky_profile", optional = true }
 bitflags = "2"
 glam = "0.32.1"
 log = { version = "0.4", features = ["std"] }
@@ -50,6 +51,7 @@ serde_json = { version = "1", optional = true, features = ["preserve_order"] }
 roxmltree = { version = "0.20", optional = true }
 base64 = { version = "0.13", optional = true }
 flate2 = { version = "1", optional = true }
+notify = { version = "6.1.1", optional = true }
 cubism-sys = { package = "live2d-cubism-core-sys", version = "0.1", path = "crates/cubism-sys", optional = true }
 kira = { version = "0.12", optional = true }
 rapier2d = { version = "0.32.0", optional = true }
@@ -69,11 +71,6 @@ yakui = { path = "crates/vendor/yakui/crates/yakui", optional = true, default-fe
 yakui-core = { path = "crates/vendor/yakui/crates/yakui-core", optional = true }
 yakui-wgpu = { path = "crates/vendor/yakui/crates/yakui-wgpu", optional = true }
 yakui-winit = { path = "crates/vendor/yakui/crates/yakui-winit", optional = true }
-
-# Existing optionals
-minifb = { version = "0.28.0", optional = true }
-rand = { version = "0.8", optional = true }
-bevy_full = { package = "bevy", version = "0.18.1", default-features = false, features = ["bevy_winit", "bevy_render", "bevy_core_pipeline", "bevy_sprite", "bevy_gizmos", "bevy_text", "bevy_post_process", "default_font", "png", "x11"], optional = true }
 
 # ── ECS tutorials (no GPU needed) ─────────────────────────────────────────────
 
@@ -387,6 +384,26 @@ path = "examples/asset_cook_smoke.rs"
 required-features = ["asset"]
 
 [[example]]
+name = "asset_load_texture"
+path = "examples/asset/load_texture.rs"
+required-features = ["asset"]
+
+[[example]]
+name = "asset_hot_reload_texture"
+path = "examples/asset/hot_reload_texture.rs"
+required-features = ["asset"]
+
+[[example]]
+name = "asset_load_with_dependency"
+path = "examples/asset/load_with_dependency.rs"
+required-features = ["asset"]
+
+[[example]]
+name = "asset_custom_factory"
+path = "examples/asset/custom_factory.rs"
+required-features = ["asset"]
+
+[[example]]
 name = "audio_demo"
 path = "examples/audio_demo.rs"
 required-features = ["app", "audio"]
@@ -401,23 +418,6 @@ name = "mp4_video_demo"
 path = "examples/mp4_video_demo.rs"
 required-features = ["video-ffmpeg"]
 
-# ── Cross-engine comparisons (--features compare) ───────────────────────────
-
-[[example]]
-name = "boids_hecs"
-path = "examples/compare/boids_hecs.rs"
-required-features = ["compare"]
-
-[[example]]
-name = "boids_bevy"
-path = "examples/compare/boids_bevy.rs"
-required-features = ["compare"]
-
-[[example]]
-name = "boids_bevy_gpu"
-path = "examples/compare/boids_bevy_gpu.rs"
-required-features = ["compare-bevy"]
-
 [features]
 # Cross-platform OS helpers.
 platform = ["dep:webbrowser"]
@@ -425,6 +425,16 @@ platform = ["dep:webbrowser"]
 app = ["asset", "platform", "sky_math/wgpu", "dep:wgpu", "dep:winit", "dep:pollster", "dep:bytemuck", "dep:gltf"]
 # Optional Renderer2D stage timing instrumentation.
 render-timings = []
+# Structured engine profiling. Disabled unless `SKY_PROFILE=1` at runtime.
+profile = [
+    "dep:sky_profile",
+    "sky_ecs/profile",
+    "render-timings",
+    "eui-neo?/profile",
+    "eui-neo-wgpu?/profile",
+]
+profile-tracy = ["profile", "sky_profile/tracy"]
+profile-gpu = ["profile", "app"]
 # Experimental Kajiya Vulkan renderer backend.
 kajiya-renderer = [
     "dep:kajiya",
@@ -446,6 +456,10 @@ asset = [
     "dep:base64",
     "dep:flate2",
 ]
+# Optional native file watching for asset hot reload. Enable alongside `app` or
+# `asset` when editor/dev builds should react to filesystem events instead of
+# relying only on periodic polling.
+asset-watch = ["asset", "dep:notify"]
 # Audio runtime
 audio = ["asset", "dep:kira", "dep:mint"]
 # Video runtime with playback clocks, frame queues, and stable streamed-frame buffers.
@@ -494,22 +508,9 @@ yakui-ui = [
     "dep:yakui-wgpu",
     "dep:yakui-winit",
 ]
-# Comparison benchmarks
-compare = ["dep:minifb", "dep:rand"]
-# Full Bevy GPU comparison
-compare-bevy = ["dep:bevy_full"]
 [dev-dependencies]
 criterion = "0.8.2"
-cgmath = "0.18"
-hecs = "0.10.5"
-bevy_ecs = "0.18.1"
-flecs_ecs = "0.2.2"
 tempfile = "3"
-
-[[bench]]
-name = "fair"
-path = "benches/fair/main.rs"
-harness = false
 
 [[bench]]
 name = "parallel_query"
