@@ -9,12 +9,12 @@ mod sidebar;
 mod story;
 mod title;
 
-use sky_engine::ui::neo::{NeoState, Screen, Ui};
+use sky_engine::ui::neo::{Screen, State, Ui};
 
 use crate::model::{GameMode, GameSession};
 use crate::theme;
 
-pub fn render(ui: &mut Ui, screen: Screen, state: &NeoState<GameSession>, session: &GameSession) {
+pub fn render(ui: &mut Ui, screen: Screen, state: &State<GameSession>, session: &GameSession) {
     let app_theme = theme::station_theme();
     background::draw(ui, screen.width, screen.height, app_theme);
 

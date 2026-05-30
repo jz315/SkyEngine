@@ -1,8 +1,8 @@
 use std::fmt;
 
 use crate::{
-    Element, KeyboardEvent, LayoutRect, PointerEvent, Response, Runtime, Screen, ScrollEvent, Ui,
-    UiDebugSnapshot,
+    DirtyInput, Element, FrameInput, KeyboardEvent, LayoutRect, PointerEvent, Response, Runtime,
+    Screen, ScrollEvent, Ui, UiDebugSnapshot,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -122,18 +122,36 @@ impl UiTestDriver {
         &mut self.runtime
     }
 
-    pub fn compose(&mut self, build: impl FnOnce(&mut Ui, Screen)) {
-        self.runtime
-            .compose(self.screen.width, self.screen.height, build);
+    pub fn frame(&mut self, build: impl FnOnce(&mut Ui, Screen)) {
+        self.runtime.frame(FrameInput::new(self.screen, 0.0), build);
     }
 
-    pub fn compose_incremental(
+    pub fn frame_incremental(
         &mut self,
-        dirty_ids: impl IntoIterator<Item = String>,
+        dirty: impl IntoIterator<Item = DirtyInput>,
         build: impl FnOnce(&mut Ui, Screen),
     ) {
+        let dirty = dirty.into_iter().collect::<Vec<_>>();
         self.runtime
-            .compose_incremental(self.screen.width, self.screen.height, dirty_ids, build);
+            .frame_incremental(FrameInput::new(self.screen, 0.0), move || dirty, build);
+    }
+
+    pub fn frame_incremental_dirty_with_delta(
+        &mut self,
+        delta_seconds: f32,
+        dirty: impl IntoIterator<Item = DirtyInput>,
+        build: impl FnOnce(&mut Ui, Screen),
+    ) {
+        let dirty = dirty.into_iter().collect::<Vec<_>>();
+        self.runtime.frame_incremental(
+            FrameInput::new(self.screen, delta_seconds),
+            move || dirty,
+            build,
+        );
+    }
+
+    pub fn advance_animations(&mut self, delta_seconds: f32) -> bool {
+        self.runtime.tick_animations(delta_seconds)
     }
 
     pub fn click(&mut self, id: &str) -> Result<UiActionTrace, UiTestError> {
@@ -281,7 +299,7 @@ impl UiTestDriver {
         self.runtime.find(id)
     }
 
-    pub fn frame(&self, id: &str) -> Result<LayoutRect, UiTestError> {
+    pub fn element_frame(&self, id: &str) -> Result<LayoutRect, UiTestError> {
         self.runtime
             .find(id)
             .map(|element| element.frame)
@@ -331,7 +349,7 @@ impl UiTestDriver {
         id: &str,
         target: TargetPoint,
     ) -> Result<(LayoutRect, [f32; 2]), UiTestError> {
-        let frame = self.frame(id)?;
+        let frame = self.element_frame(id)?;
         Ok((frame, target.resolve(frame)))
     }
 
@@ -356,7 +374,7 @@ mod tests {
         let clicks = Rc::new(Cell::new(0));
         let mut driver = UiTestDriver::new("page", 200.0, 100.0);
 
-        driver.compose({
+        driver.frame({
             let clicks = clicks.clone();
             move |ui, _| {
                 ui.rect("button")
@@ -377,7 +395,7 @@ mod tests {
     #[test]
     fn click_missing_element_returns_error() {
         let mut driver = UiTestDriver::new("page", 200.0, 100.0);
-        driver.compose(|ui, _| {
+        driver.frame(|ui, _| {
             ui.rect("button").size(80.0, 32.0).build();
         });
 
@@ -392,7 +410,7 @@ mod tests {
     #[test]
     fn hover_updates_response_state() {
         let mut driver = UiTestDriver::new("page", 200.0, 100.0);
-        driver.compose(|ui, _| {
+        driver.frame(|ui, _| {
             ui.rect("button")
                 .position(10.0, 10.0)
                 .size(80.0, 32.0)
@@ -411,7 +429,7 @@ mod tests {
         let drag = Rc::new(Cell::new(DragEvent::default()));
         let mut driver = UiTestDriver::new("page", 200.0, 100.0);
 
-        driver.compose({
+        driver.frame({
             let drag = drag.clone();
             move |ui, _| {
                 ui.rect("slider")
@@ -437,7 +455,7 @@ mod tests {
         let value = Rc::new(RefCell::new(String::new()));
         let mut driver = UiTestDriver::new("page", 240.0, 100.0);
 
-        driver.compose({
+        driver.frame({
             let value = value.clone();
             move |ui, _| {
                 widgets::input(ui, "field")

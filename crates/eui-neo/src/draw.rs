@@ -168,16 +168,87 @@ impl Default for RenderTransform {
     }
 }
 
+struct RuntimeDrawView<'a> {
+    runtime: &'a Runtime,
+}
+
+impl<'a> RuntimeDrawView<'a> {
+    fn new(runtime: &'a Runtime) -> Self {
+        Self { runtime }
+    }
+
+    fn element_count_hint(&self) -> usize {
+        self.runtime.element_count_hint()
+    }
+
+    fn roots(&self) -> &'a [Element] {
+        self.runtime.roots()
+    }
+
+    fn animated_frame(&self, element: &Element) -> LayoutRect {
+        self.runtime.animated_frame(element)
+    }
+
+    fn animated_color(&self, element: &Element) -> Color {
+        self.runtime.animated_color(element)
+    }
+
+    fn animated_text_color(&self, element: &Element) -> Color {
+        self.runtime.animated_text_color(element)
+    }
+
+    fn animated_radius(&self, element: &Element) -> f32 {
+        self.runtime.animated_radius(element)
+    }
+
+    fn animated_blur(&self, element: &Element) -> f32 {
+        self.runtime.animated_blur(element)
+    }
+
+    fn animated_opacity(&self, element: &Element) -> f32 {
+        self.runtime.animated_opacity(element)
+    }
+
+    fn animated_border(&self, element: &Element) -> Border {
+        self.runtime.animated_border(element)
+    }
+
+    fn animated_shadow(&self, element: &Element) -> Shadow {
+        self.runtime.animated_shadow(element)
+    }
+
+    fn animated_transform(&self, element: &Element) -> Transform {
+        self.runtime.animated_transform(element)
+    }
+
+    fn hover_blend_for_source(&self, id: &str) -> Option<f32> {
+        self.runtime.hover_blend_for_source(id)
+    }
+
+    fn press_blend_for_source(&self, id: &str) -> Option<(f32, LayoutRect)> {
+        self.runtime.press_blend_for_source(id)
+    }
+
+    fn resolve_image_ref(&self, image: &ImageRef) -> ImageRef {
+        self.runtime.resolve_image_ref(image)
+    }
+
+    fn resolve_font_ref(&self, font: &FontRef) -> FontRef {
+        self.runtime.resolve_font_ref(font)
+    }
+}
+
 pub(crate) fn build_draw_list(runtime: &Runtime) -> UiDrawList {
-    let mut commands = Vec::with_capacity(runtime.element_count_hint());
+    let view = RuntimeDrawView::new(runtime);
+    let mut commands = Vec::with_capacity(view.element_count_hint());
     let transform = RenderTransform::default();
-    draw_elements(runtime.roots(), runtime, transform, None, &mut commands);
+    draw_elements(view.roots(), &view, transform, None, &mut commands);
     UiDrawList::new(commands)
 }
 
 fn draw_element(
     element: &Element,
-    runtime: &Runtime,
+    runtime: &RuntimeDrawView<'_>,
     inherited: RenderTransform,
     inherited_clip: Option<UiClip>,
     commands: &mut Vec<UiDrawCommand>,
@@ -295,7 +366,7 @@ fn draw_element(
 
 fn draw_elements(
     elements: &[Element],
-    runtime: &Runtime,
+    runtime: &RuntimeDrawView<'_>,
     inherited: RenderTransform,
     inherited_clip: Option<UiClip>,
     commands: &mut Vec<UiDrawCommand>,
@@ -335,7 +406,7 @@ fn z_order_is_stable(elements: &[Element]) -> bool {
 
 fn resolve_render_transform(
     element: &Element,
-    runtime: &Runtime,
+    runtime: &RuntimeDrawView<'_>,
     inherited: RenderTransform,
 ) -> RenderTransform {
     let mut result = inherited;
@@ -489,6 +560,7 @@ fn close_enough(left: f32, right: f32) -> bool {
 mod tests {
     use super::Color;
     use super::{UiDrawCommand, UiRectDraw};
+    use crate::test_support::compose;
     use crate::{PointerEvent, Runtime, Size};
 
     fn rect(command: &UiDrawCommand) -> Option<&UiRectDraw> {
@@ -501,7 +573,7 @@ mod tests {
     #[test]
     fn draw_list_preserves_stable_z_order() {
         let mut runtime = Runtime::new("page");
-        runtime.compose(100.0, 100.0, |ui, _| {
+        compose(&mut runtime, 100.0, 100.0, |ui, _| {
             ui.rect("low").size(10.0, 10.0).z_index(0).build();
             ui.rect("high").size(10.0, 10.0).z_index(5).build();
         });
@@ -528,7 +600,7 @@ mod tests {
     #[test]
     fn clipped_element_emits_push_and_pop_clip() {
         let mut runtime = Runtime::new("page");
-        runtime.compose(100.0, 100.0, |ui, _| {
+        compose(&mut runtime, 100.0, 100.0, |ui, _| {
             ui.stack("root")
                 .size(50.0, 50.0)
                 .rounded_clip(12.0)
@@ -551,7 +623,7 @@ mod tests {
     #[test]
     fn rect_state_color_follows_current_interaction() {
         let mut runtime = Runtime::new("page");
-        runtime.compose(100.0, 100.0, |ui, _| {
+        compose(&mut runtime, 100.0, 100.0, |ui, _| {
             ui.rect("button")
                 .size(20.0, 20.0)
                 .states(Color::BLACK, Color::RED, Color::GREEN)
@@ -568,7 +640,7 @@ mod tests {
     #[test]
     fn visual_state_from_scales_dependents_around_source() {
         let mut runtime = Runtime::new("page");
-        runtime.compose(100.0, 100.0, |ui, _| {
+        compose(&mut runtime, 100.0, 100.0, |ui, _| {
             ui.stack("root")
                 .size(Size::fill(), Size::fill())
                 .content(|ui| {
@@ -602,7 +674,7 @@ mod tests {
     #[test]
     fn visual_state_from_waits_for_source_animation_state() {
         let mut runtime = Runtime::new("page");
-        runtime.compose(100.0, 100.0, |ui, _| {
+        compose(&mut runtime, 100.0, 100.0, |ui, _| {
             ui.stack("root")
                 .size(Size::fill(), Size::fill())
                 .content(|ui| {
@@ -635,7 +707,7 @@ mod tests {
     #[test]
     fn hover_opacity_from_uses_hidden_opacity_without_source_blend() {
         let mut runtime = Runtime::new("page");
-        runtime.compose(100.0, 100.0, |ui, _| {
+        compose(&mut runtime, 100.0, 100.0, |ui, _| {
             ui.stack("root")
                 .size(Size::fill(), Size::fill())
                 .content(|ui| {
@@ -667,7 +739,7 @@ mod tests {
     #[test]
     fn dependent_visual_state_ignores_layout_sources_like_eui() {
         let mut runtime = Runtime::new("page");
-        runtime.compose(100.0, 100.0, |ui, _| {
+        compose(&mut runtime, 100.0, 100.0, |ui, _| {
             ui.stack("button")
                 .position(10.0, 10.0)
                 .size(20.0, 20.0)

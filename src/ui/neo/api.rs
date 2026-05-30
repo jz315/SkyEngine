@@ -47,7 +47,7 @@ pub fn compose<R>(
     ui.with_backend_mut::<NeoUiBackend, _>(|backend| {
         backend.begin_frame_snapshot(&input, logical_surface_size, dt);
         let mut output = None;
-        backend.compose(|ui, screen| {
+        backend.frame(|ui, screen| {
             output = Some(f(ui, screen));
         });
         output
@@ -74,8 +74,8 @@ pub fn compose_state<T, R>(
     ui.with_backend_mut::<NeoUiBackend, _>(|backend| {
         backend.begin_frame_snapshot(&input, logical_surface_size, dt);
         let mut output = None;
-        backend.compose_incremental(
-            || state.take_dirty_ids(),
+        backend.frame_incremental(
+            || state.take_dirty(),
             |ui, screen| {
                 output = Some(f(ui, screen));
             },

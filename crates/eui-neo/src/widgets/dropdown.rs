@@ -136,7 +136,10 @@ impl<'ui> DropdownBuilder<'ui> {
 
     pub fn open_signal<T: 'static>(self, signal: Signal<T, bool>) -> Self {
         let owner = self.id.clone();
+        let popup_owner = format!("{owner}.popup");
         let value = self.ui.with_dependency_owner(owner, |ui| signal.watch(ui));
+        self.ui
+            .with_dependency_owner(popup_owner, |ui| signal.watch(ui));
         self.open(value)
             .on_open_change(move |next| signal.set(next))
     }
@@ -317,6 +320,20 @@ impl<'ui> DropdownBuilder<'ui> {
                             let item_y = popup_padding + index as f32 * self.item_height;
                             let change = on_change.clone();
                             let open_change = on_open_change.clone();
+                            if active {
+                                ui.rect(format!("{id}.item.selected.{index}"))
+                                    .x(popup_padding)
+                                    .y(item_y)
+                                    .size(
+                                        (self.width - popup_padding * 2.0).max(0.0),
+                                        self.item_height,
+                                    )
+                                    .color(self.style.selected)
+                                    .radius(4.0_f32.max(self.style.radius - 4.0))
+                                    .transition(self.transition)
+                                    .animate(AnimProperty::COLOR)
+                                    .build();
+                            }
                             ui.rect(format!("{id}.item.{index}"))
                                 .x(popup_padding)
                                 .y(item_y)

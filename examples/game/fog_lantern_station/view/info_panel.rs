@@ -1,5 +1,5 @@
 use sky_engine::ui::neo::widgets;
-use sky_engine::ui::neo::{Binding, NeoState, Ui};
+use sky_engine::ui::neo::{Signal, State, Ui};
 
 use crate::aftertalk;
 use crate::anomaly;
@@ -42,7 +42,7 @@ pub fn draw(
     ui: &mut Ui,
     width: f32,
     height: f32,
-    state: &NeoState<GameSession>,
+    state: &State<GameSession>,
     session: &GameSession,
     app_theme: AppTheme,
 ) {
@@ -78,7 +78,7 @@ pub fn draw(
 fn draw_info_tabs(
     ui: &mut Ui,
     width: f32,
-    state: &NeoState<GameSession>,
+    state: &State<GameSession>,
     session: &GameSession,
     app_theme: AppTheme,
 ) {
@@ -113,7 +113,7 @@ fn draw_intel(
     ui: &mut Ui,
     width: f32,
     height: f32,
-    state: &NeoState<GameSession>,
+    state: &State<GameSession>,
     session: &GameSession,
     app_theme: AppTheme,
 ) {
@@ -385,7 +385,7 @@ fn draw_intel(
         .gap(0.0)
         .theme(app_theme.tokens)
         .scrollbar_gap(10.0)
-        .offset_bind(bind_panel_scroll(state, InfoPanel::Intel))
+        .offset_signal(panel_scroll_signal(state, InfoPanel::Intel))
         .content(|ui| {
             let mut list =
                 components::VirtualList::new("right.info.intel.virtual", scroll_offset, height);
@@ -2427,7 +2427,7 @@ fn draw_routes(
     ui: &mut Ui,
     width: f32,
     height: f32,
-    state: &NeoState<GameSession>,
+    state: &State<GameSession>,
     session: &GameSession,
     app_theme: AppTheme,
 ) {
@@ -2510,7 +2510,7 @@ fn draw_routes(
         .gap(0.0)
         .theme(app_theme.tokens)
         .scrollbar_gap(10.0)
-        .offset_bind(bind_panel_scroll(state, InfoPanel::Routes))
+        .offset_signal(panel_scroll_signal(state, InfoPanel::Routes))
         .content(|ui| {
             let mut list =
                 components::VirtualList::new("right.info.routes.virtual", scroll_offset, height);
@@ -3313,7 +3313,7 @@ fn draw_cases(
     ui: &mut Ui,
     width: f32,
     height: f32,
-    state: &NeoState<GameSession>,
+    state: &State<GameSession>,
     session: &GameSession,
     app_theme: AppTheme,
 ) {
@@ -3359,7 +3359,7 @@ fn draw_cases(
         .gap(0.0)
         .theme(app_theme.tokens)
         .scrollbar_gap(10.0)
-        .offset_bind(bind_panel_scroll(state, InfoPanel::Cases))
+        .offset_signal(panel_scroll_signal(state, InfoPanel::Cases))
         .content(|ui| {
             let mut list =
                 components::VirtualList::new("right.info.cases.virtual", scroll_offset, height);
@@ -3591,7 +3591,7 @@ fn draw_inventory(
     ui: &mut Ui,
     width: f32,
     height: f32,
-    state: &NeoState<GameSession>,
+    state: &State<GameSession>,
     session: &GameSession,
     app_theme: AppTheme,
 ) {
@@ -3610,7 +3610,7 @@ fn draw_inventory(
         .gap(0.0)
         .theme(app_theme.tokens)
         .scrollbar_gap(10.0)
-        .offset_bind(bind_panel_scroll(state, InfoPanel::Inventory))
+        .offset_signal(panel_scroll_signal(state, InfoPanel::Inventory))
         .content(|ui| {
             let mut list =
                 components::VirtualList::new("right.info.inventory.virtual", scroll_offset, height);
@@ -3686,7 +3686,7 @@ fn draw_log(
     ui: &mut Ui,
     width: f32,
     height: f32,
-    state: &NeoState<GameSession>,
+    state: &State<GameSession>,
     session: &GameSession,
     app_theme: AppTheme,
 ) {
@@ -3724,7 +3724,7 @@ fn draw_log(
         .gap(0.0)
         .theme(app_theme.tokens)
         .scrollbar_gap(10.0)
-        .offset_bind(bind_panel_scroll(state, InfoPanel::Log))
+        .offset_signal(panel_scroll_signal(state, InfoPanel::Log))
         .content(|ui| {
             if session.log.is_empty() && session.state.dialogue_transcript.is_empty() {
                 components::body_text(
@@ -3935,8 +3935,9 @@ fn dialogue_choice_name(choice: DialogueChoiceId) -> &'static str {
     }
 }
 
-fn bind_panel_scroll(state: &NeoState<GameSession>, panel: InfoPanel) -> Binding<GameSession, f32> {
-    state.bind(
+fn panel_scroll_signal(state: &State<GameSession>, panel: InfoPanel) -> Signal<GameSession, f32> {
+    state.signal(
+        format!("fog.panel-scroll.{panel:?}"),
         move |session| match panel {
             InfoPanel::Intel => session.intel_scroll,
             InfoPanel::Routes => session.routes_scroll,

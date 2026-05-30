@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use sky_engine::app::{AppState, FrameContext, SetupContext};
 use sky_engine::input::KeyCode;
 use sky_engine::render::{CameraMarker, MainCamera, Projection, RenderSettings, Transform};
-use sky_engine::ui::neo::NeoState;
+use sky_engine::ui::neo::State;
 
 use crate::actions;
 use crate::model::{
@@ -20,7 +20,7 @@ use crate::view;
 
 #[derive(Debug)]
 pub struct FogLanternStation {
-    state: NeoState<GameSession>,
+    state: State<GameSession>,
     screenshot: ScreenshotProbe,
 }
 
@@ -33,7 +33,7 @@ impl Default for FogLanternStation {
         configure_debug_session(&mut session);
 
         Self {
-            state: NeoState::new(session),
+            state: State::new(session),
             screenshot: ScreenshotProbe::default(),
         }
     }
@@ -43,7 +43,7 @@ impl AppState for FogLanternStation {
     fn setup(&mut self, ctx: &mut SetupContext<'_>) {
         let app_theme = theme::station_theme();
         ctx.world.insert_resource(RenderSettings {
-            clear_color: app_theme.background_bottom.into(),
+            clear_color: sky_engine::ui::neo::to_render_color(app_theme.background_bottom),
             ..Default::default()
         });
         ctx.world.spawn((

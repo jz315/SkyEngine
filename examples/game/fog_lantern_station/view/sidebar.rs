@@ -1,5 +1,5 @@
 use sky_engine::ui::neo::widgets;
-use sky_engine::ui::neo::{NeoState, Ui};
+use sky_engine::ui::neo::{State, Ui};
 
 use crate::actions;
 use crate::content;
@@ -11,7 +11,7 @@ pub fn draw(
     ui: &mut Ui,
     width: f32,
     height: f32,
-    state: &NeoState<GameSession>,
+    state: &State<GameSession>,
     session: &GameSession,
     app_theme: AppTheme,
 ) {
@@ -98,7 +98,7 @@ fn draw_location_buttons(
     ui: &mut Ui,
     width: f32,
     height: f32,
-    state: &NeoState<GameSession>,
+    state: &State<GameSession>,
     session: &GameSession,
     app_theme: AppTheme,
 ) {
@@ -148,7 +148,7 @@ fn draw_location_buttons(
 fn draw_save_row(
     ui: &mut Ui,
     width: f32,
-    state: &NeoState<GameSession>,
+    state: &State<GameSession>,
     session: &GameSession,
     app_theme: AppTheme,
 ) {

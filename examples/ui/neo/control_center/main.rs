@@ -42,9 +42,12 @@ mod tests {
             uptime_seconds: 0.0,
             frame_count: 0,
         };
-        runtime.compose(1440.0, 920.0, |ui, screen| {
-            view::render(ui, screen, state, &snapshot, runtime_info);
-        });
+        runtime.frame(
+            FrameInput::new(Screen::new(1440.0, 920.0), 0.0).force_full_compose(true),
+            |ui, screen| {
+                view::render(ui, screen, state, &snapshot, runtime_info);
+            },
+        );
     }
 
     fn compose_control_center_incremental(
@@ -53,19 +56,25 @@ mod tests {
     ) {
         let snapshot = state.read(Clone::clone);
         let force_full_compose = runtime.needs_compose();
-        let dirty_ids = state.take_dirty_ids();
+        let dirty = state.take_dirty();
         let runtime_info = RuntimeInfo {
             uptime_seconds: 0.0,
             frame_count: 0,
         };
-        if force_full_compose && dirty_ids.is_empty() {
-            runtime.compose(1440.0, 920.0, |ui, screen| {
+        let input = FrameInput::new(Screen::new(1440.0, 920.0), 0.0)
+            .force_full_compose(force_full_compose && dirty.is_empty());
+        if force_full_compose && dirty.is_empty() {
+            runtime.frame(input, |ui, screen| {
                 view::render(ui, screen, state, &snapshot, runtime_info);
             });
         } else {
-            runtime.compose_incremental(1440.0, 920.0, dirty_ids, |ui, screen| {
-                view::render(ui, screen, state, &snapshot, runtime_info);
-            });
+            runtime.frame_incremental(
+                input,
+                move || dirty,
+                |ui, screen| {
+                    view::render(ui, screen, state, &snapshot, runtime_info);
+                },
+            );
         }
     }
 
@@ -110,6 +119,14 @@ mod tests {
                 _ => None,
             })
             .unwrap_or_else(|| panic!("missing nav draw command {id}"))
+    }
+
+    fn nav_target_color(runtime: &Runtime, index: usize) -> Color {
+        let id = format!("control-center.nav.{index}.bg");
+        runtime
+            .find(&id)
+            .unwrap_or_else(|| panic!("missing nav element {index}"))
+            .color
     }
 
     fn color_distance(left: Color, right: Color) -> f32 {
@@ -179,13 +196,14 @@ mod tests {
         );
         let theme = theme::resolve(state.read(|model| model.theme_mode));
         let frame = runtime.current_frame();
-        let overview_to_primary = color_distance(nav_color(&frame, 0), theme.tokens.primary);
-        let tasks_to_primary = color_distance(nav_color(&frame, 1), theme.tokens.primary);
+        let overview_to_primary = color_distance(nav_target_color(&runtime, 0), theme.tokens.primary);
+        let tasks_to_primary = color_distance(nav_target_color(&runtime, 1), theme.tokens.primary);
         assert!(
             tasks_to_primary < overview_to_primary,
-            "incremental compose should repaint selected Tasks nav; \
+            "incremental compose should set selected Tasks nav target color; \
              overview_distance={overview_to_primary}, tasks_distance={tasks_to_primary}"
         );
+        assert!(!frame.draw_list().is_empty());
         assert_eq!(
             runtime.find("control-center.header.title").unwrap().text,
             "Tasks"

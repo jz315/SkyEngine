@@ -1,4 +1,4 @@
-use sky_engine::ui::neo::{NeoState, Ui};
+use sky_engine::ui::neo::{State, Ui};
 
 use crate::actions;
 use crate::content;
@@ -6,13 +6,7 @@ use crate::model::{GameSession, Location};
 use crate::theme::AppTheme;
 use crate::view::{commands, components, scene};
 
-pub fn draw(
-    ui: &mut Ui,
-    width: f32,
-    height: f32,
-    state: &NeoState<GameSession>,
-    app_theme: AppTheme,
-) {
+pub fn draw(ui: &mut Ui, width: f32, height: f32, state: &State<GameSession>, app_theme: AppTheme) {
     let margin = if height < 700.0 { 24.0 } else { 34.0 };
     let available_h = (height - margin * 2.0).max(300.0);
     let card_w = (width - margin * 2.0).max(320.0).min(856.0);

@@ -12,5 +12,10 @@ categories = ["gui", "game-development"]
 bytemuck = { version = "1", features = ["derive"] }
 eui-neo = { path = "../eui-neo" }
 glyphon = "0.11"
+profiling = { version = "1.0.17", default-features = false, optional = true }
 rustc-hash = "2.1"
 wgpu = { version = "29", default-features = false, features = ["wgsl"] }
+
+[features]
+default = []
+profile = ["dep:profiling", "eui-neo/profile"]

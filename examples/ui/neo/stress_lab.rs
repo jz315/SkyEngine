@@ -160,6 +160,7 @@ impl AppState for NeoUiStressLab {
         let overlay_ms = elapsed_ms(overlay_start);
 
         self.frame_monitor.record_phases(compose_ms, overlay_ms);
+        maybe_log_stutter(&perf, compose_ms, overlay_ms);
         self.screenshot.update(ctx);
         let signature = self.state.read(LabSignature::from_state);
         self.frame_monitor.observe_signature(signature);
@@ -2187,11 +2188,39 @@ fn env_u32(key: &str) -> Option<u32> {
     std::env::var(key).ok()?.parse().ok()
 }
 
+fn env_f32(key: &str) -> Option<f32> {
+    std::env::var(key).ok()?.parse().ok()
+}
+
 fn env_string(key: &str) -> Option<String> {
     std::env::var(key)
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn maybe_log_stutter(perf: &PerfSnapshot, compose_ms: f32, overlay_ms: f32) {
+    let Some(threshold_ms) = env_f32("SKY_NEO_LAB_STUTTER_LOG_MS") else {
+        return;
+    };
+    if perf.frame_ms < threshold_ms {
+        return;
+    }
+
+    let rest_ms = (perf.frame_ms - compose_ms - overlay_ms).max(0.0);
+    eprintln!(
+        "[neo stutter] frame={} frame_ms={:.3} avg_ms={:.3} compose={:.3} overlay={:.3} rest={:.3} lifetime_worst={:.3} trigger={} trigger_age_ms={:.1} threshold={:.3}",
+        perf.frame,
+        perf.frame_ms,
+        perf.avg_ms,
+        compose_ms,
+        overlay_ms,
+        rest_ms,
+        perf.lifetime_worst_ms,
+        perf.trigger_label,
+        perf.trigger_age_ms,
+        threshold_ms,
+    );
 }
 
 fn elapsed_ms(start: Instant) -> f32 {
@@ -2343,7 +2372,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sky_engine::ui::neo::{Runtime, UiTestDriver};
+    use sky_engine::ui::neo::{DirtyInput, FrameInput, Runtime, Screen, UiTestDriver};
 
     fn perf_snapshot() -> PerfSnapshot {
         PerfSnapshot {
@@ -2376,46 +2405,41 @@ mod tests {
         assert!((perf.frame_ms - 20.0).abs() < 0.001, "{perf:?}");
     }
 
-    fn compose_lab(runtime: &mut Runtime, state: &State<LabState>, dirty_ids: Vec<String>) {
+    fn frame_lab(runtime: &mut Runtime, state: &State<LabState>, dirty: Vec<DirtyInput>) {
         let perf = perf_snapshot();
         let state = state.clone();
-        runtime.compose_incremental(
-            WINDOW_W as f32,
-            WINDOW_H as f32,
-            dirty_ids,
+        runtime.frame_incremental(
+            FrameInput::new(Screen::new(WINDOW_W as f32, WINDOW_H as f32), 0.0),
+            move || dirty,
             move |ui, screen| {
                 draw_lab(ui, screen.width, screen.height, &state, &perf, false, false);
             },
         );
     }
 
-    fn compose_lab_driver(
+    fn frame_lab_driver(
         driver: &mut UiTestDriver,
         state: &State<LabState>,
-        dirty_ids: Vec<String>,
+        dirty: Vec<DirtyInput>,
     ) {
-        compose_lab_driver_at(driver, state, dirty_ids, 0.0);
+        frame_lab_driver_at(driver, state, dirty, 0.0);
     }
 
-    fn compose_lab_driver_at(
+    fn frame_lab_driver_at(
         driver: &mut UiTestDriver,
         state: &State<LabState>,
-        dirty_ids: Vec<String>,
+        dirty: Vec<DirtyInput>,
         time: f32,
     ) {
-        if time > 0.0 {
-            driver.runtime_mut().update_events_and_timers(
-                PointerEvent::default(),
-                sky_engine::ui::neo::ScrollEvent::default(),
-                sky_engine::ui::neo::KeyboardEvent::default(),
-                time,
-            );
-        }
         let perf = perf_snapshot();
         let state = state.clone();
-        driver.compose_incremental(dirty_ids, move |ui, screen| {
+        driver.frame_incremental_dirty_with_delta(time, dirty, move |ui, screen| {
             draw_lab(ui, screen.width, screen.height, &state, &perf, false, false);
         });
+    }
+
+    fn dirty_contains(dirty: &[DirtyInput], id: &str) -> bool {
+        dirty.iter().any(|record| record.id == id)
     }
 
     #[test]
@@ -2423,7 +2447,7 @@ mod tests {
         let state = State::new(LabState::default());
         let mut driver = UiTestDriver::new("stress-lab", WINDOW_W as f32, WINDOW_H as f32);
 
-        compose_lab_driver(&mut driver, &state, Vec::new());
+        frame_lab_driver(&mut driver, &state, Vec::new());
         let label = driver
             .find("signals.tabs.label.1")
             .expect("charts tab label should exist")
@@ -2437,15 +2461,13 @@ mod tests {
 
         assert_eq!(state.read(|state| state.tab), 1, "{trace}");
         assert!(trace.point.is_some_and(|[x, y]| label.contains([x, y])));
-        let dirty_ids = state.take_dirty_ids();
+        let dirty_ids = state.take_dirty();
         assert!(
-            dirty_ids.iter().any(|id| id == "stress-lab.signals.tabs")
-                && dirty_ids
-                    .iter()
-                    .any(|id| id == "stress-lab.signals.tab.body"),
+            dirty_contains(&dirty_ids, "stress-lab.signals.tabs")
+                && dirty_contains(&dirty_ids, "stress-lab.signals.tab.body"),
             "tab click should dirty only the tab controls and tab body: dirty={dirty_ids:?} trace={trace}"
         );
-        compose_lab_driver(&mut driver, &state, dirty_ids);
+        frame_lab_driver(&mut driver, &state, dirty_ids);
 
         assert!(driver.runtime().retained_compose_stats().built >= 1);
         assert!(driver.runtime().retained_compose_stats().reused >= 1);
@@ -2465,7 +2487,7 @@ mod tests {
         assert!(indicator.x > charts_hit.x);
         assert!(indicator.x < charts_hit.x + charts_hit.width);
 
-        compose_lab_driver(&mut driver, &state, state.take_dirty_ids());
+        frame_lab_driver(&mut driver, &state, state.take_dirty());
         assert!(
             driver.runtime().retained_compose_stats().partial_layout,
             "stable post-tab frame should return to partial layout: {:?}",
@@ -2478,21 +2500,19 @@ mod tests {
         let state = State::new(LabState::default());
         let mut driver = UiTestDriver::new("stress-lab", WINDOW_W as f32, WINDOW_H as f32);
 
-        compose_lab_driver(&mut driver, &state, Vec::new());
+        frame_lab_driver(&mut driver, &state, Vec::new());
         let trace = driver
             .click("signals.tabs.hit.1")
             .expect("charts tab hit rect should exist");
 
         assert_eq!(state.read(|state| state.tab), 1, "{trace}");
-        let dirty_ids = state.take_dirty_ids();
+        let dirty_ids = state.take_dirty();
         assert!(
-            dirty_ids.iter().any(|id| id == "stress-lab.signals.tabs")
-                && dirty_ids
-                    .iter()
-                    .any(|id| id == "stress-lab.signals.tab.body"),
+            dirty_contains(&dirty_ids, "stress-lab.signals.tabs")
+                && dirty_contains(&dirty_ids, "stress-lab.signals.tab.body"),
             "tab hit rect should dirty only the tab controls and tab body: dirty={dirty_ids:?} trace={trace}"
         );
-        compose_lab_driver(&mut driver, &state, dirty_ids);
+        frame_lab_driver(&mut driver, &state, dirty_ids);
 
         assert!(driver.runtime().retained_compose_stats().built >= 1);
         assert!(driver.runtime().retained_compose_stats().reused >= 1);
@@ -2518,7 +2538,7 @@ mod tests {
         let state = State::new(LabState::default());
         let mut driver = UiTestDriver::new("stress-lab", WINDOW_W as f32, WINDOW_H as f32);
 
-        compose_lab_driver_at(&mut driver, &state, Vec::new(), 0.0);
+        frame_lab_driver_at(&mut driver, &state, Vec::new(), 0.0);
         let before_orb_scale = driver
             .find("signals.stage.a.orb.fill")
             .expect("pulse orb fill should exist before tab switch")
@@ -2530,14 +2550,14 @@ mod tests {
             .expect("charts tab hit rect should exist");
         assert_eq!(state.read(|state| state.tab), 1, "{trace}");
 
-        let dirty_ids = state.take_dirty_ids();
-        compose_lab_driver_at(&mut driver, &state, dirty_ids, 0.0);
+        let dirty_ids = state.take_dirty();
+        frame_lab_driver_at(&mut driver, &state, dirty_ids, 0.0);
         assert!(
             driver.find("signals.tab.charts").is_some(),
             "charts body should be present after tab switch: {:?}",
             driver.debug_snapshot()
         );
-        driver.runtime_mut().tick_animations(1.0);
+        driver.advance_animations(1.0);
         let before_bar = rect_draw(driver.runtime(), "signals.chart.bar.bar.3")
             .expect("pulse chart bar should draw after switching to charts")
             .transform
@@ -2548,7 +2568,7 @@ mod tests {
             driver.runtime().debug_snapshot_current()
         );
 
-        compose_lab_driver_at(&mut driver, &state, state.take_dirty_ids(), 1.570_796_4);
+        frame_lab_driver_at(&mut driver, &state, state.take_dirty(), 1.570_796_4);
         let after_orb = driver
             .find("signals.stage.a.orb.fill")
             .expect("pulse orb fill should still exist on charts tab")
@@ -2563,13 +2583,13 @@ mod tests {
             .expect("pulse chart bar should still exist on charts tab")
             .transform
             .scale[1];
-        let after_compose_bar = rect_draw(driver.runtime(), "signals.chart.bar.bar.3")
-            .expect("pulse chart bar should draw immediately after live compose")
+        let after_frame_bar = rect_draw(driver.runtime(), "signals.chart.bar.bar.3")
+            .expect("pulse chart bar should draw immediately after live frame")
             .transform
             .scale[1];
         let mut sampled_bars = Vec::new();
         for step in 1..=18 {
-            driver.runtime_mut().tick_animations(1.0 / 60.0);
+            driver.advance_animations(1.0 / 60.0);
             if matches!(step, 1 | 6 | 12 | 18) {
                 let scale = rect_draw(driver.runtime(), "signals.chart.bar.bar.3")
                     .expect("pulse chart bar should draw during animation ticks")
@@ -2584,7 +2604,7 @@ mod tests {
             .expect("pulse chart bar should draw after animation tick");
         let snapshot = driver.debug_snapshot();
         eprintln!(
-            "[signal->charts] after live compose: orb_frame={after_orb:?} orb_scale={after_orb_scale:?} pulse_bar_target_scale={after_bar_target:?} pulse_bar_draw_scale={after_compose_bar:?} sampled_ticks={sampled_bars:?} snapshot={:?}",
+            "[signal->charts] after live frame: orb_frame={after_orb:?} orb_scale={after_orb_scale:?} pulse_bar_target_scale={after_bar_target:?} pulse_bar_draw_scale={after_frame_bar:?} sampled_ticks={sampled_bars:?} snapshot={:?}",
             driver.runtime().debug_snapshot_current()
         );
 
@@ -2601,8 +2621,8 @@ mod tests {
             "charts tab should receive live pulse scale values: before_bar_scale={before_bar:?} after_target_scale={after_bar_target:?} snapshot={snapshot:?}"
         );
         assert!(
-            after_tick_bar > after_compose_bar,
-            "charts bar draw scale should animate after a tick: after_compose={after_compose_bar:?} after_tick={after_tick_bar:?}"
+            after_tick_bar > after_frame_bar,
+            "charts bar draw scale should animate after a tick: after_frame={after_frame_bar:?} after_tick={after_tick_bar:?}"
         );
         assert!(
             snapshot
@@ -2626,19 +2646,19 @@ mod tests {
             });
             let mut driver = UiTestDriver::new("stress-lab", WINDOW_W as f32, WINDOW_H as f32);
 
-            compose_lab_driver_at(&mut driver, &state, Vec::new(), 0.0);
-            driver.runtime_mut().tick_animations(0.0);
+            frame_lab_driver_at(&mut driver, &state, Vec::new(), 0.0);
+            driver.advance_animations(0.0);
             let start_draw = rect_draw_x(driver.runtime(), "signals.tabs.indicator")
                 .expect("tabs indicator should draw before click");
 
             let trace = driver
                 .click(hit_id)
                 .expect("target tab hit rect should exist");
-            let dirty_ids = state.take_dirty_ids();
+            let dirty_ids = state.take_dirty();
             assert!(!dirty_ids.is_empty(), "{trace}");
-            compose_lab_driver_at(&mut driver, &state, dirty_ids, 0.0);
-            driver.runtime_mut().tick_animations(0.0);
-            let after_compose_draw = rect_draw_x(driver.runtime(), "signals.tabs.indicator")
+            frame_lab_driver_at(&mut driver, &state, dirty_ids, 0.0);
+            driver.advance_animations(0.0);
+            let after_frame_draw = rect_draw_x(driver.runtime(), "signals.tabs.indicator")
                 .expect("tabs indicator should draw after click");
             let target = driver
                 .find("signals.tabs.indicator")
@@ -2646,16 +2666,16 @@ mod tests {
                 .frame
                 .x;
 
-            driver.runtime_mut().tick_animations(1.0 / 60.0);
+            driver.advance_animations(1.0 / 60.0);
             let after_tick_draw = rect_draw_x(driver.runtime(), "signals.tabs.indicator")
                 .expect("tabs indicator should draw after animation tick");
 
             eprintln!(
-                "[tabs indicator] start_tab={start_tab} hit={hit_id} start_draw={start_draw:.3} after_compose={after_compose_draw:.3} after_tick={after_tick_draw:.3} target={target:.3} snapshot={:?}",
+                "[tabs indicator] start_tab={start_tab} hit={hit_id} start_draw={start_draw:.3} after_frame={after_frame_draw:.3} after_tick={after_tick_draw:.3} target={target:.3} snapshot={:?}",
                 driver.runtime().debug_snapshot_current()
             );
 
-            (start_draw, after_compose_draw, after_tick_draw)
+            (start_draw, after_frame_draw, after_tick_draw)
         }
 
         let signal_to_chart = sample_transition(0, "signals.tabs.hit.1");
@@ -2679,8 +2699,8 @@ mod tests {
         });
         let mut driver = UiTestDriver::new("stress-lab", WINDOW_W as f32, WINDOW_H as f32);
 
-        compose_lab_driver(&mut driver, &state, Vec::new());
-        driver.runtime_mut().tick_animations(0.0);
+        frame_lab_driver(&mut driver, &state, Vec::new());
+        driver.advance_animations(0.0);
         let start_target = driver
             .find("interactions.segment.indicator")
             .expect("segment indicator should exist before click")
@@ -2692,21 +2712,19 @@ mod tests {
             .click("interactions.segment.hit.1")
             .expect("odd segment hit rect should exist");
         assert_eq!(state.read(|state| state.segment), 1, "{trace}");
-        let dirty_ids = state.take_dirty_ids();
+        let dirty_ids = state.take_dirty();
         assert!(
-            dirty_ids
-                .iter()
-                .any(|id| id == "stress-lab.interactions"),
+            dirty_contains(&dirty_ids, "stress-lab.interactions"),
             "interactions panel should be dirty after segment click: dirty={dirty_ids:?} trace={trace}"
         );
 
-        compose_lab_driver(&mut driver, &state, dirty_ids);
-        driver.runtime_mut().tick_animations(0.0);
+        frame_lab_driver(&mut driver, &state, dirty_ids);
+        driver.advance_animations(0.0);
         let next_target = driver
             .find("interactions.segment.indicator")
             .expect("segment indicator should exist after click")
             .frame;
-        let after_compose_draw = rect_draw_x(driver.runtime(), "interactions.segment.indicator")
+        let after_frame_draw = rect_draw_x(driver.runtime(), "interactions.segment.indicator")
             .expect("segment indicator should draw after click");
         let snapshot = driver.runtime().debug_snapshot_current();
 
@@ -2715,8 +2733,8 @@ mod tests {
             "indicator target should move from mild to odd: start={start_target:?} next={next_target:?}"
         );
         assert!(
-            after_compose_draw < next_target.x,
-            "drawn indicator should initially lag behind target while animating: draw={after_compose_draw} target={}",
+            after_frame_draw < next_target.x,
+            "drawn indicator should initially lag behind target while animating: draw={after_frame_draw} target={}",
             next_target.x
         );
         assert!(
@@ -2724,12 +2742,12 @@ mod tests {
             "segment click should leave active animations: {snapshot:?}"
         );
 
-        driver.runtime_mut().tick_animations(1.0 / 60.0);
+        driver.advance_animations(1.0 / 60.0);
         let after_tick_draw = rect_draw_x(driver.runtime(), "interactions.segment.indicator")
             .expect("segment indicator should draw after tick");
         assert!(
-            after_tick_draw > after_compose_draw,
-            "indicator draw frame should move forward after a tick: before={after_compose_draw} after={after_tick_draw}"
+            after_tick_draw > after_frame_draw,
+            "indicator draw frame should move forward after a tick: before={after_frame_draw} after={after_tick_draw}"
         );
         assert!(
             (after_tick_draw - start_draw).abs() > 0.001,
@@ -2745,8 +2763,8 @@ mod tests {
         });
         let mut driver = UiTestDriver::new("stress-lab", WINDOW_W as f32, WINDOW_H as f32);
 
-        compose_lab_driver(&mut driver, &state, Vec::new());
-        driver.runtime_mut().tick_animations(0.0);
+        frame_lab_driver(&mut driver, &state, Vec::new());
+        driver.advance_animations(0.0);
         log_segment_draw_state("before click", &driver);
 
         let trace = driver
@@ -2758,14 +2776,14 @@ mod tests {
             state.read(|state| state.segment)
         );
 
-        let dirty_ids = state.take_dirty_ids();
-        eprintln!("dirty ids after click = {dirty_ids:?}");
-        compose_lab_driver(&mut driver, &state, dirty_ids);
-        driver.runtime_mut().tick_animations(0.0);
+        let dirty_ids = state.take_dirty();
+        eprintln!("dirty records after click = {dirty_ids:?}");
+        frame_lab_driver(&mut driver, &state, dirty_ids);
+        driver.advance_animations(0.0);
         log_segment_draw_state("after compose", &driver);
 
         for step in 1..=12 {
-            driver.runtime_mut().tick_animations(1.0 / 60.0);
+            driver.advance_animations(1.0 / 60.0);
             if matches!(step, 1 | 3 | 6 | 12) {
                 log_segment_draw_state(&format!("after tick {step}"), &driver);
             }
@@ -2773,7 +2791,7 @@ mod tests {
 
         assert_eq!(state.read(|state| state.segment), 1);
         for _ in 0..48 {
-            driver.runtime_mut().tick_animations(1.0 / 60.0);
+            driver.advance_animations(1.0 / 60.0);
         }
         log_segment_draw_state("after settle", &driver);
         let indicator = rect_draw(driver.runtime(), "interactions.segment.indicator")
@@ -2787,6 +2805,140 @@ mod tests {
             "indicator highlight should be drawn over odd: indicator={:?} odd_hit={odd_hit:?}",
             indicator.frame
         );
+    }
+
+    #[test]
+    fn stress_lab_dropdowns_open_and_select_through_root_popovers() {
+        let state = State::new(LabState::default());
+        let mut driver = UiTestDriver::new("stress-lab", WINDOW_W as f32, WINDOW_H as f32);
+
+        frame_lab_driver(&mut driver, &state, Vec::new());
+
+        let control_trace = driver
+            .click("controls.preset.dropdown.field")
+            .expect("control dropdown field should be clickable");
+        assert!(
+            state.read(|state| state.control_dropdown_open),
+            "{control_trace}"
+        );
+        let dirty_ids = state.take_dirty();
+        frame_lab_driver(&mut driver, &state, dirty_ids);
+        assert!(
+            driver.find("controls.preset.dropdown.item.1").is_some(),
+            "control dropdown popup items should exist after opening: {:?}",
+            driver.debug_snapshot()
+        );
+
+        let control_item_trace = driver
+            .click("controls.preset.dropdown.item.2")
+            .expect("control dropdown popup item should be clickable");
+        assert_eq!(
+            state.read(|state| state.control_dropdown_selected),
+            2,
+            "{control_item_trace}"
+        );
+        assert!(
+            !state.read(|state| state.control_dropdown_open),
+            "{control_item_trace}"
+        );
+
+        frame_lab_driver(&mut driver, &state, state.take_dirty());
+        let quiet_label = driver
+            .find("controls.preset.dropdown.label")
+            .expect("control dropdown label should exist after selecting Quiet");
+        assert_eq!(quiet_label.text, "Quiet");
+        let quiet_badge = driver
+            .find("controls.log.badge.0.text")
+            .expect("first control log badge should exist after selecting Quiet");
+        assert_eq!(quiet_badge.text, "row 21");
+
+        let reopen_trace = driver
+            .click("controls.preset.dropdown.field")
+            .expect("control dropdown should reopen after selecting Quiet");
+        assert!(
+            state.read(|state| state.control_dropdown_open),
+            "{reopen_trace}"
+        );
+        frame_lab_driver(&mut driver, &state, state.take_dirty());
+        let drift_trace = driver
+            .click("controls.preset.dropdown.item.0")
+            .expect("Drift dropdown item should be clickable");
+        assert_eq!(
+            state.read(|state| state.control_dropdown_selected),
+            0,
+            "{drift_trace}"
+        );
+        assert!(
+            !state.read(|state| state.control_dropdown_open),
+            "{drift_trace}"
+        );
+        frame_lab_driver(&mut driver, &state, state.take_dirty());
+        let drift_label = driver
+            .find("controls.preset.dropdown.label")
+            .expect("control dropdown label should exist after selecting Drift");
+        assert_eq!(drift_label.text, "Drift");
+        let drift_badge = driver
+            .find("controls.log.badge.0.text")
+            .expect("first control log badge should exist after selecting Drift");
+        assert_eq!(drift_badge.text, "row 01");
+
+        frame_lab_driver(&mut driver, &state, state.take_dirty());
+        let interaction_trace = driver
+            .click("interactions.dropdown.field")
+            .expect("interaction dropdown field should be clickable");
+        assert!(state.read(|state| state.dropdown_open), "{interaction_trace}");
+        let dirty_ids = state.take_dirty();
+        frame_lab_driver(&mut driver, &state, dirty_ids);
+        assert!(
+            driver.find("interactions.dropdown.item.1").is_some(),
+            "interaction dropdown popup items should exist after opening: {:?}",
+            driver.debug_snapshot()
+        );
+
+        let interaction_item_trace = driver
+            .click("interactions.dropdown.item.1")
+            .expect("interaction dropdown popup item should be clickable");
+        assert_eq!(
+            state.read(|state| state.dropdown_selected),
+            1,
+            "{interaction_item_trace}"
+        );
+        assert!(
+            !state.read(|state| state.dropdown_open),
+            "{interaction_item_trace}"
+        );
+    }
+
+    #[test]
+    fn stress_lab_input_accepts_text_after_focus_click() {
+        let state = State::new(LabState::default());
+        let mut driver = UiTestDriver::new("stress-lab", WINDOW_W as f32, WINDOW_H as f32);
+
+        frame_lab_driver(&mut driver, &state, Vec::new());
+        let focus_trace = driver
+            .click("interactions.input.hit")
+            .expect("input hit rect should be clickable");
+        assert_eq!(
+            driver.runtime().focused_id(),
+            Some("stress-lab.interactions.input.hit"),
+            "{focus_trace}"
+        );
+
+        let type_trace = driver
+            .type_text("signal")
+            .expect("focused input should accept keyboard text");
+        assert_eq!(state.read(|state| state.input_text.clone()), "EUIsignal");
+        let dirty_ids = state.take_dirty();
+        assert!(
+            dirty_contains(&dirty_ids, "stress-lab.interactions.input"),
+            "typing should dirty the input owner: dirty={dirty_ids:?} trace={type_trace}"
+        );
+        frame_lab_driver(&mut driver, &state, dirty_ids);
+
+        let text = driver
+            .find("interactions.input.text")
+            .expect("input text element should exist");
+        assert_eq!(text.text, "EUIsignal");
     }
 
     fn rect_draw_x(runtime: &Runtime, id: &str) -> Option<f32> {
@@ -2838,15 +2990,15 @@ mod tests {
         let state = State::new(LabState::default());
         let mut driver = UiTestDriver::new("stress-lab", WINDOW_W as f32, WINDOW_H as f32);
 
-        compose_lab_driver(&mut driver, &state, Vec::new());
-        compose_lab_driver(&mut driver, &state, state.take_dirty_ids());
-        driver.runtime_mut().tick_animations(0.0);
+        frame_lab_driver(&mut driver, &state, Vec::new());
+        frame_lab_driver(&mut driver, &state, state.take_dirty());
+        driver.advance_animations(0.0);
 
         let active_before = driver
-            .frame("interactions.locked")
+            .element_frame("interactions.locked")
             .expect("active card should exist before scroll");
         let probe_before = driver
-            .frame("interactions.secret")
+            .element_frame("interactions.secret")
             .expect("live probe card should exist before scroll");
         let active_draw_before = rect_draw(driver.runtime(), "interactions.locked.bg")
             .expect("active card background should draw before scroll")
@@ -2858,26 +3010,24 @@ mod tests {
         let trace = driver
             .scroll("interactions.scroll.viewport", 0.0, -2.0)
             .expect("interaction viewport should receive scroll");
-        let dirty_ids = state.take_dirty_ids();
+        let dirty_ids = state.take_dirty();
         eprintln!(
             "[interaction scroll] trace={trace}\n  dirty={dirty_ids:?}\n  offset={}",
             state.read(|state| state.interaction_scroll)
         );
         assert!(
-            dirty_ids
-                .iter()
-                .any(|id| id == "stress-lab.interactions.scroll"),
+            dirty_contains(&dirty_ids, "stress-lab.interactions.scroll"),
             "scrolling should dirty the interaction scroll owner: dirty={dirty_ids:?} trace={trace}"
         );
 
-        compose_lab_driver(&mut driver, &state, dirty_ids);
-        driver.runtime_mut().tick_animations(0.0);
+        frame_lab_driver(&mut driver, &state, dirty_ids);
+        driver.advance_animations(0.0);
 
         let active_after = driver
-            .frame("interactions.locked")
+            .element_frame("interactions.locked")
             .expect("active card should exist after scroll");
         let probe_after = driver
-            .frame("interactions.secret")
+            .element_frame("interactions.secret")
             .expect("live probe card should exist after scroll");
         let active_draw_after = rect_draw(driver.runtime(), "interactions.locked.bg")
             .expect("active card background should draw after scroll")
@@ -2915,8 +3065,8 @@ mod tests {
         let state = State::new(LabState::default());
         let mut runtime = Runtime::new("stress-lab");
 
-        compose_lab(&mut runtime, &state, Vec::new());
-        compose_lab(&mut runtime, &state, Vec::new());
+        frame_lab(&mut runtime, &state, Vec::new());
+        frame_lab(&mut runtime, &state, Vec::new());
 
         assert!(runtime.retained_compose_stats().built >= 2);
         assert!(runtime.retained_compose_stats().reused >= 1);

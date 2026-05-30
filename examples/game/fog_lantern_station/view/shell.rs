@@ -1,4 +1,4 @@
-use sky_engine::ui::neo::{NeoState, Ui};
+use sky_engine::ui::neo::{State, Ui};
 
 use crate::model::GameSession;
 use crate::theme::AppTheme;
@@ -13,7 +13,7 @@ pub fn draw(
     ui: &mut Ui,
     width: f32,
     height: f32,
-    state: &NeoState<GameSession>,
+    state: &State<GameSession>,
     session: &GameSession,
     app_theme: AppTheme,
 ) {

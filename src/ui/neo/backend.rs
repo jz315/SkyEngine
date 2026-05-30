@@ -17,24 +17,54 @@ use super::input_bridge::{
     keyboard_from_key_event, merge_keyboard_event, pointer_from_input, scroll_from_input,
 };
 use super::renderer::NeoRenderer;
-use super::{KeyboardEvent, LayoutRect, PointerEvent, Runtime, Screen, ScrollEvent, Ui};
+use super::{
+    FrameInput, KeyboardEvent, LayoutRect, PointerEvent, Runtime, Screen, ScrollEvent, Ui,
+};
 
 /// Pluggable backend for the neo runtime.
 #[derive(Debug)]
 pub struct NeoUiBackend {
     runtime: Runtime,
     renderer: Option<NeoRenderer>,
-    pending_pointer: PointerEvent,
-    pending_pointer_events: Vec<PointerEvent>,
-    pending_scroll: ScrollEvent,
-    pending_keyboard: KeyboardEvent,
-    event_pointer_position: Option<[f32; 2]>,
-    event_left_down: bool,
-    event_right_down: bool,
+    pending_input: NeoPendingInput,
     modifiers: ModifiersState,
     capture: UiCaptureState,
     screen: Screen,
     delta_seconds: f32,
+}
+
+#[derive(Debug, Default)]
+struct NeoPendingInput {
+    pointer: PointerEvent,
+    pointer_events: Vec<PointerEvent>,
+    scroll: ScrollEvent,
+    keyboard: KeyboardEvent,
+    event_pointer_position: Option<[f32; 2]>,
+    event_left_down: bool,
+    event_right_down: bool,
+}
+
+impl NeoPendingInput {
+    fn begin_frame(&mut self, input: &Input) {
+        let pointer = pointer_from_input(input);
+        self.pointer = pointer;
+        if self.pointer_events.is_empty() {
+            self.event_pointer_position = pointer.position();
+            self.event_left_down = pointer.down;
+            self.event_right_down = pointer.right_down;
+        }
+        self.scroll = scroll_from_input(input);
+    }
+
+    fn drain_frame_input(&mut self, screen: Screen, delta_seconds: f32) -> FrameInput {
+        let input = FrameInput::new(screen, delta_seconds)
+            .pointer(self.pointer)
+            .pointer_events(std::mem::take(&mut self.pointer_events))
+            .scroll(self.scroll)
+            .keyboard(std::mem::take(&mut self.keyboard));
+        self.scroll = ScrollEvent::default();
+        input
+    }
 }
 
 impl NeoUiBackend {
@@ -44,13 +74,7 @@ impl NeoUiBackend {
         Self {
             runtime: Runtime::new(config.page_id),
             renderer: None,
-            pending_pointer: PointerEvent::default(),
-            pending_pointer_events: Vec::new(),
-            pending_scroll: ScrollEvent::default(),
-            pending_keyboard: KeyboardEvent::default(),
-            event_pointer_position: None,
-            event_left_down: false,
-            event_right_down: false,
+            pending_input: NeoPendingInput::default(),
             modifiers: ModifiersState::default(),
             capture: UiCaptureState::default(),
             screen: Screen::default(),
@@ -77,90 +101,31 @@ impl NeoUiBackend {
             height: logical_surface_size[1],
         };
         self.delta_seconds = delta_seconds.max(0.0);
-        self.pending_pointer = pointer_from_input(input);
-        self.event_pointer_position = self.pending_pointer.position();
-        self.event_left_down = self.pending_pointer.down;
-        self.event_right_down = self.pending_pointer.right_down;
-        self.pending_scroll = scroll_from_input(input);
+        self.pending_input.begin_frame(input);
         // Keyboard/text input is sourced from winit events so focused widgets do
         // not receive Backspace/Enter/arrows twice through the raw Input mirror.
-        self.refresh_capture();
+        self.capture = capture_for(&self.runtime, self.screen);
     }
 
-    pub fn compose(&mut self, compose: impl FnOnce(&mut Ui, Screen)) {
-        let screen = self.screen;
-        self.update_pending_events();
-        self.runtime.compose(screen.width, screen.height, compose);
-        self.runtime.tick_animations(self.delta_seconds);
-        self.refresh_capture();
+    pub fn frame(&mut self, build: impl FnOnce(&mut Ui, Screen)) {
+        let input = self.frame_input();
+        self.runtime.frame(input, build);
+        self.capture = capture_for(&self.runtime, self.screen);
     }
 
-    pub fn compose_incremental(
+    pub fn frame_incremental(
         &mut self,
-        dirty_ids: impl FnOnce() -> Vec<String>,
-        compose: impl FnOnce(&mut Ui, Screen),
+        dirty: impl FnOnce() -> Vec<eui_neo::DirtyInput>,
+        build: impl FnOnce(&mut Ui, Screen),
     ) {
-        let screen = self.screen;
-        self.update_pending_events();
-        let force_full_compose = self.runtime.needs_compose();
-        let dirty_ids = dirty_ids();
-        if force_full_compose && dirty_ids.is_empty() {
-            self.runtime.compose(screen.width, screen.height, compose);
-        } else {
-            self.runtime
-                .compose_incremental(screen.width, screen.height, dirty_ids, compose);
-        }
-        self.runtime.tick_animations(self.delta_seconds);
-        self.refresh_capture();
+        let input = self.frame_input();
+        self.runtime.frame_incremental(input, dirty, build);
+        self.capture = capture_for(&self.runtime, self.screen);
     }
 
-    fn update_pending_events(&mut self) {
-        let pointer_events = std::mem::take(&mut self.pending_pointer_events);
-        let keyboard = std::mem::take(&mut self.pending_keyboard);
-        if let Some((last, leading)) = pointer_events.split_last() {
-            for event in leading {
-                self.runtime.update_pointer(*event);
-            }
-            self.runtime.update_events_and_timers(
-                *last,
-                self.pending_scroll,
-                keyboard,
-                self.delta_seconds,
-            );
-        } else {
-            self.runtime.update_events_and_timers(
-                self.pending_pointer,
-                self.pending_scroll,
-                keyboard,
-                self.delta_seconds,
-            );
-        }
-        self.pending_scroll = ScrollEvent::default();
-    }
-
-    fn refresh_capture(&mut self) {
-        let screen_rect = LayoutRect::new(0.0, 0.0, self.screen.width, self.screen.height);
-        let wants_pointer = self.runtime.roots().iter().any(|root| {
-            tree_has_hover_or_active(root, &self.runtime)
-                || tree_has_fullscreen_interactive(root, screen_rect)
-        });
-        let wants_keyboard = self.runtime.focused_id().is_some();
-        self.capture = UiCaptureState::new(wants_pointer, wants_keyboard);
-    }
-
-    fn sync_window_ime(&self, window: Option<&Window>) {
-        let Some(window) = window else {
-            return;
-        };
-        let Some(rect) = self.runtime.focused_ime_rect() else {
-            window.set_ime_allowed(false);
-            return;
-        };
-        window.set_ime_allowed(true);
-        window.set_ime_cursor_area(
-            LogicalPosition::new(rect.x as f64, rect.y as f64),
-            LogicalSize::new(rect.width.max(1.0) as f64, rect.height.max(1.0) as f64),
-        );
+    fn frame_input(&mut self) -> FrameInput {
+        self.pending_input
+            .drain_frame_input(self.screen, self.delta_seconds)
     }
 }
 
@@ -174,7 +139,7 @@ impl UiBackend for NeoUiBackend {
     }
 
     fn handle_event(&mut self, ctx: UiEventContext<'_>) -> UiEventResponse {
-        self.sync_window_ime(ctx.window);
+        sync_window_ime(&self.runtime, ctx.window);
         match ctx.event {
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers = modifiers.state();
@@ -183,19 +148,19 @@ impl UiBackend for NeoUiBackend {
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state == ElementState::Pressed {
                     merge_keyboard_event(
-                        &mut self.pending_keyboard,
+                        &mut self.pending_input.keyboard,
                         keyboard_from_key_event(event, self.modifiers),
                     );
                 }
-                if self.runtime.focused_id().is_some() {
+                if self.runtime.has_keyboard_capture() {
                     UiEventResponse::consumed()
                 } else {
                     UiEventResponse::ignored()
                 }
             }
             WindowEvent::Ime(Ime::Commit(text)) => {
-                self.pending_keyboard.text.push_str(text);
-                if self.runtime.focused_id().is_some() {
+                self.pending_input.keyboard.text.push_str(text);
+                if self.runtime.has_keyboard_capture() {
                     UiEventResponse::consumed()
                 } else {
                     UiEventResponse::ignored()
@@ -203,71 +168,73 @@ impl UiBackend for NeoUiBackend {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let next = physical_cursor_to_logical(*position, ctx.scale_factor);
-                let previous = self.event_pointer_position;
+                let previous = self.pending_input.event_pointer_position;
                 let delta = previous
                     .map(|previous| [next[0] - previous[0], next[1] - previous[1]])
                     .unwrap_or([0.0, 0.0]);
-                self.event_pointer_position = Some(next);
-                self.pending_pointer_events.push(PointerEvent {
+                self.pending_input.event_pointer_position = Some(next);
+                self.pending_input.pointer_events.push(PointerEvent {
                     x: next[0],
                     y: next[1],
                     delta_x: delta[0],
                     delta_y: delta[1],
                     position: Some(next),
                     delta,
-                    down: self.event_left_down,
-                    right_down: self.event_right_down,
+                    down: self.pending_input.event_left_down,
+                    right_down: self.pending_input.event_right_down,
                     ..PointerEvent::default()
                 });
                 UiEventResponse::ignored()
             }
             WindowEvent::CursorLeft { .. } => {
-                self.event_pointer_position = None;
-                self.pending_pointer_events.push(PointerEvent::default());
+                self.pending_input.event_pointer_position = None;
+                self.pending_input
+                    .pointer_events
+                    .push(PointerEvent::default());
                 UiEventResponse::ignored()
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                let Some(position) = self.event_pointer_position else {
+                let Some(position) = self.pending_input.event_pointer_position else {
                     return UiEventResponse::ignored();
                 };
                 let mut event = PointerEvent {
                     x: position[0],
                     y: position[1],
                     position: Some(position),
-                    down: self.event_left_down,
-                    right_down: self.event_right_down,
+                    down: self.pending_input.event_left_down,
+                    right_down: self.pending_input.event_right_down,
                     ..PointerEvent::default()
                 };
                 match button {
                     winit::event::MouseButton::Left => match state {
                         ElementState::Pressed => {
-                            self.event_left_down = true;
+                            self.pending_input.event_left_down = true;
                             event.down = true;
                             event.pressed_this_frame = true;
                         }
                         ElementState::Released => {
-                            self.event_left_down = false;
+                            self.pending_input.event_left_down = false;
                             event.down = false;
                             event.released_this_frame = true;
                         }
                     },
                     winit::event::MouseButton::Right => match state {
                         ElementState::Pressed => {
-                            self.event_right_down = true;
+                            self.pending_input.event_right_down = true;
                             event.right_down = true;
                             event.right_pressed_this_frame = true;
                         }
                         ElementState::Released => {
-                            self.event_right_down = false;
+                            self.pending_input.event_right_down = false;
                             event.right_down = false;
                             event.right_released_this_frame = true;
                         }
                     },
                     _ => return UiEventResponse::ignored(),
                 }
-                event.down = self.event_left_down;
-                event.right_down = self.event_right_down;
-                self.pending_pointer_events.push(event);
+                event.down = self.pending_input.event_left_down;
+                event.right_down = self.pending_input.event_right_down;
+                self.pending_input.pointer_events.push(event);
                 UiEventResponse::ignored()
             }
             _ => UiEventResponse::ignored(),
@@ -280,21 +247,29 @@ impl UiBackend for NeoUiBackend {
             ctx.logical_surface_size,
             ctx.world.time.frame_delta(),
         );
-        self.sync_window_ime(ctx.window);
+        sync_window_ime(&self.runtime, ctx.window);
     }
 
     fn render_overlay(&mut self, ctx: UiRenderContext<'_>) -> Result<(), UiError> {
         if ctx.gpu.has_surface() && ctx.gpu.has_active_frame() {
+            #[cfg(feature = "profile")]
+            let _overlay_scope = sky_profile::profile_scope!("ui_neo", "render_overlay");
             if self.renderer.is_none()
                 || !self
                     .renderer
                     .as_ref()
                     .is_some_and(|renderer| renderer.matches_surface(ctx.gpu.surface_format()))
             {
-                self.renderer = Some(NeoRenderer::new(ctx.gpu));
+                #[cfg(feature = "profile")]
+                let _renderer_create_scope =
+                    sky_profile::profile_scope!("ui_neo", "create_renderer");
+                let renderer = NeoRenderer::new(ctx.gpu);
+                self.renderer = Some(renderer);
             }
             let asset_server = ctx.world.get_resource::<Assets>().cloned();
             let pending_resources = self.renderer.as_mut().is_some_and(|renderer| {
+                #[cfg(feature = "profile")]
+                let _render_scope = sky_profile::profile_scope!("ui_neo", "renderer_render");
                 let status = renderer.render(
                     ctx.gpu,
                     &mut self.runtime,
@@ -319,6 +294,31 @@ impl UiBackend for NeoUiBackend {
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
+}
+
+fn capture_for(runtime: &Runtime, screen: Screen) -> UiCaptureState {
+    let screen_rect = LayoutRect::new(0.0, 0.0, screen.width, screen.height);
+    let wants_pointer = runtime.roots().iter().any(|root| {
+        tree_has_hover_or_active(root, runtime)
+            || tree_has_fullscreen_interactive(root, screen_rect)
+    });
+    let wants_keyboard = runtime.has_keyboard_capture();
+    UiCaptureState::new(wants_pointer, wants_keyboard)
+}
+
+fn sync_window_ime(runtime: &Runtime, window: Option<&Window>) {
+    let Some(window) = window else {
+        return;
+    };
+    let Some(rect) = runtime.focused_ime_rect() else {
+        window.set_ime_allowed(false);
+        return;
+    };
+    window.set_ime_allowed(true);
+    window.set_ime_cursor_area(
+        LogicalPosition::new(rect.x as f64, rect.y as f64),
+        LogicalSize::new(rect.width.max(1.0) as f64, rect.height.max(1.0) as f64),
+    );
 }
 
 fn tree_has_hover_or_active(element: &Element, runtime: &Runtime) -> bool {
@@ -364,9 +364,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn backend_dispatches_pending_keyboard_before_next_compose() {
+    fn backend_dispatches_pending_keyboard_before_next_frame() {
         let text = Rc::new(RefCell::new(String::new()));
-        let observed_during_compose = Rc::new(RefCell::new(String::new()));
+        let observed_during_frame = Rc::new(RefCell::new(String::new()));
         let mut backend = NeoUiBackend::new(NeoUiConfig {
             page_id: "page".to_string(),
         });
@@ -376,7 +376,7 @@ mod tests {
         };
 
         let text_for_callback = text.clone();
-        backend.compose(move |ui, _| {
+        backend.frame(move |ui, _| {
             let text_for_callback = text_for_callback.clone();
             ui.rect("input")
                 .size(80.0, 24.0)
@@ -388,18 +388,18 @@ mod tests {
         backend
             .runtime
             .update_pointer(PointerEvent::pressed_at(8.0, 8.0));
-        backend.pending_keyboard = KeyboardEvent {
+        backend.pending_input.keyboard = KeyboardEvent {
             text: "A".to_string(),
             ..KeyboardEvent::default()
         };
 
-        let text_for_compose = text.clone();
-        let observed = observed_during_compose.clone();
-        backend.compose(move |ui, _| {
+        let text_for_frame = text.clone();
+        let observed = observed_during_frame.clone();
+        backend.frame(move |ui, _| {
             observed
                 .borrow_mut()
-                .push_str(text_for_compose.borrow().as_str());
-            let text_for_callback = text_for_compose.clone();
+                .push_str(text_for_frame.borrow().as_str());
+            let text_for_callback = text_for_frame.clone();
             ui.rect("input")
                 .size(80.0, 24.0)
                 .on_text_input(move |event| {
@@ -409,12 +409,12 @@ mod tests {
         });
 
         assert_eq!(text.borrow().as_str(), "A");
-        assert_eq!(observed_during_compose.borrow().as_str(), "A");
-        assert!(backend.pending_keyboard.text.is_empty());
+        assert_eq!(observed_during_frame.borrow().as_str(), "A");
+        assert!(backend.pending_input.keyboard.text.is_empty());
     }
 
     #[test]
-    fn backend_dispatches_queued_pointer_clicks_in_order_before_compose() {
+    fn backend_dispatches_queued_pointer_clicks_in_order_before_frame() {
         let clicks = Rc::new(RefCell::new(Vec::new()));
         let mut backend = NeoUiBackend::new(NeoUiConfig {
             page_id: "page".to_string(),
@@ -426,7 +426,7 @@ mod tests {
 
         let first_clicks = clicks.clone();
         let second_clicks = clicks.clone();
-        backend.compose(move |ui, _| {
+        backend.frame(move |ui, _| {
             let first_clicks = first_clicks.clone();
             ui.rect("first")
                 .position(0.0, 0.0)
@@ -443,19 +443,23 @@ mod tests {
         });
 
         backend
-            .pending_pointer_events
+            .pending_input
+            .pointer_events
             .push(PointerEvent::pressed_at(10.0, 10.0));
         backend
-            .pending_pointer_events
+            .pending_input
+            .pointer_events
             .push(PointerEvent::released_at(10.0, 10.0));
         backend
-            .pending_pointer_events
+            .pending_input
+            .pointer_events
             .push(PointerEvent::pressed_at(10.0, 50.0));
         backend
-            .pending_pointer_events
+            .pending_input
+            .pointer_events
             .push(PointerEvent::released_at(10.0, 50.0));
 
-        backend.compose(|ui, _| {
+        backend.frame(|ui, _| {
             ui.rect("first").position(0.0, 0.0).size(60.0, 30.0).build();
             ui.rect("second")
                 .position(0.0, 40.0)
@@ -467,7 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn backend_incremental_compose_drains_signal_dirty_ids_after_event_callbacks() {
+    fn backend_incremental_frame_drains_signal_dirty_records_after_event_callbacks() {
         #[derive(Default)]
         struct Model {
             page: i32,
@@ -483,16 +487,16 @@ mod tests {
             height: 80.0,
         };
 
-        let compose_nav = |backend: &mut NeoUiBackend| {
+        let run_nav_frame = |backend: &mut NeoUiBackend| {
             let dirty_state = state.clone();
-            let compose_state = state.clone();
+            let frame_state = state.clone();
             let builds = builds.clone();
-            backend.compose_incremental(
-                move || dirty_state.take_dirty_ids(),
+            backend.frame_incremental(
+                move || dirty_state.take_dirty(),
                 move |ui, _| {
                     ui.column("nav").size(160.0, 80.0).content(|ui| {
                         builds.set(builds.get() + 1);
-                        let page = compose_state.signal(
+                        let page = frame_state.signal(
                             "page",
                             |model| model.page,
                             |model, value| model.page = value,
@@ -508,17 +512,19 @@ mod tests {
             );
         };
 
-        compose_nav(&mut backend);
+        run_nav_frame(&mut backend);
         assert_eq!(builds.get(), 1);
         let frame = backend.runtime.find("nav.button.bg").unwrap().frame;
         backend
-            .pending_pointer_events
+            .pending_input
+            .pointer_events
             .push(PointerEvent::pressed_at(frame.x + 1.0, frame.y + 1.0));
         backend
-            .pending_pointer_events
+            .pending_input
+            .pointer_events
             .push(PointerEvent::released_at(frame.x + 1.0, frame.y + 1.0));
 
-        compose_nav(&mut backend);
+        run_nav_frame(&mut backend);
 
         assert_eq!(state.read(|model| model.page), 1);
         assert_eq!(builds.get(), 2);
@@ -529,7 +535,7 @@ mod tests {
     }
 
     #[test]
-    fn backend_incremental_compose_flushes_real_window_click_before_dirty_ids() {
+    fn backend_incremental_frame_flushes_real_window_click_before_dirty_records() {
         #[derive(Default)]
         struct Model {
             page: i32,
@@ -544,14 +550,14 @@ mod tests {
             height: 80.0,
         };
 
-        let compose_nav = |backend: &mut NeoUiBackend| {
+        let run_nav_frame = |backend: &mut NeoUiBackend| {
             let dirty_state = state.clone();
-            let compose_state = state.clone();
-            backend.compose_incremental(
-                move || dirty_state.take_dirty_ids(),
+            let frame_state = state.clone();
+            backend.frame_incremental(
+                move || dirty_state.take_dirty(),
                 move |ui, _| {
                     ui.column("nav").size(240.0, 80.0).content(|ui| {
-                        let page = compose_state.signal(
+                        let page = frame_state.signal(
                             "page",
                             |model| model.page,
                             |model, value| model.page = value,
@@ -568,19 +574,21 @@ mod tests {
             );
         };
 
-        compose_nav(&mut backend);
+        run_nav_frame(&mut backend);
         let label = backend.runtime.find("tabs.label.1").unwrap().frame;
         let point = [label.x + label.width * 0.5, label.y + label.height * 0.5];
 
-        backend.event_pointer_position = Some(point);
+        backend.pending_input.event_pointer_position = Some(point);
         backend
-            .pending_pointer_events
+            .pending_input
+            .pointer_events
             .push(PointerEvent::pressed_at(point[0], point[1]));
         backend
-            .pending_pointer_events
+            .pending_input
+            .pointer_events
             .push(PointerEvent::released_at(point[0], point[1]));
 
-        compose_nav(&mut backend);
+        run_nav_frame(&mut backend);
 
         assert_eq!(state.read(|model| model.page), 1);
         assert_eq!(
@@ -590,7 +598,78 @@ mod tests {
     }
 
     #[test]
-    fn backend_incremental_compose_rebuilds_fully_after_untracked_click_callback() {
+    fn begin_frame_snapshot_preserves_queued_window_pointer_click() {
+        #[derive(Default)]
+        struct Model {
+            page: i32,
+        }
+
+        let state = eui_neo::State::new(Model::default());
+        let mut backend = NeoUiBackend::new(NeoUiConfig {
+            page_id: "page".to_string(),
+        });
+        backend.screen = Screen {
+            width: 240.0,
+            height: 80.0,
+        };
+
+        let run_nav_frame = |backend: &mut NeoUiBackend| {
+            let dirty_state = state.clone();
+            let frame_state = state.clone();
+            backend.frame_incremental(
+                move || dirty_state.take_dirty(),
+                move |ui, _| {
+                    ui.column("nav").size(240.0, 80.0).content(|ui| {
+                        let page = frame_state.signal(
+                            "page",
+                            |model| model.page,
+                            |model, value| model.page = value,
+                        );
+                        let selected = page.watch(ui);
+                        eui_neo::widgets::tabs(ui, "tabs")
+                            .size(180.0, 40.0)
+                            .items(["One", "Two", "Three"])
+                            .selected(selected)
+                            .on_change(move |next| page.set(next))
+                            .build();
+                    });
+                },
+            );
+        };
+
+        run_nav_frame(&mut backend);
+        let label = backend.runtime.find("tabs.label.1").unwrap().frame;
+        let point = [label.x + label.width * 0.5, label.y + label.height * 0.5];
+
+        backend.pending_input.event_pointer_position = Some(point);
+        backend.pending_input.pointer_events.push(PointerEvent {
+            x: point[0],
+            y: point[1],
+            position: Some(point),
+            down: true,
+            pressed_this_frame: true,
+            ..PointerEvent::default()
+        });
+        backend.pending_input.event_left_down = true;
+        backend.pending_input.pointer_events.push(PointerEvent {
+            x: point[0],
+            y: point[1],
+            position: Some(point),
+            released_this_frame: true,
+            ..PointerEvent::default()
+        });
+        backend.pending_input.event_left_down = false;
+
+        let input = Input::new();
+        backend.begin_frame_snapshot(&input, [240.0, 80.0], 1.0 / 60.0);
+        run_nav_frame(&mut backend);
+
+        assert_eq!(state.read(|model| model.page), 1);
+        assert_eq!(backend.pending_input.event_pointer_position, Some(point));
+    }
+
+    #[test]
+    fn backend_incremental_frame_rebuilds_fully_after_untracked_click_callback() {
         let page = Rc::new(Cell::new(0));
         let builds = Rc::new(Cell::new(0));
         let mut backend = NeoUiBackend::new(NeoUiConfig {
@@ -601,14 +680,14 @@ mod tests {
             height: 80.0,
         };
 
-        let compose_button = |backend: &mut NeoUiBackend| {
-            let page_for_compose = page.clone();
+        let run_button_frame = |backend: &mut NeoUiBackend| {
+            let page_for_frame = page.clone();
             let page_for_click = page.clone();
             let builds = builds.clone();
-            backend.compose_incremental(Vec::new, move |ui, _| {
+            backend.frame_incremental(Vec::<eui_neo::DirtyInput>::new, move |ui, _| {
                 ui.column("panel").size(160.0, 80.0).content(|ui| {
                     builds.set(builds.get() + 1);
-                    let selected = page_for_compose.get();
+                    let selected = page_for_frame.get();
                     let page_for_click = page_for_click.clone();
                     eui_neo::widgets::button(ui, "panel.button")
                         .size(120.0, 40.0)
@@ -619,18 +698,20 @@ mod tests {
             });
         };
 
-        compose_button(&mut backend);
+        run_button_frame(&mut backend);
         assert_eq!(builds.get(), 1);
         let frame = backend.runtime.find("panel.button.bg").unwrap().frame;
         let point = [frame.x + frame.width * 0.5, frame.y + frame.height * 0.5];
         backend
-            .pending_pointer_events
+            .pending_input
+            .pointer_events
             .push(PointerEvent::pressed_at(point[0], point[1]));
         backend
-            .pending_pointer_events
+            .pending_input
+            .pointer_events
             .push(PointerEvent::released_at(point[0], point[1]));
 
-        compose_button(&mut backend);
+        run_button_frame(&mut backend);
 
         assert_eq!(page.get(), 1);
         assert_eq!(builds.get(), 2);

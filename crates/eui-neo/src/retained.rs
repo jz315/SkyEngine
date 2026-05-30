@@ -5,8 +5,9 @@
 //! merges these two invalidation sources before `Ui` decides which scopes can
 //! be reused.
 
+use std::time::Instant;
+
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::sync::OnceLock;
 
 use crate::{Element, ElementKind, LayoutRect};
 
@@ -86,21 +87,112 @@ pub enum RetainedComposeAction {
     Reused,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetainedComposeReason {
+    RetainedReuseUnavailable,
+    DirtyScope,
+    DirtyDescendant,
+    DirtyAncestor,
+    MissingPreviousRoots,
+    MissingPreviousElement,
+    CleanReuse,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetainedComposeEvent {
     pub id: ScopeId,
     pub action: RetainedComposeAction,
+    pub reason: RetainedComposeReason,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScopeComposeRecord {
     pub id: ScopeId,
     pub action: RetainedComposeAction,
+    pub reason: RetainedComposeReason,
     pub build_ms: f32,
     pub self_build_ms: f32,
     pub previous_roots: usize,
     pub current_roots: usize,
     pub element_count: usize,
+}
+
+#[derive(Debug, Default)]
+#[cfg(feature = "profile")]
+pub(crate) struct RetainedTiming {
+    enabled: bool,
+    scope_timing_stack: Vec<f32>,
+}
+
+#[cfg(feature = "profile")]
+impl RetainedTiming {
+    pub(crate) fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
+
+    pub(crate) fn metadata<T>(&mut self, op: impl FnOnce() -> T) -> T {
+        op()
+    }
+
+    pub(crate) fn lookup<T>(&mut self, op: impl FnOnce() -> T) -> T {
+        op()
+    }
+
+    pub(crate) fn begin_scope(&mut self) -> Option<Instant> {
+        if self.enabled {
+            self.scope_timing_stack.push(0.0);
+        }
+        self.enabled.then(Instant::now)
+    }
+
+    pub(crate) fn finish_scope(&mut self, start: Option<Instant>) -> (f32, f32) {
+        let build_ms = elapsed_ms(start);
+        let child_ms = if start.is_some() {
+            self.scope_timing_stack
+                .pop()
+                .expect("scope timing stack should contain active scope")
+        } else {
+            0.0
+        };
+        if start.is_some() {
+            if let Some(parent_child_ms) = self.scope_timing_stack.last_mut() {
+                *parent_child_ms += build_ms;
+            }
+        }
+        (build_ms, (build_ms - child_ms).max(0.0))
+    }
+}
+
+#[derive(Debug, Default)]
+#[cfg(not(feature = "profile"))]
+pub(crate) struct RetainedTiming;
+
+#[cfg(not(feature = "profile"))]
+impl RetainedTiming {
+    pub(crate) fn set_enabled(&mut self, _enabled: bool) {}
+
+    pub(crate) fn metadata<T>(&mut self, op: impl FnOnce() -> T) -> T {
+        op()
+    }
+
+    pub(crate) fn lookup<T>(&mut self, op: impl FnOnce() -> T) -> T {
+        op()
+    }
+
+    pub(crate) fn begin_scope(&mut self) -> Option<Instant> {
+        None
+    }
+
+    pub(crate) fn finish_scope(&mut self, _start: Option<Instant>) -> (f32, f32) {
+        (0.0, 0.0)
+    }
+}
+
+#[cfg(feature = "profile")]
+fn elapsed_ms(start: Option<Instant>) -> f32 {
+    start
+        .map(|start| start.elapsed().as_secs_f32() * 1000.0)
+        .unwrap_or(0.0)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -412,11 +504,6 @@ fn same_edge_insets(previous: crate::EdgeInsets, next: crate::EdgeInsets) -> boo
 
 fn same_f32(previous: f32, next: f32) -> bool {
     previous.to_bits() == next.to_bits()
-}
-
-pub(crate) fn scope_profile_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("SKY_NEO_SCOPE_PROFILE").is_some())
 }
 
 #[cfg(test)]

@@ -428,6 +428,7 @@ fn item_bottom(index: usize, item_height: f32, stride: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{virtual_list, VirtualListRange};
+    use crate::test_support::compose;
     use crate::{EdgeInsets, PointerEvent, Runtime, ScrollEvent, Size, State};
 
     #[derive(Default)]
@@ -456,7 +457,7 @@ mod tests {
     #[test]
     fn virtual_list_composes_only_visible_items() {
         let mut runtime = Runtime::new("page");
-        runtime.compose(240.0, 120.0, |ui, _| {
+        compose(&mut runtime, 240.0, 120.0, |ui, _| {
             virtual_list(ui, "list")
                 .size(160.0, 100.0)
                 .item_count(1_000)
@@ -485,7 +486,7 @@ mod tests {
         let state = State::new(ListState { offset: 24.0 });
         let compose_state = state.clone();
         let mut runtime = Runtime::new("page");
-        runtime.compose(240.0, 120.0, move |ui, _| {
+        compose(&mut runtime, 240.0, 120.0, move |ui, _| {
             let offset = compose_state.signal(
                 "test.signal",
                 |state| state.offset,
@@ -514,7 +515,7 @@ mod tests {
     #[test]
     fn fill_virtual_list_without_previous_frame_does_not_guess_default_height() {
         let mut runtime = Runtime::new("page");
-        runtime.compose(240.0, 120.0, |ui, _| {
+        compose(&mut runtime, 240.0, 120.0, |ui, _| {
             ui.stack("root").size(160.0, 80.0).content(|ui| {
                 virtual_list(ui, "list")
                     .size(Size::fill(), Size::fill())

@@ -1,7 +1,7 @@
 use super::config::NeoWindowConfig;
 use super::input_bridge::{pointer_from_input, scroll_from_input};
 use super::renderer::NeoRenderer;
-use super::{KeyboardEvent, Runtime, Screen, Ui};
+use super::{FrameInput, KeyboardEvent, Runtime, Screen, Ui};
 use crate::asset::Assets;
 use crate::render::SharedRenderAssetCache;
 
@@ -42,17 +42,15 @@ impl crate::app::windows::WindowClient for NeoAuxWindowClient {
             height: size.height as f32 / scale.max(0.01),
         };
 
-        self.runtime.update_events_and_timers(
-            pointer_from_input(ctx.input),
-            scroll_from_input(ctx.input),
-            KeyboardEvent::default(),
-            ctx.dt,
-        );
-        self.runtime
-            .compose(screen.width, screen.height, |ui, screen| {
+        self.runtime.frame(
+            FrameInput::new(screen, ctx.dt)
+                .pointer(pointer_from_input(ctx.input))
+                .scroll(scroll_from_input(ctx.input))
+                .keyboard(KeyboardEvent::default()),
+            |ui, screen| {
                 (self.compose)(ui, screen);
-            });
-        self.runtime.tick_animations(ctx.dt);
+            },
+        );
 
         if let Some(gpu) = ctx.renderer.wgpu_mut() {
             {

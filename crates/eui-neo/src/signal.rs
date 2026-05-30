@@ -2,12 +2,12 @@
 
 use std::cell::RefCell;
 use std::fmt;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::sync::{Arc, OnceLock};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::Ui;
+use crate::{DirtyInput, Ui};
 
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
@@ -63,6 +63,14 @@ struct SignalGraph {
     dirty_flags: FxHashMap<String, DirtyFlags>,
 }
 
+type SignalGraphCell = RefCell<SignalGraph>;
+
+thread_local! {
+    static SCOPE_SIGNAL_GRAPHS: RefCell<FxHashMap<String, Vec<Weak<SignalGraphCell>>>> =
+        RefCell::new(FxHashMap::default());
+    static PENDING_SCOPE_RESETS: RefCell<FxHashSet<String>> = RefCell::new(FxHashSet::default());
+}
+
 impl SignalGraph {
     fn record_watch(&mut self, key: SignalKey, scope: String) {
         if signal_trace_enabled() {
@@ -90,11 +98,31 @@ impl SignalGraph {
             }
         }
     }
+
+    fn clear_scope_dependencies(&mut self, scope: &str) {
+        let Some(keys) = self.scope_to_signals.remove(scope) else {
+            return;
+        };
+        for key in keys {
+            let should_remove = if let Some(scopes) = self.signal_to_scopes.get_mut(&key) {
+                scopes.remove(scope);
+                scopes.is_empty()
+            } else {
+                false
+            };
+            if should_remove {
+                self.signal_to_scopes.remove(&key);
+            }
+        }
+        self.dirty_scopes.remove(scope);
+        self.dirty_reasons.remove(scope);
+        self.dirty_flags.remove(scope);
+    }
 }
 
 pub struct State<T> {
     inner: Rc<RefCell<T>>,
-    graph: Rc<RefCell<SignalGraph>>,
+    graph: Rc<SignalGraphCell>,
 }
 
 impl<T> State<T> {
@@ -113,24 +141,9 @@ impl<T> State<T> {
         f(&mut self.inner.borrow_mut())
     }
 
-    pub fn dirty_ids(&self) -> Vec<String> {
-        self.graph.borrow().dirty_scopes.iter().cloned().collect()
-    }
-
-    pub fn clear_dirty_ids(&self) {
-        let mut graph = self.graph.borrow_mut();
-        graph.dirty_scopes.clear();
-        graph.dirty_reasons.clear();
-        graph.dirty_flags.clear();
-    }
-
-    pub fn take_dirty_ids(&self) -> Vec<String> {
-        let mut graph = self.graph.borrow_mut();
-        let ids = graph.dirty_scopes.iter().cloned().collect();
-        graph.dirty_scopes.clear();
-        graph.dirty_reasons.clear();
-        graph.dirty_flags.clear();
-        ids
+    pub fn dirty(&self) -> Vec<DirtyInput> {
+        let graph = self.graph.borrow();
+        dirty_inputs_from_graph(&graph)
     }
 
     pub fn signal_dependencies(&self) -> Vec<(SignalKey, Vec<String>)> {
@@ -142,7 +155,7 @@ impl<T> State<T> {
             .collect()
     }
 
-    pub fn dirty_id_reasons(&self) -> Vec<(String, SignalKey)> {
+    pub fn dirty_reasons(&self) -> Vec<(String, SignalKey)> {
         self.graph
             .borrow()
             .dirty_reasons
@@ -151,7 +164,7 @@ impl<T> State<T> {
             .collect()
     }
 
-    pub fn dirty_id_flags(&self) -> Vec<(String, DirtyFlags)> {
+    pub fn dirty_flags(&self) -> Vec<(String, DirtyFlags)> {
         self.graph
             .borrow()
             .dirty_flags
@@ -159,6 +172,78 @@ impl<T> State<T> {
             .map(|(scope, flags)| (scope.clone(), *flags))
             .collect()
     }
+
+    pub fn take_dirty(&self) -> Vec<DirtyInput> {
+        let mut graph = self.graph.borrow_mut();
+        let dirty = dirty_inputs_from_graph(&graph);
+        graph.dirty_scopes.clear();
+        graph.dirty_reasons.clear();
+        graph.dirty_flags.clear();
+        dirty
+    }
+}
+
+pub(crate) fn clear_scope_signal_dependencies(scope: &str) {
+    SCOPE_SIGNAL_GRAPHS.with(|registry| {
+        let mut registry = registry.borrow_mut();
+        let Some(graphs) = registry.get_mut(scope) else {
+            return;
+        };
+        graphs.retain(|graph| {
+            if let Some(graph) = graph.upgrade() {
+                graph.borrow_mut().clear_scope_dependencies(scope);
+                true
+            } else {
+                false
+            }
+        });
+        if graphs.is_empty() {
+            registry.remove(scope);
+        }
+    });
+}
+
+pub(crate) fn schedule_scope_dependency_reset(scope: &str) {
+    PENDING_SCOPE_RESETS.with(|pending| {
+        pending.borrow_mut().insert(scope.to_string());
+    });
+}
+
+fn clear_scope_signal_dependencies_if_scheduled(scope: &str) {
+    let should_clear = PENDING_SCOPE_RESETS.with(|pending| pending.borrow_mut().remove(scope));
+    if should_clear {
+        clear_scope_signal_dependencies(scope);
+    }
+}
+
+fn register_scope_signal_graph(scope: &str, graph: &Rc<SignalGraphCell>) {
+    SCOPE_SIGNAL_GRAPHS.with(|registry| {
+        let mut registry = registry.borrow_mut();
+        let graphs = registry.entry(scope.to_string()).or_default();
+        graphs.retain(|existing| existing.upgrade().is_some());
+        let already_registered = graphs
+            .iter()
+            .filter_map(Weak::upgrade)
+            .any(|existing| Rc::ptr_eq(&existing, graph));
+        if !already_registered {
+            graphs.push(Rc::downgrade(graph));
+        }
+    });
+}
+
+fn dirty_inputs_from_graph(graph: &SignalGraph) -> Vec<DirtyInput> {
+    graph
+        .dirty_flags
+        .iter()
+        .map(|(scope, flags)| {
+            let source = graph
+                .dirty_reasons
+                .get(scope)
+                .map(|key| key.as_str().to_string())
+                .unwrap_or_else(|| "signal".to_string());
+            DirtyInput::signal(scope.clone(), source, *flags)
+        })
+        .collect()
 }
 
 impl<T: 'static> State<T> {
@@ -206,6 +291,8 @@ impl<T, V: Clone> Signal<T, V> {
 
     pub fn watch(&self, ui: &mut Ui) -> V {
         if let Some(scope) = ui.dependency_owner_id() {
+            clear_scope_signal_dependencies_if_scheduled(&scope);
+            register_scope_signal_graph(&scope, &self.state.graph);
             self.state
                 .graph
                 .borrow_mut()
@@ -295,7 +382,7 @@ mod tests {
         });
 
         page.set(0);
-        assert!(state.dirty_ids().is_empty());
+        assert!(state.dirty().is_empty());
     }
 
     #[test]
@@ -318,11 +405,12 @@ mod tests {
         assert_eq!(dependencies[0].1, vec!["test.nav".to_string()]);
 
         page.set(2);
-        assert_eq!(state.dirty_ids(), vec!["test.nav".to_string()]);
-        assert_eq!(state.dirty_id_reasons()[0].0, "test.nav");
-        assert_eq!(state.dirty_id_reasons()[0].1.as_str(), "page");
+        assert_eq!(state.dirty()[0].id, "test.nav");
+        assert_eq!(state.dirty()[0].source.as_deref(), Some("page"));
+        assert_eq!(state.dirty_reasons()[0].0, "test.nav");
+        assert_eq!(state.dirty_reasons()[0].1.as_str(), "page");
         assert_eq!(
-            state.dirty_id_flags()[0],
+            state.dirty_flags()[0],
             (
                 "test.nav".to_string(),
                 super::DirtyFlags::COMPOSE | super::DirtyFlags::DRAW
@@ -351,7 +439,7 @@ mod tests {
         assert_eq!(dependencies[0].1, vec!["test.panel".to_string()]);
 
         page.set(1);
-        assert_eq!(state.dirty_ids(), vec!["test.panel".to_string()]);
+        assert_eq!(state.dirty()[0].id, "test.panel");
     }
 
     #[test]

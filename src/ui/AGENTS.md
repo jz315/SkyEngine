@@ -70,10 +70,30 @@
 - `neo/config.rs`: `NeoUiConfig` and `NeoWindowConfig`.
 - `neo/api.rs`: `compose(...)` and `open_window(...)`.
 - `neo/plugin.rs`: `NeoUiPlugin` and backend installation.
-- `neo/backend.rs`: `NeoUiBackend` and neo-specific capture/IME/render integration.
+- `neo/backend.rs`: `NeoUiBackend`, `NeoPendingInput`, and neo-specific capture/IME/render integration.
 - `neo/window.rs`: auxiliary native window client for neo-driven windows.
 - `neo/input_bridge.rs`: raw input and winit keyboard/IME translation for neo.
 - `neo/`: SkyEngine adapter for the independent `eui-neo` runtime, including backend installation, winit input translation, native windows, image resources, and overlay rendering.
+
+## Neo Crate Map
+- `crates/eui-neo/src/runtime/mod.rs`: public `Runtime` facade, construction, frame types, and lifecycle forwarding.
+- `crates/eui-neo/src/runtime/composition.rs`: full and retained incremental composition, partial/full layout decisions, and tree commits.
+- `crates/eui-neo/src/runtime/tree.rs`: roots, screen, scope roots, structure snapshots, id resolution, and structure signatures.
+- `crates/eui-neo/src/runtime/interaction.rs`: pointer, scroll, keyboard dispatch, hit testing, focus, responses, active/hover/drag state.
+- `crates/eui-neo/src/runtime/timing.rs`: runtime clock seconds, clock period ticks, and timer callback scheduling.
+- `crates/eui-neo/src/runtime/animation.rs`: element animation state, frame targets, animated values, and animation ticking.
+- `crates/eui-neo/src/runtime/resources.rs`: skin registry and text/font registration accessors.
+- `crates/eui-neo/src/runtime/debug.rs`: debug snapshots, trace flags, and diagnostic record collection.
+- `crates/eui-neo/src/runtime/dirty.rs`: render/compose/full-redraw flags and draw-list cache invalidation.
+- `crates/eui-neo/src/{callbacks,clock}.rs`: private DSL support for callback transfer/registration and `UiClock`; `Ui` remains the public builder facade.
+- `crates/eui-neo-wgpu/src/renderer/mod.rs`: public `WgpuRenderer` facade and render orchestration.
+- `crates/eui-neo-wgpu/src/renderer/buffers.rs`: vertex buffer upload and capacity cache.
+- `crates/eui-neo-wgpu/src/renderer/images.rs`: image resources, CPU/GPU uploads, cache revisions, and public `Resources`.
+- `crates/eui-neo-wgpu/src/renderer/text.rs`: glyphon state, font registration, text layers, and text buffer cache policy.
+- `crates/eui-neo-wgpu/src/renderer/collect.rs`: draw-list to render-op and primitive-item collection.
+- `crates/eui-neo-wgpu/src/renderer/primitives.rs`: rect, polygon, image, nine-slice, text vertex emission, color conversion, clip, and transform helpers.
+- `crates/eui-neo-wgpu/src/renderer/backdrop.rs`: dummy backdrop, backdrop capture, and blur capture rect logic.
+- `crates/eui-neo-wgpu/src/renderer/pipelines.rs`: `NeoWgpuResources`, shader composition, pipelines, bind groups, and vertex layouts.
 
 ## App Integration
 - App window events can flow through `handle_ui_event(...)`; backends return `UiEventResponse::consumed()` when they consume an event.
@@ -96,6 +116,7 @@
 - Keep widget behavior traceable to EUI-NEO `components/*.h` and runtime/layout/animation behavior traceable to `core/*.h`.
 - Preserve EUI-NEO callback ordering, clamp rules, z-index/layering, modal hit blocking, focus, keyboard, clipboard, IME rect, dirty/redraw, and animation semantics unless there is a documented SkyEngine platform adaptation.
 - Keep reusable behavior in `crates/eui-neo`; `src/ui/neo/` should remain a SkyEngine adapter, and examples should demonstrate parity rather than hide widget implementations.
+- Keep `Runtime` and `WgpuRenderer` as public facades over focused subsystem modules. Do not reintroduce a god-object `runtime.rs` or `renderer.rs`, and do not create a broad `RuntimeContext` that centralizes unrelated state.
 - Prefer `Ui::scroll_y` / `widgets::scroll_y` for vertical scrollable panels instead of manual viewport + content translation + scrollbar composition. Use `.inset(...)` when the scroll area lives inside a rounded panel so the scrollbar and clipped viewport do not occupy the outer rounded edge.
 - Prefer `Ui::popover` / `widgets::popover` for dropdowns, context menus, pickers, and other floating UI that should sit on a root layer instead of resizing the parent layout. Anchor popovers to stable element ids and provide a fallback rect when first-frame placement matters.
 - Use `.rounded_clip(radius)` or `.clip_to_radius()` for rounded shells whose children should be clipped to the same visible shape; this affects draw-list clips and hit testing, not only styling.

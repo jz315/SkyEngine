@@ -775,6 +775,7 @@ impl<'ui> ElementBuilder<'ui> {
         let index = self.ui.push_element(self.element);
         self.ui.push_path(index);
         let pushed_dirty_owner = self.ui.push_dirty_owner_if_exact_dirty(&id);
+        self.ui.schedule_rebuilt_scope_dependency_reset(&id);
         content(self.ui);
         if pushed_dirty_owner {
             self.ui.pop_dirty_owner();

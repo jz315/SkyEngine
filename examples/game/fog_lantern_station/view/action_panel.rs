@@ -1,4 +1,4 @@
-use sky_engine::ui::neo::{Binding, HorizontalAlign, NeoState, Size, Ui};
+use sky_engine::ui::neo::{HorizontalAlign, Signal, Size, State, Ui};
 
 use crate::actions::{self, ActionDefinition};
 use crate::content;
@@ -15,7 +15,7 @@ pub fn draw(
     ui: &mut Ui,
     width: f32,
     height: f32,
-    state: &NeoState<GameSession>,
+    state: &State<GameSession>,
     session: &GameSession,
     app_theme: AppTheme,
 ) {
@@ -55,7 +55,7 @@ pub fn draw(
                     .gap(0.0)
                     .theme(app_theme.tokens)
                     .scrollbar_gap(10.0)
-                    .offset_bind(bind_action_scroll(state))
+                    .offset_signal(action_scroll_signal(state))
                     .content(|ui| {
                         let mut list = components::VirtualList::new(
                             "right.actions.virtual",
@@ -92,7 +92,7 @@ fn draw_run_recap(
     ui: &mut Ui,
     width: f32,
     height: f32,
-    state: &NeoState<GameSession>,
+    state: &State<GameSession>,
     session: &GameSession,
     app_theme: AppTheme,
 ) {
@@ -106,7 +106,7 @@ fn draw_run_recap(
         .gap(0.0)
         .theme(app_theme.tokens)
         .scrollbar_gap(10.0)
-        .offset_bind(bind_action_scroll(state))
+        .offset_signal(action_scroll_signal(state))
         .content(|ui| {
             let mut list =
                 components::VirtualList::new("right.recap.virtual", scroll_offset, height);
@@ -200,7 +200,7 @@ fn draw_recap_card(
 fn draw_action_button(
     ui: &mut Ui,
     width: f32,
-    state: &NeoState<GameSession>,
+    state: &State<GameSession>,
     action: &ActionDefinition,
     index: usize,
     session: &GameSession,
@@ -254,8 +254,9 @@ fn draw_action_button(
         });
 }
 
-fn bind_action_scroll(state: &NeoState<GameSession>) -> Binding<GameSession, f32> {
-    state.bind(
+fn action_scroll_signal(state: &State<GameSession>) -> Signal<GameSession, f32> {
+    state.signal(
+        "fog.action-scroll",
         |session| session.action_scroll,
         |session, value| session.action_scroll = value.max(0.0),
     )

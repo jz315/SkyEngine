@@ -81,10 +81,11 @@ mod tests {
         time_picker, toast, PopoverPlacement,
     };
     use crate::expert::UiDrawCommand;
+    use crate::test_support::compose;
     use crate::Color;
     use crate::{
-        ButtonSkin, EdgeInsets, FontRef, ImageFit, ImageRef, KeyboardEvent, NeoSkin, PointerEvent,
-        Runtime, ScrollEvent, Size, Slice, State,
+        ButtonSkin, DirtyInput, EdgeInsets, FontRef, FrameInput, ImageFit, ImageRef, KeyboardEvent,
+        NeoSkin, PointerEvent, Runtime, Screen, ScrollEvent, Size, Slice, State,
     };
     use std::cell::Cell;
     use std::rc::Rc;
@@ -92,7 +93,7 @@ mod tests {
     #[test]
     fn button_composes_source_shaped_stack_background_and_content() {
         let mut runtime = Runtime::new("page");
-        runtime.compose(320.0, 180.0, |ui, _| {
+        compose(&mut runtime, 320.0, 180.0, |ui, _| {
             button(ui, "start").size(120.0, 40.0).text("Start").build();
         });
 
@@ -105,7 +106,7 @@ mod tests {
     #[test]
     fn button_layout_supports_natural_width_min_width_and_grow() {
         let mut runtime = Runtime::new("page");
-        runtime.compose(420.0, 80.0, |ui, _| {
+        compose(&mut runtime, 420.0, 80.0, |ui, _| {
             ui.row("toolbar").size(420.0, 44.0).gap(12.0).content(|ui| {
                 button(ui, "filter")
                     .text("Filter")
@@ -130,7 +131,7 @@ mod tests {
     fn button_selected_promotes_secondary_theme_to_primary_visual_target() {
         let tokens = super::theme::dark_theme_colors();
         let mut runtime = Runtime::new("page");
-        runtime.compose(240.0, 80.0, move |ui, _| {
+        compose(&mut runtime, 240.0, 80.0, move |ui, _| {
             button(ui, "page")
                 .size(120.0, 40.0)
                 .text("Page")
@@ -145,7 +146,7 @@ mod tests {
     #[test]
     fn input_layout_supports_fill_children_when_grown() {
         let mut runtime = Runtime::new("page");
-        runtime.compose(460.0, 80.0, |ui, _| {
+        compose(&mut runtime, 460.0, 80.0, |ui, _| {
             ui.row("toolbar").size(460.0, 44.0).gap(12.0).content(|ui| {
                 input(ui, "search")
                     .height(40.0)
@@ -163,7 +164,7 @@ mod tests {
     #[test]
     fn badge_uses_natural_width_and_shared_layout_constraints() {
         let mut runtime = Runtime::new("page");
-        runtime.compose(420.0, 80.0, |ui, _| {
+        compose(&mut runtime, 420.0, 80.0, |ui, _| {
             ui.row("toolbar").size(420.0, 34.0).gap(10.0).content(|ui| {
                 badge(ui, "ready").text("Ready").build();
                 badge(ui, "state")
@@ -190,7 +191,7 @@ mod tests {
     #[test]
     fn progress_clamps_value_to_unit_range() {
         let mut runtime = Runtime::new("page");
-        runtime.compose(400.0, 80.0, |ui, _| {
+        compose(&mut runtime, 400.0, 80.0, |ui, _| {
             progress(ui, "loading").size(200.0, 10.0).value(2.0).build();
         });
 
@@ -203,7 +204,7 @@ mod tests {
         let value = Rc::new(Cell::new(-1.0));
         let callback_value = value.clone();
         let mut runtime = Runtime::new("page");
-        runtime.compose(400.0, 80.0, move |ui, _| {
+        compose(&mut runtime, 400.0, 80.0, move |ui, _| {
             let callback_value = callback_value.clone();
             slider(ui, "volume")
                 .size(200.0, 20.0)
@@ -221,7 +222,7 @@ mod tests {
         let checked = Rc::new(Cell::new(false));
         let callback_checked = checked.clone();
         let mut runtime = Runtime::new("page");
-        runtime.compose(240.0, 80.0, move |ui, _| {
+        compose(&mut runtime, 240.0, 80.0, move |ui, _| {
             let callback_checked = callback_checked.clone();
             checkbox(ui, "sound")
                 .checked(false)
@@ -252,7 +253,7 @@ mod tests {
         let state = State::new(BoundWidgetState::default());
         let compose_state = state.clone();
         let mut runtime = Runtime::new("page");
-        runtime.compose(240.0, 80.0, move |ui, _| {
+        compose(&mut runtime, 240.0, 80.0, move |ui, _| {
             let checked = compose_state.signal(
                 "test.signal",
                 |state| state.checked,
@@ -272,7 +273,7 @@ mod tests {
         let state = State::new(BoundWidgetState::default());
         let compose_state = state.clone();
         let mut runtime = Runtime::new("page");
-        runtime.compose(240.0, 80.0, move |ui, _| {
+        compose(&mut runtime, 240.0, 80.0, move |ui, _| {
             let checked = compose_state.signal(
                 "test.signal",
                 |state| state.checked,
@@ -292,7 +293,7 @@ mod tests {
         let state = State::new(BoundWidgetState::default());
         let compose_state = state.clone();
         let mut runtime = Runtime::new("page");
-        runtime.compose(320.0, 80.0, move |ui, _| {
+        compose(&mut runtime, 320.0, 80.0, move |ui, _| {
             let slider_value = compose_state.signal(
                 "test.signal",
                 |state| state.slider,
@@ -314,7 +315,7 @@ mod tests {
         let state = State::new(BoundWidgetState::default());
         let compose_state = state.clone();
         let mut runtime = Runtime::new("page");
-        runtime.compose(320.0, 120.0, move |ui, _| {
+        compose(&mut runtime, 320.0, 120.0, move |ui, _| {
             let text = compose_state.signal(
                 "test.signal",
                 |state| state.text.clone(),
@@ -333,11 +334,74 @@ mod tests {
     }
 
     #[test]
+    fn input_frame_order_focuses_types_and_recomposes_dirty_text() {
+        let state = State::new(BoundWidgetState::default());
+        let mut runtime = Runtime::new("page");
+
+        let frame = |runtime: &mut Runtime, input_frame: FrameInput| {
+            let dirty_state = state.clone();
+            let compose_state = state.clone();
+            runtime.frame_incremental(
+                input_frame,
+                move || dirty_state.take_dirty(),
+                move |ui, _| {
+                    let text = compose_state.signal(
+                        "text",
+                        |state| state.text.clone(),
+                        |state, value| state.text = value,
+                    );
+                    input(ui, "name")
+                        .size(160.0, 40.0)
+                        .text_signal(text)
+                        .build();
+                },
+            );
+        };
+
+        frame(&mut runtime, FrameInput::new(Screen::new(320.0, 80.0), 0.0));
+        frame(
+            &mut runtime,
+            FrameInput::new(Screen::new(320.0, 80.0), 0.0).pointer_events([
+                PointerEvent::pressed_at(8.0, 8.0),
+                PointerEvent::released_at(8.0, 8.0),
+            ]),
+        );
+        assert_eq!(runtime.text_focused_id(), Some("page.name.hit"));
+
+        frame(
+            &mut runtime,
+            FrameInput::new(Screen::new(320.0, 80.0), 0.0).keyboard(KeyboardEvent {
+                text: "abc".to_string(),
+                ..KeyboardEvent::default()
+            }),
+        );
+
+        assert_eq!(state.read(|state| state.text.clone()), "abc");
+        assert_eq!(
+            runtime
+                .find("name.text")
+                .expect("input text element should be present")
+                .text,
+            "abc"
+        );
+        assert_eq!(runtime.debug_snapshot().dirty_ids, vec!["page.name"]);
+        assert!(runtime
+            .debug_snapshot()
+            .invalidations
+            .iter()
+            .any(|invalidation| {
+                invalidation.target.id() == "page.name.hit"
+                    && invalidation.source.kind() == "event"
+                    && invalidation.source.label() == "text_input"
+            }));
+    }
+
+    #[test]
     fn scrollbar_wheel_reports_clamped_offset_change() {
         let offset = Rc::new(Cell::new(-1.0));
         let callback_offset = offset.clone();
         let mut runtime = Runtime::new("page");
-        runtime.compose(80.0, 240.0, move |ui, _| {
+        compose(&mut runtime, 80.0, 240.0, move |ui, _| {
             let callback_offset = callback_offset.clone();
             scrollbar(ui, "list.scrollbar")
                 .size(8.0, 100.0)
@@ -360,7 +424,7 @@ mod tests {
         let offset = Rc::new(Cell::new(-1.0));
         let callback_offset = offset.clone();
         let mut runtime = Runtime::new("page");
-        runtime.compose(160.0, 120.0, move |ui, _| {
+        compose(&mut runtime, 160.0, 120.0, move |ui, _| {
             let callback_offset = callback_offset.clone();
             ui.scroll_y("list")
                 .size(120.0, 80.0)
@@ -394,7 +458,7 @@ mod tests {
         });
         let compose_state = state.clone();
         let mut runtime = Runtime::new("page");
-        runtime.compose(160.0, 120.0, move |ui, _| {
+        compose(&mut runtime, 160.0, 120.0, move |ui, _| {
             let offset = compose_state.signal(
                 "test.signal",
                 |state| state.offset,
@@ -424,7 +488,7 @@ mod tests {
 
         for _ in 0..2 {
             let callback_offset = offset.clone();
-            runtime.compose(160.0, 120.0, move |ui, _| {
+            compose(&mut runtime, 160.0, 120.0, move |ui, _| {
                 ui.stack("root").size(120.0, 80.0).content(|ui| {
                     ui.scroll_y("list")
                         .size(Size::fill(), Size::fill())
@@ -454,7 +518,7 @@ mod tests {
     #[test]
     fn scroll_y_fill_viewport_without_previous_frame_does_not_guess_default_track() {
         let mut runtime = Runtime::new("page");
-        runtime.compose(160.0, 120.0, |ui, _| {
+        compose(&mut runtime, 160.0, 120.0, |ui, _| {
             ui.stack("root").size(120.0, 80.0).content(|ui| {
                 ui.scroll_y("list")
                     .size(Size::fill(), Size::fill())
@@ -472,7 +536,7 @@ mod tests {
     #[test]
     fn scroll_y_inset_keeps_viewport_and_scrollbar_inside_outer_shell() {
         let mut runtime = Runtime::new("page");
-        runtime.compose(160.0, 120.0, |ui, _| {
+        compose(&mut runtime, 160.0, 120.0, |ui, _| {
             ui.scroll_y("panel")
                 .size(120.0, 80.0)
                 .inset(10.0)
@@ -499,7 +563,7 @@ mod tests {
         let offset = Rc::new(Cell::new(-1.0));
         let callback_offset = offset.clone();
         let mut runtime = Runtime::new("page");
-        runtime.compose(180.0, 120.0, move |ui, _| {
+        compose(&mut runtime, 180.0, 120.0, move |ui, _| {
             let callback_offset = callback_offset.clone();
             ui.scroll_x("strip")
                 .size(140.0, 80.0)
@@ -530,7 +594,7 @@ mod tests {
     #[test]
     fn scroll_x_inset_keeps_viewport_and_scrollbar_inside_outer_shell() {
         let mut runtime = Runtime::new("page");
-        runtime.compose(180.0, 120.0, |ui, _| {
+        compose(&mut runtime, 180.0, 120.0, |ui, _| {
             ui.scroll_x("panel")
                 .size(140.0, 80.0)
                 .inset(10.0)
@@ -557,7 +621,7 @@ mod tests {
         let offset = Rc::new(Cell::new((-1.0, -1.0)));
         let callback_offset = offset.clone();
         let mut runtime = Runtime::new("page");
-        runtime.compose(220.0, 160.0, move |ui, _| {
+        compose(&mut runtime, 220.0, 160.0, move |ui, _| {
             let callback_offset = callback_offset.clone();
             ui.scroll_xy("grid")
                 .size(160.0, 100.0)
@@ -595,7 +659,7 @@ mod tests {
     #[test]
     fn scroll_xy_inset_keeps_viewport_and_scrollbars_inside_outer_shell() {
         let mut runtime = Runtime::new("page");
-        runtime.compose(220.0, 160.0, |ui, _| {
+        compose(&mut runtime, 220.0, 160.0, |ui, _| {
             ui.scroll_xy("panel")
                 .size(160.0, 110.0)
                 .inset(10.0)
@@ -628,7 +692,7 @@ mod tests {
     fn popover_composes_on_root_layer_from_previous_anchor_frame() {
         let mut runtime = Runtime::new("page");
         for _ in 0..2 {
-            runtime.compose(320.0, 180.0, |ui, _| {
+            compose(&mut runtime, 320.0, 180.0, |ui, _| {
                 ui.column("panel")
                     .position(20.0, 30.0)
                     .size(120.0, 80.0)
@@ -656,7 +720,7 @@ mod tests {
     #[test]
     fn popover_without_anchor_frame_does_not_guess_zero_anchor() {
         let mut runtime = Runtime::new("page");
-        runtime.compose(320.0, 180.0, |ui, _| {
+        compose(&mut runtime, 320.0, 180.0, |ui, _| {
             ui.column("panel")
                 .position(20.0, 30.0)
                 .size(120.0, 80.0)
@@ -682,7 +746,7 @@ mod tests {
         let value = Rc::new(std::cell::RefCell::new(String::new()));
         let callback_value = value.clone();
         let mut runtime = Runtime::new("page");
-        runtime.compose(320.0, 120.0, move |ui, _| {
+        compose(&mut runtime, 320.0, 120.0, move |ui, _| {
             let callback_value = callback_value.clone();
             input(ui, "name")
                 .text("")
@@ -706,7 +770,7 @@ mod tests {
         let selected = Rc::new(Cell::new(-1));
         let callback_selected = selected.clone();
         let mut runtime = Runtime::new("page");
-        runtime.compose(320.0, 80.0, move |ui, _| {
+        compose(&mut runtime, 320.0, 80.0, move |ui, _| {
             let callback_selected = callback_selected.clone();
             segmented(ui, "mode")
                 .size(180.0, 30.0)
@@ -727,7 +791,7 @@ mod tests {
         let selected = Rc::new(Cell::new(-1));
         let callback_selected = selected.clone();
         let mut runtime = Runtime::new("page");
-        runtime.compose(360.0, 80.0, move |ui, _| {
+        compose(&mut runtime, 360.0, 80.0, move |ui, _| {
             let callback_selected = callback_selected.clone();
             tabs(ui, "tabs")
                 .size(240.0, 40.0)
@@ -748,7 +812,7 @@ mod tests {
         let state = State::new(BoundWidgetState::default());
         let compose_state = state.clone();
         let mut runtime = Runtime::new("page");
-        runtime.compose(320.0, 80.0, move |ui, _| {
+        compose(&mut runtime, 320.0, 80.0, move |ui, _| {
             let selected = compose_state.signal(
                 "test.signal",
                 |state| state.selected,
@@ -772,7 +836,7 @@ mod tests {
         let state = State::new(BoundWidgetState::default());
         let compose_state = state.clone();
         let mut runtime = Runtime::new("page");
-        runtime.compose(360.0, 80.0, move |ui, _| {
+        compose(&mut runtime, 360.0, 80.0, move |ui, _| {
             let selected = compose_state.signal(
                 "test.signal",
                 |state| state.selected,
@@ -796,7 +860,7 @@ mod tests {
         let state = State::new(BoundWidgetState::default());
         let compose_state = state.clone();
         let mut runtime = Runtime::new("page");
-        runtime.compose(260.0, 220.0, move |ui, _| {
+        compose(&mut runtime, 260.0, 220.0, move |ui, _| {
             let selected = compose_state.signal(
                 "test.nav",
                 |state| state.selected,
@@ -815,7 +879,7 @@ mod tests {
         runtime.update_pointer(PointerEvent::released_at(8.0, 74.0));
 
         assert_eq!(state.read(|state| state.selected), 1);
-        assert_eq!(state.dirty_ids(), vec!["page.nav".to_string()]);
+        assert_eq!(state.dirty()[0].id, "page.nav");
     }
 
     #[test]
@@ -823,7 +887,7 @@ mod tests {
         let state = State::new(BoundWidgetState::default());
         let compose_state = state.clone();
         let mut runtime = Runtime::new("page");
-        runtime.compose(240.0, 80.0, move |ui, _| {
+        compose(&mut runtime, 240.0, 80.0, move |ui, _| {
             let selected = compose_state.signal(
                 "test.signal",
                 |state| state.selected == 2,
@@ -857,7 +921,7 @@ mod tests {
         let mut runtime = Runtime::new("page");
         for _ in 0..2 {
             let compose_state = compose_state.clone();
-            runtime.compose(320.0, 220.0, move |ui, _| {
+            compose(&mut runtime, 320.0, 220.0, move |ui, _| {
                 let selected = compose_state.signal(
                     "test.signal",
                     |state| state.selected,
@@ -884,11 +948,115 @@ mod tests {
     }
 
     #[test]
+    fn dropdown_frame_order_opens_and_selects_through_dirty_recompose() {
+        let state = State::new(BoundWidgetState::default());
+        let mut runtime = Runtime::new("page");
+
+        let frame = |runtime: &mut Runtime, dirty: Vec<DirtyInput>| {
+            let dirty_state = state.clone();
+            let compose_state = state.clone();
+            runtime.frame_incremental(
+                FrameInput::new(Screen::new(320.0, 220.0), 0.0).dirty(dirty),
+                move || dirty_state.take_dirty(),
+                move |ui, _| {
+                    let selected = compose_state.signal(
+                        "selected",
+                        |state| state.selected,
+                        |state, value| state.selected = value,
+                    );
+                    let open = compose_state.signal(
+                        "open",
+                        |state| state.open,
+                        |state, value| state.open = value,
+                    );
+                    dropdown(ui, "quality")
+                        .items(["Low", "Medium", "High"])
+                        .value_signal(selected)
+                        .open_signal(open)
+                        .build();
+                },
+            );
+        };
+
+        frame(&mut runtime, Vec::new());
+        runtime.frame_incremental(
+            FrameInput::new(Screen::new(320.0, 220.0), 0.0).pointer_events([
+                PointerEvent::pressed_at(8.0, 8.0),
+                PointerEvent::released_at(8.0, 8.0),
+            ]),
+            || state.take_dirty(),
+            {
+                let state = state.clone();
+                move |ui, _| {
+                    let selected = state.signal(
+                        "selected",
+                        |state| state.selected,
+                        |state, value| state.selected = value,
+                    );
+                    let open = state.signal(
+                        "open",
+                        |state| state.open,
+                        |state, value| state.open = value,
+                    );
+                    dropdown(ui, "quality")
+                        .items(["Low", "Medium", "High"])
+                        .value_signal(selected)
+                        .open_signal(open)
+                        .build();
+                }
+            },
+        );
+
+        assert!(state.read(|state| state.open));
+        assert!(runtime.find("quality.popup.surface").is_some());
+        assert_eq!(
+            runtime.debug_snapshot().dirty_ids,
+            vec!["page.quality", "page.quality.popup"]
+        );
+
+        runtime.frame_incremental(
+            FrameInput::new(Screen::new(320.0, 220.0), 0.0).pointer_events([
+                PointerEvent::pressed_at(16.0, 100.0),
+                PointerEvent::released_at(16.0, 100.0),
+            ]),
+            || state.take_dirty(),
+            {
+                let state = state.clone();
+                move |ui, _| {
+                    let selected = state.signal(
+                        "selected",
+                        |state| state.selected,
+                        |state, value| state.selected = value,
+                    );
+                    let open = state.signal(
+                        "open",
+                        |state| state.open,
+                        |state, value| state.open = value,
+                    );
+                    dropdown(ui, "quality")
+                        .items(["Low", "Medium", "High"])
+                        .value_signal(selected)
+                        .open_signal(open)
+                        .build();
+                }
+            },
+        );
+
+        assert_eq!(state.read(|state| state.selected), 1);
+        assert!(!state.read(|state| state.open));
+        assert!(runtime.find("quality.popup.surface").is_none());
+        assert_eq!(
+            runtime.debug_snapshot().dirty_ids,
+            vec!["page.quality", "page.quality.popup"]
+        );
+    }
+
+    #[test]
     fn dialog_backdrop_reports_close() {
         let closed = Rc::new(Cell::new(false));
         let callback_closed = closed.clone();
         let mut runtime = Runtime::new("page");
-        runtime.compose(400.0, 300.0, move |ui, _| {
+        compose(&mut runtime, 400.0, 300.0, move |ui, _| {
             let callback_closed = callback_closed.clone();
             dialog(ui, "confirm")
                 .open(true)
@@ -908,7 +1076,7 @@ mod tests {
         let opened = Rc::new(Cell::new(false));
         let callback_opened = opened.clone();
         let mut runtime = Runtime::new("page");
-        runtime.compose(320.0, 160.0, move |ui, _| {
+        compose(&mut runtime, 320.0, 160.0, move |ui, _| {
             let callback_opened = callback_opened.clone();
             dropdown(ui, "quality")
                 .items(["Low", "High"])
@@ -933,7 +1101,7 @@ mod tests {
         for _ in 0..2 {
             let callback_selected = callback_selected.clone();
             let callback_opened = callback_opened.clone();
-            runtime.compose(320.0, 220.0, move |ui, _| {
+            compose(&mut runtime, 320.0, 220.0, move |ui, _| {
                 let callback_selected = callback_selected.clone();
                 let callback_opened = callback_opened.clone();
                 dropdown(ui, "quality")
@@ -953,13 +1121,37 @@ mod tests {
     }
 
     #[test]
+    fn dropdown_open_popup_draws_selected_option_background() {
+        let mut runtime = Runtime::new("page");
+        for _ in 0..2 {
+            compose(&mut runtime, 320.0, 220.0, move |ui, _| {
+                dropdown(ui, "quality")
+                    .items(["Drift", "Burst", "Quiet"])
+                    .selected(0)
+                    .open(true)
+                    .build();
+            });
+        }
+
+        let selected = runtime
+            .find("quality.item.selected.0")
+            .expect("selected option background should exist");
+        let item = runtime
+            .find("quality.item.0")
+            .expect("selected option hit rect should exist");
+
+        assert_eq!(selected.frame, item.frame);
+        assert!(runtime.find("quality.item.selected.1").is_none());
+    }
+
+    #[test]
     fn context_menu_dismiss_and_select_callbacks_run() {
         let dismissed = Rc::new(Cell::new(false));
         let selected = Rc::new(Cell::new(-1));
         let callback_dismissed = dismissed.clone();
         let callback_selected = selected.clone();
         let mut runtime = Runtime::new("page");
-        runtime.compose(320.0, 220.0, move |ui, _| {
+        compose(&mut runtime, 320.0, 220.0, move |ui, _| {
             let callback_dismissed = callback_dismissed.clone();
             let callback_selected = callback_selected.clone();
             context_menu(ui, "menu")
@@ -990,7 +1182,7 @@ mod tests {
         });
         let compose_state = state.clone();
         let mut runtime = Runtime::new("page");
-        runtime.compose(480.0, 360.0, move |ui, _| {
+        compose(&mut runtime, 480.0, 360.0, move |ui, _| {
             let open = compose_state.signal(
                 "test.signal",
                 |state| state.open,
@@ -1026,7 +1218,7 @@ mod tests {
         });
         let compose_state = state.clone();
         let mut runtime = Runtime::new("page");
-        runtime.compose(420.0, 340.0, move |ui, _| {
+        compose(&mut runtime, 420.0, 340.0, move |ui, _| {
             let open = compose_state.signal(
                 "test.signal",
                 |state| state.open,
@@ -1058,7 +1250,7 @@ mod tests {
         let dismissed = Rc::new(Cell::new(false));
         let callback_dismissed = dismissed.clone();
         let mut runtime = Runtime::new("page");
-        runtime.compose(480.0, 320.0, move |ui, _| {
+        compose(&mut runtime, 480.0, 320.0, move |ui, _| {
             let callback_dismissed = callback_dismissed.clone();
             toast(ui, "saved")
                 .visible(true)
@@ -1081,7 +1273,7 @@ mod tests {
             opacity: 0.6,
         };
         let mut runtime = Runtime::new("page");
-        runtime.compose(200.0, 100.0, move |ui, _| {
+        compose(&mut runtime, 200.0, 100.0, move |ui, _| {
             image_with_style(ui, "avatar", style)
                 .position(10.0, 20.0)
                 .size(80.0, 40.0)
@@ -1131,7 +1323,7 @@ mod tests {
                 ),
         );
 
-        runtime.compose(320.0, 120.0, |ui, _| {
+        compose(&mut runtime, 320.0, 120.0, |ui, _| {
             skin_button(ui, "play")
                 .skin("kenney.button.green")
                 .text("PLAY")

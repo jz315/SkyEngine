@@ -1,4 +1,4 @@
-use sky_engine::ui::neo::{Binding, NeoState, Ui};
+use sky_engine::ui::neo::{Signal, State, Ui};
 
 use crate::content;
 use crate::dialogue_system;
@@ -12,7 +12,7 @@ pub fn draw(
     ui: &mut Ui,
     width: f32,
     height: f32,
-    state: &NeoState<GameSession>,
+    state: &State<GameSession>,
     session: &GameSession,
     app_theme: AppTheme,
 ) {
@@ -36,7 +36,7 @@ fn draw_narrative(
     ui: &mut Ui,
     width: f32,
     height: f32,
-    state: &NeoState<GameSession>,
+    state: &State<GameSession>,
     session: &GameSession,
     app_theme: AppTheme,
 ) {
@@ -75,7 +75,7 @@ fn draw_narrative(
                         .gap(14.0)
                         .theme(app_theme.tokens)
                         .scrollbar_gap(10.0)
-                        .offset_bind(bind_story_scroll(state))
+                        .offset_signal(story_scroll_signal(state))
                         .content(|ui| {
                             ui.text("story.narrative.title")
                                 .size(inner_w, 36.0)
@@ -132,8 +132,9 @@ fn draw_narrative(
         });
 }
 
-fn bind_story_scroll(state: &NeoState<GameSession>) -> Binding<GameSession, f32> {
-    state.bind(
+fn story_scroll_signal(state: &State<GameSession>) -> Signal<GameSession, f32> {
+    state.signal(
+        "fog.story-scroll",
         |session| session.story_scroll,
         |session, value| session.story_scroll = value.max(0.0),
     )

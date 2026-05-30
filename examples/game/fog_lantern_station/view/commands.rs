@@ -1,9 +1,9 @@
-use sky_engine::ui::neo::NeoState;
+use sky_engine::ui::neo::State;
 
 use crate::model::GameSession;
 use crate::save;
 
-pub fn save_current_state(state: &NeoState<GameSession>) {
+pub fn save_current_state(state: &State<GameSession>) {
     state.update(|session| match save::save(session) {
         Ok(path) => {
             session.notice = Some(format!("已保存到 {}", path.display()));
@@ -14,7 +14,7 @@ pub fn save_current_state(state: &NeoState<GameSession>) {
     });
 }
 
-pub fn load_into_state(state: &NeoState<GameSession>) {
+pub fn load_into_state(state: &State<GameSession>) {
     state.update(|session| match save::load() {
         Ok(mut loaded) => {
             loaded.notice = Some("存档已读取。".to_string());

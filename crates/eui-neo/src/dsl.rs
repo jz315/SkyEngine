@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -8,9 +8,11 @@ use super::{
     ButtonSkin, CheckboxSkin, DragEvent, Element, ElementBuilder, ElementKind, KeyboardEvent,
     LayoutRect, PanelSkin, PointerEvent, Response, ScrollEvent, SkinRegistry, SliderSkin,
 };
+use crate::callbacks::UiCallbacks;
+use crate::clock::{ClockPeriodMap, UiClock};
 use crate::retained::{
-    RetainedComposeAction, RetainedComposeEvent, RetainedComposeStats, RetainedRoot,
-    ScopeComposeRecord, ScopeRoots, ScopeSet,
+    RetainedComposeAction, RetainedComposeEvent, RetainedComposeReason, RetainedComposeStats,
+    RetainedRoot, RetainedTiming, ScopeComposeRecord, ScopeRoots, ScopeSet,
 };
 
 /// Logical screen size supplied to neo composition.
@@ -55,99 +57,33 @@ pub struct Ui {
     focused_id: Option<String>,
     retained_stats: RetainedComposeStats,
     diagnostics_enabled: bool,
-    profile_timing: bool,
-    retained_lookup_ms: f32,
-    retained_metadata_ms: f32,
-    scope_timing_stack: Vec<f32>,
+    retained_timing: RetainedTiming,
     retained_events: Vec<RetainedComposeEvent>,
     scope_compose_records: Vec<ScopeComposeRecord>,
     clock_seconds: f64,
     clock_frame_index: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ClockTick {
-    pub seconds: f32,
-    pub frame_index: u64,
-    pub period: Duration,
+pub(crate) struct UiParts {
+    pub roots: Vec<Element>,
+    pub callbacks: UiCallbacks,
+    pub scope_roots: ScopeRoots,
+    pub live_scopes: ScopeSet,
+    pub clock_ids: ScopeSet,
+    pub clock_periods: Option<ClockPeriodMap>,
+    pub retained_stats: RetainedComposeStats,
+    pub retained_events: Vec<RetainedComposeEvent>,
+    pub scope_compose_records: Vec<ScopeComposeRecord>,
+    pub previous_scope_roots: ScopeRoots,
+    pub previous_roots: Vec<Element>,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct RetainedUiProfile {
-    pub lookup_ms: f32,
-    pub metadata_ms: f32,
-}
-
-pub(crate) type ClockPeriodMap = FxHashMap<String, Duration>;
-
-#[derive(Debug)]
-pub struct UiClock<'ui> {
-    seconds: f64,
-    frame_index: u64,
-    owner: Option<String>,
-    live_scopes: &'ui mut ScopeSet,
-    clock_ids: &'ui mut ScopeSet,
-    clock_periods: &'ui mut Option<ClockPeriodMap>,
-}
-
-#[derive(Default)]
-pub(crate) struct UiCallbacks {
-    pub on_click: FxHashMap<String, Box<dyn FnMut()>>,
-    pub on_press: FxHashMap<String, Box<dyn FnMut(PointerEvent, LayoutRect)>>,
-    pub on_context_menu: FxHashMap<String, Box<dyn FnMut(PointerEvent, LayoutRect)>>,
-    pub on_focus_changed: FxHashMap<String, Box<dyn FnMut(bool)>>,
-    pub on_text_input: FxHashMap<String, Box<dyn FnMut(KeyboardEvent)>>,
-    pub on_scroll: FxHashMap<String, Box<dyn FnMut(ScrollEvent)>>,
-    pub on_drag: FxHashMap<String, Box<dyn FnMut(DragEvent)>>,
-    pub on_timer: FxHashMap<String, Box<dyn FnMut()>>,
-}
-
-impl std::fmt::Debug for UiCallbacks {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("UiCallbacks")
-            .field("on_click", &self.on_click.len())
-            .field("on_press", &self.on_press.len())
-            .field("on_context_menu", &self.on_context_menu.len())
-            .field("on_focus_changed", &self.on_focus_changed.len())
-            .field("on_text_input", &self.on_text_input.len())
-            .field("on_scroll", &self.on_scroll.len())
-            .field("on_drag", &self.on_drag.len())
-            .field("on_timer", &self.on_timer.len())
-            .finish()
-    }
-}
-
-impl UiCallbacks {
-    fn transfer_for_elements(&mut self, previous: &mut UiCallbacks, elements: &[Element]) {
-        let mut ids = FxHashSet::default();
-        collect_element_ids(elements, &mut ids);
-        for id in ids {
-            if let Some(callback) = previous.on_click.remove(&id) {
-                self.on_click.insert(id.clone(), callback);
-            }
-            if let Some(callback) = previous.on_press.remove(&id) {
-                self.on_press.insert(id.clone(), callback);
-            }
-            if let Some(callback) = previous.on_context_menu.remove(&id) {
-                self.on_context_menu.insert(id.clone(), callback);
-            }
-            if let Some(callback) = previous.on_focus_changed.remove(&id) {
-                self.on_focus_changed.insert(id.clone(), callback);
-            }
-            if let Some(callback) = previous.on_text_input.remove(&id) {
-                self.on_text_input.insert(id.clone(), callback);
-            }
-            if let Some(callback) = previous.on_scroll.remove(&id) {
-                self.on_scroll.insert(id.clone(), callback);
-            }
-            if let Some(callback) = previous.on_drag.remove(&id) {
-                self.on_drag.insert(id.clone(), callback);
-            }
-            if let Some(callback) = previous.on_timer.remove(&id) {
-                self.on_timer.insert(id, callback);
-            }
-        }
-    }
+struct ScopeComposeMetrics {
+    build_ms: f32,
+    self_build_ms: f32,
+    previous_roots: usize,
+    current_roots: usize,
+    element_count: usize,
 }
 
 impl Ui {
@@ -179,10 +115,7 @@ impl Ui {
             focused_id: None,
             retained_stats: RetainedComposeStats::default(),
             diagnostics_enabled: cfg!(debug_assertions),
-            profile_timing: false,
-            retained_lookup_ms: 0.0,
-            retained_metadata_ms: 0.0,
-            scope_timing_stack: Vec::new(),
+            retained_timing: RetainedTiming::default(),
             retained_events: Vec::new(),
             scope_compose_records: Vec::new(),
             clock_seconds: 0.0,
@@ -202,40 +135,20 @@ impl Ui {
         &mut self.roots
     }
 
-    pub(crate) fn into_parts(
-        self,
-    ) -> (
-        Vec<Element>,
-        UiCallbacks,
-        ScopeRoots,
-        ScopeSet,
-        ScopeSet,
-        Option<ClockPeriodMap>,
-        RetainedComposeStats,
-        Vec<RetainedComposeEvent>,
-        Vec<ScopeComposeRecord>,
-        ScopeRoots,
-        Vec<Element>,
-        RetainedUiProfile,
-    ) {
-        let profile = RetainedUiProfile {
-            lookup_ms: self.retained_lookup_ms,
-            metadata_ms: self.retained_metadata_ms,
-        };
-        (
-            self.roots,
-            self.callbacks,
-            self.scope_roots,
-            self.live_scopes,
-            self.clock_ids,
-            self.clock_periods,
-            self.retained_stats,
-            self.retained_events,
-            self.scope_compose_records,
-            self.previous_scope_roots,
-            self.previous_roots,
-            profile,
-        )
+    pub(crate) fn into_parts(self) -> UiParts {
+        UiParts {
+            roots: self.roots,
+            callbacks: self.callbacks,
+            scope_roots: self.scope_roots,
+            live_scopes: self.live_scopes,
+            clock_ids: self.clock_ids,
+            clock_periods: self.clock_periods,
+            retained_stats: self.retained_stats,
+            retained_events: self.retained_events,
+            scope_compose_records: self.scope_compose_records,
+            previous_scope_roots: self.previous_scope_roots,
+            previous_roots: self.previous_roots,
+        }
     }
 
     pub fn into_roots(self) -> Vec<Element> {
@@ -318,7 +231,7 @@ impl Ui {
     }
 
     pub(crate) fn set_profile_timing(&mut self, enabled: bool) {
-        self.profile_timing = enabled;
+        self.retained_timing.set_enabled(enabled);
     }
 
     pub(crate) fn set_diagnostics_enabled(&mut self, enabled: bool) {
@@ -430,43 +343,38 @@ impl Ui {
         // Reusing a scope transfers its previous elements and callbacks as a
         // unit. If the scope itself or any nested scope is dirty, rebuild it so
         // signal reads and callbacks capture fresh state.
-        if self.scope_reuse_enabled
-            && !retained_element_has_dirty_dependency(
-                &self.dirty_root_ids,
-                &self.previous_scope_roots,
-                &id,
-            )
-        {
+        let reuse_blocker = self.retained_reuse_blocker(&id);
+        if reuse_blocker.is_none() {
             if let Some(elements) = self.previous_elements_for_scope(&id) {
                 self.callbacks
                     .transfer_for_elements(&mut self.previous_callbacks, &elements);
                 self.preserve_clock_dependencies_for_reused_scope(&id);
                 let children = children_at_path_mut(&mut self.roots, &self.path);
                 children.extend(elements.clone());
-                if self.diagnostics_enabled {
-                    self.retained_events.push(RetainedComposeEvent {
-                        id: id.clone(),
-                        action: RetainedComposeAction::Reused,
-                    });
-                    self.scope_compose_records.push(ScopeComposeRecord {
-                        id: id.clone(),
-                        action: RetainedComposeAction::Reused,
+                self.record_scope_compose(
+                    id.clone(),
+                    RetainedComposeAction::Reused,
+                    RetainedComposeReason::CleanReuse,
+                    ScopeComposeMetrics {
                         build_ms: 0.0,
                         self_build_ms: 0.0,
                         previous_roots: elements.len(),
                         current_roots: elements.len(),
                         element_count: count_elements(&elements),
-                    });
-                }
+                    },
+                );
                 self.record_scope_roots(id, &elements);
                 self.retained_stats.reused += 1;
                 return;
             }
         }
 
+        let build_reason = reuse_blocker.unwrap_or(RetainedComposeReason::MissingPreviousElement);
         let pushed_dirty_owner = self.push_dirty_owner_if_exact_dirty(&id);
+        let id_for_reset = id.clone();
         self.scope_stack.push(id);
         let start = children_at_path_mut(&mut self.roots, &self.path).len();
+        self.schedule_rebuilt_scope_dependency_reset(&id_for_reset);
         let build_start = self.begin_scope_timing();
         build(self);
         let (build_ms, self_build_ms) = self.finish_scope_timing(build_start);
@@ -480,14 +388,11 @@ impl Ui {
                 .expect("dirty owner stack should contain active scope");
         }
         let roots = children_at_path_mut(&mut self.roots, &self.path)[start..].to_vec();
-        if self.diagnostics_enabled {
-            self.retained_events.push(RetainedComposeEvent {
-                id: id.clone(),
-                action: RetainedComposeAction::Built,
-            });
-            self.scope_compose_records.push(ScopeComposeRecord {
-                id: id.clone(),
-                action: RetainedComposeAction::Built,
+        self.record_scope_compose(
+            id.clone(),
+            RetainedComposeAction::Built,
+            build_reason,
+            ScopeComposeMetrics {
                 build_ms,
                 self_build_ms,
                 previous_roots: self
@@ -496,8 +401,8 @@ impl Ui {
                     .map_or(0, |roots| roots.len()),
                 current_roots: roots.len(),
                 element_count: count_elements(&roots),
-            });
-        }
+            },
+        );
         self.record_scope_roots(id, &roots);
         self.retained_stats.built += 1;
     }
@@ -525,6 +430,7 @@ impl Ui {
         build: impl FnOnce(&mut Ui) -> R,
     ) -> R {
         let id = self.resolve_id(id.as_ref());
+        self.schedule_rebuilt_scope_dependency_reset(&id);
         self.dependency_owner_stack.push(id);
         let result = build(self);
         self.dependency_owner_stack
@@ -540,15 +446,22 @@ impl Ui {
         index
     }
 
-    pub(crate) fn reuse_retained_element(&mut self, id: &str) -> bool {
-        if !self.dirty_owner_stack.is_empty()
-            || !self.scope_reuse_enabled
-            || retained_element_has_dirty_dependency(
+    pub(crate) fn schedule_rebuilt_scope_dependency_reset(&mut self, scope: &str) {
+        if self.scope_reuse_enabled
+            && self.previous_scope_roots.contains_key(scope)
+            && retained_element_has_dirty_dependency(
                 &self.dirty_root_ids,
                 &self.previous_scope_roots,
-                id,
+                scope,
             )
         {
+            crate::signal::schedule_scope_dependency_reset(scope);
+        }
+    }
+
+    pub(crate) fn reuse_retained_element(&mut self, id: &str) -> bool {
+        let reuse_blocker = self.retained_reuse_blocker(id);
+        if !self.dirty_owner_stack.is_empty() || reuse_blocker.is_some() {
             return false;
         }
         let Some(elements) = self.previous_elements_for_scope(id) else {
@@ -559,21 +472,18 @@ impl Ui {
         self.preserve_clock_dependencies_for_reused_scope(id);
         let children = children_at_path_mut(&mut self.roots, &self.path);
         children.extend(elements.clone());
-        if self.diagnostics_enabled {
-            self.retained_events.push(RetainedComposeEvent {
-                id: id.to_string(),
-                action: RetainedComposeAction::Reused,
-            });
-            self.scope_compose_records.push(ScopeComposeRecord {
-                id: id.to_string(),
-                action: RetainedComposeAction::Reused,
+        self.record_scope_compose(
+            id.to_string(),
+            RetainedComposeAction::Reused,
+            RetainedComposeReason::CleanReuse,
+            ScopeComposeMetrics {
                 build_ms: 0.0,
                 self_build_ms: 0.0,
                 previous_roots: elements.len(),
                 current_roots: elements.len(),
                 element_count: count_elements(&elements),
-            });
-        }
+            },
+        );
         self.record_scope_roots(id.to_string(), &elements);
         self.retained_stats.reused += 1;
         true
@@ -588,14 +498,12 @@ impl Ui {
     ) {
         let element = children_at_path_mut(&mut self.roots, &self.path)[index].clone();
         let roots = vec![element];
-        if self.diagnostics_enabled {
-            self.retained_events.push(RetainedComposeEvent {
-                id: id.clone(),
-                action: RetainedComposeAction::Built,
-            });
-            self.scope_compose_records.push(ScopeComposeRecord {
-                id: id.clone(),
-                action: RetainedComposeAction::Built,
+        self.record_scope_compose(
+            id.clone(),
+            RetainedComposeAction::Built,
+            self.retained_build_reason(&id)
+                .unwrap_or(RetainedComposeReason::MissingPreviousElement),
+            ScopeComposeMetrics {
                 build_ms,
                 self_build_ms,
                 previous_roots: self
@@ -604,25 +512,77 @@ impl Ui {
                     .map_or(0, |roots| roots.len()),
                 current_roots: roots.len(),
                 element_count: count_elements(&roots),
-            });
-        }
+            },
+        );
         self.record_scope_roots(id, &roots);
         self.retained_stats.built += 1;
     }
 
+    fn retained_build_reason(&self, id: &str) -> Option<RetainedComposeReason> {
+        if !self.dirty_owner_stack.is_empty() {
+            return Some(RetainedComposeReason::DirtyAncestor);
+        }
+        self.retained_reuse_blocker(id)
+    }
+
+    fn retained_reuse_blocker(&self, id: &str) -> Option<RetainedComposeReason> {
+        if !self.scope_reuse_enabled {
+            return Some(RetainedComposeReason::RetainedReuseUnavailable);
+        }
+        if !self.previous_scope_roots.contains_key(id) {
+            return Some(RetainedComposeReason::MissingPreviousRoots);
+        }
+        if self.dirty_scopes.contains(id) {
+            return Some(RetainedComposeReason::DirtyScope);
+        }
+        if retained_element_has_dirty_dependency(
+            &self.dirty_root_ids,
+            &self.previous_scope_roots,
+            id,
+        ) {
+            return Some(RetainedComposeReason::DirtyDescendant);
+        }
+        None
+    }
+
+    fn record_scope_compose(
+        &mut self,
+        id: String,
+        action: RetainedComposeAction,
+        reason: RetainedComposeReason,
+        metrics: ScopeComposeMetrics,
+    ) {
+        if !self.diagnostics_enabled {
+            return;
+        }
+        self.retained_events.push(RetainedComposeEvent {
+            id: id.clone(),
+            action,
+            reason,
+        });
+        self.scope_compose_records.push(ScopeComposeRecord {
+            id,
+            action,
+            reason,
+            build_ms: metrics.build_ms,
+            self_build_ms: metrics.self_build_ms,
+            previous_roots: metrics.previous_roots,
+            current_roots: metrics.current_roots,
+            element_count: metrics.element_count,
+        });
+    }
+
     fn record_scope_roots(&mut self, id: String, elements: &[Element]) {
-        let start = self.profile_timing.then(Instant::now);
-        let roots = RetainedRoot::from_elements(elements);
-        self.retained_metadata_ms += elapsed_ms(start);
+        let roots = self
+            .retained_timing
+            .metadata(|| RetainedRoot::from_elements(elements));
         self.scope_roots.insert(id, roots);
     }
 
     fn previous_elements_for_scope(&mut self, id: &str) -> Option<Vec<Element>> {
-        let start = self.profile_timing.then(Instant::now);
-        let elements =
-            previous_elements_for_scope(&self.previous_roots, &self.previous_scope_roots, id);
-        self.retained_lookup_ms += elapsed_ms(start);
-        elements
+        self.retained_timing.lookup(|| {
+            previous_elements_for_scope(&self.previous_roots, &self.previous_scope_roots, id)
+        })
     }
 
     fn preserve_clock_dependencies_for_reused_scope(&mut self, id: &str) {
@@ -639,28 +599,11 @@ impl Ui {
     }
 
     pub(crate) fn begin_scope_timing(&mut self) -> Option<Instant> {
-        let enabled = crate::retained::scope_profile_enabled();
-        if enabled {
-            self.scope_timing_stack.push(0.0);
-        }
-        enabled.then(Instant::now)
+        self.retained_timing.begin_scope()
     }
 
     pub(crate) fn finish_scope_timing(&mut self, start: Option<Instant>) -> (f32, f32) {
-        let build_ms = elapsed_ms(start);
-        let child_ms = if start.is_some() {
-            self.scope_timing_stack
-                .pop()
-                .expect("scope timing stack should contain active scope")
-        } else {
-            0.0
-        };
-        if start.is_some() {
-            if let Some(parent_child_ms) = self.scope_timing_stack.last_mut() {
-                *parent_child_ms += build_ms;
-            }
-        }
-        (build_ms, (build_ms - child_ms).max(0.0))
+        self.retained_timing.finish_scope(start)
     }
 
     pub(crate) fn push_dirty_owner_if_exact_dirty(&mut self, id: &str) -> bool {
@@ -855,48 +798,6 @@ fn previous_elements_for_scope(
     }
     Some(elements)
 }
-
-impl UiClock<'_> {
-    pub fn seconds(mut self) -> f32 {
-        self.register_dependency();
-        self.seconds as f32
-    }
-
-    pub fn frame_index(mut self) -> u64 {
-        self.register_dependency();
-        self.frame_index
-    }
-
-    pub fn every(mut self, period: Duration) -> ClockTick {
-        self.register_periodic_dependency(period);
-        ClockTick {
-            seconds: self.seconds as f32,
-            frame_index: self.frame_index,
-            period,
-        }
-    }
-
-    fn register_dependency(&mut self) {
-        if let Some(owner) = self.owner.as_ref() {
-            self.live_scopes.insert(owner.clone());
-            self.clock_ids.insert(owner.clone());
-        }
-    }
-
-    fn register_periodic_dependency(&mut self, period: Duration) {
-        if let Some(owner) = self.owner.as_ref() {
-            self.clock_ids.insert(owner.clone());
-            if period.is_zero() {
-                self.live_scopes.insert(owner.clone());
-            } else {
-                self.clock_periods
-                    .get_or_insert_with(ClockPeriodMap::default)
-                    .insert(owner.clone(), period);
-            }
-        }
-    }
-}
-
 fn find_frame(elements: &[Element], id: &str) -> Option<LayoutRect> {
     for element in elements {
         if element.id == id {
@@ -920,25 +821,11 @@ fn find_element<'a>(elements: &'a [Element], id: &str) -> Option<&'a Element> {
     }
     None
 }
-
-fn collect_element_ids(elements: &[Element], ids: &mut FxHashSet<String>) {
-    for element in elements {
-        ids.insert(element.id.clone());
-        collect_element_ids(&element.children, ids);
-    }
-}
-
 fn count_elements(elements: &[Element]) -> usize {
     elements
         .iter()
         .map(|element| 1 + count_elements(&element.children))
         .sum()
-}
-
-fn elapsed_ms(start: Option<Instant>) -> f32 {
-    start
-        .map(|start| start.elapsed().as_secs_f32() * 1000.0)
-        .unwrap_or(0.0)
 }
 
 #[cfg(test)]
