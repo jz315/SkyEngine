@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft execution plan.
+Implementation reference for the strong-handle asset surface.
 
 This plan is the recommended next step for the asset system. It supersedes the
 older weak-`Handle` / strong-`AssetRef` direction where they conflict. The target

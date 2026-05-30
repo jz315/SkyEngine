@@ -1,11 +1,15 @@
 # Neo UI Standalone Library Working Draft
 
-Document status: normative planning draft.
+Document status: broad standalone-library planning draft.
 
-This document is the single active specification and execution plan for Neo UI.
-It replaces the earlier exploratory port and usability plans. Those plans were
-useful while the idea was still forming; this file is the API contract we use
-before extracting Neo UI into a standalone library.
+This document is the broad standalone-library specification for Neo UI. The
+reactive state, binding, dirty-scope, and controlled-widget API is superseded by
+`docs/plan/neo_ui_reactive_signal_scope_plan.md`, which intentionally allows
+breaking changes and replaces the older `Binding` direction with `Signal`.
+
+This document replaces the earlier exploratory port and usability plans. Those
+plans were useful while the idea was still forming; this file remains the broad
+library contract we use before extracting Neo UI into a standalone library.
 
 This document intentionally uses standard-like wording. `shall` is a
 requirement, `shall not` is a prohibition, `should` is the preferred design
@@ -67,7 +71,7 @@ neo_ui::Neo
 neo_ui::Ui
 neo_ui::Response
 neo_ui::State
-neo_ui::Binding
+neo_ui::Signal
 neo_ui::widgets
 ```
 
@@ -141,7 +145,7 @@ pub struct Frame<'a>;
 pub struct FrameOutput<R = ()>;
 pub struct Response;
 pub struct State<T>;
-pub struct Binding<T>;
+pub struct Signal<T>;
 pub struct Id;
 pub struct Screen;
 pub struct Rect;
@@ -153,8 +157,9 @@ pub mod widgets;
 pub mod prelude;
 ```
 
-`NeoRuntime`, `NeoState`, and current EUI-style names may remain as temporary
-compatibility aliases. New examples and docs shall prefer `Neo` and `State`.
+`NeoRuntime`, `NeoState`, `Binding`, and current EUI-style names shall not be
+public compatibility aliases in the final standalone API. New examples and docs
+shall prefer `Neo`, `State`, and `Signal`.
 
 ## 5. Standalone Runtime API
 
@@ -348,9 +353,9 @@ neo::NeoUiPlugin::install(world);
 
 or the current plugin-equivalent shape.
 
-`neo::compose(ctx.ui(), ...)` may lazily install the backend during migration,
-but final examples should install the backend explicitly when the app setup API
-is clear.
+`neo::compose(ctx.ui(), ...)` may lazily install the backend only as an internal
+staging step while the new API lands. Final examples should install the backend
+explicitly when the app setup API is clear.
 
 ## 7. Authoring API
 
@@ -473,23 +478,35 @@ Users shall not be required to manually concatenate long IDs for ordinary UI.
 
 New public Rust API shall use `snake_case`.
 
-CamelCase aliases may remain temporarily for EUI-NEO familiarity.
+CamelCase public aliases shall not be part of the final standalone API.
 
-New documentation and examples shall not teach camelCase aliases.
+## 8. State And Signal
 
-## 8. State And Binding
+### 8.1 Signal-First State
 
-### 8.1 Direct Mutable State
-
-Simple widgets shall accept direct mutable references:
+State shared by retained widgets shall flow through explicit signals:
 
 ```rust
-ui.checkbox("fullscreen", &mut settings.fullscreen);
-ui.slider("volume", &mut settings.volume).range(0.0..=1.0);
-ui.input("player_name", &mut profile.name);
+let state = State::new(AppModel::default());
+
+let volume = state.signal(
+    SignalKey::static_str("settings.volume"),
+    |model| model.volume,
+    |model, value| model.volume = value,
+);
+
+ui.scope("settings.audio", |ui| {
+    ui.slider("volume").range(0.0..=1.0).signal(volume);
+});
 ```
 
-This is the preferred API for local game state.
+This is the preferred API for shared state, grouped controls, retained
+animation targets, and any value whose change should dirty a UI scope.
+
+Widgets may still expose explicit `.value(...).on_change(...)` APIs for
+advanced composition, tests, and integration with external state systems, but
+the final public API shall not teach direct mutable references as the primary
+retained UI state model.
 
 ### 8.2 `State<T>`
 
@@ -500,35 +517,42 @@ pub struct State<T> { /* private */ }
 
 impl<T> State<T> {
     pub fn new(value: T) -> Self;
-    pub fn get(&self) -> T where T: Clone;
-    pub fn set(&self, value: T);
     pub fn read<R>(&self, f: impl FnOnce(&T) -> R) -> R;
     pub fn write<R>(&self, f: impl FnOnce(&mut T) -> R) -> R;
-    pub fn binding<U>(&self, get: impl Fn(&T) -> U + 'static) -> Binding<U>
+    pub fn signal<U>(
+        &self,
+        key: SignalKey,
+        get: impl Fn(&T) -> U + 'static,
+        set: impl Fn(&mut T, U) + 'static,
+    ) -> Signal<U>
     where
-        U: Clone + 'static;
+        U: Clone + PartialEq + 'static;
 }
 ```
 
-`State<T>` shall be useful, but ordinary widgets shall not force all state into
-`State<T>`.
+`State<T>` is the built-in state owner for Neo-authored screens. Host adapters
+may bridge external state systems into `Signal<T>`, but widgets should not know
+about the external model.
 
-### 8.3 `Binding<T>`
+### 8.3 `Signal<T>`
 
-`Binding<T>` shall represent reusable read/write access to state:
+`Signal<T>` shall represent reusable tracked read/write access to state:
 
 ```rust
-pub struct Binding<T> { /* private */ }
+pub struct Signal<T> { /* private */ }
 
-impl<T> Binding<T> {
-    pub fn get(&self) -> T where T: Clone;
+impl<T> Signal<T> {
+    pub fn watch(&self, ui: &mut Ui<'_>) -> T where T: Clone;
+    pub fn peek(&self) -> T where T: Clone;
     pub fn set(&self, value: T);
-    pub fn update(&self, f: impl FnOnce(&mut T));
+    pub fn update(&self, f: impl FnOnce(T) -> T);
 }
 ```
 
-Widgets may accept `Binding<T>` where shared callback-driven state is more
-convenient than `&mut T`.
+`watch(ui)` shall read and register the active scope as a dependency. `peek()`
+shall read without registering a dependency.
+
+Widgets should accept `Signal<T>` for controlled state.
 
 ## 9. Input, Text, And Capture
 
@@ -739,10 +763,10 @@ neo::compose(ctx.ui(), |ui| {
 });
 ```
 
-The existing `neo::compose(ctx, |ui, screen| ...)` API may remain as a temporary
-wrapper.
+The existing `neo::compose(ctx, |ui, screen| ...)` API shall be removed when the
+new compose entry point lands. It shall not remain as a public wrapper.
 
-The old API shall be deprecated after examples are migrated.
+Examples shall be migrated in the same break.
 
 ### 12.4 Phase D: Separate Host Adapter From Core
 
@@ -788,7 +812,7 @@ SkyEngine shall consume it by path dependency.
 The SkyEngine adapter shall re-export the common authoring surface where useful:
 
 ```rust
-pub use neo_ui::{Binding, Color, FrameOutput, Neo, Response, State, Ui, widgets};
+pub use neo_ui::{Color, FrameOutput, Neo, Response, Signal, State, Ui, widgets};
 ```
 
 ### 12.6 Phase F: Optional Renderer Crate
@@ -812,16 +836,20 @@ Publication may be considered only when:
 - input capture works in pause menu, settings, inventory search, modal, and IME scenarios;
 - the public API has survived at least one real example migration.
 
-## 13. Compatibility
+## 13. Clean Break Policy
 
-During migration, existing examples should continue to compile unless a break
-is deliberate and recorded here.
+The Neo UI standalone API shall prefer one deliberate public break over a long
+compatibility period.
 
-Old APIs should first become wrappers around new APIs.
+Old APIs shall not first become public wrappers around new APIs unless a short
+private adapter is required to stage one patch.
 
 Removed APIs shall be removed from examples and docs in the same change.
 
-CamelCase aliases may stay temporarily but shall not appear in new examples.
+Examples shall be allowed to break during the API rewrite, but the rewrite is
+not complete until the intended examples compile against the new API.
+
+CamelCase public aliases shall not be kept for EUI-NEO familiarity.
 
 ## 14. Validation
 
@@ -861,7 +889,7 @@ The following modules are already close to standalone core shape:
 
 ```text
 animation
-binding
+signal
 builder
 dsl
 draw
@@ -907,9 +935,9 @@ Neo::frame(Frame::new(screen).events(events).dt(dt), |ui| { ... })
     -> FrameOutput<R>
 ```
 
-`NeoRuntime` may remain an internal implementation detail or a compatibility
-alias, but ordinary users shall not need to call event update, layout, animation,
-capture, and draw-list methods separately.
+`NeoRuntime` may remain an internal implementation detail, but it shall not be a
+public compatibility alias. Ordinary users shall not need to call event update,
+layout, animation, capture, and draw-list methods separately.
 
 ### 15.3 Input And Capture
 
@@ -994,9 +1022,9 @@ ui.input("name", &mut profile.name).placeholder("Name");
 ui.slider("volume", &mut settings.volume).range(0.0..=1.0);
 ```
 
-Callbacks and `Binding<T>` remain useful for advanced shared state, but they
-shall not be required for ordinary buttons, inputs, sliders, toggles, menus, or
-settings panels.
+Callbacks and explicit `.value(...).on_change(...)` APIs remain useful for
+advanced shared state, but ordinary controlled widgets shall prefer
+`Signal<T>`.
 
 ## 16. Target Architecture
 
@@ -1025,7 +1053,7 @@ No lower layer shall depend on a higher layer.
 
 ```text
 app-neutral runtime: Neo, Frame, FrameOutput, Options
-authoring: Ui, Id, Response, State, Binding, widgets
+authoring: Ui, Id, Response, State, Signal, widgets
 input: Event, PointerEvent, KeyEvent, TextEvent, ImeEvent, Capture
 layout: Screen, Vec2, Rect, Size, EdgeInsets, alignment
 visual model: Element, DrawList, draw commands, ImageSource, Color
@@ -1063,7 +1091,7 @@ compose(ctx.ui(), |ui| ...)
 winit/SkyEngine input translation
 UiHost capture projection
 SkyEngine GpuContext renderer bridge
-optional compatibility wrappers for old examples
+debug-only migration helpers that are not public API
 ```
 
 The adapter shall re-export the common `neo_ui` authoring surface, but it shall
@@ -1111,12 +1139,13 @@ Before the crate extraction begins, the project locks these API decisions:
 - The compose closure receives only `&mut Ui`; screen data is read from
   `ui.screen()`.
 - Widgets are response-first. Callback APIs are additive.
-- Direct `&mut T` widget state is the common path. `State` and `Binding` are
-  optional tools.
+- `Signal<T>` is the common path for shared retained UI state.
+- Explicit `.value(...).on_change(...)` controls are available for advanced
+  integration, tests, and external state systems.
 - Core input uses Neo-owned events, not `winit` or SkyEngine input types.
 - Core rendering output is `DrawList`, not `wgpu` commands or SkyEngine GPU
   resources.
-- CamelCase aliases are compatibility only and shall not appear in new examples.
+- CamelCase public aliases are not part of the final API.
 
 ## 18. Decision Record
 
@@ -1128,8 +1157,8 @@ The project currently decides:
 - the SkyEngine authoring API is `neo::compose(ctx.ui(), |ui| { ... })`;
 - `ctx.neo(...)` is rejected for the common path;
 - response-first widgets are preferred;
-- direct `&mut` state is preferred for simple state;
-- `State` and `Binding` are provided for shared state;
+- `Signal<T>` is preferred for shared retained UI state;
+- `State` and `Signal` are provided for shared state;
 - Neo-owned core types are required before crate extraction;
 - renderer-neutral draw output is required before a clean standalone core exists.
 

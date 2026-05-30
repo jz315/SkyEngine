@@ -1,5 +1,16 @@
 # Asset Resource System Plan
 
+Status: historical planning reference.
+
+This document predates the Sakura resource-system adaptation work and the strong
+`Handle<T>` migration. Keep it as background context only. For current asset
+runtime behavior and implementation status, prefer
+`docs/plan/sakura_resource_system_adaptation_plan.md`, then
+`docs/plan/asset_smart_handle_migration_plan.md`, then
+`docs/reference/asset.md`. Where this file says `AssetServer`, weak `Handle<T>`,
+manual lifetime, thread-per-load, hard-coded cooking, or manual-only hot reload,
+the newer documents and current source code supersede it.
+
 ## Summary
 
 This plan turns SkyEngine's current asset module from a usable runtime service

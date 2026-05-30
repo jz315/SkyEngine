@@ -202,11 +202,11 @@ Definition of done:
 
 ### Phase 2: Asset System Cleanup
 
-1. Replace `AssetServer` with the planned `Assets` facade.
+1. Keep `Assets` as the single public asset facade; older `AssetServer` wording is historical.
 2. Move asset database, stores, queues, registry, events, and diagnostics under `Assets`.
-3. Remove scattered `AssetServer` lazy initialization.
+3. Avoid scattered asset-system lazy initialization outside the `Assets` facade.
 4. Make asset factory registration explicit through asset module/plugin installation, not audio/video server constructors.
-5. Keep `Handle<T>` as weak identity and `AssetRef<T>` as strong runtime lifetime.
+5. Keep `Handle<T>` as the strong runtime lease and use `WeakHandle<T>` / `AssetPath<T>` for weak or serializable identity references.
 
 Definition of done:
 

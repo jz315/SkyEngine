@@ -2,11 +2,17 @@
 
 ## Status
 
-Draft standard for the direct rewrite of SkyEngine's asset and resource
-architecture.
+Historical draft standard for the direct rewrite of SkyEngine's asset and
+resource architecture.
 
-This document is normative for future asset-system design. Implementation plans
-may reference it, but this document defines the target rules and boundaries.
+This document is no longer the sole normative source. It remains useful for
+boundaries such as "asset is not renderer/audio/video/backend residency", but
+current source code plus `docs/plan/sakura_resource_system_adaptation_plan.md`,
+`docs/plan/asset_smart_handle_migration_plan.md`, and
+`docs/reference/asset.md` supersede it where they conflict. In particular,
+strong `Handle<T>`, `WeakHandle<T>`, `AssetPath<T>`, registry-driven cookers,
+bounded I/O, diagnostics, package seams, and hot reload behavior should be read
+from the newer documents.
 
 ## Normative Language
 
@@ -137,64 +143,69 @@ The asset system MUST distinguish identity from lifetime.
 
 ### `Handle<T>`
 
-`Handle<T>` is a typed weak identity handle.
+`Handle<T>` is the current typed strong runtime handle.
 
 `Handle<T>` MUST:
 
 - contain asset identity;
-- be cheap to copy;
-- be serializable when the asset type supports scene/prefab usage;
-- be valid for ECS components and documents;
-- NOT keep an asset loaded by itself;
-- NOT imply the asset is ready.
-
-`Handle<T>` SHOULD be used in serialized data:
-
-```rust
-struct Sprite {
-    texture: Handle<TextureAsset>,
-}
-```
-
-### `AssetRef<T>`
-
-`AssetRef<T>` is the runtime strong asset smart pointer.
-
-`AssetRef<T>` MUST:
-
-- keep the asset load intent alive;
 - be cheap to clone;
-- release its load intent automatically when the final strong reference drops;
-- expose its weak `Handle<T>`;
-- expose readiness and error state;
+- keep the asset load intent alive while any strong handle exists;
+- release its load intent automatically when the final strong handle drops;
+- expose its weak identity through `downgrade`;
+- expose readiness and error state through the `Assets` facade;
 - provide safe access to the installed runtime asset when ready.
 
-`AssetRef<T>` MUST NOT require user code to call `unload`.
+`Handle<T>` MUST NOT require user code to call `unload`.
 
-`AssetRef<T>` SHOULD NOT implement `Deref<Target = T>`, because assets may be
-loading, failed, reloading, or evicted.
+`Handle<T>` SHOULD NOT implement `Copy`, because cloning it owns another
+runtime lease. It SHOULD NOT be the default serialized document reference.
 
-Preferred access pattern:
+Preferred runtime access pattern:
 
 ```rust
-let texture: AssetRef<TextureAsset> = assets.load("sprites/player.png")?;
+let texture: Handle<TextureAsset> = assets.load("sprites/player.png")?;
 
-if let Some(cpu_texture) = texture.try_get() {
+if let Some(cpu_texture) = assets.try_get(&texture) {
     // use installed CPU-side asset
 }
 ```
 
+### `WeakHandle<T>` And `AssetPath<T>`
+
+`WeakHandle<T>` is the typed weak identity handle.
+
+`WeakHandle<T>` MUST:
+
+- contain asset identity;
+- be cheap to copy;
+- NOT keep an asset loaded by itself;
+- NOT imply the asset is ready.
+
+`AssetPath<T>` is a typed source-path reference that can be serialized and later
+resolved or loaded through `Assets`.
+
+`WeakHandle<T>` or `AssetPath<T>` SHOULD be used in serialized data:
+
+```rust
+struct SpriteDescriptor {
+    texture: AssetPath<TextureAsset>,
+}
+```
+
+The older draft terminology `AssetRef<T>` is superseded. The current strong
+runtime handle is `Handle<T>`, and the current weak identity is
+`WeakHandle<T>` or `AssetPath<T>`.
+
 Required common methods:
 
 ```rust
-impl<T: Asset> AssetRef<T> {
-    pub fn handle(&self) -> Handle<T>;
+impl<T: Asset> Handle<T> {
     pub fn id(&self) -> AssetId;
-    pub fn state(&self) -> AssetState;
-    pub fn is_ready(&self) -> bool;
-    pub fn try_get(&self) -> Option<Arc<T>>;
-    pub fn get(&self) -> Result<Arc<T>, AssetError>;
-    pub fn error(&self) -> Option<AssetError>;
+    pub fn downgrade(&self) -> WeakHandle<T>;
+}
+
+impl<T: Asset> WeakHandle<T> {
+    pub fn id(&self) -> AssetId;
 }
 ```
 
@@ -202,7 +213,7 @@ Names MAY change, but the semantics MUST remain.
 
 ### `AssetGroup`
 
-`AssetGroup` is a batch of strong asset references.
+`AssetGroup` is a possible future batch of strong `Handle<T>` roots.
 
 `AssetGroup` MUST:
 
@@ -230,12 +241,13 @@ let chapter = assets.load_group("chapter_01")?;
 world.insert_resource(chapter);
 ```
 
-Scene components SHOULD usually store `Handle<T>`, while a scene-level or
-chapter-level `AssetGroup` keeps the required assets alive.
+Scene documents SHOULD usually store `WeakHandle<T>` or `AssetPath<T>`, while
+runtime scene components and scene-level groups can keep strong `Handle<T>`
+roots alive.
 
 ## Public Loading API
 
-Normal loading MUST return strong asset references:
+Normal loading MUST return strong `Handle<T>` values:
 
 ```rust
 let texture = assets.load::<TextureAsset>("sprites/player.png")?;
@@ -450,8 +462,9 @@ expensive decode work.
 
 Asset dependencies MUST be loaded and held by the asset system.
 
-If `AssetRef<A>` depends on `B`, then `B` MUST remain alive as long as `A` needs
-it, unless loading fails or the dependency is explicitly optional.
+If asset `A` depends on `B`, then the asset system MUST keep `B` alive as a
+dependency lease while `A` needs it, unless loading fails or the dependency is
+explicitly optional.
 
 Dependency cycles MUST be detected and reported through structured errors.
 
@@ -516,8 +529,9 @@ they MUST NOT own the asset database.
 
 `Assets` MUST NOT play sounds or music.
 
-`AudioServer` SHOULD accept `AssetRef<SoundClip>` and `AssetRef<MusicTrack>` or
-resolve `Handle<T>` through an explicit `Assets` reference.
+`AudioServer` SHOULD accept strong `Handle<SoundClip>` and
+`Handle<MusicTrack>` values or resolve weak identities through an explicit
+`Assets` reference.
 
 When playback begins, `AudioServer` SHOULD keep a strong asset reference for as
 long as the playback instance needs the asset.
@@ -574,7 +588,7 @@ VideoPlayer: runtime decoder/player
 GpuVideoFrameBuffer: current frame GPU target
 ```
 
-`VideoServer` SHOULD keep a strong `AssetRef<VideoSourceAsset>` while playback
+`VideoServer` SHOULD keep a strong `Handle<VideoSourceAsset>` while playback
 needs access to the source.
 
 ## Domain Runtime Rule
@@ -661,8 +675,8 @@ The standard is satisfied when:
 - normal user code interacts with one `Assets` facade;
 - no asset global singleton is required;
 - `World` contains at most the public `Assets` facade for asset internals;
-- `Handle<T>` is weak identity;
-- `AssetRef<T>` is strong automatic lifetime;
+- `Handle<T>` is the strong automatic runtime lease;
+- `WeakHandle<T>` / `AssetPath<T>` are weak or serializable identity references;
 - users do not manually balance load/unload in normal code;
 - asset groups support scene-level residency;
 - cook is registry-driven;
