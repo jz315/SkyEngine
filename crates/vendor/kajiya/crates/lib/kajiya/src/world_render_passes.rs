@@ -15,13 +15,12 @@ impl WorldRenderer {
         rg: &mut rg::TemporalRenderGraph,
         frame_desc: &WorldFrameDesc,
     ) -> rg::Handle<Image> {
-        let tlas = if rg.device().ray_tracing_enabled()
-            && self.has_ray_tracing_top_level_acceleration()
-        {
-            Some(self.prepare_top_level_acceleration(rg))
-        } else {
-            None
-        };
+        let tlas =
+            if rg.device().ray_tracing_enabled() && self.has_ray_tracing_top_level_acceleration() {
+                Some(self.prepare_top_level_acceleration(rg))
+            } else {
+                None
+            };
 
         let mut accum_img = rg
             .get_or_create_temporal(

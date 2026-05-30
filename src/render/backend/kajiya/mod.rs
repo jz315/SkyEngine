@@ -162,6 +162,10 @@ impl SceneRenderer for KajiyaSceneRenderer {
         RenderBackendKind::Kajiya
     }
 
+    fn presents_during_render(&self) -> bool {
+        true
+    }
+
     fn begin_frame(&mut self) -> Result<SceneFrame, SceneRendererError> {
         if self.config.should_trace_frame(self.frame_index) {
             eprintln!(

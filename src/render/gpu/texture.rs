@@ -75,6 +75,32 @@ mod tests {
         assert_eq!(texture.mip_level_count(), 3);
         assert_eq!(texture.sample_count(), 1);
         assert_eq!(texture.dimension(), wgpu::TextureDimension::D2);
+        assert_eq!(texture.resident_bytes(), Some(512));
+    }
+
+    #[test]
+    fn texture_resident_bytes_reports_common_format_sizes() {
+        assert_eq!(
+            texture_resident_bytes(2, 3, 1, wgpu::TextureFormat::Rgba8UnormSrgb),
+            Some(24)
+        );
+        assert_eq!(
+            texture_resident_bytes(2, 3, 1, wgpu::TextureFormat::Rgba16Float),
+            Some(48)
+        );
+        assert_eq!(
+            texture_resident_bytes(2, 3, 2, wgpu::TextureFormat::Rgba16Float),
+            Some(96)
+        );
+        assert_eq!(
+            texture_resident_bytes(
+                u32::MAX,
+                u32::MAX,
+                u32::MAX,
+                wgpu::TextureFormat::Rgba32Float
+            ),
+            None
+        );
     }
 }
 
@@ -513,6 +539,20 @@ impl Texture {
         self.0.sample_count
     }
 
+    /// Approximate bytes retained by this texture's allocated texels.
+    ///
+    /// Compressed, packed, multi-planar, and other uncommon formats return
+    /// `None` until the engine has an explicit accounting rule for them.
+    #[inline]
+    pub fn resident_bytes(&self) -> Option<usize> {
+        texture_resident_bytes(
+            self.width(),
+            self.height(),
+            self.depth_or_array_layers(),
+            self.format(),
+        )
+    }
+
     /// Generate a 1×1 white pixel texture (used as default/fallback).
     pub fn white_pixel(ctx: &GpuContext) -> Self {
         Self::from_rgba8(ctx, 1, 1, &[255, 255, 255, 255])
@@ -620,4 +660,58 @@ fn rgba8_len(width: u32, height: u32) -> Result<usize, TextureError> {
         .and_then(|value| value.checked_mul(4))
         .map(|value| value as usize)
         .ok_or(TextureError::InvalidTextureSize { width, height })
+}
+
+fn texture_resident_bytes(
+    width: u32,
+    height: u32,
+    depth_or_array_layers: u32,
+    format: wgpu::TextureFormat,
+) -> Option<usize> {
+    let bytes_per_texel = texture_format_bytes_per_texel(format)?;
+    (width as usize)
+        .checked_mul(height as usize)?
+        .checked_mul(depth_or_array_layers as usize)?
+        .checked_mul(bytes_per_texel)
+}
+
+fn texture_format_bytes_per_texel(format: wgpu::TextureFormat) -> Option<usize> {
+    Some(match format {
+        wgpu::TextureFormat::R8Unorm
+        | wgpu::TextureFormat::R8Snorm
+        | wgpu::TextureFormat::R8Uint
+        | wgpu::TextureFormat::R8Sint => 1,
+        wgpu::TextureFormat::R16Uint
+        | wgpu::TextureFormat::R16Sint
+        | wgpu::TextureFormat::R16Float
+        | wgpu::TextureFormat::Rg8Unorm
+        | wgpu::TextureFormat::Rg8Snorm
+        | wgpu::TextureFormat::Rg8Uint
+        | wgpu::TextureFormat::Rg8Sint
+        | wgpu::TextureFormat::Depth16Unorm => 2,
+        wgpu::TextureFormat::R32Uint
+        | wgpu::TextureFormat::R32Sint
+        | wgpu::TextureFormat::R32Float
+        | wgpu::TextureFormat::Rg16Uint
+        | wgpu::TextureFormat::Rg16Sint
+        | wgpu::TextureFormat::Rg16Float
+        | wgpu::TextureFormat::Rgba8Unorm
+        | wgpu::TextureFormat::Rgba8UnormSrgb
+        | wgpu::TextureFormat::Rgba8Snorm
+        | wgpu::TextureFormat::Rgba8Uint
+        | wgpu::TextureFormat::Rgba8Sint
+        | wgpu::TextureFormat::Bgra8Unorm
+        | wgpu::TextureFormat::Bgra8UnormSrgb
+        | wgpu::TextureFormat::Depth32Float => 4,
+        wgpu::TextureFormat::Rg32Uint
+        | wgpu::TextureFormat::Rg32Sint
+        | wgpu::TextureFormat::Rg32Float
+        | wgpu::TextureFormat::Rgba16Uint
+        | wgpu::TextureFormat::Rgba16Sint
+        | wgpu::TextureFormat::Rgba16Float => 8,
+        wgpu::TextureFormat::Rgba32Uint
+        | wgpu::TextureFormat::Rgba32Sint
+        | wgpu::TextureFormat::Rgba32Float => 16,
+        _ => return None,
+    })
 }

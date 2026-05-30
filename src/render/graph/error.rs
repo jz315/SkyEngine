@@ -163,3 +163,42 @@ impl RenderGraphProfiler for DebugProfiler {
         );
     }
 }
+
+#[cfg(feature = "profile")]
+pub struct SkyProfileRenderGraphProfiler {
+    active_pass: Option<sky_profile::ScopeGuard>,
+}
+
+#[cfg(feature = "profile")]
+impl SkyProfileRenderGraphProfiler {
+    pub fn new() -> Self {
+        Self { active_pass: None }
+    }
+}
+
+#[cfg(feature = "profile")]
+impl Default for SkyProfileRenderGraphProfiler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(feature = "profile")]
+impl RenderGraphProfiler for SkyProfileRenderGraphProfiler {
+    fn on_pass_begin(&mut self, name: &str, pass_type: PassType) {
+        self.active_pass = Some(sky_profile::profile_scope!(
+            "render_graph",
+            format!("{pass_type:?}:{name}")
+        ));
+    }
+
+    fn on_pass_end(&mut self, _name: &str, _elapsed: std::time::Duration) {
+        self.active_pass.take();
+    }
+
+    fn on_compile(&mut self, pass_count: usize, culled: usize, dep_levels: u32) {
+        sky_profile::profile_counter!("render_graph", "compiled_pass_count", pass_count as f64);
+        sky_profile::profile_counter!("render_graph", "culled_pass_count", culled as f64);
+        sky_profile::profile_counter!("render_graph", "dependency_levels", dep_levels as f64);
+    }
+}

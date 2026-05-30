@@ -151,6 +151,9 @@ pub enum SceneFrameSkipReason {
 /// Backend-neutral renderer interface used by the app runner.
 pub trait SceneRenderer {
     fn backend_kind(&self) -> RenderBackendKind;
+    fn presents_during_render(&self) -> bool {
+        false
+    }
     fn begin_frame(&mut self) -> Result<SceneFrame, SceneRendererError>;
     fn end_frame(&mut self, frame: SceneFrame);
     fn render_world(&mut self, frame: &mut SceneFrame, world: &World) -> SceneRenderOutcome;

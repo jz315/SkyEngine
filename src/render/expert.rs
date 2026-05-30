@@ -34,10 +34,15 @@ pub use super::gpu::{
     DEFAULT_DEPTH_FORMAT,
 };
 pub use super::graph::{
-    AliasingStats, BufferBuilder, BufferHandle, ColorOutput, CompiledPass, CopyOp, CopyPassSetup,
-    DebugProfiler, DepthStencilOutput, ImportedTexture, LoadOp, PassFlags, PassHandle, PassSetup,
-    PassType, PhysicalResources, PhysicalTextureRef, RenderGraph, RenderGraphError,
-    RenderGraphProfiler, ResourceRef, TargetSize, TextureBuilder, TextureHandle,
+    AliasingStats, BufferBuilder, BufferHandle, ColorOutput, CompiledPass, CopyOp, CopyOpDebug,
+    CopyPassSetup, DebugProfiler, DepthStencilOutput, ImportedTexture, LoadOp, PassFlags,
+    PassHandle, PassSetup, PassType, PhysicalResourceViewStats, PhysicalResources,
+    PhysicalTextureRef, QueueAssignmentDiagnostic, QueueDiagnosticClass, QueueScheduleBlocker,
+    QueueScheduleDiagnostic, QueueScheduleReason, RenderGraph, RenderGraphAliasGroupDebug,
+    RenderGraphAliasMemberDebug, RenderGraphAliasRedirectDebug, RenderGraphBufferResourceDebug,
+    RenderGraphDebugDump, RenderGraphDotOptions, RenderGraphError, RenderGraphLifetimeDebug,
+    RenderGraphPassDebug, RenderGraphProfiler, RenderGraphResourceDebug, RenderGraphResourceKind,
+    RenderGraphTextureResourceDebug, ResourceRef, TargetSize, TextureBuilder, TextureHandle,
 };
 pub use super::lighting::{
     color_temperature, DirectionalShadowPhase, GpuLight, GpuLightKind, Light2D, LightPass,

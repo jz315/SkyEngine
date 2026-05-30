@@ -45,7 +45,9 @@ fn sprite_texture_asset_handle_uploads_into_render_cache() {
     );
     let stats = renderer.stats();
     assert_eq!(stats.resident_render_assets, 1);
+    assert_eq!(stats.resident_render_asset_bytes, 16);
     assert_eq!(stats.uploaded_render_assets, 1);
+    assert_eq!(stats.uploaded_render_asset_bytes, 16);
     assert_eq!(stats.loading_render_assets, 1);
     assert_eq!(stats.fallback_render_assets, 1);
     assert_eq!(stats.missing_render_assets, 0);
@@ -136,6 +138,7 @@ fn texture_asset_gpu_queue_uploads_requested_textures_on_following_frame() {
     let stats = renderer.stats();
     assert_eq!(stats.uploaded_render_assets, 2);
     assert_eq!(stats.resident_render_assets, 2);
+    assert_eq!(stats.resident_render_asset_bytes, 20);
     assert_eq!(stats.loading_render_assets, 2);
     assert_eq!(stats.fallback_render_assets, 2);
     assert_eq!(
@@ -385,6 +388,206 @@ fn wait_texture_gpu_prepares_queued_texture_immediately() {
 }
 
 #[test]
+fn texture_memory_budget_evicts_least_recently_used_resident_texture() {
+    let (device, queue) = create_test_device();
+    let ctx = GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [64, 64]);
+    let asset_server = Assets::with_empty_manifest(AssetConfig::default());
+    let first = asset_server.insert_runtime(TextureAsset::white_pixel());
+    let second = asset_server.insert_runtime(TextureAsset::white_pixel());
+    let third = asset_server.insert_runtime(TextureAsset::white_pixel());
+    let cache = SharedRenderAssetCache::default();
+
+    cache.borrow_mut().set_texture_memory_budget(Some(8));
+    for texture in [&first, &second] {
+        assert_eq!(
+            cache
+                .borrow_mut()
+                .request_texture_gpu(&ctx, &asset_server, texture),
+            crate::render::TextureReadiness::GpuQueued
+        );
+        assert_eq!(
+            cache
+                .borrow_mut()
+                .prepare_queued_texture(&ctx, texture.id()),
+            crate::render::TextureReadiness::GpuReady
+        );
+    }
+    assert!(cache.borrow_mut().contains_texture(&first));
+    assert!(cache.borrow_mut().contains_texture(&second));
+
+    assert_eq!(
+        cache
+            .borrow_mut()
+            .texture_readiness(Some(&asset_server), &first),
+        crate::render::TextureReadiness::GpuReady
+    );
+    assert_eq!(
+        cache
+            .borrow_mut()
+            .request_texture_gpu(&ctx, &asset_server, &third),
+        crate::render::TextureReadiness::GpuQueued
+    );
+    assert_eq!(
+        cache.borrow_mut().prepare_queued_texture(&ctx, third.id()),
+        crate::render::TextureReadiness::GpuReady
+    );
+
+    assert!(cache.borrow_mut().contains_texture(&first));
+    assert!(!cache.borrow_mut().contains_texture(&second));
+    assert!(cache.borrow_mut().contains_texture(&third));
+    let stats = cache.borrow_mut().finish_frame();
+    assert_eq!(stats.resident_assets, 2);
+    assert_eq!(stats.resident_bytes, 8);
+    assert_eq!(stats.evicted_assets, 1);
+    assert_eq!(stats.evicted_bytes, 4);
+}
+
+#[test]
+fn texture_memory_budget_preserves_pinned_resident_texture() {
+    let (device, queue) = create_test_device();
+    let ctx = GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [64, 64]);
+    let asset_server = Assets::with_empty_manifest(AssetConfig::default());
+    let first = asset_server.insert_runtime(TextureAsset::white_pixel());
+    let second = asset_server.insert_runtime(TextureAsset::white_pixel());
+    let third = asset_server.insert_runtime(TextureAsset::white_pixel());
+    let cache = SharedRenderAssetCache::default();
+
+    cache.borrow_mut().set_texture_memory_budget(Some(8));
+    for texture in [&first, &second] {
+        assert_eq!(
+            cache
+                .borrow_mut()
+                .request_texture_gpu(&ctx, &asset_server, texture),
+            crate::render::TextureReadiness::GpuQueued
+        );
+        assert_eq!(
+            cache
+                .borrow_mut()
+                .prepare_queued_texture(&ctx, texture.id()),
+            crate::render::TextureReadiness::GpuReady
+        );
+    }
+    cache.borrow_mut().pin_texture(&second);
+    assert!(cache.borrow_mut().is_texture_pinned(&second));
+
+    assert_eq!(
+        cache
+            .borrow_mut()
+            .texture_readiness(Some(&asset_server), &first),
+        crate::render::TextureReadiness::GpuReady
+    );
+    assert_eq!(
+        cache
+            .borrow_mut()
+            .request_texture_gpu(&ctx, &asset_server, &third),
+        crate::render::TextureReadiness::GpuQueued
+    );
+    assert_eq!(
+        cache.borrow_mut().prepare_queued_texture(&ctx, third.id()),
+        crate::render::TextureReadiness::GpuReady
+    );
+
+    assert!(!cache.borrow_mut().contains_texture(&first));
+    assert!(cache.borrow_mut().contains_texture(&second));
+    assert!(cache.borrow_mut().contains_texture(&third));
+    let stats = cache.borrow_mut().finish_frame();
+    assert_eq!(stats.resident_assets, 2);
+    assert_eq!(stats.resident_bytes, 8);
+    assert_eq!(stats.evicted_assets, 1);
+    assert_eq!(stats.evicted_bytes, 4);
+}
+
+#[test]
+fn unpin_texture_reapplies_texture_memory_budget() {
+    let (device, queue) = create_test_device();
+    let ctx = GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [64, 64]);
+    let asset_server = Assets::with_empty_manifest(AssetConfig::default());
+    let first = asset_server.insert_runtime(TextureAsset::white_pixel());
+    let second = asset_server.insert_runtime(TextureAsset::white_pixel());
+    let cache = SharedRenderAssetCache::default();
+
+    cache.borrow_mut().set_texture_memory_budget(Some(4));
+    cache.borrow_mut().pin_texture(&first);
+    assert_eq!(
+        cache
+            .borrow_mut()
+            .request_texture_gpu(&ctx, &asset_server, &first),
+        crate::render::TextureReadiness::GpuQueued
+    );
+    assert_eq!(
+        cache.borrow_mut().prepare_queued_texture(&ctx, first.id()),
+        crate::render::TextureReadiness::GpuReady
+    );
+    assert_eq!(
+        cache
+            .borrow_mut()
+            .request_texture_gpu(&ctx, &asset_server, &second),
+        crate::render::TextureReadiness::GpuQueued
+    );
+    assert_eq!(
+        cache.borrow_mut().prepare_queued_texture(&ctx, second.id()),
+        crate::render::TextureReadiness::GpuReady
+    );
+
+    assert!(cache.borrow_mut().contains_texture(&first));
+    assert!(cache.borrow_mut().contains_texture(&second));
+    cache.borrow_mut().unpin_texture(&first);
+    assert!(!cache.borrow_mut().is_texture_pinned(&first));
+    assert!(!cache.borrow_mut().contains_texture(&first));
+    assert!(cache.borrow_mut().contains_texture(&second));
+    let stats = cache.borrow_mut().finish_frame();
+    assert_eq!(stats.resident_assets, 1);
+    assert_eq!(stats.resident_bytes, 4);
+    assert_eq!(stats.evicted_assets, 1);
+    assert_eq!(stats.evicted_bytes, 4);
+}
+
+#[test]
+fn invalid_runtime_texture_prepare_reports_failed_readiness() {
+    let (device, queue) = create_test_device();
+    let ctx = GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [64, 64]);
+    let asset_server = Assets::with_empty_manifest(AssetConfig::default());
+    let texture = asset_server.insert_runtime(TextureAsset::new(
+        1,
+        1,
+        crate::asset::TextureColorSpace::Srgb,
+        vec![255, 255, 255],
+    ));
+    let cache = SharedRenderAssetCache::default();
+
+    assert_eq!(
+        cache
+            .borrow_mut()
+            .request_texture_gpu(&ctx, &asset_server, &texture),
+        crate::render::TextureReadiness::GpuQueued
+    );
+    assert_eq!(
+        cache
+            .borrow_mut()
+            .prepare_queued_texture(&ctx, texture.id()),
+        crate::render::TextureReadiness::Failed
+    );
+    assert_eq!(
+        cache
+            .borrow_mut()
+            .texture_readiness(Some(&asset_server), &texture),
+        crate::render::TextureReadiness::Failed
+    );
+    assert_eq!(
+        cache
+            .borrow_mut()
+            .request_texture_gpu(&ctx, &asset_server, &texture),
+        crate::render::TextureReadiness::Failed
+    );
+    assert!(!cache.borrow_mut().contains_texture(&texture));
+    let stats = cache.borrow_mut().finish_frame();
+    assert_eq!(stats.resident_assets, 0);
+    assert_eq!(stats.uploaded_assets, 0);
+    assert_eq!(stats.failed_assets, 1);
+    assert_eq!(stats.cached_failed_assets, 1);
+}
+
+#[test]
 fn missing_sprite_texture_asset_is_reported_in_render_stats() {
     let (device, queue) = create_test_device();
     let mut ctx =
@@ -420,4 +623,5 @@ fn missing_sprite_texture_asset_is_reported_in_render_stats() {
     assert_eq!(stats.loading_render_assets, 0);
     assert_eq!(stats.missing_render_assets, 1);
     assert_eq!(stats.failed_render_assets, 0);
+    assert_eq!(stats.cached_failed_render_assets, 0);
 }

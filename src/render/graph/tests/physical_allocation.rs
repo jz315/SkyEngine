@@ -126,6 +126,7 @@ fn physical_resources_view_follows_alias_redirect() {
         buffer_descs: &graph.buffers,
         alias_redirects: &graph.alias_redirects,
         blackboard: graph.blackboard_ref(),
+        view_stats: None,
     };
 
     // Both handles must resolve to valid views without panicking.
@@ -366,6 +367,7 @@ fn physical_resources_texture_ref_returns_correct_data() {
         buffer_descs: &graph.buffers,
         alias_redirects: &graph.alias_redirects,
         blackboard: graph.blackboard_ref(),
+        view_stats: None,
     };
 
     let tex_ref = resources.texture_ref(t);
@@ -410,6 +412,7 @@ fn physical_resources_texture_subresource_view_creates_mip_layer_view() {
         buffer_descs: &graph.buffers,
         alias_redirects: &graph.alias_redirects,
         blackboard: graph.blackboard_ref(),
+        view_stats: None,
     };
 
     let _view = resources.texture_subresource_view(subresource, wgpu::TextureViewDimension::D2);
@@ -452,6 +455,7 @@ fn storage_texture_view_accepts_storage_usage() {
         buffer_descs: &graph.buffers,
         alias_redirects: &graph.alias_redirects,
         blackboard: graph.blackboard_ref(),
+        view_stats: None,
     };
 
     let _view = resources.storage_texture_view(subresource, wgpu::TextureViewDimension::D2Array);
@@ -493,6 +497,7 @@ fn storage_texture_view_panics_without_storage_usage() {
         buffer_descs: &graph.buffers,
         alias_redirects: &graph.alias_redirects,
         blackboard: graph.blackboard_ref(),
+        view_stats: None,
     };
 
     let _view = resources.storage_texture_view(subresource, wgpu::TextureViewDimension::D2);
@@ -532,6 +537,7 @@ fn render_attachment_view_panics_for_multi_layer_range() {
         buffer_descs: &graph.buffers,
         alias_redirects: &graph.alias_redirects,
         blackboard: graph.blackboard_ref(),
+        view_stats: None,
     };
 
     let _view = resources.render_attachment_view(subresource);
@@ -568,12 +574,78 @@ fn physical_resources_buffer_resolves() {
         buffer_descs: &graph.buffers,
         alias_redirects: &graph.alias_redirects,
         blackboard: graph.blackboard_ref(),
+        view_stats: None,
     };
 
     let buf = resources.buffer(b);
     assert!(buf.size() >= 512);
 
     graph.destroy_physical_resources();
+}
+
+#[test]
+fn physical_resource_view_stats_count_latest_execution() {
+    let (device, queue) = create_test_device();
+    let mut ctx = crate::gpu::GpuContext::new_headless(
+        device,
+        queue,
+        wgpu::TextureFormat::Bgra8Unorm,
+        [16, 16],
+    );
+
+    let mut graph = RenderGraph::new();
+    let texture = graph.create_texture(|b| {
+        b.name("tracked_views")
+            .size(TargetSize::Exact(8, 8))
+            .format(TextureFormat::Rgba8Unorm)
+            .mip_level_count(2)
+            .storage_binding()
+            .render_attachment()
+            .sampled();
+    });
+    let subresource = TextureSubresource::new(texture, 0, 1, 0, 1);
+
+    graph.add_compute_pass("produce", |s| {
+        s.write(texture);
+    });
+    graph.add_render_pass("inspect", |s| {
+        s.read(texture);
+        s.write_surface();
+    });
+
+    let mut run = |pass: &CompiledPass,
+                   _gpu: &mut crate::gpu::GpuContext,
+                   resources: &PhysicalResources<'_>| {
+        if pass.name == "inspect" {
+            let _texture_ref = resources.texture_ref(texture);
+            let _default_view = resources.view(texture);
+            let _subresource_view =
+                resources.texture_subresource_view(subresource, wgpu::TextureViewDimension::D2);
+            let _storage_view =
+                resources.storage_texture_view(subresource, wgpu::TextureViewDimension::D2);
+            let _attachment_view = resources.render_attachment_view(subresource);
+        }
+        Ok(())
+    };
+
+    graph.try_execute(&mut ctx, &mut run).unwrap();
+    let stats = graph.physical_resource_view_stats();
+    assert_eq!(stats.default_texture_view_resolves, 3);
+    assert_eq!(stats.texture_subresource_view_creations, 3);
+    assert_eq!(stats.storage_texture_view_creations, 1);
+    assert_eq!(stats.render_attachment_view_creations, 1);
+
+    graph.try_execute(&mut ctx, run).unwrap();
+    let stats = graph.physical_resource_view_stats();
+    assert_eq!(
+        stats,
+        PhysicalResourceViewStats {
+            default_texture_view_resolves: 3,
+            texture_subresource_view_creations: 3,
+            storage_texture_view_creations: 1,
+            render_attachment_view_creations: 1,
+        }
+    );
 }
 
 #[test]

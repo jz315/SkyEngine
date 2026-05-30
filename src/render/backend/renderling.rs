@@ -3,7 +3,9 @@ use std::sync::Arc;
 use rustc_hash::FxHashMap;
 use winit::window::Window;
 
-use crate::asset::{AssetId, Assets, Handle};
+use crate::asset::{
+    Asset, AssetEvent, AssetEventCursor, AssetEventKind, AssetId, AssetState, Assets,
+};
 use crate::ecs::World;
 use crate::math::Projection;
 use crate::render::asset::{
@@ -34,6 +36,16 @@ struct RenderlingMeshGpu {
     indices: Option<::renderling::slab::HybridArray<u32>>,
 }
 
+struct CachedRenderlingMesh {
+    source: Arc<MeshAsset>,
+    gpu: RenderlingMeshGpu,
+}
+
+struct CachedRenderlingMaterial {
+    source: Option<Arc<StandardMaterialAsset>>,
+    material: RMaterial,
+}
+
 pub struct RenderlingSceneRenderer {
     context: ::renderling::Context,
     stage: ::renderling::stage::Stage,
@@ -41,8 +53,9 @@ pub struct RenderlingSceneRenderer {
     stats: RenderStats,
     snapshot_extractor: SceneSnapshotExtractor,
     snapshot: SceneSnapshot,
-    mesh_cache: FxHashMap<AssetId, RenderlingMeshGpu>,
-    material_cache: FxHashMap<AssetId, RMaterial>,
+    mesh_cache: FxHashMap<AssetId, CachedRenderlingMesh>,
+    material_cache: FxHashMap<AssetId, CachedRenderlingMaterial>,
+    asset_event_cursor: AssetEventCursor,
     active_cameras: Vec<RCamera>,
     active_transforms: Vec<RTransform>,
     active_renderlets: Vec<RRenderlet>,
@@ -82,6 +95,7 @@ impl RenderlingSceneRenderer {
             snapshot: SceneSnapshot::default(),
             mesh_cache: FxHashMap::default(),
             material_cache: FxHashMap::default(),
+            asset_event_cursor: AssetEventCursor::default(),
             active_cameras: Vec::new(),
             active_transforms: Vec::new(),
             active_renderlets: Vec::new(),
@@ -109,6 +123,7 @@ impl RenderlingSceneRenderer {
             snapshot: SceneSnapshot::default(),
             mesh_cache: FxHashMap::default(),
             material_cache: FxHashMap::default(),
+            asset_event_cursor: AssetEventCursor::default(),
             active_cameras: Vec::new(),
             active_transforms: Vec::new(),
             active_renderlets: Vec::new(),
@@ -163,6 +178,7 @@ impl RenderlingSceneRenderer {
             return;
         };
         self.warned_assets = false;
+        self.handle_asset_events(assets);
 
         let camera = self
             .snapshot
@@ -267,30 +283,103 @@ impl RenderlingSceneRenderer {
     }
 
     fn sync_mesh(&mut self, assets: &Assets, mesh_id: AssetId) -> Option<&RenderlingMeshGpu> {
-        if !self.mesh_cache.contains_key(&mesh_id) {
-            let mesh = assets.try_get_id::<MeshAsset>(mesh_id)?;
-            match build_renderling_mesh(&self.stage, &mesh) {
-                Some(gpu) => {
-                    self.mesh_cache.insert(mesh_id, gpu);
-                    self.stats.uploaded_render_assets =
-                        self.stats.uploaded_render_assets.saturating_add(1);
-                }
-                None => return None,
-            }
+        let mesh = assets.try_get_id::<MeshAsset>(mesh_id)?;
+        if self
+            .mesh_cache
+            .get(&mesh_id)
+            .is_some_and(|cached| Arc::ptr_eq(&cached.source, &mesh))
+        {
+            return self.mesh_cache.get(&mesh_id).map(|cached| &cached.gpu);
         }
-        self.mesh_cache.get(&mesh_id)
+
+        self.mesh_cache.remove(&mesh_id);
+        let gpu = build_renderling_mesh(&self.stage, &mesh)?;
+        self.mesh_cache
+            .insert(mesh_id, CachedRenderlingMesh { source: mesh, gpu });
+        self.stats.uploaded_render_assets = self.stats.uploaded_render_assets.saturating_add(1);
+        self.mesh_cache.get(&mesh_id).map(|cached| &cached.gpu)
     }
 
     fn sync_material(&mut self, assets: &Assets, material_id: AssetId) -> Option<&RMaterial> {
-        if !self.material_cache.contains_key(&material_id) {
-            let material = assets.try_get_id::<StandardMaterialAsset>(material_id);
-            let material = self
-                .stage
-                .new_value(renderling_material(material.as_deref()));
-            self.material_cache.insert(material_id, material);
-            self.stats.uploaded_render_assets = self.stats.uploaded_render_assets.saturating_add(1);
+        let source = assets.try_get_id::<StandardMaterialAsset>(material_id);
+        if self
+            .material_cache
+            .get(&material_id)
+            .is_some_and(|cached| option_arc_ptr_eq(&cached.source, &source))
+        {
+            return self
+                .material_cache
+                .get(&material_id)
+                .map(|cached| &cached.material);
         }
-        self.material_cache.get(&material_id)
+
+        self.material_cache.remove(&material_id);
+        let material = self.stage.new_value(renderling_material(source.as_deref()));
+        self.material_cache
+            .insert(material_id, CachedRenderlingMaterial { source, material });
+        self.stats.uploaded_render_assets = self.stats.uploaded_render_assets.saturating_add(1);
+        self.material_cache
+            .get(&material_id)
+            .map(|cached| &cached.material)
+    }
+
+    fn handle_asset_events(&mut self, assets: &Assets) {
+        for event in assets.events_since(&mut self.asset_event_cursor) {
+            self.handle_asset_event(assets, event);
+        }
+    }
+
+    fn handle_asset_event(&mut self, assets: &Assets, event: AssetEvent) {
+        if !event.asset_type.is_empty()
+            && event.asset_type != MeshAsset::TYPE
+            && event.asset_type != StandardMaterialAsset::TYPE
+        {
+            return;
+        }
+
+        match event.kind {
+            AssetEventKind::Loaded => {}
+            AssetEventKind::Failed if event.state == AssetState::Installed => {}
+            AssetEventKind::Failed | AssetEventKind::Unloaded | AssetEventKind::ReloadQueued => {
+                self.mesh_cache.remove(&event.id);
+                self.material_cache.remove(&event.id);
+            }
+            AssetEventKind::Installed | AssetEventKind::Reloaded => {
+                self.invalidate_installed_if_changed(assets, event);
+            }
+        }
+    }
+
+    fn invalidate_installed_if_changed(&mut self, assets: &Assets, event: AssetEvent) {
+        if event.asset_type.is_empty() || event.asset_type == MeshAsset::TYPE {
+            let current = assets.try_get_id::<MeshAsset>(event.id);
+            if current.as_ref().map_or(true, |current| {
+                self.mesh_cache
+                    .get(&event.id)
+                    .is_some_and(|cached| !Arc::ptr_eq(&cached.source, current))
+            }) {
+                self.mesh_cache.remove(&event.id);
+            }
+        }
+
+        if event.asset_type.is_empty() || event.asset_type == StandardMaterialAsset::TYPE {
+            let current = assets.try_get_id::<StandardMaterialAsset>(event.id);
+            if current.as_ref().map_or(true, |current| {
+                self.material_cache.get(&event.id).is_some_and(|cached| {
+                    !option_arc_ptr_eq(&cached.source, &Some(current.clone()))
+                })
+            }) {
+                self.material_cache.remove(&event.id);
+            }
+        }
+    }
+}
+
+fn option_arc_ptr_eq<T>(left: &Option<Arc<T>>, right: &Option<Arc<T>>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+        (None, None) => true,
+        _ => false,
     }
 }
 
@@ -585,11 +674,8 @@ mod tests {
         uv: [f32; 2],
     }
 
-    #[test]
-    fn renderling_scene_renderer_uses_neutral_scene_snapshot() {
-        let mut world = World::new();
-        let assets = Assets::with_empty_manifest(AssetConfig::default());
-        let mesh = assets.insert_runtime(MeshAsset::from_raw(MeshAssetDescriptor::new(
+    fn triangle_mesh(label: &'static str) -> MeshAsset {
+        MeshAsset::from_raw(MeshAssetDescriptor::new(
             bytemuck::cast_slice(&[
                 Vertex {
                     position: [0.0, 0.0, 0.0],
@@ -609,8 +695,48 @@ mod tests {
             ]),
             3,
             MeshVertexLayout::position_normal_uv(),
-            "renderling_snapshot_triangle",
-        )));
+            label,
+        ))
+    }
+
+    #[test]
+    fn renderling_cache_resyncs_replaced_runtime_assets() {
+        let assets = Assets::with_empty_manifest(AssetConfig::default());
+        let mesh = assets.insert_runtime(triangle_mesh("renderling_cache_triangle"));
+        let material = assets.insert_runtime(StandardMaterialAsset::new());
+        let mut renderer = RenderlingSceneRenderer::new_for_tests([128, 96]);
+
+        assert!(renderer.sync_mesh(&assets, mesh.id()).is_some());
+        assert!(renderer.sync_material(&assets, material.id()).is_some());
+        assert_eq!(renderer.stats.uploaded_render_assets, 2);
+        assert!(renderer.sync_mesh(&assets, mesh.id()).is_some());
+        assert!(renderer.sync_material(&assets, material.id()).is_some());
+        assert_eq!(renderer.stats.uploaded_render_assets, 2);
+
+        renderer.handle_asset_events(&assets);
+        assert!(renderer.mesh_cache.contains_key(&mesh.id()));
+        assert!(renderer.material_cache.contains_key(&material.id()));
+
+        assets
+            .replace_runtime(&mesh, triangle_mesh("renderling_cache_triangle_reloaded"))
+            .expect("mesh replacement should emit an installed event");
+        assets
+            .replace_runtime(&material, StandardMaterialAsset::new().roughness(0.25))
+            .expect("material replacement should emit an installed event");
+        renderer.handle_asset_events(&assets);
+        assert!(!renderer.mesh_cache.contains_key(&mesh.id()));
+        assert!(!renderer.material_cache.contains_key(&material.id()));
+
+        assert!(renderer.sync_mesh(&assets, mesh.id()).is_some());
+        assert!(renderer.sync_material(&assets, material.id()).is_some());
+        assert_eq!(renderer.stats.uploaded_render_assets, 4);
+    }
+
+    #[test]
+    fn renderling_scene_renderer_uses_neutral_scene_snapshot() {
+        let mut world = World::new();
+        let assets = Assets::with_empty_manifest(AssetConfig::default());
+        let mesh = assets.insert_runtime(triangle_mesh("renderling_snapshot_triangle"));
         let material = assets.insert_runtime(StandardMaterialAsset::new());
         world.insert_resource(assets);
 

@@ -9,7 +9,9 @@ use std::{
 use rustc_hash::{FxHashMap, FxHashSet};
 use turbosloth::*;
 
-use crate::asset::{AssetId, Assets, Handle};
+use crate::asset::{
+    Asset, AssetEvent, AssetEventCursor, AssetEventKind, AssetId, AssetState, Assets,
+};
 use crate::asset::{TextureAsset, TextureColorSpace};
 use crate::ecs::EntityId;
 use crate::render::asset::{
@@ -77,8 +79,11 @@ struct KajiyaMeshSources {
 struct KajiyaMaterialSources {
     id: Option<AssetId>,
     material: Option<Arc<StandardMaterialAsset>>,
+    albedo_texture_id: Option<AssetId>,
     albedo_texture: Option<Arc<TextureAsset>>,
+    normal_texture_id: Option<AssetId>,
     normal_texture: Option<Arc<TextureAsset>>,
+    emissive_texture_id: Option<AssetId>,
     emissive_texture: Option<Arc<TextureAsset>>,
 }
 
@@ -110,24 +115,39 @@ impl KajiyaMaterialSources {
         id: AssetId,
         material: Option<Arc<StandardMaterialAsset>>,
     ) -> Self {
+        let albedo_texture_id = material
+            .as_ref()
+            .and_then(|material| material.albedo_texture.as_ref())
+            .map(|texture| texture.id());
         let albedo_texture = material
             .as_ref()
-            .and_then(|material| material.albedo_texture)
+            .and_then(|material| material.albedo_texture.clone())
             .and_then(|texture| assets.try_get(&texture));
+        let normal_texture_id = material
+            .as_ref()
+            .and_then(|material| material.normal_texture.as_ref())
+            .map(|texture| texture.id());
         let normal_texture = material
             .as_ref()
-            .and_then(|material| material.normal_texture)
+            .and_then(|material| material.normal_texture.clone())
             .and_then(|texture| assets.try_get(&texture));
+        let emissive_texture_id = material
+            .as_ref()
+            .and_then(|material| material.emissive_texture.as_ref())
+            .map(|texture| texture.id());
         let emissive_texture = material
             .as_ref()
-            .and_then(|material| material.emissive_texture)
+            .and_then(|material| material.emissive_texture.clone())
             .and_then(|texture| assets.try_get(&texture));
 
         Self {
             id: Some(id),
             material,
+            albedo_texture_id,
             albedo_texture,
+            normal_texture_id,
             normal_texture,
+            emissive_texture_id,
             emissive_texture,
         }
     }
@@ -136,8 +156,11 @@ impl KajiyaMaterialSources {
         Self {
             id: None,
             material: None,
+            albedo_texture_id: None,
             albedo_texture: None,
+            normal_texture_id: None,
             normal_texture: None,
+            emissive_texture_id: None,
             emissive_texture: None,
         }
     }
@@ -145,9 +168,18 @@ impl KajiyaMaterialSources {
     fn matches(&self, other: &Self) -> bool {
         self.id == other.id
             && option_arc_ptr_eq(&self.material, &other.material)
+            && self.albedo_texture_id == other.albedo_texture_id
             && option_arc_ptr_eq(&self.albedo_texture, &other.albedo_texture)
+            && self.normal_texture_id == other.normal_texture_id
             && option_arc_ptr_eq(&self.normal_texture, &other.normal_texture)
+            && self.emissive_texture_id == other.emissive_texture_id
             && option_arc_ptr_eq(&self.emissive_texture, &other.emissive_texture)
+    }
+
+    fn references_texture(&self, id: AssetId) -> bool {
+        self.albedo_texture_id == Some(id)
+            || self.normal_texture_id == Some(id)
+            || self.emissive_texture_id == Some(id)
     }
 
     fn hash_content(&self, hasher: &mut impl Hasher) {
@@ -158,6 +190,7 @@ impl KajiyaMaterialSources {
                 hash_f32_array(material.albedo.to_array(), hasher);
                 material
                     .albedo_texture
+                    .as_ref()
                     .map(|handle| handle.id())
                     .hash(hasher);
                 material.albedo_sampler.hash(hasher);
@@ -165,12 +198,14 @@ impl KajiyaMaterialSources {
                 material.roughness.to_bits().hash(hasher);
                 material
                     .normal_texture
+                    .as_ref()
                     .map(|handle| handle.id())
                     .hash(hasher);
                 material.normal_sampler.hash(hasher);
                 hash_f32_array(material.emissive.to_array(), hasher);
                 material
                     .emissive_texture
+                    .as_ref()
                     .map(|handle| handle.id())
                     .hash(hasher);
                 material.emissive_sampler.hash(hasher);
@@ -189,6 +224,7 @@ pub(crate) struct KajiyaRenderAssetCache {
     mesh_cache: FxHashMap<KajiyaMeshKey, CachedMesh>,
     instance_cache: FxHashMap<EntityId, CachedInstance>,
     reported_failures: FxHashSet<KajiyaMeshKey>,
+    asset_event_cursor: Option<AssetEventCursor>,
     lazy_cache: Arc<turbosloth::LazyCache>,
     cache_dir: PathBuf,
 }
@@ -199,6 +235,7 @@ impl KajiyaRenderAssetCache {
             mesh_cache: FxHashMap::default(),
             instance_cache: FxHashMap::default(),
             reported_failures: FxHashSet::default(),
+            asset_event_cursor: None,
             lazy_cache: LazyCache::create(),
             cache_dir,
         }
@@ -224,6 +261,7 @@ impl KajiyaRenderAssetCache {
         };
 
         let mut stats = KajiyaAssetSyncStats::default();
+        self.consume_asset_events(world_renderer, assets, &mut stats);
         let mut live_entities = FxHashSet::default();
 
         for (entity, instance) in snapshot.mesh_instances() {
@@ -294,6 +332,108 @@ impl KajiyaRenderAssetCache {
         stats.resident_meshes = self.mesh_cache.len();
         stats.resident_instances = self.instance_cache.len();
         stats
+    }
+
+    fn consume_asset_events(
+        &mut self,
+        world_renderer: &mut ::kajiya::world_renderer::WorldRenderer,
+        assets: &Assets,
+        stats: &mut KajiyaAssetSyncStats,
+    ) {
+        if self.asset_event_cursor.is_none() {
+            self.asset_event_cursor = Some(assets.event_cursor());
+        }
+        let events = assets.events_since(
+            self.asset_event_cursor
+                .as_mut()
+                .expect("asset event cursor should be initialized"),
+        );
+        for event in &events {
+            self.handle_asset_event(world_renderer, assets, event, stats);
+        }
+    }
+
+    fn handle_asset_event(
+        &mut self,
+        world_renderer: &mut ::kajiya::world_renderer::WorldRenderer,
+        assets: &Assets,
+        event: &AssetEvent,
+        stats: &mut KajiyaAssetSyncStats,
+    ) {
+        if !event_can_affect_kajiya_mesh(event) {
+            return;
+        }
+
+        let keys = match event.kind {
+            AssetEventKind::Loaded => Vec::new(),
+            AssetEventKind::Installed | AssetEventKind::Reloaded => {
+                self.installed_event_invalidated_keys(assets, event)
+            }
+            AssetEventKind::ReloadQueued | AssetEventKind::Unloaded => {
+                self.referenced_keys_for_event(event)
+            }
+            AssetEventKind::Failed if event.state == AssetState::Installed => Vec::new(),
+            AssetEventKind::Failed => self.referenced_keys_for_event(event),
+        };
+        self.invalidate_cached_keys(world_renderer, keys, stats);
+    }
+
+    fn installed_event_invalidated_keys(
+        &self,
+        assets: &Assets,
+        event: &AssetEvent,
+    ) -> Vec<KajiyaMeshKey> {
+        self.mesh_cache
+            .iter()
+            .filter_map(|(key, cached)| {
+                if !cached_key_references_event(key, cached, event) {
+                    return None;
+                }
+                match collect_mesh_sources(assets, key) {
+                    Ok(current) if cached.sources.matches(&current) => None,
+                    _ => Some(key.clone()),
+                }
+            })
+            .collect()
+    }
+
+    fn referenced_keys_for_event(&self, event: &AssetEvent) -> Vec<KajiyaMeshKey> {
+        self.mesh_cache
+            .iter()
+            .filter_map(|(key, cached)| {
+                cached_key_references_event(key, cached, event).then_some(key.clone())
+            })
+            .collect()
+    }
+
+    fn invalidate_cached_keys(
+        &mut self,
+        world_renderer: &mut ::kajiya::world_renderer::WorldRenderer,
+        keys: Vec<KajiyaMeshKey>,
+        stats: &mut KajiyaAssetSyncStats,
+    ) {
+        if keys.is_empty() {
+            return;
+        }
+
+        let invalidated = keys.into_iter().collect::<FxHashSet<_>>();
+        for key in &invalidated {
+            self.mesh_cache.remove(key);
+            self.reported_failures.remove(key);
+        }
+
+        let stale_instances = self
+            .instance_cache
+            .iter()
+            .filter_map(|(entity, cached)| invalidated.contains(&cached.key).then_some(*entity))
+            .collect::<Vec<_>>();
+        for entity in stale_instances {
+            if let Some(cached) = self.instance_cache.remove(&entity) {
+                world_renderer.remove_instance(cached.handle);
+                stats.removed_instances += 1;
+                stats.topology_changed = true;
+            }
+        }
     }
 
     fn sync_mesh(
@@ -377,6 +517,49 @@ impl KajiyaRenderAssetCache {
             eprintln!("[SkyEngine] Kajiya asset sync skipped a mesh: {error}");
         }
     }
+}
+
+fn event_can_affect_kajiya_mesh(event: &AssetEvent) -> bool {
+    event.asset_type.is_empty()
+        || event.asset_type == MeshAsset::TYPE
+        || event.asset_type == StandardMaterialAsset::TYPE
+        || event.asset_type == TextureAsset::TYPE
+}
+
+fn cached_key_references_event(
+    key: &KajiyaMeshKey,
+    cached: &CachedMesh,
+    event: &AssetEvent,
+) -> bool {
+    if (event.asset_type.is_empty() || event.asset_type == MeshAsset::TYPE) && key.mesh == event.id
+    {
+        return true;
+    }
+
+    if event.asset_type.is_empty() || event.asset_type == StandardMaterialAsset::TYPE {
+        if key.materials.contains(&event.id)
+            || cached
+                .sources
+                .materials
+                .iter()
+                .any(|material| material.id == Some(event.id))
+        {
+            return true;
+        }
+    }
+
+    if event.asset_type.is_empty() || event.asset_type == TextureAsset::TYPE {
+        if cached
+            .sources
+            .materials
+            .iter()
+            .any(|material| material.references_texture(event.id))
+        {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn build_kajiya_triangle_mesh(
@@ -803,18 +986,8 @@ mod tests {
         uv: [f32; 2],
     }
 
-    #[test]
-    fn converts_sky_mesh_and_material_to_kajiya_triangle_mesh() {
-        let assets = Assets::with_empty_manifest(AssetConfig::default());
-        let texture = assets.insert_runtime(TextureAsset::white_pixel());
-        let material = assets.insert_runtime(
-            StandardMaterialAsset::new()
-                .albedo(Color::rgb(0.25, 0.5, 0.75))
-                .albedo_texture(texture)
-                .roughness(0.35)
-                .metallic(0.1),
-        );
-        let mesh = MeshAsset::from_raw(MeshAssetDescriptor::new(
+    fn triangle_mesh(label: &'static str) -> MeshAsset {
+        MeshAsset::from_raw(MeshAssetDescriptor::new(
             bytemuck::cast_slice(&[
                 Vertex {
                     position: [-1.0, 0.0, 0.0],
@@ -834,8 +1007,43 @@ mod tests {
             ]),
             3,
             MeshVertexLayout::position_normal_uv(),
-            "kajiya-conversion",
-        ));
+            label,
+        ))
+    }
+
+    fn installed_event(id: AssetId, asset_type: &'static str) -> AssetEvent {
+        AssetEvent {
+            sequence: 0,
+            id,
+            kind: AssetEventKind::Installed,
+            state: AssetState::Installed,
+            generation: 0,
+            asset_type: asset_type.to_string(),
+            failure_phase: None,
+            manifest_fingerprint: None,
+            content_hash: None,
+            dependencies: Vec::new(),
+            reload_pending: false,
+        }
+    }
+
+    fn assert_single_key(keys: Vec<KajiyaMeshKey>, expected: &KajiyaMeshKey) {
+        assert_eq!(keys.len(), 1);
+        assert_eq!(&keys[0], expected);
+    }
+
+    #[test]
+    fn converts_sky_mesh_and_material_to_kajiya_triangle_mesh() {
+        let assets = Assets::with_empty_manifest(AssetConfig::default());
+        let texture = assets.insert_runtime(TextureAsset::white_pixel());
+        let material = assets.insert_runtime(
+            StandardMaterialAsset::new()
+                .albedo(Color::rgb(0.25, 0.5, 0.75))
+                .albedo_texture(texture)
+                .roughness(0.35)
+                .metallic(0.1),
+        );
+        let mesh = triangle_mesh("kajiya-conversion");
 
         let sources = KajiyaMeshSources {
             mesh: Arc::new(mesh.clone()),
@@ -867,6 +1075,87 @@ mod tests {
         assert_eq!(
             converted.materials[0].base_color_mult,
             [0.25, 0.5, 0.75, 1.0]
+        );
+    }
+
+    #[test]
+    fn installed_event_only_invalidates_changed_kajiya_sources() {
+        let assets = Assets::with_empty_manifest(AssetConfig::default());
+        let texture = assets.insert_runtime(TextureAsset::white_pixel());
+        let material =
+            assets.insert_runtime(StandardMaterialAsset::new().albedo_texture(texture.clone()));
+        let mesh = assets.insert_runtime(triangle_mesh("kajiya-event-source"));
+        let key = KajiyaMeshKey {
+            mesh: mesh.id(),
+            materials: vec![material.id()],
+        };
+        let sources = collect_mesh_sources(&assets, &key).unwrap();
+        let mut cache = KajiyaRenderAssetCache::new(PathBuf::new());
+        cache.mesh_cache.insert(
+            key.clone(),
+            CachedMesh {
+                sources,
+                handle: ::kajiya::world_renderer::MeshHandle(7),
+            },
+        );
+
+        assert!(cache
+            .installed_event_invalidated_keys(
+                &assets,
+                &installed_event(material.id(), StandardMaterialAsset::TYPE)
+            )
+            .is_empty());
+
+        assets
+            .replace_runtime(
+                &texture,
+                TextureAsset::checkerboard(2, 1, [255, 0, 0, 255], [0, 0, 255, 255]),
+            )
+            .unwrap();
+        assert_single_key(
+            cache.installed_event_invalidated_keys(
+                &assets,
+                &installed_event(texture.id(), TextureAsset::TYPE),
+            ),
+            &key,
+        );
+    }
+
+    #[test]
+    fn kajiya_event_references_mesh_material_and_texture_sources() {
+        let assets = Assets::with_empty_manifest(AssetConfig::default());
+        let albedo = assets.insert_runtime(TextureAsset::white_pixel());
+        let material =
+            assets.insert_runtime(StandardMaterialAsset::new().albedo_texture(albedo.clone()));
+        let mesh = assets.insert_runtime(triangle_mesh("kajiya-event-reference"));
+        let key = KajiyaMeshKey {
+            mesh: mesh.id(),
+            materials: vec![material.id()],
+        };
+        let sources = collect_mesh_sources(&assets, &key).unwrap();
+        let mut cache = KajiyaRenderAssetCache::new(PathBuf::new());
+        cache.mesh_cache.insert(
+            key.clone(),
+            CachedMesh {
+                sources,
+                handle: ::kajiya::world_renderer::MeshHandle(11),
+            },
+        );
+
+        assert_single_key(
+            cache.referenced_keys_for_event(&installed_event(mesh.id(), MeshAsset::TYPE)),
+            &key,
+        );
+        assert_single_key(
+            cache.referenced_keys_for_event(&installed_event(
+                material.id(),
+                StandardMaterialAsset::TYPE,
+            )),
+            &key,
+        );
+        assert_single_key(
+            cache.referenced_keys_for_event(&installed_event(albedo.id(), TextureAsset::TYPE)),
+            &key,
         );
     }
 }

@@ -8,6 +8,7 @@
 mod material_asset;
 mod mesh_asset;
 mod render_assets;
+mod runtime_factory;
 mod vertex_layout;
 
 #[cfg(test)]
@@ -20,6 +21,9 @@ pub use mesh_asset::{
     MeshAsset, MeshAssetDescriptor, MeshAssetError, MeshBoundingSphere, MeshIndexData, MeshSubMesh,
 };
 pub use render_assets::RenderAssets;
+pub use runtime_factory::{
+    register_render_asset_factories, register_render_cookers, render_cook_registry,
+};
 pub use vertex_layout::{
     MeshVertexAttribute, MeshVertexFormat, MeshVertexLayout, MeshVertexSemantic,
 };

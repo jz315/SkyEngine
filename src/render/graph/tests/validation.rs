@@ -342,11 +342,14 @@ fn buffer_to_texture_rejects_too_small_source_buffer() {
         .unwrap_err();
     assert!(matches!(
         err,
-        RenderGraphError::SourceBufferTooSmall {
+        RenderGraphError::InvalidBufferTextureCopyLayout {
             buffer,
-            required_bytes,
-            actual_bytes
-        } if buffer == src && required_bytes == 3904 && actual_bytes == 256
+            texture,
+            ref details,
+        } if buffer == src
+            && texture == dst
+            && details.contains("needs 3904 bytes")
+            && details.contains("has 256")
     ));
 }
 

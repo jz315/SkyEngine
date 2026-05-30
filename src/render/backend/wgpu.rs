@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use winit::window::Window;
 
-use crate::asset::{Assets, Handle};
+use crate::asset::{AssetEventCursor, Assets, Handle};
 use crate::ecs::World;
 use crate::gpu::GpuContext;
 use crate::render::asset::{MeshAsset, StandardMaterialAsset};
@@ -25,6 +25,7 @@ pub struct WgpuSceneRenderer {
     gpu: GpuContext,
     render_runtime: Option<RenderRuntime>,
     asset_cache: WgpuRenderAssetCache,
+    asset_event_cursor: AssetEventCursor,
     warned_missing_pipeline: bool,
 }
 
@@ -46,6 +47,7 @@ impl WgpuSceneRenderer {
             gpu,
             render_runtime,
             asset_cache: WgpuRenderAssetCache::default(),
+            asset_event_cursor: AssetEventCursor::default(),
             warned_missing_pipeline: false,
         })
     }
@@ -130,6 +132,13 @@ impl SceneRenderer for WgpuSceneRenderer {
             return self.clear_frame(frame, world, SceneFrameClearReason::MissingPipeline);
         };
 
+        if let Some(assets) = world.get_resource::<Assets>() {
+            for event in assets.events_since(&mut self.asset_event_cursor) {
+                self.asset_cache
+                    .handle_asset_event(render_runtime, assets, event);
+            }
+        }
+
         let outcome = match render_runtime.render_world(&mut self.gpu, world) {
             FrameRenderOutcome::Rendered => SceneRenderOutcome::Rendered,
             FrameRenderOutcome::Skipped(reason) => {
@@ -173,10 +182,15 @@ impl SceneRenderer for WgpuSceneRenderer {
     }
 
     fn stats(&self) -> RenderStats {
-        self.render_runtime
+        let mut stats = self
+            .render_runtime
             .as_ref()
             .map(RenderRuntime::stats)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        stats.resident_render_assets = stats
+            .resident_render_assets
+            .saturating_add(self.asset_cache.stats().resident_assets());
+        stats
     }
 
     fn surface_size(&self) -> [u32; 2] {

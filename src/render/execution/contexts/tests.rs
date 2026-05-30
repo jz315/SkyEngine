@@ -87,7 +87,9 @@ fn compute_context_resource_helpers_resolve_declared_resources() {
         buffer_descs: &buffer_descs,
         alias_redirects: &alias_redirects,
         blackboard: &blackboard,
+        view_stats: None,
     };
+
     let ctx = ComputePassExecuteContext::new(&mut gpu, &pass, &resources, &execution);
 
     assert_eq!(ctx.read_texture(0), read_texture);
@@ -230,7 +232,9 @@ fn custom_shadow_resources_flow_to_execute_context() {
         buffer_descs: &buffer_descs,
         alias_redirects: &alias_redirects,
         blackboard: graph.blackboard_ref(),
+        view_stats: None,
     };
+
     let consumer = GraphPassExecuteContext::new(&mut gpu, &pass, &resources, &execution);
 
     let shadows = consumer.require_scene_shadows();
@@ -427,7 +431,9 @@ fn graph_pass_contexts_share_blackboard_values() {
         buffer_descs: &buffer_descs,
         alias_redirects: &alias_redirects,
         blackboard: graph.blackboard_ref(),
+        view_stats: None,
     };
+
     let ctx = GraphPassExecuteContext::new(&mut gpu, &pass, &resources, &execution);
 
     assert_eq!(
@@ -486,7 +492,9 @@ fn postfx_and_finalize_contexts_share_blackboard_values() {
         buffer_descs: &buffer_descs,
         alias_redirects: &alias_redirects,
         blackboard: graph.blackboard_ref(),
+        view_stats: None,
     };
+
     let postfx_execute = PostFxPassExecuteContext::new(&mut gpu, &pass, &resources, &execution);
     assert_eq!(
         postfx_execute.blackboard_get::<u32>("postfx_value"),
@@ -519,7 +527,9 @@ fn postfx_and_finalize_contexts_share_blackboard_values() {
         buffer_descs: &buffer_descs,
         alias_redirects: &alias_redirects,
         blackboard: graph.blackboard_ref(),
+        view_stats: None,
     };
+
     let finalize_execute =
         RenderPassExecuteContext::new(&mut gpu, &pass, &resources, &finalize_execution);
     assert_eq!(

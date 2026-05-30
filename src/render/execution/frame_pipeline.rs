@@ -110,9 +110,10 @@ impl<'nodes, S: ?Sized> FramePipeline<'nodes, S> {
         let pass_dispatch = &self.pass_dispatch;
         let mut counted_draw_dispatches = FxHashSet::default();
 
-        if let Err(error) = self
-            .graph
-            .try_execute(ctx, |compiled_pass, ctx, resources| {
+        let mut execute_pass =
+            |compiled_pass: &crate::render::graph::CompiledPass,
+             ctx: &mut GpuContext,
+             resources: &crate::render::graph::PhysicalResources<'_>| {
                 let Some(dispatch) = pass_dispatch.get(&compiled_pass.handle).copied() else {
                     return Ok(());
                 };
@@ -175,8 +176,18 @@ impl<'nodes, S: ?Sized> FramePipeline<'nodes, S> {
                     }
                 }
                 Ok(())
-            })
-        {
+            };
+
+        #[cfg(feature = "profile")]
+        let graph_result = {
+            let mut profiler = crate::render::graph::SkyProfileRenderGraphProfiler::new();
+            self.graph
+                .try_execute_profiled(ctx, &mut profiler, &mut execute_pass)
+        };
+        #[cfg(not(feature = "profile"))]
+        let graph_result = self.graph.try_execute(ctx, &mut execute_pass);
+
+        if let Err(error) = graph_result {
             eprintln!(
                 "[SkyEngine] Frame render graph execution failed; frame may be incomplete: {error}"
             );

@@ -37,9 +37,10 @@ fn builder_unlit_pipeline_renders_default_sprite_scene() {
 
     ctx.begin_frame()
         .expect("headless begin_frame should succeed");
-    renderer.render_world(&mut ctx, &world);
+    let outcome = renderer.render_world(&mut ctx, &world);
     ctx.end_frame();
 
+    assert_eq!(outcome, crate::render::FrameRenderOutcome::Rendered);
     let stats = renderer.stats();
     assert_eq!(stats.view_count, 1);
     assert!(stats.passes >= 1);

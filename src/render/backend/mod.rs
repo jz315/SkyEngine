@@ -123,6 +123,26 @@ mod tests {
         .expect("Failed to create test GPU device")
     }
 
+    #[test]
+    fn scene_frame_requires_render_or_clear_before_it_is_presentable() {
+        let mut frame = SceneFrame::new(RenderBackendKind::Wgpu);
+        assert!(!frame.is_presentable());
+        assert_eq!(frame.render_outcome(), SceneRenderOutcome::NotRendered);
+
+        frame.set_render_outcome(SceneRenderOutcome::Skipped(
+            SceneFrameSkipReason::MissingPipeline,
+        ));
+        assert!(!frame.is_presentable());
+
+        frame.set_render_outcome(SceneRenderOutcome::Cleared(
+            SceneFrameClearReason::MissingPipeline,
+        ));
+        assert!(frame.is_presentable());
+
+        frame.mark_pre_present_notified();
+        assert!(frame.pre_present_notified());
+    }
+
     fn triangle_mesh(label: &'static str) -> MeshAsset {
         MeshAsset::from_raw(MeshAssetDescriptor::new(
             bytemuck::cast_slice(&[
@@ -169,6 +189,8 @@ mod tests {
 
         assert_eq!(first, second);
         assert!(render_runtime.mesh(first).is_some());
+        assert_eq!(cache.stats().resident_meshes, 1);
+        assert_eq!(cache.stats().resident_standard_materials, 0);
 
         let material_first = cache.sync_standard_material(
             &gpu,
@@ -206,6 +228,68 @@ mod tests {
         assert!(render_runtime
             .material_erased::<StandardMaterial>(material_second)
             .is_ok());
+        let stats = cache.stats();
+        assert_eq!(stats.resident_meshes, 1);
+        assert_eq!(stats.resident_standard_materials, 1);
+        assert_eq!(stats.resident_assets(), 2);
+    }
+
+    #[test]
+    fn wgpu_asset_cache_invalidates_mesh_and_material_from_asset_events() {
+        let (device, queue) = create_test_device();
+        let gpu =
+            GpuContext::new_headless(device, queue, ::wgpu::TextureFormat::Bgra8Unorm, [32, 32]);
+        let mut render_runtime = RenderRuntime::from_asset(RenderPipelineAsset::builder().build());
+        let assets = Assets::with_empty_manifest(AssetConfig::default());
+        let mesh = assets.insert_runtime(triangle_mesh("backend_event_triangle"));
+        let material = assets.insert_runtime(StandardMaterialAsset::new());
+        let render_assets = SharedRenderAssetCache::default();
+        let mut cache = super::wgpu_asset_bridge::WgpuRenderAssetCache::default();
+
+        let mesh_handle = cache
+            .sync_mesh(&gpu, &mut render_runtime, &assets, mesh.clone())
+            .expect("mesh should upload");
+        let material_handle = cache
+            .sync_standard_material(
+                &gpu,
+                &mut render_runtime,
+                &assets,
+                &render_assets,
+                material.clone(),
+            )
+            .expect("material should upload");
+
+        let mut cursor = crate::asset::AssetEventCursor::default();
+        for event in assets.events_since(&mut cursor) {
+            cache.handle_asset_event(&mut render_runtime, &assets, event);
+        }
+        assert!(render_runtime.mesh(mesh_handle).is_some());
+        assert!(render_runtime
+            .material_erased::<StandardMaterial>(material_handle)
+            .is_ok());
+        assert_eq!(cache.stats().resident_assets(), 2);
+
+        assets
+            .replace_runtime(&mesh, triangle_mesh("backend_event_triangle_reloaded"))
+            .expect("mesh runtime replacement should emit an installed event");
+        assets
+            .replace_runtime(&material, StandardMaterialAsset::new().roughness(0.42))
+            .expect("material runtime replacement should emit an installed event");
+        for event in assets.events_since(&mut cursor) {
+            cache.handle_asset_event(&mut render_runtime, &assets, event);
+        }
+
+        assert!(render_runtime.mesh(mesh_handle).is_none());
+        assert!(render_runtime
+            .material_erased::<StandardMaterial>(material_handle)
+            .is_err());
+        assert_eq!(cache.stats().resident_assets(), 0);
+        let reloaded_mesh = cache
+            .sync_mesh(&gpu, &mut render_runtime, &assets, mesh)
+            .expect("mesh should resync after replacement");
+        assert!(render_runtime.mesh(reloaded_mesh).is_some());
+        assert_eq!(cache.stats().resident_meshes, 1);
+        assert_eq!(cache.stats().resident_standard_materials, 0);
     }
 
     #[test]

@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
 
-use crate::asset::{AssetId, Assets, Handle, TextureAsset};
+use crate::asset::{
+    Asset, AssetEvent, AssetEventKind, AssetId, AssetState, Assets, Handle, TextureAsset,
+};
 use crate::gpu::GpuContext;
 use crate::render::asset::{MeshAsset, StandardMaterialAsset};
 use crate::render::gpu::Texture;
@@ -15,6 +17,20 @@ use crate::render::runtime::RenderRuntime;
 pub(crate) struct WgpuRenderAssetCache {
     meshes: FxHashMap<AssetId, CachedWgpuMesh>,
     standard_materials: FxHashMap<AssetId, CachedWgpuStandardMaterial>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct WgpuRenderAssetStats {
+    pub(crate) resident_meshes: usize,
+    pub(crate) resident_standard_materials: usize,
+}
+
+impl WgpuRenderAssetStats {
+    #[inline]
+    pub(crate) fn resident_assets(self) -> usize {
+        self.resident_meshes
+            .saturating_add(self.resident_standard_materials)
+    }
 }
 
 struct CachedWgpuMesh {
@@ -36,6 +52,40 @@ struct StandardMaterialTextureKeys {
 }
 
 impl WgpuRenderAssetCache {
+    #[inline]
+    pub(crate) fn stats(&self) -> WgpuRenderAssetStats {
+        WgpuRenderAssetStats {
+            resident_meshes: self.meshes.len(),
+            resident_standard_materials: self.standard_materials.len(),
+        }
+    }
+
+    pub(crate) fn handle_asset_event(
+        &mut self,
+        render_runtime: &mut RenderRuntime,
+        assets: &Assets,
+        event: AssetEvent,
+    ) {
+        if !event.asset_type.is_empty()
+            && event.asset_type != MeshAsset::TYPE
+            && event.asset_type != StandardMaterialAsset::TYPE
+        {
+            return;
+        }
+
+        match event.kind {
+            AssetEventKind::Loaded => {}
+            AssetEventKind::Failed if event.state == AssetState::Installed => {}
+            AssetEventKind::Failed | AssetEventKind::Unloaded | AssetEventKind::ReloadQueued => {
+                self.invalidate_mesh(render_runtime, event.id);
+                self.invalidate_standard_material(render_runtime, event.id);
+            }
+            AssetEventKind::Installed | AssetEventKind::Reloaded => {
+                self.invalidate_installed_if_changed(render_runtime, assets, event);
+            }
+        }
+    }
+
     pub(crate) fn sync_mesh(
         &mut self,
         gpu: &GpuContext,
@@ -134,6 +184,47 @@ impl WgpuRenderAssetCache {
             },
         );
         Some(material_handle)
+    }
+
+    fn invalidate_installed_if_changed(
+        &mut self,
+        render_runtime: &mut RenderRuntime,
+        assets: &Assets,
+        event: AssetEvent,
+    ) {
+        if event.asset_type.is_empty() || event.asset_type == MeshAsset::TYPE {
+            let current = assets.try_get_id::<MeshAsset>(event.id);
+            if current.as_ref().map_or(true, |current| {
+                self.meshes
+                    .get(&event.id)
+                    .is_some_and(|cached| !Arc::ptr_eq(&cached.source, current))
+            }) {
+                self.invalidate_mesh(render_runtime, event.id);
+            }
+        }
+
+        if event.asset_type.is_empty() || event.asset_type == StandardMaterialAsset::TYPE {
+            let current = assets.try_get_id::<StandardMaterialAsset>(event.id);
+            if current.as_ref().map_or(true, |current| {
+                self.standard_materials
+                    .get(&event.id)
+                    .is_some_and(|cached| !Arc::ptr_eq(&cached.source, current))
+            }) {
+                self.invalidate_standard_material(render_runtime, event.id);
+            }
+        }
+    }
+
+    fn invalidate_mesh(&mut self, render_runtime: &mut RenderRuntime, id: AssetId) {
+        if let Some(stale) = self.meshes.remove(&id) {
+            let _ = render_runtime.remove_mesh(stale.handle);
+        }
+    }
+
+    fn invalidate_standard_material(&mut self, render_runtime: &mut RenderRuntime, id: AssetId) {
+        if let Some(stale) = self.standard_materials.remove(&id) {
+            let _ = render_runtime.remove_material_erased::<StandardMaterial>(stale.handle);
+        }
     }
 }
 

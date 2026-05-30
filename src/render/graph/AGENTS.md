@@ -8,15 +8,18 @@
 
 ## File Map
 - `mod.rs`: core `RenderGraph` struct definition, resource creation, pass registration, reset/destroy, query accessors, and handle validation helpers.
+- `access.rs`: borrowed `PassAccessInfo` summaries used by dependency analysis, diagnostics, and debug dumps without becoming a second source of truth.
 - `compile.rs`: compilation pipeline (`compile()` method) — dependency analysis, topological sort, dead-pass culling, execution reordering, and resource lifetime analysis.  Memory alias analysis is deferred to `allocate.rs`.
 - `allocate.rs`: physical resource lifecycle — `allocate_physical_resources()` (with deferred alias computation using real surface dimensions), `release_transient_resources()`, resolve helpers (`try_resolve_texture`, `try_resolve_buffer`, `resolve_texture_extent`), buffer usage inference, and public physical resource accessors.
 - `reorder.rs`: execution reordering for cache locality and lifetime compression.  Adapted from SakuraEngine's `ExecutionReorderPhase`.  Single forward-pass algorithm with BFS-based DAG safety checks and Jaccard resource affinity scoring.  Configurable via `ReorderConfig` (max attraction distance, min affinity score).
 - `alias.rs`: memory aliasing for transient textures.  Adapted from SakuraEngine's `MemoryAliasingPhase`.  Bucket-based best-fit algorithm where transient textures with non-overlapping lifetimes and matching formats share physical `RenderTarget` objects.  Exports `AliasingStats` for compression ratio monitoring.
 - `types.rs`: all public and internal type definitions — `TextureHandle`, `BufferHandle`, `PassHandle`, `TextureSubresource`, `ResourceRef`, `TargetSize`, `PassType`, `PassFlags` (bitflags), `CopyOp`, `LoadOp`, `ColorOutput`, `DepthStencilOutput`, `TextureDesc`, `BufferDesc`, `ImportedTexture`, `PassEntry`, `CompiledPass`, `ResourceLifetime`, `PhysicalResources`, `PhysicalTextureRef`, and helpers (`resolve_target_size`, `resource_refs_overlap`, `texture_format_bytes_per_pixel`).
 - `builder.rs`: builder types for graph construction — `TextureBuilder` (name, size, format, usage, sample/mip/array metadata, transient/persistent, import), `BufferBuilder` (name, size, usage, transient/persistent, import), `PassSetup` (read/write/readwrite for textures and buffers, MRT color outputs with load ops, depth-stencil, surface writes, flags), `CopyPassSetup` (texture-to-texture, buffer-to-buffer, buffer-to-texture, upload-to-texture).
+- `debug.rs`: read-only `RenderGraphDebugDump` snapshots for pass order, liveness, resource lifetimes, resource classifications, copy ops, alias groups, and alias redirects.
 - `error.rs`: `RenderGraphError` enum (including dependency, handle, copy/upload validation, allocation, and execution failures), `RenderGraphProfiler` trait, and `DebugProfiler`.
 - `pool.rs`: transient resource pools — `TransientPool` (keyed on `{format, usage, width, height, sample_count, mip_level_count, array_layer_count}` for `RenderTarget` recycling) and `TransientBufferPool` (keyed on `{size_bytes, usage}` for `wgpu::Buffer` recycling). Both use `FxHashMap<Key, Vec<T>>` stacks.
-- `visualize.rs`: GraphViz DOT export with resource/pass nodes and read/write edges, coloured by pass type.
+- `queue_diagnostic.rs`: dry-run queue classification diagnostics for async compute/copy candidates and graphics blockers. It does not change execution order or submit to other queues.
+- `visualize.rs`: GraphViz DOT export with compact output plus opt-in detailed labels from the debug dump, including lifetimes, dependency levels, copy ops, subresources, and alias groups.
 - `tests.rs`: render graph regression tests covering compilation, dependency analysis, dead-pass culling, reordering, aliasing, physical resource allocation/release, builder APIs, MRT, depth-stencil, copy ops, import, execution errors, and PhysicalResources resolution.
 
 ## Handle Model
@@ -63,7 +66,7 @@ Compilation is **idempotent** and cached; the cache is invalidated when passes o
 ## PassFlags (Scheduling Hints)
 - `PREFER_ASYNC_COMPUTE` (0x02): hint for future multi-queue support.
 - `COMPUTE_INTENSIVE` (0x10), `VERTEX_BOUND_INTENSIVE` (0x20), `PIXEL_BOUND_INTENSIVE` (0x40), `BANDWIDTH_INTENSIVE` (0x80): workload characterization hints.
-- Currently informational only; no multi-queue scheduler is implemented.
+- Currently diagnostic only; `queue_schedule_diagnostic()` reports candidates and blockers, but no multi-queue scheduler is implemented.
 
 ## Blackboard
 - `RenderGraph` owns a `Blackboard` instance for cross-pass data sharing.
@@ -71,7 +74,10 @@ Compilation is **idempotent** and cached; the cache is invalidated when passes o
 - Cleared on `reset()`.
 
 ## Visualization
-- `export_dot()` produces a GraphViz DOT string with resource nodes (textures, buffers, surface), pass nodes (colored by type, dashed if culled), and read/write edges.
+- `debug_dump()` produces a read-only snapshot of declared and compiled graph state without compiling, allocating, or executing.
+- `export_dot()` produces compact GraphViz DOT output with resource nodes (textures, buffers, surface), pass nodes (colored by type, dashed if culled), and read/write edges.
+- `export_dot_with_options(RenderGraphDotOptions::detailed())` includes opt-in diagnostic details such as execution indices, dependency levels, lifetimes, copy op summaries, subresource labels, resource classifications, and alias groups.
+- `queue_schedule_diagnostic()` classifies passes for future scheduling analysis without changing execution order or frame rendering behavior.
 
 ## Borrow Pattern in Execution
 - During `try_execute`, `PhysicalResources` holds shared (`&`) borrows of `physical_textures`, `physical_buffers`, `textures`, `buffers`, and `alias_redirects`.

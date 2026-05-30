@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -18,8 +18,12 @@ const TEXTURE_PREPARE_BATCH_SIZE: usize = 4;
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct RenderAssetStats {
     pub resident_assets: usize,
+    pub resident_bytes: usize,
     pub uploaded_assets: usize,
     pub uploaded_bytes: usize,
+    pub evicted_assets: usize,
+    pub evicted_bytes: usize,
+    pub cached_failed_assets: usize,
     pub queued_assets: usize,
     pub visible_queued_assets: usize,
     pub loading_assets: usize,
@@ -42,6 +46,18 @@ pub enum TextureReadiness {
 struct CachedGpuTexture {
     source: Arc<TextureAsset>,
     texture: Texture,
+    byte_size: usize,
+    last_used_order: u64,
+}
+
+struct FailedGpuTexturePrepare {
+    source: Arc<TextureAsset>,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct TextureEvictionStats {
+    ids: Vec<AssetId>,
+    bytes: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -63,8 +79,110 @@ struct QueuedGpuTexture {
 #[derive(Default)]
 struct TextureGpuCache {
     textures: FxHashMap<AssetId, CachedGpuTexture>,
+    prepare_failures: FxHashMap<AssetId, FailedGpuTexturePrepare>,
     queue: TexturePrepareQueue,
     requested: FxHashSet<AssetId>,
+    pinned: FxHashSet<AssetId>,
+    resident_bytes: usize,
+    next_access_order: u64,
+}
+
+impl TextureGpuCache {
+    fn next_access_order(&mut self) -> u64 {
+        let order = self.next_access_order;
+        self.next_access_order = self.next_access_order.wrapping_add(1);
+        order
+    }
+
+    fn touch(&mut self, id: AssetId) {
+        let order = self.next_access_order();
+        if let Some(cached) = self.textures.get_mut(&id) {
+            cached.last_used_order = order;
+        }
+    }
+
+    fn remove_resident(&mut self, id: AssetId) -> Option<CachedGpuTexture> {
+        let removed = self.textures.remove(&id)?;
+        self.resident_bytes = self.resident_bytes.saturating_sub(removed.byte_size);
+        Some(removed)
+    }
+
+    fn insert_resident(
+        &mut self,
+        id: AssetId,
+        source: Arc<TextureAsset>,
+        texture: Texture,
+    ) -> usize {
+        if let Some(removed) = self.remove_resident(id) {
+            drop(removed);
+        }
+        self.prepare_failures.remove(&id);
+        let byte_size = texture
+            .resident_bytes()
+            .unwrap_or_else(|| source.pixels().len());
+        let last_used_order = self.next_access_order();
+        self.resident_bytes = self.resident_bytes.saturating_add(byte_size);
+        self.textures.insert(
+            id,
+            CachedGpuTexture {
+                source,
+                texture,
+                byte_size,
+                last_used_order,
+            },
+        );
+        byte_size
+    }
+
+    fn insert_prepare_failure(&mut self, id: AssetId, source: Arc<TextureAsset>) {
+        self.remove_resident(id);
+        self.queue.remove(id);
+        self.requested.remove(&id);
+        self.prepare_failures
+            .insert(id, FailedGpuTexturePrepare { source });
+    }
+
+    fn prepare_failed_current(&self, id: AssetId, source: &Arc<TextureAsset>) -> bool {
+        self.prepare_failures
+            .get(&id)
+            .is_some_and(|failure| Arc::ptr_eq(&failure.source, source))
+    }
+
+    fn evict_to_budget(
+        &mut self,
+        budget: usize,
+        protected: Option<AssetId>,
+    ) -> TextureEvictionStats {
+        let mut stats = TextureEvictionStats::default();
+        while self.resident_bytes > budget {
+            let Some(id) = self
+                .textures
+                .iter()
+                .filter(|(id, _)| protected != Some(**id) && !self.pinned.contains(*id))
+                .min_by_key(|(_, cached)| cached.last_used_order)
+                .map(|(id, _)| *id)
+            else {
+                break;
+            };
+            if let Some(removed) = self.remove_resident(id) {
+                stats.ids.push(id);
+                stats.bytes = stats.bytes.saturating_add(removed.byte_size);
+            }
+            self.queue.remove(id);
+            self.requested.remove(&id);
+        }
+        stats
+    }
+
+    fn clear(&mut self) {
+        self.textures.clear();
+        self.prepare_failures.clear();
+        self.queue.clear();
+        self.requested.clear();
+        self.pinned.clear();
+        self.resident_bytes = 0;
+        self.next_access_order = 0;
+    }
 }
 
 #[derive(Default)]
@@ -151,6 +269,7 @@ impl TexturePrepareQueue {
 
     fn clear(&mut self) {
         self.queued.clear();
+        self.next_order = 0;
     }
 }
 
@@ -158,6 +277,8 @@ impl TexturePrepareQueue {
 struct RenderAssetFrameStats {
     uploaded: FxHashSet<AssetId>,
     uploaded_bytes: usize,
+    evicted: FxHashSet<AssetId>,
+    evicted_bytes: usize,
     upload_ms: f64,
     loading: FxHashSet<AssetId>,
     fallback: FxHashSet<AssetId>,
@@ -170,6 +291,8 @@ impl RenderAssetFrameStats {
     fn clear(&mut self) {
         self.uploaded.clear();
         self.uploaded_bytes = 0;
+        self.evicted.clear();
+        self.evicted_bytes = 0;
         self.upload_ms = 0.0;
         self.loading.clear();
         self.fallback.clear();
@@ -182,6 +305,12 @@ impl RenderAssetFrameStats {
         self.uploaded.insert(id);
         self.uploaded_bytes = self.uploaded_bytes.saturating_add(bytes);
         self.upload_ms += upload_ms;
+    }
+
+    #[inline]
+    fn record_evictions(&mut self, evictions: TextureEvictionStats) {
+        self.evicted_bytes = self.evicted_bytes.saturating_add(evictions.bytes);
+        self.evicted.extend(evictions.ids);
     }
 
     #[inline]
@@ -208,13 +337,19 @@ impl RenderAssetFrameStats {
     fn snapshot(
         &self,
         resident_assets: usize,
+        resident_bytes: usize,
+        cached_failed_assets: usize,
         queued_assets: usize,
         visible_queued_assets: usize,
     ) -> RenderAssetStats {
         RenderAssetStats {
             resident_assets,
+            resident_bytes,
             uploaded_assets: self.uploaded.len(),
             uploaded_bytes: self.uploaded_bytes,
+            evicted_assets: self.evicted.len(),
+            evicted_bytes: self.evicted_bytes,
+            cached_failed_assets,
             queued_assets,
             visible_queued_assets,
             loading_assets: self.loading.len(),
@@ -259,6 +394,7 @@ impl RenderAssetFrameStats {
 #[derive(Default)]
 pub struct RenderAssetCache {
     textures: TextureGpuCache,
+    texture_memory_budget_bytes: Option<usize>,
     frame: RenderAssetFrameStats,
     stats: RenderAssetStats,
     logged_missing_textures: FxHashSet<AssetId>,
@@ -275,6 +411,34 @@ impl RenderAssetCache {
     pub fn begin_frame(&mut self) {
         self.frame.clear();
         self.stats = RenderAssetStats::default();
+    }
+
+    #[inline]
+    pub fn set_texture_memory_budget(&mut self, budget_bytes: Option<usize>) {
+        self.texture_memory_budget_bytes = budget_bytes;
+        if let Some(budget_bytes) = budget_bytes {
+            let evictions = self.textures.evict_to_budget(budget_bytes, None);
+            self.frame.record_evictions(evictions);
+        }
+    }
+
+    #[inline]
+    pub fn pin_texture(&mut self, handle: &Handle<TextureAsset>) {
+        self.textures.pinned.insert(handle.id());
+    }
+
+    #[inline]
+    pub fn unpin_texture(&mut self, handle: &Handle<TextureAsset>) {
+        self.textures.pinned.remove(&handle.id());
+        if let Some(budget_bytes) = self.texture_memory_budget_bytes {
+            let evictions = self.textures.evict_to_budget(budget_bytes, None);
+            self.frame.record_evictions(evictions);
+        }
+    }
+
+    #[inline]
+    pub fn is_texture_pinned(&self, handle: &Handle<TextureAsset>) -> bool {
+        self.textures.pinned.contains(&handle.id())
     }
 
     pub fn texture(
@@ -335,11 +499,15 @@ impl RenderAssetCache {
         self.textures.requested.remove(&id);
         if let Some(cached) = self.textures.textures.get(&id) {
             if Arc::ptr_eq(&cached.source, &source) {
+                self.textures.touch(id);
                 return TextureReadiness::GpuReady;
             }
         }
         if self.textures.queue.contains_current(id, &source) {
             return TextureReadiness::GpuQueued;
+        }
+        if self.textures.prepare_failed_current(id, &source) {
+            return TextureReadiness::Failed;
         }
         TextureReadiness::CpuReady
     }
@@ -370,8 +538,12 @@ impl RenderAssetCache {
         self.textures.requested.remove(&id);
         if let Some(cached) = self.textures.textures.get(&id) {
             if Arc::ptr_eq(&cached.source, &source) {
+                self.textures.touch(id);
                 return TextureReadiness::GpuReady;
             }
+        }
+        if self.textures.prepare_failed_current(id, &source) {
+            return TextureReadiness::Failed;
         }
 
         self.queue_texture_gpu(id, source, priority);
@@ -415,6 +587,9 @@ impl RenderAssetCache {
     }
 
     pub fn prepare_queued_textures(&mut self, gpu: &GpuContext) {
+        #[cfg(feature = "profile")]
+        let _scope = sky_profile::profile_scope!("render_asset", "prepare_queued_textures");
+
         for _ in 0..TEXTURE_PREPARE_BATCH_SIZE {
             let Some((id, entry)) = self.textures.queue.pop_next() else {
                 break;
@@ -427,6 +602,8 @@ impl RenderAssetCache {
         let Some(entry) = self.textures.queue.pop_id(id) else {
             return if self.textures.textures.contains_key(&id) {
                 TextureReadiness::GpuReady
+            } else if self.textures.prepare_failures.contains_key(&id) {
+                TextureReadiness::Failed
             } else {
                 TextureReadiness::CpuReady
             };
@@ -434,6 +611,8 @@ impl RenderAssetCache {
         self.prepare_queued_entry(gpu, id, entry);
         if self.textures.textures.contains_key(&id) {
             TextureReadiness::GpuReady
+        } else if self.textures.prepare_failures.contains_key(&id) {
+            TextureReadiness::Failed
         } else {
             TextureReadiness::CpuReady
         }
@@ -452,6 +631,8 @@ impl RenderAssetCache {
         );
         self.stats = self.frame.snapshot(
             self.textures.textures.len(),
+            self.textures.resident_bytes,
+            self.textures.prepare_failures.len(),
             self.textures.queue.len(),
             self.textures.queue.visible_len(),
         );
@@ -460,11 +641,17 @@ impl RenderAssetCache {
 
     #[inline]
     pub fn handle_asset_event(&mut self, event: AssetEvent, assets: Option<&Assets>) {
+        if !event.asset_type.is_empty() && event.asset_type != TextureAsset::TYPE {
+            return;
+        }
+
         match event.kind {
+            AssetEventKind::Loaded => {}
+            AssetEventKind::Failed if event.state == AssetState::Installed => {}
             AssetEventKind::Failed | AssetEventKind::Unloaded | AssetEventKind::ReloadQueued => {
                 self.invalidate_texture(event.id);
             }
-            AssetEventKind::Installed => {
+            AssetEventKind::Installed | AssetEventKind::Reloaded => {
                 let source = assets.and_then(|assets| assets.try_get_id::<TextureAsset>(event.id));
                 self.invalidate_stale_cpu_asset(event.id, source.as_ref());
             }
@@ -483,16 +670,16 @@ impl RenderAssetCache {
 
     #[inline]
     pub fn invalidate_texture(&mut self, id: AssetId) {
-        self.textures.textures.remove(&id);
+        self.textures.remove_resident(id);
         self.textures.queue.remove(id);
         self.textures.requested.remove(&id);
+        self.textures.prepare_failures.remove(&id);
+        self.textures.pinned.remove(&id);
     }
 
     #[inline]
     pub fn clear(&mut self) {
-        self.textures.textures.clear();
-        self.textures.queue.clear();
-        self.textures.requested.clear();
+        self.textures.clear();
         self.frame.clear();
         self.stats = RenderAssetStats::default();
         self.logged_missing_textures.clear();
@@ -542,7 +729,8 @@ impl RenderAssetCache {
         source: Arc<TextureAsset>,
         priority: TexturePreparePriority,
     ) {
-        self.textures.textures.remove(&id);
+        self.textures.remove_resident(id);
+        self.textures.prepare_failures.remove(&id);
         self.textures.queue.push(id, source, priority);
     }
 
@@ -553,14 +741,26 @@ impl RenderAssetCache {
                 .get(&id)
                 .is_some_and(|cached| !Arc::ptr_eq(&cached.source, source))
         }) {
-            self.textures.textures.remove(&id);
+            self.textures.remove_resident(id);
+        }
+        if source.map_or(true, |source| {
+            self.textures
+                .prepare_failures
+                .get(&id)
+                .is_some_and(|failure| !Arc::ptr_eq(&failure.source, source))
+        }) {
+            self.textures.prepare_failures.remove(&id);
         }
         self.textures.queue.retain_current(id, source);
     }
 
     fn prepare_queued_entry(&mut self, gpu: &GpuContext, id: AssetId, entry: QueuedGpuTexture) {
+        #[cfg(feature = "profile")]
+        let _scope = sky_profile::profile_scope!("render_asset", format!("prepare_texture:{id}"));
+
         if let Some(cached) = self.textures.textures.get(&id) {
             if Arc::ptr_eq(&cached.source, &entry.source) {
+                self.textures.touch(id);
                 return;
             }
         }
@@ -568,14 +768,28 @@ impl RenderAssetCache {
         let upload_start = timing_start();
         let texture = prepare_texture_asset(gpu, &entry.source);
         let upload_ms = elapsed_ms(upload_start);
-        self.textures.textures.insert(
-            id,
-            CachedGpuTexture {
-                source: entry.source,
-                texture,
-            },
-        );
-        self.frame.record_upload(id, entry.byte_size, upload_ms);
+        match texture {
+            Ok(texture) => {
+                let uploaded_bytes = self.textures.insert_resident(id, entry.source, texture);
+                if let Some(budget_bytes) = self.texture_memory_budget_bytes {
+                    let evictions = self.textures.evict_to_budget(budget_bytes, Some(id));
+                    self.frame.record_evictions(evictions);
+                }
+                self.frame.record_upload(id, uploaded_bytes, upload_ms);
+            }
+            Err(error) => {
+                log::error!(
+                    target: "sky_engine::render::asset",
+                    "{}: texture asset {} ({}) failed GPU prepare: {}",
+                    RENDER_TEXTURE_ASSET_FAILED_LOG,
+                    id,
+                    TextureAsset::TYPE,
+                    error,
+                );
+                self.textures.insert_prepare_failure(id, entry.source);
+                self.frame.record_failed(id);
+            }
+        }
     }
 }
 
@@ -596,18 +810,63 @@ impl SharedRenderAssetCache {
     }
 }
 
-fn prepare_texture_asset(gpu: &GpuContext, source: &TextureAsset) -> Texture {
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TexturePrepareError {
+    EmptyDimensions { width: u32, height: u32 },
+    PixelDataSizeOverflow { width: u32, height: u32 },
+    PixelDataLengthMismatch { expected: usize, actual: usize },
+}
+
+impl fmt::Display for TexturePrepareError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyDimensions { width, height } => {
+                write!(f, "invalid empty dimensions {width}x{height}")
+            }
+            Self::PixelDataSizeOverflow { width, height } => {
+                write!(
+                    f,
+                    "texture dimensions {width}x{height} overflow RGBA8 byte size"
+                )
+            }
+            Self::PixelDataLengthMismatch { expected, actual } => {
+                write!(f, "expected {expected} RGBA8 bytes, got {actual}")
+            }
+        }
+    }
+}
+
+fn prepare_texture_asset(
+    gpu: &GpuContext,
+    source: &TextureAsset,
+) -> Result<Texture, TexturePrepareError> {
+    let width = source.width();
+    let height = source.height();
+    if width == 0 || height == 0 {
+        return Err(TexturePrepareError::EmptyDimensions { width, height });
+    }
+    let expected_len = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or(TexturePrepareError::PixelDataSizeOverflow { width, height })?;
+    if source.pixels().len() != expected_len {
+        return Err(TexturePrepareError::PixelDataLengthMismatch {
+            expected: expected_len,
+            actual: source.pixels().len(),
+        });
+    }
+
     let format = match source.color_space() {
         crate::asset::TextureColorSpace::Linear => wgpu::TextureFormat::Rgba8Unorm,
         crate::asset::TextureColorSpace::Srgb => wgpu::TextureFormat::Rgba8UnormSrgb,
     };
 
-    Texture::from_rgba8_with_format(
+    Ok(Texture::from_rgba8_with_format(
         gpu,
-        source.width(),
-        source.height(),
+        width,
+        height,
         source.pixels(),
         format,
         "asset_texture",
-    )
+    ))
 }

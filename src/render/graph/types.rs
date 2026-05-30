@@ -2,6 +2,7 @@
 
 use std::any::Any;
 use std::borrow::Cow;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::render::gpu::RenderTarget;
@@ -248,6 +249,80 @@ pub(crate) struct ResourceLifetime {
     pub last_use: usize,
 }
 
+/// Counts `PhysicalResources` view resolutions and view creations observed
+/// during the latest graph execution.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PhysicalResourceViewStats {
+    pub default_texture_view_resolves: u64,
+    pub texture_subresource_view_creations: u64,
+    pub storage_texture_view_creations: u64,
+    pub render_attachment_view_creations: u64,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct PhysicalResourceViewStatsCounters {
+    default_texture_view_resolves: AtomicU64,
+    texture_subresource_view_creations: AtomicU64,
+    storage_texture_view_creations: AtomicU64,
+    render_attachment_view_creations: AtomicU64,
+}
+
+impl PhysicalResourceViewStatsCounters {
+    #[inline]
+    pub(crate) fn reset(&self) {
+        self.default_texture_view_resolves
+            .store(0, Ordering::Relaxed);
+        self.texture_subresource_view_creations
+            .store(0, Ordering::Relaxed);
+        self.storage_texture_view_creations
+            .store(0, Ordering::Relaxed);
+        self.render_attachment_view_creations
+            .store(0, Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub(crate) fn snapshot(&self) -> PhysicalResourceViewStats {
+        PhysicalResourceViewStats {
+            default_texture_view_resolves: self
+                .default_texture_view_resolves
+                .load(Ordering::Relaxed),
+            texture_subresource_view_creations: self
+                .texture_subresource_view_creations
+                .load(Ordering::Relaxed),
+            storage_texture_view_creations: self
+                .storage_texture_view_creations
+                .load(Ordering::Relaxed),
+            render_attachment_view_creations: self
+                .render_attachment_view_creations
+                .load(Ordering::Relaxed),
+        }
+    }
+
+    #[inline]
+    fn record_default_texture_view_resolve(&self) {
+        self.default_texture_view_resolves
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline]
+    fn record_texture_subresource_view_creation(&self) {
+        self.texture_subresource_view_creations
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline]
+    fn record_storage_texture_view_creation(&self) {
+        self.storage_texture_view_creations
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline]
+    fn record_render_attachment_view_creation(&self) {
+        self.render_attachment_view_creations
+            .fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 // ── Physical resource accessor ──────────────────────────────────────────────
 
 /// Read-only accessor for physical resources during graph execution.
@@ -259,6 +334,7 @@ pub struct PhysicalResources<'a> {
     pub(crate) buffer_descs: &'a [BufferDesc],
     pub(crate) alias_redirects: &'a rustc_hash::FxHashMap<usize, usize>,
     pub(crate) blackboard: &'a Blackboard,
+    pub(crate) view_stats: Option<&'a PhysicalResourceViewStatsCounters>,
 }
 
 impl<'a> PhysicalResources<'a> {
@@ -322,6 +398,9 @@ impl<'a> PhysicalResources<'a> {
             self.texture_handle_matches(handle),
             "texture handle does not belong to these physical resources"
         );
+        if let Some(stats) = self.view_stats {
+            stats.record_default_texture_view_resolve();
+        }
         if let Some(rt) = self.render_target(handle) {
             return PhysicalTextureRef {
                 view: rt.view(),
@@ -370,6 +449,9 @@ impl<'a> PhysicalResources<'a> {
             self.texture_handle_matches(handle),
             "texture handle does not belong to these physical resources"
         );
+        if let Some(stats) = self.view_stats {
+            stats.record_default_texture_view_resolve();
+        }
         if let Some(rt) = self.render_target(handle) {
             return rt.view();
         }
@@ -392,6 +474,9 @@ impl<'a> PhysicalResources<'a> {
         subresource: TextureSubresource,
         dimension: wgpu::TextureViewDimension,
     ) -> wgpu::TextureView {
+        if let Some(stats) = self.view_stats {
+            stats.record_texture_subresource_view_creation();
+        }
         assert!(
             self.texture_subresource_matches(subresource),
             "texture subresource does not belong to these physical resources or is out of range"
@@ -422,6 +507,9 @@ impl<'a> PhysicalResources<'a> {
         subresource: TextureSubresource,
         dimension: wgpu::TextureViewDimension,
     ) -> wgpu::TextureView {
+        if let Some(stats) = self.view_stats {
+            stats.record_storage_texture_view_creation();
+        }
         let usage = self.texture_ref(subresource.texture).usage;
         assert!(
             usage.contains(wgpu::TextureUsages::STORAGE_BINDING),
@@ -433,6 +521,9 @@ impl<'a> PhysicalResources<'a> {
     /// Create a single-mip, single-layer render attachment view.
     #[inline]
     pub fn render_attachment_view(&self, subresource: TextureSubresource) -> wgpu::TextureView {
+        if let Some(stats) = self.view_stats {
+            stats.record_render_attachment_view_creation();
+        }
         assert_eq!(
             subresource.mip_level_count, 1,
             "render_attachment_view requires exactly one mip level"

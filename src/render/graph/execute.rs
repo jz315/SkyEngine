@@ -395,10 +395,12 @@ impl RenderGraph {
         };
         let actual_bytes = self.buffers[src.0].size_bytes;
         if actual_bytes < required_bytes {
-            return Err(RenderGraphError::SourceBufferTooSmall {
+            return Err(RenderGraphError::InvalidBufferTextureCopyLayout {
                 buffer: src,
-                required_bytes,
-                actual_bytes,
+                texture: dst,
+                details: Cow::Owned(format!(
+                    "source buffer is too small: needs {required_bytes} bytes, has {actual_bytes}"
+                )),
             });
         }
 
@@ -583,12 +585,15 @@ impl RenderGraph {
     fn execute_copy_pass(
         &self,
         ctx: &mut GpuContext,
+        pass: &CompiledPass,
         ops: &[ValidatedCopyOp<'_>],
     ) -> Result<(), RenderGraphError> {
         if ctx.has_active_frame() {
-            ctx.flush("render_graph_encoder_after_copy");
+            let flush_label = format!("render_graph_encoder_after_copy_{}", pass.name);
+            ctx.flush(&flush_label);
         }
 
+        let encoder_label = format!("render_graph_copy_pass_{}#{}", pass.name, pass.index);
         let mut encoder: Option<wgpu::CommandEncoder> = None;
         let submit_pending = |ctx: &mut GpuContext, encoder: &mut Option<wgpu::CommandEncoder>| {
             if let Some(encoder) = encoder.take() {
@@ -604,7 +609,7 @@ impl RenderGraph {
                     let encoder = encoder.get_or_insert_with(|| {
                         ctx.device()
                             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                                label: Some("render_graph_copy_pass"),
+                                label: Some(&encoder_label),
                             })
                     });
                     encoder.copy_texture_to_texture(
@@ -619,7 +624,7 @@ impl RenderGraph {
                     let encoder = encoder.get_or_insert_with(|| {
                         ctx.device()
                             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                                label: Some("render_graph_copy_pass"),
+                                label: Some(&encoder_label),
                             })
                     });
                     encoder.copy_buffer_to_buffer(src_buf, 0, dst_buf, 0, *size);
@@ -630,7 +635,7 @@ impl RenderGraph {
                     let encoder = encoder.get_or_insert_with(|| {
                         ctx.device()
                             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                                label: Some("render_graph_copy_pass"),
+                                label: Some(&encoder_label),
                             })
                     });
                     encoder.copy_buffer_to_texture(
@@ -685,6 +690,25 @@ impl RenderGraph {
         Ok(())
     }
 
+    fn pass_execution_error(
+        &self,
+        pass: &CompiledPass,
+        execution_order: usize,
+        error: RenderGraphError,
+    ) -> RenderGraphError {
+        let compiled_order = self
+            .order
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        RenderGraphError::ExecutionFailed(format!(
+            "pass \"{}\" (#{}, {:?}, exec #{execution_order}, dep {}) failed: {}; \
+             compiled order [{compiled_order}]",
+            pass.name, pass.index, pass.pass_type, pass.dep_level, error
+        ))
+    }
+
     /// Compile, allocate resources, and execute all alive passes in order.
     pub fn try_execute<F>(
         &mut self,
@@ -713,6 +737,7 @@ impl RenderGraph {
                     }
                 };
 
+            self.view_stats.reset();
             self.allocate_physical_resources(ctx);
             self.trace_aliasing_state(&compiled);
 
@@ -724,11 +749,16 @@ impl RenderGraph {
                 buffer_descs: &self.buffers,
                 alias_redirects: &self.alias_redirects,
                 blackboard: &self.blackboard,
+                view_stats: Some(&self.view_stats),
             };
 
             let mut err = None;
             let mut active_alias_owners = FxHashMap::default();
-            for (pass, copy_ops) in compiled.iter().zip(validated_copy_passes.iter()) {
+            for (execution_order, (pass, copy_ops)) in compiled
+                .iter()
+                .zip(validated_copy_passes.iter())
+                .enumerate()
+            {
                 if Self::trace_aliasing_enabled() {
                     eprintln!(
                         "[RenderGraph][alias] executing {}#{}",
@@ -737,14 +767,14 @@ impl RenderGraph {
                 }
                 self.flush_before_aliased_owner_change(ctx, pass, &mut active_alias_owners);
                 if pass.pass_type == PassType::Copy {
-                    if let Err(e) = self.execute_copy_pass(ctx, copy_ops) {
-                        err = Some(e);
+                    if let Err(e) = self.execute_copy_pass(ctx, pass, copy_ops) {
+                        err = Some(self.pass_execution_error(pass, execution_order, e));
                         break;
                     }
                     active_alias_owners.clear();
                 } else {
                     if let Err(e) = run_pass(pass, ctx, &resources) {
-                        err = Some(e);
+                        err = Some(self.pass_execution_error(pass, execution_order, e));
                         break;
                     }
                 }
@@ -806,6 +836,7 @@ impl RenderGraph {
                     }
                 };
 
+            self.view_stats.reset();
             self.allocate_physical_resources(ctx);
             self.trace_aliasing_state(&compiled);
 
@@ -817,30 +848,52 @@ impl RenderGraph {
                 buffer_descs: &self.buffers,
                 alias_redirects: &self.alias_redirects,
                 blackboard: &self.blackboard,
+                view_stats: Some(&self.view_stats),
             };
 
             let mut err = None;
             let mut active_alias_owners = FxHashMap::default();
-            for (pass, copy_ops) in compiled.iter().zip(validated_copy_passes.iter()) {
+            for (execution_order, (pass, copy_ops)) in compiled
+                .iter()
+                .zip(validated_copy_passes.iter())
+                .enumerate()
+            {
                 self.flush_before_aliased_owner_change(ctx, pass, &mut active_alias_owners);
                 profiler.on_pass_begin(&pass.name, pass.pass_type);
+                #[cfg(feature = "profile-gpu")]
+                let gpu_profile_scope = ctx.begin_gpu_profile_scope(
+                    "render_graph",
+                    format!("{:?}:{}", pass.pass_type, pass.name),
+                );
                 let start = std::time::Instant::now();
                 if Self::trace_aliasing_enabled() {
                     eprintln!("[RenderGraph][alias] begin {}", pass.name);
                 }
                 if pass.pass_type == PassType::Copy {
-                    if let Err(e) = self.execute_copy_pass(ctx, copy_ops) {
+                    if let Err(e) = self.execute_copy_pass(ctx, pass, copy_ops) {
+                        #[cfg(feature = "profile-gpu")]
+                        if let Some(scope) = gpu_profile_scope {
+                            ctx.end_gpu_profile_scope(scope);
+                        }
                         profiler.on_pass_end(&pass.name, start.elapsed());
-                        err = Some(e);
+                        err = Some(self.pass_execution_error(pass, execution_order, e));
                         break;
                     }
                     active_alias_owners.clear();
                 } else {
                     if let Err(e) = run_pass(pass, ctx, &resources) {
+                        #[cfg(feature = "profile-gpu")]
+                        if let Some(scope) = gpu_profile_scope {
+                            ctx.end_gpu_profile_scope(scope);
+                        }
                         profiler.on_pass_end(&pass.name, start.elapsed());
-                        err = Some(e);
+                        err = Some(self.pass_execution_error(pass, execution_order, e));
                         break;
                     }
+                }
+                #[cfg(feature = "profile-gpu")]
+                if let Some(scope) = gpu_profile_scope {
+                    ctx.end_gpu_profile_scope(scope);
                 }
                 profiler.on_pass_end(&pass.name, start.elapsed());
                 if Self::trace_aliasing_enabled() {

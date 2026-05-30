@@ -38,6 +38,8 @@ impl RenderExecutor {
             fallback_texture,
         );
         let execute_start = timing_start();
+        #[cfg(feature = "profile")]
+        let _scope = sky_profile::profile_scope!("render", "FramePipeline::execute_frame");
         let stats = pipeline.execute_frame_with_services(gpu, frame, &mut render_services);
         let execute_ms = elapsed_ms(execute_start);
         FrameExecutionSummary { stats, execute_ms }

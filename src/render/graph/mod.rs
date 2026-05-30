@@ -51,13 +51,16 @@
 //! }
 //! ```
 
+mod access;
 mod alias;
 mod allocate;
 mod builder;
 mod compile;
+mod debug;
 mod error;
 mod execute;
 mod pool;
+mod queue_diagnostic;
 mod reorder;
 #[cfg(test)]
 mod tests;
@@ -75,8 +78,21 @@ use crate::render::resources::blackboard::Blackboard;
 
 pub use alias::AliasingStats;
 pub use builder::{BufferBuilder, CopyPassSetup, PassSetup, TextureBuilder};
+pub use debug::{
+    CopyOpDebug, RenderGraphAliasGroupDebug, RenderGraphAliasMemberDebug,
+    RenderGraphAliasRedirectDebug, RenderGraphBufferResourceDebug, RenderGraphDebugDump,
+    RenderGraphLifetimeDebug, RenderGraphPassDebug, RenderGraphResourceDebug,
+    RenderGraphResourceKind, RenderGraphTextureResourceDebug,
+};
+#[cfg(feature = "profile")]
+pub use error::SkyProfileRenderGraphProfiler;
 pub use error::{DebugProfiler, RenderGraphError, RenderGraphProfiler};
+pub use queue_diagnostic::{
+    QueueAssignmentDiagnostic, QueueDiagnosticClass, QueueScheduleBlocker, QueueScheduleDiagnostic,
+    QueueScheduleReason,
+};
 pub use types::*;
+pub use visualize::RenderGraphDotOptions;
 
 use pool::{BufferPoolKey, PoolKey, TransientBufferPool, TransientPool};
 
@@ -145,6 +161,9 @@ pub struct RenderGraph {
 
     // Cross-pass data sharing
     blackboard: Blackboard,
+
+    // Lightweight diagnostics for cache-audit evidence.
+    view_stats: PhysicalResourceViewStatsCounters,
 }
 
 impl Default for RenderGraph {
@@ -294,6 +313,7 @@ impl RenderGraph {
             transient_pool: TransientPool::new(),
             transient_buffer_pool: TransientBufferPool::new(),
             blackboard: Blackboard::new(),
+            view_stats: PhysicalResourceViewStatsCounters::default(),
         }
     }
 
@@ -530,6 +550,16 @@ impl RenderGraph {
             .count()
     }
 
+    /// View-resolution counters collected during the most recent graph
+    /// execution.
+    ///
+    /// These are diagnostics for cache audits. They do not change scheduling,
+    /// resource allocation, or view creation behavior.
+    #[must_use]
+    pub fn physical_resource_view_stats(&self) -> PhysicalResourceViewStats {
+        self.view_stats.snapshot()
+    }
+
     /// Return pass handles for all passes declared at or after `start`.
     pub(crate) fn pass_handles_from(&self, start: usize) -> Vec<PassHandle> {
         (start..self.passes.len())
@@ -709,6 +739,7 @@ impl RenderGraph {
         self.transient_buffer_pool = TransientBufferPool::new();
         self.handle_token = next_handle_token();
         self.blackboard.clear();
+        self.view_stats.reset();
         self.max_dep_level = 0;
         self.culled_count = 0;
         self.compiled = false;

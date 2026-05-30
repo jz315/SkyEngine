@@ -54,37 +54,80 @@ impl FrameCoordinator {
         asset_cache: &SharedRenderAssetCache,
         mut parts: FrameRuntimeParts<'_>,
     ) -> FrameRenderOutcome {
+        #[cfg(feature = "profile")]
+        let _render_scope = sky_profile::profile_scope!("render", "RenderRuntime::render_world");
+
         let asset_server = world.get_resource::<Assets>().cloned();
-        let inputs = begin_frame_inputs(&mut parts, gpu, world, Some(asset_cache));
-        let mut extracted = extract_frame(
-            &mut parts,
-            gpu,
-            world,
-            &inputs,
-            Some(asset_cache),
-            asset_server.as_ref(),
-        );
-        if !prepare_frame_assets(&mut parts, gpu, Some(asset_cache)) {
+        let inputs = {
+            #[cfg(feature = "profile")]
+            let _scope = sky_profile::profile_scope!("render", "begin_frame_inputs");
+            begin_frame_inputs(&mut parts, gpu, world, Some(asset_cache))
+        };
+        let mut extracted = {
+            #[cfg(feature = "profile")]
+            let _scope = sky_profile::profile_scope!("render", "extract_frame");
+            extract_frame(
+                &mut parts,
+                gpu,
+                world,
+                &inputs,
+                Some(asset_cache),
+                asset_server.as_ref(),
+            )
+        };
+        if !{
+            #[cfg(feature = "profile")]
+            let _scope = sky_profile::profile_scope!("render", "prepare_frame_assets");
+            prepare_frame_assets(&mut parts, gpu, Some(asset_cache))
+        } {
             let render_asset_stats = finish_render_assets(Some(asset_cache));
             finish_skipped_frame_stats(&mut parts, &inputs, &extracted, render_asset_stats);
             remember_previous_models(&mut parts, &inputs);
             return FrameRenderOutcome::Skipped(FrameSkipReason::ResourcePreparationFailed);
         }
-        let uploads = upload_scene_data(&mut parts, gpu, world, &inputs, &mut extracted);
-        prepare_global_illumination(&mut parts, gpu, &extracted, &uploads);
-        let shadows = prepare_shadows(&mut parts, gpu, &extracted, &uploads);
-        let render_asset_stats = finish_render_assets(Some(asset_cache));
-        let execution = execute_prepared_frame(&mut parts, gpu, &extracted, &uploads, &shadows);
-        finish_frame_stats(
-            &mut parts,
-            &inputs,
-            &extracted,
-            &uploads,
-            &shadows,
-            render_asset_stats,
-            &execution,
-        );
-        remember_previous_models(&mut parts, &inputs);
+        let uploads = {
+            #[cfg(feature = "profile")]
+            let _scope = sky_profile::profile_scope!("render", "upload_scene_data");
+            upload_scene_data(&mut parts, gpu, world, &inputs, &mut extracted)
+        };
+        {
+            #[cfg(feature = "profile")]
+            let _scope = sky_profile::profile_scope!("render", "prepare_global_illumination");
+            prepare_global_illumination(&mut parts, gpu, &extracted, &uploads);
+        }
+        let shadows = {
+            #[cfg(feature = "profile")]
+            let _scope = sky_profile::profile_scope!("render", "prepare_shadows");
+            prepare_shadows(&mut parts, gpu, &extracted, &uploads)
+        };
+        let render_asset_stats = {
+            #[cfg(feature = "profile")]
+            let _scope = sky_profile::profile_scope!("render", "finish_render_assets");
+            finish_render_assets(Some(asset_cache))
+        };
+        let execution = {
+            #[cfg(feature = "profile")]
+            let _scope = sky_profile::profile_scope!("render", "execute_prepared_frame");
+            execute_prepared_frame(&mut parts, gpu, &extracted, &uploads, &shadows)
+        };
+        {
+            #[cfg(feature = "profile")]
+            let _scope = sky_profile::profile_scope!("render", "finish_frame_stats");
+            finish_frame_stats(
+                &mut parts,
+                &inputs,
+                &extracted,
+                &uploads,
+                &shadows,
+                render_asset_stats,
+                &execution,
+            );
+        }
+        {
+            #[cfg(feature = "profile")]
+            let _scope = sky_profile::profile_scope!("render", "remember_previous_models");
+            remember_previous_models(&mut parts, &inputs);
+        }
         FrameRenderOutcome::Rendered
     }
 }

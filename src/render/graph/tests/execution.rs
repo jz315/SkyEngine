@@ -21,5 +21,12 @@ fn try_execute_propagates_render_pass_error() {
             Err(RenderGraphError::ExecutionFailed("boom".into()))
         })
         .unwrap_err();
-    assert!(matches!(err, RenderGraphError::ExecutionFailed(ref msg) if msg == "boom"));
+    assert!(matches!(err, RenderGraphError::ExecutionFailed(ref msg) if
+        msg.contains("pass \"present\"")
+            && msg.contains("#0")
+            && msg.contains("Render")
+            && msg.contains("exec #0")
+            && msg.contains("compiled order [0]")
+            && msg.contains("boom")
+    ));
 }
