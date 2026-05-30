@@ -4,7 +4,7 @@
 //! Compare FPS with the Sky Engine version.
 //!
 //! ```
-//! cargo run --example boids_hecs --features compare --release
+//! cargo run --manifest-path tools/ecs-comparison/Cargo.toml --example boids_hecs --release
 //! ```
 
 use minifb::{Key, MouseButton, MouseMode, Window, WindowOptions};

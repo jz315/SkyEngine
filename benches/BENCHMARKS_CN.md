@@ -11,16 +11,16 @@
 
 ```bash
 # 四引擎公平对比（Sky/hecs/Bevy/Flecs）
-cargo bench --bench fair
+cargo compare-ecs
 
 # 单引擎测试
-cargo bench --bench fair -- sky
-cargo bench --bench fair -- hecs
-cargo bench --bench fair -- bevy
-cargo bench --bench fair -- flecs
+cargo compare-ecs -- sky
+cargo compare-ecs -- hecs
+cargo compare-ecs -- bevy
+cargo compare-ecs -- flecs
 
 # 精确运行单个 benchmark
-cargo bench --bench fair -- fair_random_access/get/sky --exact
+cargo compare-ecs -- fair_random_access/get/sky --exact
 
 # Chunk 大小调优：修改 src/ecs/chunk.rs 中的 CHUNK_SIZE 后重跑
 ```
@@ -89,4 +89,3 @@ cargo bench --bench fair -- fair_random_access/get/sky --exact
 | `spawn_despawn` (实体生命周期) | 54.3 µs | 51.4 µs | 108–248 µs | 332 µs | 显著优于 Bevy/Flecs |
 
 ---
-

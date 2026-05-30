@@ -4,7 +4,7 @@
 //! pipeline with HDR camera, bloom, and tonemapping.
 //!
 //! ```sh
-//! cargo run --example boids_bevy_gpu --features compare-bevy --release
+//! cargo run --manifest-path tools/ecs-comparison/Cargo.toml --example boids_bevy_gpu --features bevy-gpu-example --release
 //! ```
 
 use std::f32::consts::TAU;

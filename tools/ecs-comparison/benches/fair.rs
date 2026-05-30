@@ -1,10 +1,15 @@
-#[path = "../common.rs"]
+#[path = "../src/common.rs"]
 mod common;
 
+#[path = "../src/bevy.rs"]
 mod bevy;
+#[path = "../src/flecs.rs"]
 mod flecs;
+#[path = "../src/hecs.rs"]
 mod hecs;
+#[path = "../src/shared.rs"]
 mod shared;
+#[path = "../src/sky.rs"]
 mod sky;
 
 use criterion::{criterion_group, criterion_main, Criterion};

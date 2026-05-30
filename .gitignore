@@ -27,7 +27,10 @@ criterion/
 
 # Vendor / third-party SDKs
 CubismSdkForNative/
-tools/
+tools/*
+!tools/ecs-comparison/
+!tools/ecs-comparison/**
+tools/ecs-comparison/target/
 
 # Local reference and archive checkouts
 _achieved/

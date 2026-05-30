@@ -4,7 +4,7 @@
 //! Compare FPS with the Sky Engine and hecs versions.
 //!
 //! ```
-//! cargo run --example boids_bevy --features compare --release
+//! cargo run --manifest-path tools/ecs-comparison/Cargo.toml --example boids_bevy --release
 //! ```
 
 use bevy_ecs::prelude::*;

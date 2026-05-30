@@ -1,0 +1,37 @@
+[package]
+name = "sky_engine_ecs_comparison"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+sky_engine = { path = "../.." }
+criterion = "0.8.2"
+cgmath = "0.18"
+hecs = "0.10.5"
+bevy_ecs = "0.18.1"
+flecs_ecs = "0.2.2"
+minifb = "0.28.0"
+rand = "0.8"
+bevy_full = { package = "bevy", version = "0.18.1", default-features = false, features = ["bevy_winit", "bevy_render", "bevy_core_pipeline", "bevy_sprite", "bevy_gizmos", "bevy_text", "bevy_post_process", "default_font", "png", "x11"], optional = true }
+
+[features]
+bevy-gpu-example = ["dep:bevy_full"]
+
+[[bench]]
+name = "fair"
+path = "benches/fair.rs"
+harness = false
+
+[[example]]
+name = "boids_hecs"
+path = "examples/boids_hecs.rs"
+
+[[example]]
+name = "boids_bevy"
+path = "examples/boids_bevy.rs"
+
+[[example]]
+name = "boids_bevy_gpu"
+path = "examples/boids_bevy_gpu.rs"
+required-features = ["bevy-gpu-example"]

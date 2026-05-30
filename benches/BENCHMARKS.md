@@ -13,22 +13,22 @@
 
 ```bash
 # Fair comparison of four engines (Sky/hecs/Bevy/Flecs)
-cargo bench --bench fair
+cargo compare-ecs
 
 # Single engine test
-cargo bench --bench fair -- sky
-cargo bench --bench fair -- hecs
-cargo bench --bench fair -- bevy
-cargo bench --bench fair -- flecs
+cargo compare-ecs -- sky
+cargo compare-ecs -- hecs
+cargo compare-ecs -- bevy
+cargo compare-ecs -- flecs
 
 # Run a specific benchmark precisely
-cargo bench --bench fair -- fair_random_access/get/sky --exact
+cargo compare-ecs -- fair_random_access/get/sky --exact
 
 # Run the repeated traversal stability benchmark
-cargo bench --bench fair -- fair_iteration_repeated/simple_x32/sky --exact
+cargo compare-ecs -- fair_iteration_repeated/simple_x32/sky --exact
 
 # Run the larger 100k-entity traversal benchmark
-cargo bench --bench fair -- fair_iteration_large
+cargo compare-ecs -- fair_iteration_large
 
 # Chunk size tuning: modify CHUNK_SIZE in src/ecs/chunk.rs and rerun
 ```
