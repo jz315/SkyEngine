@@ -12,15 +12,16 @@ If you're new to the project, read and run examples in this order:
 4. `systems` — grouped scheduling and frame updates
 5. `tiny_defense` — a complete ECS-only game loop
 6. `scene_basic` — optional persistence and prefab saving
-7. `clear_screen` → `sprite_demo` → `textured_demo` → `lighting_demo`
-8. `render_graph_showcase` → `perf_test` → `renderer_probe`
-9. `custom_feature_demo` — a public zero-engine-modification `RenderFeature` extension example
-10. `custom_material_demo` — a public user-defined `Material` + `MeshRenderer` example
-11. `ui_legacy_hud_menu` — legacy retained UI for HUD/menu/buttons/text/progress
-12. `last_light_guild` — an 8-bit-style rendered RPG-sim prototype
-13. `fog_lantern_station` — Neo UI narrative adventure with saves and multiple endings
-14. `physics_arcade_demo` / `tiled_physics_demo` — optional `app + physics` demos
-15. `boids` / `boids_classic` / `cosmic_jellyfish` / `neon_galaxy`
+7. `asset_load_texture` → `asset_hot_reload_texture` → `asset_load_with_dependency`
+8. `clear_screen` → `sprite_demo` → `textured_demo` → `lighting_demo`
+9. `render_graph_showcase` → `perf_test` → `renderer_probe`
+10. `custom_feature_demo` — a public zero-engine-modification `RenderFeature` extension example
+11. `custom_material_demo` — a public user-defined `Material` + `MeshRenderer` example
+12. `ui_legacy_hud_menu` — legacy retained UI for HUD/menu/buttons/text/progress
+13. `last_light_guild` — an 8-bit-style rendered RPG-sim prototype
+14. `fog_lantern_station` — Neo UI narrative adventure with saves and multiple endings
+15. `physics_arcade_demo` / `tiled_physics_demo` — optional `app + physics` demos
+16. `boids` / `boids_classic` / `cosmic_jellyfish` / `neon_galaxy`
 
 ## Render Learning Path
 
@@ -95,6 +96,24 @@ Optional persistence/prefab tutorial. No GPU feature flags required.
 ```bash
 cargo run --example scene_basic --features scene
 ```
+
+### `examples/asset/`
+
+Asset examples use only the `asset` feature. They create temporary source/cooked
+data at runtime, so they are safe to run without preparing a project asset
+folder.
+
+```bash
+cargo run --example asset_load_texture --features asset
+cargo run --example asset_hot_reload_texture --features asset
+cargo run --example asset_load_with_dependency --features asset
+cargo run --example asset_custom_factory --features asset
+```
+
+- `asset_load_texture` — cook a PNG, load it through `AssetPath<TextureAsset>`, and read the CPU-side `TextureAsset`.
+- `asset_hot_reload_texture` — modify a source PNG, recook it, reload the manifest, and inspect the reload report.
+- `asset_load_with_dependency` — let a custom factory declare a discovered dependency and watch the dependency install first.
+- `asset_custom_factory` — register a tiny runtime factory for a game-defined asset type.
 
 ### `examples/render/`
 
@@ -188,14 +207,14 @@ cargo run --example cosmic_jellyfish --features app --release
 cargo run --example neon_galaxy --features app --release
 ```
 
-### `examples/compare/`
+### `tools/ecs-comparison/examples/`
 
 Cross-engine comparison examples. These are not part of the recommended learning path.
 
 ```bash
-cargo run --example boids_hecs --features compare --release
-cargo run --example boids_bevy --features compare --release
-cargo run --example boids_bevy_gpu --features compare-bevy --release
+cargo run --manifest-path tools/ecs-comparison/Cargo.toml --example boids_hecs --release
+cargo run --manifest-path tools/ecs-comparison/Cargo.toml --example boids_bevy --release
+cargo run --manifest-path tools/ecs-comparison/Cargo.toml --example boids_bevy_gpu --features bevy-gpu-example --release
 ```
 
 ## Notes
@@ -203,4 +222,4 @@ cargo run --example boids_bevy_gpu --features compare-bevy --release
 - The source of truth for runnable examples is `Cargo.toml`.
 - `examples/ecs` is the best entry point for API learning.
 - `examples/demo` is optimized for showcasing the engine, not for teaching individual APIs step by step.
-- `examples/compare` is for cross-engine reference material.
+- `tools/ecs-comparison` is for cross-engine reference material.

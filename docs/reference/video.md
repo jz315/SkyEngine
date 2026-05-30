@@ -102,6 +102,8 @@ let frame = video.current_frame(instance);
 # Ok::<(), sky_engine::video::VideoError>(())
 ```
 
+`video.stats()` 返回 `VideoServerStats`，包含播放实例数、Playing/Paused/Finished/Stopped 分布、当前引用的 clip 数、当前帧 texture 数、当前帧 texture 字节数、累计播放启动失败数和最后一次播放失败摘要。这个快照只描述 `VideoServer` 自己的 playback/frame residency，不写入 asset core 的 `AssetStats`。`app` 服务会在 stats 变化时发布 `video.stats` 结构化诊断事件；当播放启动失败计数增加时，另发 `video.play.failed` warning 事件，包含失败增量、累计值和最后失败摘要。当当前帧 texture 字节数变为非零或尺寸级别发生变化时，另发 `video.frame.resident` info 事件，包含当前帧 texture 字节数、texture 数、实例数、播放中实例数和 clip 数。
+
 ## Streaming Frames
 
 原型或 ECS sprite 路径可以写入稳定的 `VideoFrameBuffer`，然后把它的 texture handle 交给 `SpriteRenderer`：
@@ -132,9 +134,12 @@ let frame = GpuVideoFrameBuffer::new(
 
 // 每当解码出一帧 RGBA8：
 frame.write_rgba8(gpu, rgba_pixels)?;
+let resident_bytes = frame.resident_bytes();
 batch.set_texture(frame.texture());
 # Ok::<(), sky_engine::video::VideoError>(())
 ```
+
+`GpuVideoFrameBuffer::resident_bytes()` 只报告这个 GPU frame buffer 自己的 texture 字节估算；它不经过 `AssetStats`，也不代表全局视频内存预算。
 
 `examples/video_demo.rs` 使用的就是这条 GPU 稳定纹理路径。
 

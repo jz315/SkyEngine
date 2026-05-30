@@ -100,11 +100,24 @@ fn main() {
 }
 ```
 
+### Asset 快速检查
+
+这些示例会在临时目录里生成源文件、cooked 文件和 manifest，不需要提前准备项目资源目录：
+
+```bash
+cargo run --example asset_load_texture --features asset
+cargo run --example asset_hot_reload_texture --features asset
+cargo run --example asset_load_with_dependency --features asset
+cargo run --example asset_custom_factory --features asset
+```
+
+资源系统入口见 [`docs/reference/asset.md`](docs/reference/asset.md)：`Assets`、强 `Handle<T>`、`WeakHandle<T>`、typed `AssetPath<T>`、hot reload、cook registry 和自定义 factory 都在那里收口。
+
 ---
 
 ## 📊 性能基准
 
-所有数据来自 `cargo bench --bench fair` 公平横向对比，使用 Criterion 框架在同一台 Windows 机器上采集。详细历史记录见 [BENCHMARKS.md](benches\BENCHMARKS_CN.md)。
+所有数据来自 `cargo compare-ecs` 公平横向对比，使用 Criterion 框架在同一台 Windows 机器上采集。详细历史记录见 [BENCHMARKS.md](benches\BENCHMARKS_CN.md)。
 
 ### 迭代性能
 
@@ -132,13 +145,13 @@ fn main() {
 
 ```bash
 # 运行公平对比基准
-cargo bench --bench fair
+cargo compare-ecs
 
 # 运行指定引擎
-cargo bench --bench fair -- sky
-cargo bench --bench fair -- hecs
-cargo bench --bench fair -- bevy
-cargo bench --bench fair -- flecs
+cargo compare-ecs -- sky
+cargo compare-ecs -- hecs
+cargo compare-ecs -- bevy
+cargo compare-ecs -- flecs
 ```
 
 ---

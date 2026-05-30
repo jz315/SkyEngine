@@ -226,6 +226,19 @@ ctx.render();
 let stats = ctx.render_stats();
 ```
 
+在 `app` feature 下，runner 会在完成帧提交后把 renderer-owned stats 镜像到
+`Diagnostics`：
+
+- `render.stats`: draw/pass counts, resident/uploaded/evicted/queued render asset counts, resident/uploaded/evicted byte counts, cached prepare-failure count, fallback/missing/failed render asset counts.
+- `render.asset.failed`: warning event emitted when the failed render asset count changes, including previous/current failed counts, failed delta, cached-failed/missing/fallback/loading/queued/visible queued counts.
+- `render.asset.missing`: warning event emitted when missing render asset count changes, including fallback/loading/queued/visible queued/failed/cached-failed counts.
+- `render.asset.fallback`: info event emitted when fallback render asset count changes, including loading/queued/visible queued/missing/failed counts.
+- `render.asset.uploaded`: info event emitted when the renderer-owned residency cache enters an upload burst, including uploaded count/bytes plus current resident and queued render asset counts.
+- `render.asset.evicted`: warning event emitted when the renderer-owned residency cache enters an eviction burst, including evicted count/bytes plus current resident and queued render asset counts.
+
+这些事件只镜像 render backend 自己的状态，不会把 GPU residency、upload queue
+或 renderer failure policy 移到 asset core。
+
 render timing instrumentation 由 `render-timings` feature 控制。
 
 ## 测试和检查

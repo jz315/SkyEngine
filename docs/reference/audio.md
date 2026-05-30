@@ -17,8 +17,8 @@ cargo run --example audio_demo --features "app audio"
 ```rust
 use sky_engine::audio::{
     AudioBusId, AudioCommands, AudioConfig, AudioEmitter2D, AudioEmitterAsset, AudioError,
-    AudioInstanceId, AudioListener2D, AudioPlaybackSettings, AudioServer, AudioSpatialSettings,
-    AudioTween, MusicTrack, SoundClip,
+    AudioInstanceId, AudioListener2D, AudioPlaybackSettings, AudioServer, AudioServerStats,
+    AudioSpatialSettings, AudioTween, MusicTrack, SoundClip,
 };
 ```
 
@@ -70,7 +70,10 @@ world.insert_resource(audio);
 audio.is_available() -> bool
 audio.disabled_reason() -> Option<String>
 audio.bus_id("music") -> Option<AudioBusId>
+audio.stats() -> AudioServerStats
 ```
+
+`AudioServerStats` 是 audio 后端本地快照，只报告 backend available 状态、不可用原因、配置 bus 数、后端 live instance 数、spatial instance 数、直接播放实例数、ECS emitter 绑定数、累计播放启动失败数和最后一次播放失败摘要。它不进入 `AssetStats`，也不让 asset core 拥有 audio residency。`app` 服务会在 stats 变化时发布 `audio.stats` 结构化诊断事件；当 backend 进入不可用状态时，另发 `audio.backend.unavailable` warning 事件，包含不可用原因、bus 数和当前 audio-side instance/binding 计数；当播放启动失败计数增加时，另发 `audio.play.failed` warning 事件，包含失败增量、累计值和最后失败摘要。
 
 播放：
 

@@ -52,6 +52,22 @@ you want a stable dependency.
 - [Benchmarks](benches/BENCHMARKS.md) for local benchmark history and policy.
 - [Chinese README](README_zh.md) for the Chinese overview.
 
+## Asset Quick Start
+
+The asset examples create temporary source and cooked data, so they can be run
+without preparing a project asset folder:
+
+```bash
+cargo run --example asset_load_texture --features asset
+cargo run --example asset_hot_reload_texture --features asset
+cargo run --example asset_load_with_dependency --features asset
+cargo run --example asset_custom_factory --features asset
+```
+
+See [Asset Reference](docs/reference/asset.md) for `Assets`, strong
+`Handle<T>`, `WeakHandle<T>`, typed `AssetPath<T>`, hot reload, cook registry,
+and custom factory details.
+
 ## Main Areas
 
 - ECS and scheduling
