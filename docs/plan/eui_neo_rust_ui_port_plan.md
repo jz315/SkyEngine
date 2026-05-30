@@ -485,7 +485,6 @@ crate root exports      documented public API
 testing                 stable test-driver API
 expert                  renderer/tooling/debug API
 runtime internals       crate-private implementation detail
-
 ```
 
 `prelude` 是普通应用的首选入口。它应当包含 `Runtime`、`FrameInput`、`Frame`、`Ui`、
@@ -495,7 +494,10 @@ runtime internals       crate-private implementation detail
 `expert` 来构建普通 UI。
 
 `runtime::*` 内部模块不得因为方便而扩大 public surface。新增 public API 必须先归类到
-`prelude`、crate root、`testing`、`expert` 或 SkyEngine adapter。
+`prelude`、crate root、`testing` 或 `expert`。
+
+Host/backend integration 是 EUI-NEO 的使用方，不是本库 API 分层的一部分。SkyEngine
+可以验证、适配和消费 EUI-NEO API，但不得反向定义 EUI-NEO 的 public API。
 
 ### 7.2 API 稳定等级
 
@@ -895,7 +897,7 @@ focus、layer、callbacks、signal dependencies、retained tree 的能力，都�
 
 
 
-### 7.16 API Evolution Rules
+### 7.15 API Evolution Rules
 
 新增或修改 public API 必须回答：
 
