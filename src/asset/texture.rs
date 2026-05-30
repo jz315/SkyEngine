@@ -2,11 +2,9 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use super::install::{AssetInstallContext, AssetInstallResult};
 use super::registry::AssetRuntimeFactory;
-use super::types::{
-    Asset, AssetError, AssetId, AssetInstallContext, AssetInstallResult, AssetLoadContext,
-    LoadedAsset,
-};
+use super::types::{Asset, AssetCookedSchema, AssetError, AssetId, AssetLoadContext, LoadedAsset};
 
 const TEXTURE_COOKED_MAGIC: &[u8; 8] = b"SKYTEX01";
 const TEXTURE_COOKED_VERSION: u32 = 2;
@@ -165,6 +163,10 @@ pub(crate) struct TextureAssetFactory;
 impl AssetRuntimeFactory for TextureAssetFactory {
     type Asset = TextureAsset;
     type Loaded = TextureAsset;
+
+    fn cooked_schema(&self) -> Option<AssetCookedSchema> {
+        Some(AssetCookedSchema::new("texture.rgba8", 1))
+    }
 
     fn load(&self, ctx: AssetLoadContext<'_>) -> Result<LoadedAsset<Self::Loaded>, AssetError> {
         let texture = decode_texture_cooked(ctx.asset_id, ctx.bytes)?;

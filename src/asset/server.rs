@@ -1,30 +1,45 @@
 use std::any::{Any, TypeId};
-use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
 
+use super::driver::{self, AssetDriveMode, AssetRecordDriver};
+use super::events::{self, AssetEventLog};
 use super::font::{FontAsset, FontAssetFactory};
-use super::io::{AssetIoService, AssetIoSubmitError};
-use super::provider::{
-    AssetProvider, AssetSourceLocation, LocalAssetProvider, ResolvedAssetSource,
+#[cfg(test)]
+use super::install::AssetInstallTask;
+use super::install::{self, AssetInstallBudget};
+#[cfg(test)]
+use super::install::{
+    AssetInstallContext, AssetInstallPoll, AssetInstallResult, AssetUninstallContext,
 };
-use super::registry::{AssetRuntimeFactory, ErasedAssetFactory, FactoryAdapter, ManifestIndex};
-use super::request::{AssetRequest, AssetRequestPhase};
-use super::texture::{
-    decode_texture_source_bytes, TextureAsset, TextureAssetFactory, TextureColorSpace,
+use super::load::{
+    drain_completed_loads_or_fail, has_current_inflight_load, load_record_now_and_apply_or_fail,
+    should_load_record_in_background, submit_record_load_or_fail, AssetLoadQueue,
 };
+#[cfg(test)]
+use super::provider::ResolvedAssetSource;
+use super::provider::{AssetProvider, LocalAssetProvider};
+use super::registry::{
+    resolve_typed_source_asset, typed_asset_path, AssetFactories, AssetRegistryLoader,
+    AssetRuntimeFactory, LocalManifestRegistry, LocalManifestRegistryLoader,
+};
+use super::reload::{self, AssetReloadController};
+use super::request::AssetRequests;
+use super::runtime;
+use super::store::AssetStore;
+use super::texture::{TextureAsset, TextureAssetFactory};
+#[cfg(test)]
+use super::types::AssetLoadContext;
 use super::types::{
-    Asset, AssetConfig, AssetError, AssetEvent, AssetEventCursor, AssetEventKind,
-    AssetFailurePhase, AssetHandleProvider, AssetId, AssetInstallContext, AssetInstallPoll,
-    AssetInstallResult, AssetInstallTask, AssetLease, AssetLoadContext, AssetManifestEntry,
-    AssetRegistryManifest, AssetState, AssetStats, AssetStatus, Handle, WeakHandle,
-    ASSET_SYSTEM_VERSION,
+    Asset, AssetConfig, AssetDiagnosticsSnapshot, AssetError, AssetEvent, AssetEventCursor,
+    AssetFailurePhase, AssetFailureSnapshot, AssetHandleProvider, AssetId, AssetLease,
+    AssetMetadata, AssetPath, AssetRegistryManifest, AssetReloadReport, AssetReloadStatus,
+    AssetRequestSnapshot, AssetState, AssetStats, AssetStatus, AssetWatchPaths, Handle, WeakHandle,
 };
-
-const ASSET_EVENT_LOG_CAP: usize = 1024;
-const BLOCKING_LOAD_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1);
+use super::watcher::AssetFileWatcher;
+use super::{blocking, dependency, diagnostics, lease};
 
 #[derive(Clone)]
 pub struct Assets {
@@ -40,27 +55,84 @@ impl std::fmt::Debug for Assets {
 
 impl Assets {
     pub fn new(config: AssetConfig) -> Result<Self, AssetError> {
-        let manifest = load_manifest(&config)?;
+        let registry_loader = Box::new(LocalManifestRegistryLoader);
+        let manifest = registry_loader.load(&config)?;
         let (release_tx, release_rx) = mpsc::channel();
-        let mut inner = AssetsInner::new(config, manifest, release_rx);
+        let mut inner = AssetsInner::new_with_registry_loader(
+            config,
+            manifest,
+            release_tx.clone(),
+            release_rx,
+            registry_loader,
+        );
         inner.register_factory(TextureAssetFactory);
         inner.register_factory(FontAssetFactory);
-        Ok(Self {
-            inner: Arc::new(Mutex::new(inner)),
-            release_tx,
-        })
+        Ok(Self::from_inner(inner, release_tx))
     }
 
     #[must_use]
     pub fn with_empty_manifest(config: AssetConfig) -> Self {
         let (release_tx, release_rx) = mpsc::channel();
-        let mut inner = AssetsInner::new(config, AssetRegistryManifest::default(), release_rx);
+        let mut inner = AssetsInner::new(
+            config,
+            AssetRegistryManifest::default(),
+            release_tx.clone(),
+            release_rx,
+        );
         inner.register_factory(TextureAssetFactory);
         inner.register_factory(FontAssetFactory);
-        Self {
-            inner: Arc::new(Mutex::new(inner)),
-            release_tx,
-        }
+        Self::from_inner(inner, release_tx)
+    }
+
+    #[cfg(test)]
+    fn with_manifest_and_provider(
+        config: AssetConfig,
+        manifest: AssetRegistryManifest,
+        provider: impl AssetProvider + 'static,
+    ) -> Self {
+        let (release_tx, release_rx) = mpsc::channel();
+        let mut inner = AssetsInner::new_with_provider(
+            config,
+            manifest,
+            release_tx.clone(),
+            release_rx,
+            Box::new(provider),
+        );
+        inner.register_factory(TextureAssetFactory);
+        inner.register_factory(FontAssetFactory);
+        Self::from_inner(inner, release_tx)
+    }
+
+    #[cfg(test)]
+    fn with_registry_loader_and_provider(
+        config: AssetConfig,
+        registry_loader: impl AssetRegistryLoader + 'static,
+        provider: impl AssetProvider + 'static,
+    ) -> Result<Self, AssetError> {
+        let registry_loader = Box::new(registry_loader);
+        let manifest = registry_loader.load(&config)?;
+        let (release_tx, release_rx) = mpsc::channel();
+        let mut inner = AssetsInner::new_with_provider_and_registry_loader(
+            config,
+            manifest,
+            release_tx.clone(),
+            release_rx,
+            Box::new(provider),
+            registry_loader,
+        );
+        inner.register_factory(TextureAssetFactory);
+        inner.register_factory(FontAssetFactory);
+        Ok(Self::from_inner(inner, release_tx))
+    }
+
+    fn from_inner(inner: AssetsInner, release_tx: Sender<AssetId>) -> Self {
+        let inner = Arc::new(Mutex::new(inner));
+        let provider: Arc<dyn AssetHandleProvider> = inner.clone();
+        inner
+            .lock()
+            .expect("assets mutex poisoned")
+            .set_handle_provider(Arc::downgrade(&provider));
+        Self { inner, release_tx }
     }
 
     pub fn register_factory<F>(&self, factory: F)
@@ -73,9 +145,7 @@ impl Assets {
 
     pub fn reload_manifest(&self) -> Result<(), AssetError> {
         let mut inner = self.inner.lock().expect("assets mutex poisoned");
-        let manifest = load_manifest(&inner.config)?;
-        inner.set_manifest(manifest);
-        Ok(())
+        inner.reload_manifest()
     }
 
     pub fn reload_changed(&self) -> Result<Vec<AssetId>, AssetError> {
@@ -83,43 +153,110 @@ impl Assets {
         inner.reload_changed()
     }
 
+    pub fn reload_changed_with_report(&self) -> Result<AssetReloadReport, AssetError> {
+        let mut inner = self.inner.lock().expect("assets mutex poisoned");
+        inner.reload_changed_report()
+    }
+
+    pub fn force_reload(&self, id: AssetId) -> Result<AssetReloadReport, AssetError> {
+        let mut inner = self.inner.lock().expect("assets mutex poisoned");
+        inner.force_reload(id)
+    }
+
+    pub fn set_auto_reload_frozen(&self, frozen: bool) {
+        let mut inner = self.inner.lock().expect("assets mutex poisoned");
+        inner.set_auto_reload_frozen(frozen);
+    }
+
     #[must_use]
-    pub fn config(&self) -> AssetConfig {
+    pub fn reload_status(&self) -> AssetReloadStatus {
         self.inner
             .lock()
             .expect("assets mutex poisoned")
-            .config
-            .clone()
+            .reload_status()
+    }
+
+    #[must_use]
+    pub fn last_reload_report(&self) -> AssetReloadReport {
+        self.inner
+            .lock()
+            .expect("assets mutex poisoned")
+            .last_reload_report()
+    }
+
+    #[must_use]
+    pub fn config(&self) -> AssetConfig {
+        self.inner.lock().expect("assets mutex poisoned").config()
     }
 
     pub fn load<T: Asset>(&self, path: impl AsRef<Path>) -> Result<Handle<T>, AssetError> {
-        let path_buf = path.as_ref().to_path_buf();
+        self.load_with_priority(path, self.config().io_default_priority)
+    }
+
+    pub fn load_with_priority<T: Asset>(
+        &self,
+        path: impl AsRef<Path>,
+        priority: i32,
+    ) -> Result<Handle<T>, AssetError> {
+        let asset_path = AssetPath::<T>::new(path.as_ref());
+        self.load_path_with_priority(&asset_path, priority)
+    }
+
+    pub fn load_path<T: Asset>(&self, path: &AssetPath<T>) -> Result<Handle<T>, AssetError> {
+        self.load_path_with_priority(path, self.config().io_default_priority)
+    }
+
+    pub fn load_path_with_priority<T: Asset>(
+        &self,
+        path: &AssetPath<T>,
+        priority: i32,
+    ) -> Result<Handle<T>, AssetError> {
+        let path_buf = path.as_path().to_path_buf();
         let mut inner = self.inner.lock().expect("assets mutex poisoned");
-        let id = inner
-            .lookup_source_asset(&path_buf)
-            .ok_or_else(|| AssetError::AssetPathNotFound { path: path_buf })?;
-        inner.validate_typed_request::<T>(id)?;
-        inner.acquire_direct_lease(id, Some(TypeId::of::<T>()));
+        let id = inner.acquire_typed_manifest_source_lease::<T>(&path_buf, priority)?;
         Ok(self.make_handle(id))
     }
 
     pub fn load_id<T: Asset>(&self, id: AssetId) -> Result<Handle<T>, AssetError> {
+        self.load_id_with_priority(id, self.config().io_default_priority)
+    }
+
+    pub fn load_id_with_priority<T: Asset>(
+        &self,
+        id: AssetId,
+        priority: i32,
+    ) -> Result<Handle<T>, AssetError> {
         let mut inner = self.inner.lock().expect("assets mutex poisoned");
-        inner.validate_typed_request::<T>(id)?;
-        inner.acquire_direct_lease(id, Some(TypeId::of::<T>()));
+        inner.acquire_typed_manifest_direct_lease::<T>(id, priority)?;
         Ok(self.make_handle(id))
     }
 
     pub fn load_handle<T: Asset>(&self, handle: WeakHandle<T>) -> Result<Handle<T>, AssetError> {
-        self.load_id(handle.id())
+        self.load_handle_with_priority(handle, self.config().io_default_priority)
+    }
+
+    pub fn load_handle_with_priority<T: Asset>(
+        &self,
+        handle: WeakHandle<T>,
+        priority: i32,
+    ) -> Result<Handle<T>, AssetError> {
+        self.load_id_with_priority(handle.id(), priority)
     }
 
     pub fn load_texture(
         &self,
         path_or_key: impl AsRef<Path>,
     ) -> Result<Handle<TextureAsset>, AssetError> {
+        self.load_texture_with_priority(path_or_key, self.config().io_default_priority)
+    }
+
+    pub fn load_texture_with_priority(
+        &self,
+        path_or_key: impl AsRef<Path>,
+        priority: i32,
+    ) -> Result<Handle<TextureAsset>, AssetError> {
         let mut inner = self.inner.lock().expect("assets mutex poisoned");
-        let id = inner.load_texture(path_or_key.as_ref())?;
+        let id = inner.load_texture(path_or_key.as_ref(), priority)?;
         Ok(self.make_handle(id))
     }
 
@@ -127,8 +264,16 @@ impl Assets {
         &self,
         path_or_key: impl AsRef<Path>,
     ) -> Result<Handle<FontAsset>, AssetError> {
+        self.load_font_with_priority(path_or_key, self.config().io_default_priority)
+    }
+
+    pub fn load_font_with_priority(
+        &self,
+        path_or_key: impl AsRef<Path>,
+        priority: i32,
+    ) -> Result<Handle<FontAsset>, AssetError> {
         let mut inner = self.inner.lock().expect("assets mutex poisoned");
-        let id = inner.load_font(path_or_key.as_ref())?;
+        let id = inner.load_font(path_or_key.as_ref(), priority)?;
         Ok(self.make_handle(id))
     }
 
@@ -141,14 +286,7 @@ impl Assets {
         id: AssetId,
         timeout: std::time::Duration,
     ) -> Result<Arc<T>, AssetError> {
-        let deadline =
-            Instant::now()
-                .checked_add(timeout)
-                .ok_or_else(|| AssetError::InvalidState {
-                    id,
-                    state: self.state_untyped(id),
-                    message: "blocking load timeout is too large".to_string(),
-                })?;
+        let deadline = blocking::deadline_from_timeout(id, timeout, || self.state_untyped(id))?;
         self.load_blocking_until::<T>(id, Some(deadline))
     }
 
@@ -159,41 +297,19 @@ impl Assets {
     ) -> Result<Arc<T>, AssetError> {
         let handle = self.load_id::<T>(id)?;
 
-        loop {
-            {
+        blocking::drive_until_ready(
+            id,
+            deadline,
+            |force_synchronous_load| {
                 let mut inner = self.inner.lock().expect("assets mutex poisoned");
-                inner.apply_blocking_update(id, deadline.is_none())?;
-            }
-
-            match self.state(&handle) {
-                AssetState::Installed => return self.get(&handle),
-                AssetState::Failed => {
-                    return match self.error(&handle) {
-                        Some(error) => Err(error),
-                        None => Err(AssetError::AssetNotInstalled {
-                            id,
-                            state: AssetState::Failed,
-                        }),
-                    }
-                }
-                state => {
-                    if let Some(deadline) = deadline {
-                        let now = Instant::now();
-                        if now >= deadline {
-                            return Err(AssetError::InvalidState {
-                                id,
-                                state,
-                                message: "asset did not reach a terminal state before blocking load timeout".to_string(),
-                            });
-                        }
-                        let remaining = deadline.saturating_duration_since(now);
-                        std::thread::sleep(remaining.min(BLOCKING_LOAD_POLL_INTERVAL));
-                    } else {
-                        std::thread::sleep(BLOCKING_LOAD_POLL_INTERVAL);
-                    }
-                }
-            }
-        }
+                inner.apply_blocking_update(id, force_synchronous_load)
+            },
+            || match self.state(&handle) {
+                AssetState::Installed => blocking::BlockingLoadStatus::Ready(self.get(&handle)),
+                AssetState::Failed => blocking::BlockingLoadStatus::Failed(self.error(&handle)),
+                state => blocking::BlockingLoadStatus::Pending(state),
+            },
+        )
     }
 
     pub fn update(&self) -> Result<(), AssetError> {
@@ -216,10 +332,7 @@ impl Assets {
         self.inner
             .lock()
             .expect("assets mutex poisoned")
-            .records
-            .get(&id)
-            .map(|record| record.state)
-            .unwrap_or(AssetState::Unloaded)
+            .state_for_handle(id)
     }
 
     #[must_use]
@@ -232,7 +345,11 @@ impl Assets {
     }
 
     pub fn get_id<T: Asset>(&self, id: AssetId) -> Result<Arc<T>, AssetError> {
-        let installed = self.inner.get_for_handle(id, T::TYPE, TypeId::of::<T>())?;
+        let installed = self
+            .inner
+            .lock()
+            .expect("assets mutex poisoned")
+            .get_for_handle(id, T::TYPE, TypeId::of::<T>())?;
         Arc::downcast::<T>(installed).map_err(|_| AssetError::AssetTypeMismatch {
             id,
             expected: T::TYPE,
@@ -255,9 +372,7 @@ impl Assets {
         self.inner
             .lock()
             .expect("assets mutex poisoned")
-            .records
-            .get(&handle.id())
-            .and_then(|record| record.error.clone())
+            .error_for_handle(handle.id())
     }
 
     #[must_use]
@@ -270,9 +385,7 @@ impl Assets {
         self.inner
             .lock()
             .expect("assets mutex poisoned")
-            .records
-            .get(&id)
-            .and_then(|record| record.failure_phase)
+            .failure_phase(id)
     }
 
     #[must_use]
@@ -281,13 +394,59 @@ impl Assets {
     }
 
     #[must_use]
+    pub fn queued_request_snapshots(&self) -> Vec<AssetRequestSnapshot> {
+        self.inner
+            .lock()
+            .expect("assets mutex poisoned")
+            .queued_request_snapshots()
+    }
+
+    #[must_use]
+    pub fn active_request_snapshots(&self) -> Vec<AssetRequestSnapshot> {
+        self.inner
+            .lock()
+            .expect("assets mutex poisoned")
+            .active_request_snapshots()
+    }
+
+    #[must_use]
+    pub fn failed_request_snapshots(&self) -> Vec<AssetRequestSnapshot> {
+        self.inner
+            .lock()
+            .expect("assets mutex poisoned")
+            .failed_request_snapshots()
+    }
+
+    #[must_use]
+    pub fn canceled_request_snapshots(&self) -> Vec<AssetRequestSnapshot> {
+        self.inner
+            .lock()
+            .expect("assets mutex poisoned")
+            .canceled_request_snapshots()
+    }
+
+    #[must_use]
+    pub fn failed_asset_snapshots(&self) -> Vec<AssetFailureSnapshot> {
+        self.inner
+            .lock()
+            .expect("assets mutex poisoned")
+            .failed_asset_snapshots()
+    }
+
+    #[must_use]
+    pub fn diagnostics_snapshot(&self) -> AssetDiagnosticsSnapshot {
+        self.inner
+            .lock()
+            .expect("assets mutex poisoned")
+            .diagnostics_snapshot()
+    }
+
+    #[must_use]
     pub fn manifest(&self) -> AssetRegistryManifest {
         self.inner
             .lock()
             .expect("assets mutex poisoned")
-            .manifest
-            .manifest
-            .clone()
+            .manifest_snapshot()
     }
 
     #[must_use]
@@ -296,6 +455,45 @@ impl Assets {
             .lock()
             .expect("assets mutex poisoned")
             .lookup_source_asset(path.as_ref())
+    }
+
+    #[must_use]
+    pub fn source_path(&self, id: AssetId) -> Option<PathBuf> {
+        self.inner
+            .lock()
+            .expect("assets mutex poisoned")
+            .source_path(id)
+    }
+
+    #[must_use]
+    pub fn metadata(&self, id: AssetId) -> Option<AssetMetadata> {
+        self.inner
+            .lock()
+            .expect("assets mutex poisoned")
+            .metadata(id)
+    }
+
+    #[must_use]
+    pub fn watch_paths(&self, id: AssetId) -> Option<AssetWatchPaths> {
+        self.inner
+            .lock()
+            .expect("assets mutex poisoned")
+            .watch_paths(id)
+    }
+
+    pub fn resolve_asset_path<T: Asset>(
+        &self,
+        path: &AssetPath<T>,
+    ) -> Result<WeakHandle<T>, AssetError> {
+        let path_buf = path.as_path().to_path_buf();
+        let inner = self.inner.lock().expect("assets mutex poisoned");
+        let id = inner.resolve_typed_source_asset::<T>(&path_buf)?;
+        Ok(WeakHandle::new(id))
+    }
+
+    pub fn asset_path<T: Asset>(&self, id: AssetId) -> Result<AssetPath<T>, AssetError> {
+        let inner = self.inner.lock().expect("assets mutex poisoned");
+        inner.typed_asset_path::<T>(id)
     }
 
     #[must_use]
@@ -318,7 +516,9 @@ impl Assets {
         let id = AssetId::new();
         let mut inner = self.inner.lock().expect("assets mutex poisoned");
         inner.insert_runtime(id, asset);
-        inner.retain_direct_lease(id, Some(TypeId::of::<T>()));
+        inner
+            .retain_existing_direct_lease(id, Some(TypeId::of::<T>()))
+            .expect("runtime asset should exist before retaining its handle lease");
         self.make_handle(id)
     }
 
@@ -351,18 +551,13 @@ impl AssetHandleProvider for Mutex<AssetsInner> {
     fn state_for_handle(&self, id: AssetId) -> AssetState {
         self.lock()
             .expect("assets mutex poisoned")
-            .records
-            .get(&id)
-            .map(|record| record.state)
-            .unwrap_or(AssetState::Unloaded)
+            .state_for_handle(id)
     }
 
     fn error_for_handle(&self, id: AssetId) -> Option<AssetError> {
         self.lock()
             .expect("assets mutex poisoned")
-            .records
-            .get(&id)
-            .and_then(|record| record.error.clone())
+            .error_for_handle(id)
     }
 
     fn get_for_handle(
@@ -372,921 +567,453 @@ impl AssetHandleProvider for Mutex<AssetsInner> {
         expected_type_id: TypeId,
     ) -> Result<Arc<dyn Any + Send + Sync>, AssetError> {
         let inner = self.lock().expect("assets mutex poisoned");
-        let record = inner
-            .records
-            .get(&id)
-            .ok_or(AssetError::AssetNotInstalled {
-                id,
-                state: AssetState::Unloaded,
-            })?;
-        if record
-            .requested_type
-            .is_some_and(|type_id| type_id != expected_type_id)
-        {
-            return Err(AssetError::AssetTypeMismatch {
-                id,
-                expected: expected_type,
-                actual: record.asset_type.clone(),
-            });
-        }
-        record
-            .installed
-            .clone()
-            .ok_or(AssetError::AssetNotInstalled {
-                id,
-                state: record.state,
-            })
+        inner.get_for_handle(id, expected_type, expected_type_id)
     }
 }
 
 struct AssetsInner {
     config: AssetConfig,
-    provider: LocalAssetProvider,
-    manifest: ManifestIndex,
-    factories: HashMap<String, Arc<dyn ErasedAssetFactory>>,
-    records: HashMap<AssetId, AssetRecord>,
-    raw_textures: HashMap<String, AssetId>,
-    raw_fonts: HashMap<String, AssetId>,
-    requests: VecDeque<AssetRequest>,
+    provider: Box<dyn AssetProvider>,
+    registry_loader: Box<dyn AssetRegistryLoader>,
+    manifest: LocalManifestRegistry,
+    factories: AssetFactories,
+    store: AssetStore,
+    requests: AssetRequests,
+    release_tx: Sender<AssetId>,
     release_rx: Receiver<AssetId>,
-    load_tx: Sender<CompletedLoad>,
-    load_rx: Receiver<CompletedLoad>,
-    io: AssetIoService,
-    inflight_loads: HashSet<(AssetId, u64)>,
-    events: VecDeque<AssetEvent>,
-    next_event_sequence: u64,
+    handle_provider: Option<Weak<dyn AssetHandleProvider>>,
+    watcher: AssetFileWatcher,
+    load_queue: AssetLoadQueue,
+    events: AssetEventLog,
+    reload: AssetReloadController,
 }
 
 impl AssetsInner {
     fn new(
         config: AssetConfig,
         manifest: AssetRegistryManifest,
+        release_tx: Sender<AssetId>,
         release_rx: Receiver<AssetId>,
     ) -> Self {
-        let (load_tx, load_rx) = mpsc::channel();
+        let provider = Box::new(LocalAssetProvider::new(&config));
+        Self::new_with_provider(config, manifest, release_tx, release_rx, provider)
+    }
+
+    fn new_with_registry_loader(
+        config: AssetConfig,
+        manifest: AssetRegistryManifest,
+        release_tx: Sender<AssetId>,
+        release_rx: Receiver<AssetId>,
+        registry_loader: Box<dyn AssetRegistryLoader>,
+    ) -> Self {
+        let provider = Box::new(LocalAssetProvider::new(&config));
+        Self::new_with_provider_and_registry_loader(
+            config,
+            manifest,
+            release_tx,
+            release_rx,
+            provider,
+            registry_loader,
+        )
+    }
+
+    fn new_with_provider(
+        config: AssetConfig,
+        manifest: AssetRegistryManifest,
+        release_tx: Sender<AssetId>,
+        release_rx: Receiver<AssetId>,
+        provider: Box<dyn AssetProvider>,
+    ) -> Self {
+        Self::new_with_provider_and_registry_loader(
+            config,
+            manifest,
+            release_tx,
+            release_rx,
+            provider,
+            Box::new(LocalManifestRegistryLoader),
+        )
+    }
+
+    fn new_with_provider_and_registry_loader(
+        config: AssetConfig,
+        manifest: AssetRegistryManifest,
+        release_tx: Sender<AssetId>,
+        release_rx: Receiver<AssetId>,
+        provider: Box<dyn AssetProvider>,
+        registry_loader: Box<dyn AssetRegistryLoader>,
+    ) -> Self {
         let io_worker_threads = config.io_worker_threads;
         let io_queue_capacity = config.io_queue_capacity;
-        let provider = LocalAssetProvider::new(&config);
+        let io_shutdown_timeout = config.io_shutdown_timeout;
+        let watcher = AssetFileWatcher::new(&config);
         Self {
             config,
             provider,
-            manifest: ManifestIndex::new(manifest),
-            factories: HashMap::default(),
-            records: HashMap::default(),
-            raw_textures: HashMap::default(),
-            raw_fonts: HashMap::default(),
-            requests: VecDeque::new(),
+            registry_loader,
+            manifest: LocalManifestRegistry::new(manifest),
+            factories: AssetFactories::default(),
+            store: AssetStore::default(),
+            requests: AssetRequests::default(),
+            release_tx,
             release_rx,
-            load_tx,
-            load_rx,
-            io: AssetIoService::new(io_worker_threads, io_queue_capacity),
-            inflight_loads: HashSet::default(),
-            events: VecDeque::new(),
-            next_event_sequence: 0,
+            handle_provider: None,
+            watcher,
+            load_queue: AssetLoadQueue::with_shutdown_timeout(
+                io_worker_threads,
+                io_queue_capacity,
+                io_shutdown_timeout,
+            ),
+            events: AssetEventLog::default(),
+            reload: AssetReloadController::default(),
         }
     }
 
-    fn push_event(&mut self, id: AssetId, kind: AssetEventKind, state: AssetState) {
-        let event = AssetEvent {
-            sequence: self.next_event_sequence,
-            id,
-            kind,
-            state,
-        };
-        self.next_event_sequence = self.next_event_sequence.wrapping_add(1);
-        self.events.push_back(event);
-        while self.events.len() > ASSET_EVENT_LOG_CAP {
-            self.events.pop_front();
-        }
+    fn set_handle_provider(&mut self, handle_provider: Weak<dyn AssetHandleProvider>) {
+        self.handle_provider = Some(handle_provider);
+    }
+
+    fn set_auto_reload_frozen(&mut self, frozen: bool) {
+        self.reload.set_frozen(frozen);
+    }
+
+    fn last_reload_report(&self) -> AssetReloadReport {
+        self.reload.last_report()
+    }
+
+    fn config(&self) -> AssetConfig {
+        self.config.clone()
+    }
+
+    fn state_for_handle(&self, id: AssetId) -> AssetState {
+        self.store.state_for_handle(id)
+    }
+
+    fn error_for_handle(&self, id: AssetId) -> Option<AssetError> {
+        self.store.error_for_handle(id)
+    }
+
+    fn failure_phase(&self, id: AssetId) -> Option<AssetFailurePhase> {
+        self.store.failure_phase(id)
+    }
+
+    fn get_for_handle(
+        &self,
+        id: AssetId,
+        expected_type: &'static str,
+        expected_type_id: TypeId,
+    ) -> Result<Arc<dyn Any + Send + Sync>, AssetError> {
+        self.store
+            .get_for_handle(id, expected_type, expected_type_id)
     }
 
     fn event_cursor(&self) -> AssetEventCursor {
-        AssetEventCursor::new(self.next_event_sequence)
+        self.events.cursor()
     }
 
     fn events_since(&self, cursor: &mut AssetEventCursor) -> Vec<AssetEvent> {
-        let next_sequence = cursor.next_sequence();
-        let events = self
-            .events
-            .iter()
-            .copied()
-            .filter(|event| event.sequence >= next_sequence)
-            .collect();
-        cursor.set_next_sequence(self.next_event_sequence);
-        events
+        self.events.events_since(cursor)
     }
 
     fn stats(&self) -> AssetStats {
-        let mut stats = AssetStats {
-            records: self.records.len(),
-            queued_requests: self.requests.len(),
-            inflight_loads: self.inflight_loads.len(),
-            retained_events: self.events.len(),
-            ..AssetStats::default()
-        };
-
-        for record in self.records.values() {
-            stats.strong_references += record.strong_ref_count;
-            stats.dependency_references += record.dependency_ref_count;
-            stats.states.record(record.state);
-        }
-
-        stats
+        diagnostics::stats(
+            &self.store,
+            &self.requests,
+            &self.load_queue,
+            self.provider.as_ref(),
+            &self.events,
+            Instant::now(),
+        )
     }
 
-    fn set_manifest(&mut self, manifest: AssetRegistryManifest) {
-        self.manifest = ManifestIndex::new(manifest);
+    fn queued_request_snapshots(&self) -> Vec<AssetRequestSnapshot> {
+        diagnostics::queued_request_snapshots(&self.requests, Instant::now())
+    }
 
-        let ids: Vec<_> = self.records.keys().copied().collect();
-        for id in ids {
-            if self
-                .records
-                .get(&id)
-                .is_some_and(|record| record.runtime || record.raw_source_path.is_some())
-            {
-                continue;
-            }
+    fn active_request_snapshots(&self) -> Vec<AssetRequestSnapshot> {
+        diagnostics::active_request_snapshots(
+            &self.store,
+            &self.requests,
+            &self.load_queue,
+            Instant::now(),
+        )
+    }
 
-            if let Some(entry) = self.manifest.entry(id) {
-                self.records
-                    .get_mut(&id)
-                    .expect("record should exist")
-                    .asset_type = entry.asset_type.clone();
-                continue;
-            }
+    fn failed_request_snapshots(&self) -> Vec<AssetRequestSnapshot> {
+        diagnostics::failed_request_snapshots(&self.store, &self.requests)
+    }
 
-            self.release_held_dependencies(id);
-            if let Some(record) = self.records.get_mut(&id) {
-                record.loaded = None;
-                record.installed = None;
-                record.install_task = None;
-                record.set_error(AssetError::AssetNotFound { id }, AssetFailurePhase::Lookup);
-                record.state = AssetState::Failed;
-            }
-            self.push_event(id, AssetEventKind::Failed, AssetState::Failed);
-            self.schedule_release_if_unused(id);
-        }
+    fn canceled_request_snapshots(&self) -> Vec<AssetRequestSnapshot> {
+        diagnostics::canceled_request_snapshots(&self.requests)
+    }
+
+    fn failed_asset_snapshots(&self) -> Vec<AssetFailureSnapshot> {
+        diagnostics::failed_asset_snapshots(&self.store)
+    }
+
+    fn diagnostics_snapshot(&self) -> AssetDiagnosticsSnapshot {
+        diagnostics::snapshot(
+            &self.config,
+            &self.store,
+            &self.requests,
+            &self.load_queue,
+            self.provider.as_ref(),
+            &self.events,
+            &self.reload,
+            Instant::now(),
+        )
+    }
+
+    fn reload_status(&self) -> AssetReloadStatus {
+        diagnostics::reload_status(&self.config, &self.reload, Instant::now())
+    }
+
+    fn reload_manifest(&mut self) -> Result<(), AssetError> {
+        reload::reload_manifest_records(
+            &self.config,
+            &mut self.store,
+            &mut self.events,
+            &mut self.requests,
+            self.provider.as_ref(),
+            self.registry_loader.as_ref(),
+            &mut self.manifest,
+            self.config.io_default_priority,
+            Instant::now(),
+        )
     }
 
     fn register_factory<F>(&mut self, factory: F)
     where
         F: AssetRuntimeFactory,
     {
-        self.factories.insert(
-            factory.asset_type().to_string(),
-            Arc::new(FactoryAdapter(factory)),
-        );
+        self.factories.register(factory);
     }
 
-    fn validate_typed_request<T: Asset>(&self, id: AssetId) -> Result<(), AssetError> {
-        let entry = self
-            .manifest
-            .entry(id)
-            .ok_or(AssetError::AssetNotFound { id })?;
-        let factory = self.factories.get(&entry.asset_type).ok_or_else(|| {
-            AssetError::FactoryNotRegistered {
-                asset_type: entry.asset_type.clone(),
-            }
-        })?;
+    fn resolve_typed_source_asset<T: Asset>(&self, path: &Path) -> Result<AssetId, AssetError> {
+        resolve_typed_source_asset::<T, _>(&self.config, &self.manifest, &self.factories, path)
+    }
 
-        if factory.product_type_id() != TypeId::of::<T>() {
-            return Err(AssetError::AssetTypeMismatch {
-                id,
-                expected: T::TYPE,
-                actual: entry.asset_type.clone(),
-            });
-        }
+    fn typed_asset_path<T: Asset>(&self, id: AssetId) -> Result<AssetPath<T>, AssetError> {
+        typed_asset_path::<T, _>(&self.manifest, &self.factories, id)
+    }
 
-        Ok(())
+    fn manifest_snapshot(&self) -> AssetRegistryManifest {
+        super::registry::manifest_snapshot(&self.manifest)
     }
 
     fn lookup_source_asset(&self, path: &Path) -> Option<AssetId> {
-        let key = self.config.source_key(path);
-        self.manifest.source_to_id.get(&key).copied()
+        super::registry::lookup_source_asset(&self.config, &self.manifest, path)
     }
 
-    fn load_texture(&mut self, path_or_key: &Path) -> Result<AssetId, AssetError> {
-        if let Some(id) = self.lookup_source_asset(path_or_key) {
-            self.validate_typed_request::<TextureAsset>(id)?;
-            self.acquire_direct_lease(id, Some(TypeId::of::<TextureAsset>()));
-            return Ok(id);
-        }
-
-        let request = RawTextureRequest::new(&self.config, path_or_key);
-        let id = match self.raw_textures.get(&request.key).copied() {
-            Some(id) => id,
-            None => {
-                let id = AssetId::new();
-                self.raw_textures.insert(request.key, id);
-                self.records
-                    .insert(id, AssetRecord::new_raw_texture(request.path.clone()));
-                id
-            }
-        };
-
-        let factory = self.factories.get(TextureAsset::TYPE).ok_or_else(|| {
-            AssetError::FactoryNotRegistered {
-                asset_type: TextureAsset::TYPE.to_string(),
-            }
-        })?;
-        if factory.product_type_id() != TypeId::of::<TextureAsset>() {
-            return Err(AssetError::Internal {
-                message: "registered texture factory product type does not match TextureAsset"
-                    .to_string(),
-            });
-        }
-
-        if let Some(record) = self.records.get_mut(&id) {
-            record.strong_ref_count += 1;
-            if record.requested_type.is_none() {
-                record.requested_type = Some(TypeId::of::<TextureAsset>());
-            }
-        }
-        self.requests
-            .push_back(AssetRequest::new(id, Some(TypeId::of::<TextureAsset>())));
-        Ok(id)
+    fn source_path(&self, id: AssetId) -> Option<PathBuf> {
+        super::registry::source_path(&self.manifest, id)
     }
 
-    fn load_font(&mut self, path_or_key: &Path) -> Result<AssetId, AssetError> {
-        if let Some(id) = self.lookup_source_asset(path_or_key) {
-            self.validate_typed_request::<FontAsset>(id)?;
-            self.acquire_direct_lease(id, Some(TypeId::of::<FontAsset>()));
-            return Ok(id);
-        }
-
-        let request = RawTextureRequest::new(&self.config, path_or_key);
-        let id = match self.raw_fonts.get(&request.key).copied() {
-            Some(id) => id,
-            None => {
-                let id = AssetId::new();
-                self.raw_fonts.insert(request.key, id);
-                self.records
-                    .insert(id, AssetRecord::new_raw_font(request.path.clone()));
-                id
-            }
-        };
-
-        let factory = self.factories.get(FontAsset::TYPE).ok_or_else(|| {
-            AssetError::FactoryNotRegistered {
-                asset_type: FontAsset::TYPE.to_string(),
-            }
-        })?;
-        if factory.product_type_id() != TypeId::of::<FontAsset>() {
-            return Err(AssetError::Internal {
-                message: "registered font factory product type does not match FontAsset"
-                    .to_string(),
-            });
-        }
-
-        if let Some(record) = self.records.get_mut(&id) {
-            record.strong_ref_count += 1;
-            if record.requested_type.is_none() {
-                record.requested_type = Some(TypeId::of::<FontAsset>());
-            }
-        }
-        self.requests
-            .push_back(AssetRequest::new(id, Some(TypeId::of::<FontAsset>())));
-        Ok(id)
+    fn metadata(&self, id: AssetId) -> Option<AssetMetadata> {
+        super::registry::metadata(&self.manifest, id)
     }
 
-    fn should_track_for_reload(&self, id: AssetId) -> bool {
-        self.records.get(&id).is_some_and(|record| {
-            !record.runtime
-                && record.raw_source_path.is_none()
-                && (record.strong_ref_count > 0
-                    || record.dependency_ref_count > 0
-                    || record.installed.is_some()
-                    || record.loaded.is_some()
-                    || record.reload_pending)
-        })
+    fn watch_paths(&self, id: AssetId) -> Option<AssetWatchPaths> {
+        super::registry::watch_paths(&self.config, &self.manifest, id)
     }
 
-    fn acquire_direct_lease(&mut self, id: AssetId, requested_type: Option<TypeId>) {
-        self.retain_direct_lease(id, requested_type);
-        self.requests
-            .push_back(AssetRequest::new(id, requested_type));
+    fn load_texture(&mut self, path_or_key: &Path, priority: i32) -> Result<AssetId, AssetError> {
+        lease::acquire_texture_source_lease(
+            &self.config,
+            &self.manifest,
+            &self.factories,
+            &mut self.store,
+            &mut self.requests,
+            path_or_key,
+            priority,
+            Instant::now(),
+        )
     }
 
-    fn retain_direct_lease(&mut self, id: AssetId, requested_type: Option<TypeId>) {
-        let record = self.records.entry(id).or_insert_with(|| {
-            let entry = self
-                .manifest
-                .entry(id)
-                .expect("asset record must exist in manifest");
-            AssetRecord::new(id, entry.asset_type.clone())
-        });
-        record.strong_ref_count += 1;
+    fn load_font(&mut self, path_or_key: &Path, priority: i32) -> Result<AssetId, AssetError> {
+        lease::acquire_font_source_lease(
+            &self.config,
+            &self.manifest,
+            &self.factories,
+            &mut self.store,
+            &mut self.requests,
+            path_or_key,
+            priority,
+            Instant::now(),
+        )
+    }
 
-        if record.requested_type.is_none() {
-            record.requested_type = requested_type;
-        }
+    fn acquire_typed_manifest_direct_lease<T: Asset>(
+        &mut self,
+        id: AssetId,
+        priority: i32,
+    ) -> Result<(), AssetError> {
+        lease::acquire_typed_manifest_direct_lease::<T>(
+            &mut self.store,
+            &mut self.requests,
+            &self.manifest,
+            &self.factories,
+            id,
+            priority,
+            Instant::now(),
+        )
+    }
+
+    fn acquire_typed_manifest_source_lease<T: Asset>(
+        &mut self,
+        path: &Path,
+        priority: i32,
+    ) -> Result<AssetId, AssetError> {
+        lease::acquire_typed_manifest_source_lease::<T>(
+            &self.config,
+            &self.manifest,
+            &self.factories,
+            &mut self.store,
+            &mut self.requests,
+            path,
+            priority,
+            Instant::now(),
+        )
+    }
+
+    fn retain_existing_direct_lease(
+        &mut self,
+        id: AssetId,
+        requested_type: Option<TypeId>,
+    ) -> Result<(), AssetError> {
+        lease::retain_existing_direct_lease(&mut self.store, id, requested_type)
     }
 
     fn drain_handle_releases(&mut self) {
-        while let Ok(id) = self.release_rx.try_recv() {
-            if let Some(record) = self.records.get_mut(&id) {
-                record.strong_ref_count = record.strong_ref_count.saturating_sub(1);
-            }
-            self.schedule_release_if_unused(id);
-        }
-    }
-
-    fn activate_record_for_load(record: &mut AssetRecord, requested_type: Option<TypeId>) {
-        if record.requested_type.is_none() {
-            record.requested_type = requested_type;
-        }
-
-        match record.state {
-            AssetState::Unloaded | AssetState::Failed => {
-                record.load_generation = record.load_generation.wrapping_add(1);
-                record.state = AssetState::Loading;
-                record.clear_error();
-            }
-            AssetState::Uninstalling => {
-                record.state = AssetState::Installed;
-                record.clear_error();
-            }
-            AssetState::Unloading => {
-                record.load_generation = record.load_generation.wrapping_add(1);
-                record.clear_error();
-                record.state = if record.loaded.is_some() {
-                    AssetState::Loaded
-                } else {
-                    AssetState::Loading
-                };
-            }
-            AssetState::Loading
-            | AssetState::Loaded
-            | AssetState::WaitingDependencies
-            | AssetState::Installing
-            | AssetState::Installed => {}
-        }
-    }
-
-    fn normalize_dependencies(dependencies: Vec<AssetId>) -> Vec<AssetId> {
-        let mut unique = Vec::with_capacity(dependencies.len());
-        for dependency in dependencies {
-            if !unique.contains(&dependency) {
-                unique.push(dependency);
-            }
-        }
-        unique
-    }
-
-    fn replace_held_dependencies(&mut self, id: AssetId, new_dependencies: Vec<AssetId>) {
-        let new_dependencies = Self::normalize_dependencies(new_dependencies);
-        let old_dependencies = match self.records.get_mut(&id) {
-            Some(record) => {
-                std::mem::replace(&mut record.held_dependencies, new_dependencies.clone())
-            }
-            None => return,
-        };
-
-        for dependency in &old_dependencies {
-            if new_dependencies.contains(dependency) {
-                continue;
-            }
-            self.release_dependency_reference(*dependency);
-        }
-
-        for dependency in &new_dependencies {
-            if old_dependencies.contains(dependency) {
-                continue;
-            }
-
-            let Some(entry) = self.manifest.entry(*dependency) else {
-                continue;
-            };
-
-            let record = self
-                .records
-                .entry(*dependency)
-                .or_insert_with(|| AssetRecord::new(*dependency, entry.asset_type.clone()));
-            record.dependency_ref_count += 1;
-            Self::activate_record_for_load(record, None);
-        }
-    }
-
-    fn release_held_dependencies(&mut self, id: AssetId) {
-        self.replace_held_dependencies(id, Vec::new());
-    }
-
-    fn release_dependency_reference(&mut self, id: AssetId) {
-        if let Some(record) = self.records.get_mut(&id) {
-            record.dependency_ref_count = record.dependency_ref_count.saturating_sub(1);
-        }
-        self.schedule_release_if_unused(id);
-    }
-
-    fn is_referenced(&self, id: AssetId) -> bool {
-        self.records
-            .get(&id)
-            .is_some_and(|record| record.strong_ref_count > 0 || record.dependency_ref_count > 0)
-    }
-
-    fn dependency_links(&self, id: AssetId) -> Vec<AssetId> {
-        if let Some(record) = self.records.get(&id) {
-            if !record.dependencies.is_empty() {
-                return record.dependencies.clone();
-            }
-        }
-
-        self.manifest
-            .entry(id)
-            .map(|entry| entry.dependencies.clone())
-            .unwrap_or_default()
-    }
-
-    fn find_dependency_cycle_from(
-        &self,
-        id: AssetId,
-        stack: &mut Vec<AssetId>,
-        visited: &mut HashSet<AssetId>,
-    ) -> Option<Vec<AssetId>> {
-        if let Some(index) = stack.iter().position(|existing| *existing == id) {
-            let mut cycle = stack[index..].to_vec();
-            cycle.push(id);
-            return Some(cycle);
-        }
-
-        if !visited.insert(id) {
-            return None;
-        }
-
-        stack.push(id);
-        for dependency in self.dependency_links(id) {
-            if let Some(cycle) = self.find_dependency_cycle_from(dependency, stack, visited) {
-                return Some(cycle);
-            }
-        }
-        stack.pop();
-        None
-    }
-
-    fn find_dependency_cycle(&self, id: AssetId) -> Option<Vec<AssetId>> {
-        let mut stack = Vec::new();
-        let mut visited = HashSet::new();
-        self.find_dependency_cycle_from(id, &mut stack, &mut visited)
-    }
-
-    fn schedule_release_if_unused(&mut self, id: AssetId) {
-        if self
-            .records
-            .get(&id)
-            .is_some_and(|record| record.reload_pending)
-        {
-            return;
-        }
-
-        if self.is_referenced(id) {
-            return;
-        }
-
-        self.release_held_dependencies(id);
-
-        let Some(record) = self.records.get_mut(&id) else {
-            return;
-        };
-
-        let mut pushed_unloaded = false;
-        match record.state {
-            AssetState::Installed => record.state = AssetState::Uninstalling,
-            AssetState::Loaded
-            | AssetState::WaitingDependencies
-            | AssetState::Installing
-            | AssetState::Failed => record.state = AssetState::Unloading,
-            AssetState::Unloaded | AssetState::Loading => {
-                if matches!(record.state, AssetState::Loading) {
-                    record.load_generation = record.load_generation.wrapping_add(1);
-                }
-                record.loaded = None;
-                record.installed = None;
-                record.install_task = None;
-                record.clear_error();
-                record.loaded_entry_fingerprint = None;
-                record.loaded_cooked_hash = None;
-                record.reload_pending = false;
-                record.state = AssetState::Unloaded;
-                pushed_unloaded = true;
-            }
-            AssetState::Uninstalling | AssetState::Unloading => {}
-        }
-        if pushed_unloaded {
-            self.push_event(id, AssetEventKind::Unloaded, AssetState::Unloaded);
-        }
-    }
-
-    fn record_depends_on(&self, id: AssetId, dependency: AssetId) -> bool {
-        self.records.get(&id).is_some_and(|record| {
-            if record.held_dependencies.contains(&dependency) {
-                return true;
-            }
-            record.dependencies.contains(&dependency)
-        })
-    }
-
-    fn dependent_reload_closure(&self, roots: &[AssetId]) -> Vec<AssetId> {
-        let mut impacted = Vec::new();
-        let mut seen = HashSet::new();
-        let mut queue: VecDeque<_> = roots.iter().copied().collect();
-
-        while let Some(id) = queue.pop_front() {
-            if !seen.insert(id) {
-                continue;
-            }
-            impacted.push(id);
-
-            let dependents: Vec<_> = self
-                .records
-                .keys()
-                .copied()
-                .filter(|candidate| self.record_depends_on(*candidate, id))
-                .collect();
-            for dependent in dependents {
-                queue.push_back(dependent);
-            }
-        }
-
-        impacted
-    }
-
-    fn queue_record_reload(&mut self, id: AssetId) {
-        if let Some(record) = self.records.get_mut(&id) {
-            record.reload_pending = true;
-        }
-    }
-
-    fn prepare_record_reload(&mut self, id: AssetId) {
-        self.release_held_dependencies(id);
-
-        let Some(record) = self.records.get_mut(&id) else {
-            return;
-        };
-
-        record.load_generation = record.load_generation.wrapping_add(1);
-        record.loaded = None;
-        record.installed = None;
-        record.install_task = None;
-        record.dependencies.clear();
-        record.clear_error();
-        record.loaded_entry_fingerprint = None;
-        record.loaded_cooked_hash = None;
-
-        if self.manifest.entry(id).is_some() {
-            record.state = AssetState::Loading;
-            self.push_event(id, AssetEventKind::ReloadQueued, AssetState::Loading);
-        } else {
-            record.set_error(AssetError::AssetNotFound { id }, AssetFailurePhase::Lookup);
-            record.state = AssetState::Failed;
-            record.reload_pending = false;
-            self.push_event(id, AssetEventKind::Failed, AssetState::Failed);
-        }
+        lease::apply_handle_releases(
+            &self.release_rx,
+            &mut self.store,
+            &mut self.load_queue,
+            &mut self.events,
+        );
     }
 
     fn reload_changed(&mut self) -> Result<Vec<AssetId>, AssetError> {
-        let manifest = load_manifest(&self.config)?;
-        self.set_manifest(manifest);
-
-        let ids: Vec<_> = self.records.keys().copied().collect();
-        let mut changed_roots = Vec::new();
-
-        for id in ids {
-            if !self.should_track_for_reload(id) {
-                continue;
-            }
-
-            let Some(entry) = self.manifest.entry(id) else {
-                continue;
-            };
-            let Some(record) = self.records.get(&id) else {
-                continue;
-            };
-
-            let current_entry_fingerprint = manifest_entry_fingerprint(entry)?;
-            let source = self.resolve_record_source(id)?;
-            let current_cooked_hash = hash_bytes(&source.read_bytes(id)?);
-            if record.loaded_entry_fingerprint.as_ref() != Some(&current_entry_fingerprint)
-                || record.loaded_cooked_hash.as_ref() != Some(&current_cooked_hash)
-            {
-                changed_roots.push(id);
-            }
-        }
-
-        let impacted = self.dependent_reload_closure(&changed_roots);
-        for id in &impacted {
-            self.queue_record_reload(*id);
-        }
-        for id in &impacted {
-            self.prepare_record_reload(*id);
-        }
-
-        Ok(impacted)
+        Ok(self.reload_changed_report()?.impacted)
     }
 
-    fn entry_for_record(&self, id: AssetId) -> Result<AssetManifestEntry, AssetError> {
-        if let Some(entry) = self.manifest.entry(id) {
-            return Ok(entry.clone());
-        }
-
-        let path = self
-            .records
-            .get(&id)
-            .and_then(|record| record.raw_source_path.as_ref())
-            .ok_or(AssetError::AssetNotFound { id })?;
-        let record = self
-            .records
-            .get(&id)
-            .ok_or(AssetError::AssetNotFound { id })?;
-        if record.asset_type == FontAsset::TYPE {
-            Ok(raw_font_manifest_entry(id, self.config.source_key(path)))
-        } else {
-            Ok(raw_texture_manifest_entry(
-                id,
-                self.config.source_key(path),
-                serde_json::json!({ "srgb": true }),
-            ))
-        }
+    fn reload_changed_report(&mut self) -> Result<AssetReloadReport, AssetError> {
+        reload::reload_changed_with_report(
+            &self.config,
+            &mut self.store,
+            &mut self.events,
+            &mut self.requests,
+            &mut self.reload,
+            self.provider.as_ref(),
+            self.registry_loader.as_ref(),
+            &mut self.manifest,
+            self.config.io_default_priority,
+            Instant::now(),
+        )
     }
 
-    fn resolve_record_source(&self, id: AssetId) -> Result<ResolvedAssetSource, AssetError> {
-        let entry = self.entry_for_record(id)?;
-        let raw_source_path = self
-            .records
-            .get(&id)
-            .and_then(|record| record.raw_source_path.clone());
-        self.provider.resolve(id, entry, raw_source_path)
+    fn force_reload(&mut self, id: AssetId) -> Result<AssetReloadReport, AssetError> {
+        reload::force_reload_root(
+            &self.config,
+            &mut self.store,
+            &mut self.events,
+            &mut self.requests,
+            &mut self.reload,
+            self.provider.as_ref(),
+            self.registry_loader.as_ref(),
+            &mut self.manifest,
+            id,
+            self.config.io_default_priority,
+            Instant::now(),
+        )
+    }
+
+    fn maybe_auto_reload(&mut self) -> Result<(), AssetError> {
+        let now = Instant::now();
+        let watcher_events = self.watcher.drain();
+        reload::drive_auto_reload(
+            &self.config,
+            &mut self.store,
+            &mut self.events,
+            &mut self.requests,
+            &mut self.reload,
+            self.provider.as_ref(),
+            self.registry_loader.as_ref(),
+            &mut self.manifest,
+            watcher_events,
+            self.config.io_default_priority,
+            now,
+        )
     }
 
     fn spawn_load_record(&mut self, id: AssetId) -> Result<bool, AssetError> {
-        let source = self.resolve_record_source(id)?;
-        let entry = source.entry().clone();
-        let generation = self
-            .records
-            .get(&id)
-            .map(|record| record.load_generation)
-            .ok_or(AssetError::AssetNotFound { id })?;
-
-        if !self.inflight_loads.insert((id, generation)) {
-            return Ok(false);
-        }
-
-        let asset_root = self.config.asset_root.clone();
-        let cooked_root = self.config.cooked_root();
-        let factory = self
-            .factories
-            .get(&entry.asset_type)
-            .cloned()
-            .ok_or_else(|| AssetError::FactoryNotRegistered {
-                asset_type: entry.asset_type.clone(),
-            })?;
-        let tx = self.load_tx.clone();
-
-        match self.io.submit(move || {
-            let result = load_resolved_source_asset(
-                id,
-                &source,
-                factory.as_ref(),
-                &asset_root,
-                &cooked_root,
-            );
-
-            let completion = match result {
-                Ok((loaded, cooked_hash)) => CompletedLoad {
-                    id,
-                    generation,
-                    entry,
-                    cooked_hash: Some(cooked_hash),
-                    result: Ok(loaded),
-                },
-                Err(error) => CompletedLoad {
-                    id,
-                    generation,
-                    entry,
-                    cooked_hash: None,
-                    result: Err(error),
-                },
-            };
-
-            let _ = tx.send(completion);
-        }) {
-            Ok(()) => Ok(true),
-            Err(AssetIoSubmitError::QueueFull) => {
-                self.inflight_loads.remove(&(id, generation));
-                Ok(false)
-            }
-            Err(AssetIoSubmitError::Closed) => {
-                self.inflight_loads.remove(&(id, generation));
-                Err(AssetError::Internal {
-                    message: "asset io service is closed".to_string(),
-                })
-            }
-        }
-    }
-
-    fn finish_load_completion(&mut self, completion: CompletedLoad) -> Result<bool, AssetError> {
-        self.inflight_loads
-            .remove(&(completion.id, completion.generation));
-
-        let Some(record) = self.records.get(&completion.id) else {
-            return Ok(false);
-        };
-        if record.load_generation != completion.generation || record.state != AssetState::Loading {
-            return Ok(false);
-        }
-
-        match completion.result {
-            Ok(loaded) => {
-                let dependencies =
-                    Self::normalize_dependencies(if loaded.dependencies.is_empty() {
-                        completion.entry.dependencies.clone()
-                    } else {
-                        loaded.dependencies
-                    });
-                let entry_fingerprint = manifest_entry_fingerprint(&completion.entry)?;
-                self.replace_held_dependencies(completion.id, dependencies.clone());
-
-                let record = self
-                    .records
-                    .get_mut(&completion.id)
-                    .expect("record should exist");
-                record.loaded = Some(loaded.loaded);
-                record.dependencies = dependencies;
-                record.clear_error();
-                record.loaded_entry_fingerprint = Some(entry_fingerprint);
-                record.loaded_cooked_hash = completion.cooked_hash;
-                record.state = AssetState::Loaded;
-                Ok(true)
-            }
-            Err(error) => {
-                self.release_held_dependencies(completion.id);
-                let record = self
-                    .records
-                    .get_mut(&completion.id)
-                    .expect("record should exist");
-                record.loaded = None;
-                record.installed = None;
-                record.install_task = None;
-                record.set_error(error.clone(), AssetFailurePhase::from_error(&error));
-                record.loaded_entry_fingerprint = None;
-                record.loaded_cooked_hash = None;
-                record.reload_pending = false;
-                record.state = AssetState::Failed;
-                self.push_event(completion.id, AssetEventKind::Failed, AssetState::Failed);
-                self.schedule_release_if_unused(completion.id);
-                Err(error)
-            }
-        }
+        submit_record_load_or_fail(
+            &self.config,
+            self.provider.as_ref(),
+            &self.manifest,
+            &self.factories,
+            &mut self.store,
+            &mut self.events,
+            &mut self.requests,
+            &mut self.load_queue,
+            id,
+            Instant::now(),
+        )
     }
 
     fn drain_load_completions(&mut self) -> Result<usize, AssetError> {
-        let mut completed = 0usize;
-        loop {
-            match self.load_rx.try_recv() {
-                Ok(completion) => {
-                    if self.finish_load_completion(completion)? {
-                        completed += 1;
-                    }
-                }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => break,
-            }
-        }
-        Ok(completed)
+        drain_completed_loads_or_fail(
+            &mut self.store,
+            &mut self.events,
+            &mut self.requests,
+            &mut self.load_queue,
+            &self.manifest,
+            self.config.io_default_priority,
+            Instant::now(),
+        )
     }
 
     fn activate_queued_requests(&mut self) -> Result<(), AssetError> {
-        while let Some(request) = self.requests.pop_front() {
-            debug_assert_eq!(request.phase, AssetRequestPhase::Queued);
-            let record = self
-                .records
-                .get_mut(&request.id)
-                .ok_or(AssetError::AssetNotFound { id: request.id })?;
-            Self::activate_record_for_load(record, request.requested_type);
-            debug_assert_ne!(
-                AssetRequestPhase::from_state(record.state),
-                AssetRequestPhase::Queued
-            );
-        }
-        Ok(())
+        super::request::activate_queued_requests(
+            &mut self.store,
+            &mut self.requests,
+            Instant::now(),
+        )
+    }
+
+    fn refresh_active_requests_after_drive(&mut self) {
+        super::request::refresh_active_requests_after_drive(
+            &self.store,
+            &mut self.requests,
+            &mut self.load_queue,
+            Instant::now(),
+        );
     }
 
     fn should_load_in_background(&self, id: AssetId) -> bool {
-        let texture_asset = self.records.get(&id).is_some_and(|record| {
-            record.raw_source_path.is_some() || record.asset_type == TextureAsset::TYPE
-        });
-        self.config.background_loading || texture_asset
+        should_load_record_in_background(&self.config, &self.store, id)
     }
 
     fn has_current_inflight_load(&self, id: AssetId) -> bool {
-        self.records
-            .get(&id)
-            .is_some_and(|record| self.inflight_loads.contains(&(id, record.load_generation)))
-    }
-
-    fn blocking_relevant_ids(&self, target_id: AssetId) -> Vec<AssetId> {
-        let mut ids = Vec::new();
-        let mut seen = HashSet::new();
-        let mut stack = vec![target_id];
-
-        while let Some(id) = stack.pop() {
-            if !seen.insert(id) {
-                continue;
-            }
-            ids.push(id);
-
-            let mut dependencies = self.dependency_links(id);
-            dependencies.reverse();
-            stack.extend(dependencies);
-        }
-
-        ids
+        has_current_inflight_load(&self.store, &self.load_queue, id)
     }
 
     fn apply_update(&mut self) -> Result<(), AssetError> {
         self.drain_handle_releases();
+        self.maybe_auto_reload()?;
         self.activate_queued_requests()?;
         let _ = self.drain_load_completions()?;
-        let mut installs_remaining = self.config.install_budget_per_update.unwrap_or(usize::MAX);
-        let mut polled_installs = HashSet::new();
+        let install_budget_per_update = self.config.install_budget_per_update;
+        let install_time_budget = self.config.install_time_budget;
+        driver::drive_records(
+            self,
+            AssetDriveMode::Normal {
+                install_budget_per_update,
+                install_time_budget,
+                started_at: Instant::now(),
+            },
+        )?;
 
-        let mut iterations = 0usize;
-        loop {
-            iterations += 1;
-            if iterations > self.records.len().saturating_mul(4).max(8) {
-                break;
-            }
-
-            let ids: Vec<_> = self.records.keys().copied().collect();
-            let mut progressed = false;
-
-            for id in ids {
-                let state = match self.records.get(&id) {
-                    Some(record) => record.state,
-                    None => continue,
-                };
-
-                match state {
-                    AssetState::Loading => {
-                        if self.should_load_in_background(id) {
-                            if self.spawn_load_record(id)? {
-                                progressed = true;
-                            }
-                        } else {
-                            self.load_record(id)?;
-                            progressed = true;
-                        }
-                    }
-                    AssetState::Loaded | AssetState::WaitingDependencies => {
-                        if let Some(next_state) = self.evaluate_dependencies(id)? {
-                            self.records
-                                .get_mut(&id)
-                                .expect("record should exist")
-                                .state = next_state;
-                            progressed = true;
-                        }
-                    }
-                    AssetState::Installing => {
-                        if installs_remaining > 0 && polled_installs.insert(id) {
-                            if self.install_record(id)? {
-                                progressed = true;
-                            }
-                            installs_remaining -= 1;
-                        }
-                    }
-                    AssetState::Uninstalling => {
-                        let record = self.records.get_mut(&id).expect("record should exist");
-                        record.installed = None;
-                        record.install_task = None;
-                        record.state = AssetState::Unloading;
-                        progressed = true;
-                    }
-                    AssetState::Unloading => {
-                        let record = self.records.get_mut(&id).expect("record should exist");
-                        record.loaded = None;
-                        record.installed = None;
-                        record.install_task = None;
-                        record.dependencies.clear();
-                        record.clear_error();
-                        record.loaded_entry_fingerprint = None;
-                        record.loaded_cooked_hash = None;
-                        record.reload_pending = false;
-                        record.state = AssetState::Unloaded;
-                        self.push_event(id, AssetEventKind::Unloaded, AssetState::Unloaded);
-                        progressed = true;
-                    }
-                    AssetState::Unloaded | AssetState::Installed | AssetState::Failed => {}
-                }
-            }
-
-            if self.drain_load_completions()? > 0 {
-                progressed = true;
-            }
-
-            if !progressed {
-                break;
-            }
-        }
-
+        self.refresh_active_requests_after_drive();
         Ok(())
     }
 
@@ -1299,678 +1026,163 @@ impl AssetsInner {
         self.activate_queued_requests()?;
         let _ = self.drain_load_completions()?;
 
-        if !self.records.contains_key(&target_id) {
-            return Err(AssetError::AssetNotFound { id: target_id });
-        }
+        driver::drive_records(
+            self,
+            AssetDriveMode::Blocking {
+                target_id,
+                force_synchronous_load,
+                started_at: Instant::now(),
+            },
+        )?;
 
-        let mut polled_installs = HashSet::new();
-        let mut iterations = 0usize;
-        loop {
-            let ids = self.blocking_relevant_ids(target_id);
-            iterations += 1;
-            if iterations > ids.len().saturating_mul(4).max(8) {
-                break;
-            }
-
-            let mut progressed = false;
-
-            for id in ids {
-                let state = match self.records.get(&id) {
-                    Some(record) => record.state,
-                    None => continue,
-                };
-
-                match state {
-                    AssetState::Loading => {
-                        if self.has_current_inflight_load(id) {
-                            continue;
-                        }
-
-                        if !force_synchronous_load && self.should_load_in_background(id) {
-                            if self.spawn_load_record(id)? {
-                                progressed = true;
-                            }
-                        } else {
-                            self.load_record(id)?;
-                            progressed = true;
-                        }
-                    }
-                    AssetState::Loaded | AssetState::WaitingDependencies => {
-                        if let Some(next_state) = self.evaluate_dependencies(id)? {
-                            self.records
-                                .get_mut(&id)
-                                .expect("record should exist")
-                                .state = next_state;
-                            progressed = true;
-                        }
-                    }
-                    AssetState::Installing => {
-                        if polled_installs.insert(id) && self.install_record(id)? {
-                            progressed = true;
-                        }
-                    }
-                    AssetState::Uninstalling => {
-                        let record = self.records.get_mut(&id).expect("record should exist");
-                        record.installed = None;
-                        record.install_task = None;
-                        record.state = AssetState::Unloading;
-                        progressed = true;
-                    }
-                    AssetState::Unloading => {
-                        let record = self.records.get_mut(&id).expect("record should exist");
-                        record.loaded = None;
-                        record.installed = None;
-                        record.install_task = None;
-                        record.dependencies.clear();
-                        record.clear_error();
-                        record.loaded_entry_fingerprint = None;
-                        record.loaded_cooked_hash = None;
-                        record.reload_pending = false;
-                        record.state = AssetState::Unloaded;
-                        self.push_event(id, AssetEventKind::Unloaded, AssetState::Unloaded);
-                        progressed = true;
-                    }
-                    AssetState::Unloaded | AssetState::Installed | AssetState::Failed => {}
-                }
-            }
-
-            if self.drain_load_completions()? > 0 {
-                progressed = true;
-            }
-
-            if !progressed {
-                break;
-            }
-        }
-
+        self.refresh_active_requests_after_drive();
         Ok(())
     }
 
     fn insert_runtime<T: Asset>(&mut self, id: AssetId, asset: T) {
-        let installed: Arc<dyn Any + Send + Sync> = Arc::new(asset);
-        self.records.insert(
-            id,
-            AssetRecord::new_runtime(T::TYPE.to_string(), TypeId::of::<T>(), installed),
-        );
-        self.push_event(id, AssetEventKind::Installed, AssetState::Installed);
+        runtime::insert_runtime_asset(&mut self.store, &mut self.events, id, asset);
     }
 
     fn replace_runtime<T: Asset>(&mut self, id: AssetId, asset: T) -> Result<(), AssetError> {
-        let installed: Arc<dyn Any + Send + Sync> = Arc::new(asset);
-        self.release_held_dependencies(id);
-
-        match self.records.get_mut(&id) {
-            Some(record) => {
-                if record
-                    .requested_type
-                    .is_some_and(|type_id| type_id != TypeId::of::<T>())
-                {
-                    return Err(AssetError::AssetTypeMismatch {
-                        id,
-                        expected: T::TYPE,
-                        actual: record.asset_type.clone(),
-                    });
-                }
-                record.asset_type = T::TYPE.to_string();
-                record.state = AssetState::Installed;
-                record.requested_type = Some(TypeId::of::<T>());
-                record.dependencies.clear();
-                record.held_dependencies.clear();
-                record.loaded = Some(installed.clone());
-                record.installed = Some(installed);
-                record.install_task = None;
-                record.clear_error();
-                record.loaded_entry_fingerprint = None;
-                record.loaded_cooked_hash = None;
-                record.reload_pending = false;
-                record.runtime = true;
-                record.raw_source_path = None;
-            }
-            None => {
-                self.records.insert(
-                    id,
-                    AssetRecord::new_runtime(T::TYPE.to_string(), TypeId::of::<T>(), installed),
-                );
-            }
-        }
-
-        self.push_event(id, AssetEventKind::Installed, AssetState::Installed);
-        Ok(())
+        runtime::replace_runtime_asset(
+            &mut self.store,
+            &mut self.events,
+            &self.manifest,
+            id,
+            asset,
+            self.config.io_default_priority,
+        )
     }
 
     fn load_record(&mut self, id: AssetId) -> Result<(), AssetError> {
-        let source = self.resolve_record_source(id)?;
-        let entry = source.entry().clone();
-        let cooked_root = self.config.cooked_root();
-        let factory = self
-            .factories
-            .get(&entry.asset_type)
-            .cloned()
-            .ok_or_else(|| AssetError::FactoryNotRegistered {
-                asset_type: entry.asset_type.clone(),
-            })?;
-
-        let result = load_resolved_source_asset(
+        load_record_now_and_apply_or_fail(
+            &self.config,
+            self.provider.as_ref(),
+            &self.manifest,
+            &self.factories,
+            &mut self.store,
+            &mut self.events,
+            &mut self.requests,
+            &mut self.load_queue,
             id,
-            &source,
-            factory.as_ref(),
-            &self.config.asset_root,
-            &cooked_root,
-        );
-
-        match result {
-            Ok((loaded, content_hash)) => {
-                let dependencies =
-                    Self::normalize_dependencies(if loaded.dependencies.is_empty() {
-                        entry.dependencies.clone()
-                    } else {
-                        loaded.dependencies
-                    });
-                let entry_fingerprint = manifest_entry_fingerprint(&entry)?;
-                self.replace_held_dependencies(id, dependencies.clone());
-
-                let record = self.records.get_mut(&id).expect("record should exist");
-                record.loaded = Some(loaded.loaded);
-                record.dependencies = dependencies;
-                record.clear_error();
-                record.loaded_entry_fingerprint = Some(entry_fingerprint);
-                record.loaded_cooked_hash = Some(content_hash);
-                record.state = AssetState::Loaded;
-                Ok(())
-            }
-            Err(error) => {
-                self.release_held_dependencies(id);
-                let record = self.records.get_mut(&id).expect("record should exist");
-                record.loaded = None;
-                record.installed = None;
-                record.install_task = None;
-                record.set_error(error.clone(), AssetFailurePhase::from_error(&error));
-                record.loaded_entry_fingerprint = None;
-                record.loaded_cooked_hash = None;
-                record.reload_pending = false;
-                record.state = AssetState::Failed;
-                self.push_event(id, AssetEventKind::Failed, AssetState::Failed);
-                self.schedule_release_if_unused(id);
-                Err(error)
-            }
-        }
+            Instant::now(),
+        )
     }
 
     fn evaluate_dependencies(&mut self, id: AssetId) -> Result<Option<AssetState>, AssetError> {
-        let dependencies = self
-            .records
-            .get(&id)
-            .map(|record| record.dependencies.clone())
-            .unwrap_or_default();
-
-        if dependencies.is_empty() {
-            return Ok(Some(AssetState::Installing));
-        }
-
-        let mut waiting = false;
-        for dependency in dependencies {
-            let Some(entry) = self.manifest.entry(dependency) else {
-                self.release_held_dependencies(id);
-                let error = AssetError::MissingDependency { id, dependency };
-                let record = self.records.get_mut(&id).expect("record should exist");
-                record.loaded = None;
-                record.installed = None;
-                record.install_task = None;
-                record.set_error(error.clone(), AssetFailurePhase::Dependency);
-                record.state = AssetState::Failed;
-                self.push_event(id, AssetEventKind::Failed, AssetState::Failed);
-                return Err(error);
-            };
-
-            if !self.records.contains_key(&dependency) {
-                self.records.insert(
-                    dependency,
-                    AssetRecord::new(dependency, entry.asset_type.clone()),
-                );
-                let record = self
-                    .records
-                    .get_mut(&dependency)
-                    .expect("record should exist");
-                Self::activate_record_for_load(record, None);
-                waiting = true;
-                continue;
-            }
-
-            match self.records.get(&dependency).map(|record| record.state) {
-                Some(AssetState::Installed) => {}
-                Some(AssetState::Failed) => {
-                    self.release_held_dependencies(id);
-                    let error = AssetError::DependencyFailed { id, dependency };
-                    let record = self.records.get_mut(&id).expect("record should exist");
-                    record.loaded = None;
-                    record.installed = None;
-                    record.install_task = None;
-                    record.set_error(error.clone(), AssetFailurePhase::Dependency);
-                    record.state = AssetState::Failed;
-                    self.push_event(id, AssetEventKind::Failed, AssetState::Failed);
-                    return Err(error);
-                }
-                Some(_) | None => waiting = true,
-            }
-        }
-
-        if let Some(cycle) = self.find_dependency_cycle(id) {
-            self.release_held_dependencies(id);
-            let error = AssetError::DependencyCycle { cycle };
-            let record = self.records.get_mut(&id).expect("record should exist");
-            record.loaded = None;
-            record.installed = None;
-            record.install_task = None;
-            record.set_error(error.clone(), AssetFailurePhase::Dependency);
-            record.state = AssetState::Failed;
-            self.push_event(id, AssetEventKind::Failed, AssetState::Failed);
-            return Err(error);
-        }
-
-        Ok(Some(if waiting {
-            AssetState::WaitingDependencies
-        } else {
-            AssetState::Installing
-        }))
+        dependency::resolve_dependencies_or_fail(
+            &mut self.store,
+            &mut self.events,
+            &mut self.requests,
+            &self.manifest,
+            id,
+            self.config.io_default_priority,
+            Instant::now(),
+        )
+        .map(Some)
     }
 
-    fn install_record(&mut self, id: AssetId) -> Result<bool, AssetError> {
-        let entry = self.entry_for_record(id)?;
-        let factory = self
-            .factories
-            .get(&entry.asset_type)
-            .cloned()
-            .ok_or_else(|| AssetError::FactoryNotRegistered {
-                asset_type: entry.asset_type.clone(),
-            })?;
-        let loaded = self
-            .records
-            .get(&id)
-            .and_then(|record| record.loaded.clone())
-            .ok_or_else(|| AssetError::InvalidState {
-                id,
-                state: AssetState::Installing,
-                message: "missing loaded payload".to_string(),
-            })?;
+    fn install_record(
+        &mut self,
+        id: AssetId,
+        budget: AssetInstallBudget,
+    ) -> Result<bool, AssetError> {
+        install::install_record_or_fail(
+            &self.config,
+            &self.manifest,
+            &self.factories,
+            &mut self.store,
+            &mut self.events,
+            &mut self.requests,
+            &self.release_tx,
+            self.handle_provider.clone(),
+            id,
+            budget,
+            self.config.io_default_priority,
+            Instant::now(),
+        )
+    }
 
-        let context = AssetInstallContext {
-            asset_id: id,
-            entry: &entry,
-        };
-
-        let result = if let Some(mut task) = self
-            .records
-            .get_mut(&id)
-            .expect("record should exist")
-            .install_task
-            .take()
-        {
-            match task.poll_install(context) {
-                Ok(AssetInstallPoll::Ready(installed)) => Ok(AssetInstallResult::Ready(installed)),
-                Ok(AssetInstallPoll::Pending) => Ok(AssetInstallResult::Pending(task)),
-                Err(error) => Err(error),
-            }
-        } else {
-            factory.begin_install(&loaded, context)
-        };
-
-        match result {
-            Ok(AssetInstallResult::Ready(installed)) => {
-                let record = self.records.get_mut(&id).expect("record should exist");
-                record.installed = Some(installed);
-                record.install_task = None;
-                record.clear_error();
-                record.reload_pending = false;
-                record.state = AssetState::Installed;
-                self.push_event(id, AssetEventKind::Installed, AssetState::Installed);
-                self.schedule_release_if_unused(id);
-                Ok(true)
-            }
-            Ok(AssetInstallResult::Pending(task)) => {
-                let record = self.records.get_mut(&id).expect("record should exist");
-                record.install_task = Some(task);
-                record.state = AssetState::Installing;
-                Ok(false)
-            }
-            Err(error) => {
-                self.release_held_dependencies(id);
-                let record = self.records.get_mut(&id).expect("record should exist");
-                record.loaded = None;
-                record.installed = None;
-                record.install_task = None;
-                record.set_error(error.clone(), AssetFailurePhase::Install);
-                record.loaded_entry_fingerprint = None;
-                record.loaded_cooked_hash = None;
-                record.reload_pending = false;
-                record.state = AssetState::Failed;
-                self.push_event(id, AssetEventKind::Failed, AssetState::Failed);
-                self.schedule_release_if_unused(id);
-                Err(error)
-            }
-        }
+    fn uninstall_record(&mut self, id: AssetId) -> Result<bool, AssetError> {
+        install::uninstall_record_or_fail(
+            &self.config,
+            &self.manifest,
+            &self.factories,
+            &mut self.store,
+            &mut self.events,
+            &mut self.requests,
+            id,
+            self.config.io_default_priority,
+            Instant::now(),
+        )
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct RawTextureRequest {
-    key: String,
-    path: PathBuf,
-}
-
-impl RawTextureRequest {
-    fn new(config: &AssetConfig, path: &Path) -> Self {
-        let path = if path.is_absolute() {
-            path.to_path_buf()
-        } else if config.asset_root.is_absolute() {
-            config.asset_root.join(path)
-        } else {
-            std::env::current_dir()
-                .unwrap_or_else(|_| PathBuf::from("."))
-                .join(&config.asset_root)
-                .join(path)
-        };
-        let key = config.source_key(&path);
-        Self { key, path }
-    }
-}
-
-struct AssetRecord {
-    asset_type: String,
-    state: AssetState,
-    requested_type: Option<TypeId>,
-    strong_ref_count: usize,
-    dependency_ref_count: usize,
-    dependencies: Vec<AssetId>,
-    held_dependencies: Vec<AssetId>,
-    loaded: Option<Arc<dyn Any + Send + Sync>>,
-    installed: Option<Arc<dyn Any + Send + Sync>>,
-    install_task: Option<Box<dyn AssetInstallTask<Output = Arc<dyn Any + Send + Sync>>>>,
-    error: Option<AssetError>,
-    failure_phase: Option<AssetFailurePhase>,
-    loaded_entry_fingerprint: Option<String>,
-    loaded_cooked_hash: Option<String>,
-    reload_pending: bool,
-    load_generation: u64,
-    runtime: bool,
-    raw_source_path: Option<PathBuf>,
-}
-
-impl AssetRecord {
-    fn new(_id: AssetId, asset_type: String) -> Self {
-        Self {
-            asset_type,
-            state: AssetState::Unloaded,
-            requested_type: None,
-            strong_ref_count: 0,
-            dependency_ref_count: 0,
-            dependencies: Vec::new(),
-            held_dependencies: Vec::new(),
-            loaded: None,
-            installed: None,
-            install_task: None,
-            error: None,
-            failure_phase: None,
-            loaded_entry_fingerprint: None,
-            loaded_cooked_hash: None,
-            reload_pending: false,
-            load_generation: 0,
-            runtime: false,
-            raw_source_path: None,
-        }
+impl AssetRecordDriver for AssetsInner {
+    fn store(&self) -> &AssetStore {
+        &self.store
     }
 
-    fn new_raw_texture(path: PathBuf) -> Self {
-        Self {
-            asset_type: TextureAsset::TYPE.to_string(),
-            state: AssetState::Unloaded,
-            requested_type: Some(TypeId::of::<TextureAsset>()),
-            strong_ref_count: 0,
-            dependency_ref_count: 0,
-            dependencies: Vec::new(),
-            held_dependencies: Vec::new(),
-            loaded: None,
-            installed: None,
-            install_task: None,
-            error: None,
-            failure_phase: None,
-            loaded_entry_fingerprint: None,
-            loaded_cooked_hash: None,
-            reload_pending: false,
-            load_generation: 0,
-            runtime: false,
-            raw_source_path: Some(path),
-        }
+    fn store_mut(&mut self) -> &mut AssetStore {
+        &mut self.store
     }
 
-    fn new_raw_font(path: PathBuf) -> Self {
-        Self {
-            asset_type: FontAsset::TYPE.to_string(),
-            state: AssetState::Unloaded,
-            requested_type: Some(TypeId::of::<FontAsset>()),
-            strong_ref_count: 0,
-            dependency_ref_count: 0,
-            dependencies: Vec::new(),
-            held_dependencies: Vec::new(),
-            loaded: None,
-            installed: None,
-            install_task: None,
-            error: None,
-            failure_phase: None,
-            loaded_entry_fingerprint: None,
-            loaded_cooked_hash: None,
-            reload_pending: false,
-            load_generation: 0,
-            runtime: false,
-            raw_source_path: Some(path),
-        }
+    fn drain_load_completions(&mut self) -> Result<usize, AssetError> {
+        AssetsInner::drain_load_completions(self)
     }
 
-    fn new_runtime(
-        asset_type: String,
-        requested_type: TypeId,
-        installed: Arc<dyn Any + Send + Sync>,
-    ) -> Self {
-        Self {
-            asset_type,
-            state: AssetState::Installed,
-            requested_type: Some(requested_type),
-            strong_ref_count: 0,
-            dependency_ref_count: 0,
-            dependencies: Vec::new(),
-            held_dependencies: Vec::new(),
-            loaded: Some(installed.clone()),
-            installed: Some(installed),
-            install_task: None,
-            error: None,
-            failure_phase: None,
-            loaded_entry_fingerprint: None,
-            loaded_cooked_hash: None,
-            reload_pending: false,
-            load_generation: 0,
-            runtime: true,
-            raw_source_path: None,
-        }
+    fn spawn_load_record(&mut self, id: AssetId) -> Result<bool, AssetError> {
+        AssetsInner::spawn_load_record(self, id)
     }
 
-    fn clear_error(&mut self) {
-        self.error = None;
-        self.failure_phase = None;
+    fn load_record(&mut self, id: AssetId) -> Result<(), AssetError> {
+        AssetsInner::load_record(self, id)
     }
 
-    fn set_error(&mut self, error: AssetError, phase: AssetFailurePhase) {
-        self.error = Some(error);
-        self.failure_phase = Some(phase);
-    }
-}
-
-struct CompletedLoad {
-    id: AssetId,
-    generation: u64,
-    entry: AssetManifestEntry,
-    cooked_hash: Option<String>,
-    result: Result<crate::asset::LoadedAsset<Arc<dyn Any + Send + Sync>>, AssetError>,
-}
-
-fn raw_texture_manifest_entry(
-    id: AssetId,
-    source_path: String,
-    import_settings: serde_json::Value,
-) -> AssetManifestEntry {
-    AssetManifestEntry {
-        asset_id: id,
-        asset_type: TextureAsset::TYPE.to_string(),
-        importer: "texture.raw".to_string(),
-        cooker: "texture.raw_rgba8".to_string(),
-        version: 1,
-        source_path,
-        cooked_path: String::new(),
-        dependencies: Vec::new(),
-        import_settings,
-    }
-}
-
-fn raw_font_manifest_entry(id: AssetId, source_path: String) -> AssetManifestEntry {
-    AssetManifestEntry {
-        asset_id: id,
-        asset_type: FontAsset::TYPE.to_string(),
-        importer: "font.raw".to_string(),
-        cooker: "font.raw_bytes".to_string(),
-        version: 1,
-        source_path,
-        cooked_path: String::new(),
-        dependencies: Vec::new(),
-        import_settings: serde_json::Value::Null,
-    }
-}
-
-fn load_raw_source_asset(
-    entry: &AssetManifestEntry,
-    raw_source_path: &Path,
-    bytes: &[u8],
-) -> Result<crate::asset::LoadedAsset<Arc<dyn Any + Send + Sync>>, AssetError> {
-    if entry.asset_type == TextureAsset::TYPE {
-        let texture = decode_texture_source_bytes(raw_source_path, bytes, TextureColorSpace::Srgb)?;
-        return Ok(crate::asset::LoadedAsset::new(
-            Arc::new(texture) as Arc<dyn Any + Send + Sync>
-        ));
-    }
-    if entry.asset_type == FontAsset::TYPE {
-        return Ok(crate::asset::LoadedAsset::new(
-            Arc::new(FontAsset::new(Arc::<[u8]>::from(bytes.to_vec())))
-                as Arc<dyn Any + Send + Sync>,
-        ));
-    }
-    Err(AssetError::Unsupported {
-        message: format!(
-            "raw source loading is not supported for asset type `{}`",
-            entry.asset_type
-        ),
-    })
-}
-
-fn load_resolved_source_asset(
-    id: AssetId,
-    source: &ResolvedAssetSource,
-    factory: &dyn ErasedAssetFactory,
-    asset_root: &Path,
-    cooked_root: &Path,
-) -> Result<
-    (
-        crate::asset::LoadedAsset<Arc<dyn Any + Send + Sync>>,
-        String,
-    ),
-    AssetError,
-> {
-    let bytes = source.read_bytes(id)?;
-    let content_hash = hash_bytes(&bytes);
-    let loaded = match source.location() {
-        AssetSourceLocation::Raw(path) => load_raw_source_asset(source.entry(), path, &bytes)?,
-        AssetSourceLocation::Cooked(_) => factory.load(AssetLoadContext {
-            asset_id: id,
-            entry: source.entry(),
-            bytes: &bytes,
-            asset_root,
-            cooked_root,
-        })?,
-    };
-    Ok((loaded, content_hash))
-}
-
-fn manifest_entry_fingerprint(entry: &AssetManifestEntry) -> Result<String, AssetError> {
-    let fingerprint = serde_json::json!({
-        "asset_id": entry.asset_id.to_string(),
-        "asset_type": entry.asset_type,
-        "importer": entry.importer,
-        "cooker": entry.cooker,
-        "version": entry.version,
-        "source_path": entry.source_path,
-        "cooked_path": entry.cooked_path,
-        "dependencies": entry
-            .dependencies
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>(),
-        "import_settings": entry.import_settings,
-    });
-    let bytes = serde_json::to_vec(&fingerprint).map_err(|error| AssetError::Internal {
-        message: format!("failed to serialize asset manifest fingerprint: {error}"),
-    })?;
-    Ok(hash_bytes(&bytes))
-}
-
-fn hash_bytes(bytes: &[u8]) -> String {
-    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
-    const FNV_PRIME: u64 = 0x100000001b3;
-
-    let mut hash = FNV_OFFSET_BASIS;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    format!("{hash:016x}")
-}
-
-fn load_manifest(config: &AssetConfig) -> Result<AssetRegistryManifest, AssetError> {
-    let manifest_path = config.manifest_path();
-    if !manifest_path.exists() {
-        return if config.cooked_root().exists() {
-            Err(AssetError::ManifestMissing {
-                path: manifest_path,
-            })
-        } else {
-            Ok(AssetRegistryManifest {
-                version: ASSET_SYSTEM_VERSION,
-                target: config.target.clone(),
-                assets: Vec::new(),
-            })
-        };
+    fn evaluate_dependencies(&mut self, id: AssetId) -> Result<Option<AssetState>, AssetError> {
+        AssetsInner::evaluate_dependencies(self, id)
     }
 
-    let bytes = std::fs::read(&manifest_path).map_err(|error| AssetError::Io {
-        path: manifest_path.clone(),
-        message: error.to_string(),
-    })?;
-    let manifest: AssetRegistryManifest =
-        serde_json::from_slice(&bytes).map_err(|error| AssetError::Json {
-            path: manifest_path.clone(),
-            message: error.to_string(),
-        })?;
-
-    if manifest.version != ASSET_SYSTEM_VERSION {
-        return Err(AssetError::VersionMismatch {
-            path: manifest_path,
-            expected: ASSET_SYSTEM_VERSION,
-            actual: manifest.version,
-        });
+    fn install_record(
+        &mut self,
+        id: AssetId,
+        budget: AssetInstallBudget,
+    ) -> Result<bool, AssetError> {
+        AssetsInner::install_record(self, id, budget)
     }
 
-    Ok(manifest)
+    fn uninstall_record(&mut self, id: AssetId) -> Result<bool, AssetError> {
+        AssetsInner::uninstall_record(self, id)
+    }
+
+    fn should_load_in_background(&self, id: AssetId) -> bool {
+        AssetsInner::should_load_in_background(self, id)
+    }
+
+    fn has_current_inflight_load(&self, id: AssetId) -> bool {
+        AssetsInner::has_current_inflight_load(self, id)
+    }
+
+    fn blocking_relevant_ids(&self, target_id: AssetId) -> Vec<AssetId> {
+        dependency::blocking_relevant_ids(&self.store, &self.manifest, target_id)
+    }
+
+    fn record_unloaded(&mut self, id: AssetId) {
+        events::push_unloaded_event(&mut self.events, &self.store, id);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::asset::{AssetManifestEntry, LoadedAsset};
+    use crate::asset::provider::{write_test_bundle, MemoryAssetProvider};
+    use crate::asset::registry::load_manifest;
+    use crate::asset::{
+        AssetEventKind, AssetManifestEntry, AssetReloadSkipReason, AssetRequestStatus, LoadedAsset,
+        ASSET_SYSTEM_VERSION,
+    };
+    use std::collections::{HashMap, HashSet};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use tempfile::tempdir;
@@ -2010,6 +1222,18 @@ mod tests {
         }
     }
 
+    struct StaticRegistryLoader {
+        manifest: AssetRegistryManifest,
+        loads: Arc<AtomicUsize>,
+    }
+
+    impl AssetRegistryLoader for StaticRegistryLoader {
+        fn load(&self, _config: &AssetConfig) -> Result<AssetRegistryManifest, AssetError> {
+            self.loads.fetch_add(1, Ordering::SeqCst);
+            Ok(self.manifest.clone())
+        }
+    }
+
     #[derive(Clone)]
     struct SlowFactory {
         delay: Duration,
@@ -2039,6 +1263,29 @@ mod tests {
         }
     }
 
+    struct SlowTextureFactory {
+        delay: Duration,
+    }
+
+    impl AssetRuntimeFactory for SlowTextureFactory {
+        type Asset = TextureAsset;
+        type Loaded = TextureAsset;
+
+        fn load(&self, ctx: AssetLoadContext<'_>) -> Result<LoadedAsset<Self::Loaded>, AssetError> {
+            std::thread::sleep(self.delay);
+            Ok(LoadedAsset::new(TextureAsset::white_pixel())
+                .with_dependencies(ctx.entry.dependencies.clone()))
+        }
+
+        fn begin_install(
+            &self,
+            loaded: &Self::Loaded,
+            _ctx: AssetInstallContext<'_>,
+        ) -> Result<AssetInstallResult<Self::Asset>, AssetError> {
+            Ok(AssetInstallResult::Ready(loaded.clone()))
+        }
+    }
+
     struct FailingInstallFactory;
 
     impl AssetRuntimeFactory for FailingInstallFactory {
@@ -2061,6 +1308,40 @@ mod tests {
         ) -> Result<AssetInstallResult<Self::Asset>, AssetError> {
             Err(AssetError::Unsupported {
                 message: "install failed intentionally".to_string(),
+            })
+        }
+    }
+
+    struct FailingUninstallFactory;
+
+    impl AssetRuntimeFactory for FailingUninstallFactory {
+        type Asset = DummyAsset;
+        type Loaded = LoadedDummy;
+
+        fn load(&self, ctx: AssetLoadContext<'_>) -> Result<LoadedAsset<Self::Loaded>, AssetError> {
+            let text =
+                std::str::from_utf8(ctx.bytes).map_err(|error| AssetError::InvalidCookedAsset {
+                    id: Some(ctx.asset_id),
+                    message: error.to_string(),
+                })?;
+            Ok(LoadedAsset::new(LoadedDummy(text.to_string())))
+        }
+
+        fn begin_install(
+            &self,
+            loaded: &Self::Loaded,
+            _ctx: AssetInstallContext<'_>,
+        ) -> Result<AssetInstallResult<Self::Asset>, AssetError> {
+            Ok(AssetInstallResult::Ready(DummyAsset(loaded.0.clone())))
+        }
+
+        fn uninstall(
+            &self,
+            _installed: &Self::Asset,
+            _ctx: AssetUninstallContext<'_>,
+        ) -> Result<(), AssetError> {
+            Err(AssetError::Unsupported {
+                message: "uninstall failed intentionally".to_string(),
             })
         }
     }
@@ -2106,6 +1387,7 @@ mod tests {
         fn poll_install(
             &mut self,
             _ctx: AssetInstallContext<'_>,
+            _budget: AssetInstallBudget,
         ) -> Result<AssetInstallPoll<Self::Output>, AssetError> {
             if self.pending_polls > 0 {
                 self.pending_polls -= 1;
@@ -2116,10 +1398,37 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Default)]
+    struct InvalidationCountingProvider {
+        invalidate_all_calls: Arc<AtomicUsize>,
+    }
+
+    impl InvalidationCountingProvider {
+        fn invalidate_all_calls(&self) -> usize {
+            self.invalidate_all_calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl AssetProvider for InvalidationCountingProvider {
+        fn resolve(
+            &self,
+            id: AssetId,
+            _entry: AssetManifestEntry,
+            _raw_source_path: Option<PathBuf>,
+        ) -> Result<ResolvedAssetSource, AssetError> {
+            Err(AssetError::AssetNotFound { id })
+        }
+
+        fn invalidate_all(&self) {
+            self.invalidate_all_calls.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
     #[derive(Clone)]
     struct CountingFactory {
         loads: Arc<Mutex<HashMap<AssetId, usize>>>,
         installs: Arc<Mutex<HashMap<AssetId, usize>>>,
+        uninstalls: Arc<Mutex<HashMap<AssetId, usize>>>,
     }
 
     impl CountingFactory {
@@ -2127,6 +1436,7 @@ mod tests {
             Self {
                 loads: Arc::new(Mutex::new(HashMap::default())),
                 installs: Arc::new(Mutex::new(HashMap::default())),
+                uninstalls: Arc::new(Mutex::new(HashMap::default())),
             }
         }
 
@@ -2144,6 +1454,15 @@ mod tests {
                 .installs
                 .lock()
                 .expect("counting installs mutex poisoned")
+                .get(&id)
+                .unwrap_or(&0)
+        }
+
+        fn uninstall_count(&self, id: AssetId) -> usize {
+            *self
+                .uninstalls
+                .lock()
+                .expect("counting uninstalls mutex poisoned")
                 .get(&id)
                 .unwrap_or(&0)
         }
@@ -2179,6 +1498,19 @@ mod tests {
             *installs.entry(ctx.asset_id).or_insert(0) += 1;
             Ok(AssetInstallResult::Ready(DummyAsset(loaded.0.clone())))
         }
+
+        fn uninstall(
+            &self,
+            _installed: &Self::Asset,
+            ctx: AssetUninstallContext<'_>,
+        ) -> Result<(), AssetError> {
+            let mut uninstalls = self
+                .uninstalls
+                .lock()
+                .expect("counting uninstalls mutex poisoned");
+            *uninstalls.entry(ctx.asset_id).or_insert(0) += 1;
+            Ok(())
+        }
     }
 
     fn write_manifest_entries(
@@ -2190,6 +1522,7 @@ mod tests {
         let manifest = AssetRegistryManifest {
             version: ASSET_SYSTEM_VERSION,
             target: "native".to_string(),
+            provenance: Vec::new(),
             assets: entries,
         };
         std::fs::write(
@@ -2204,6 +1537,86 @@ mod tests {
         entry: AssetManifestEntry,
     ) -> Result<AssetConfig, Box<dyn std::error::Error>> {
         write_manifest_entries(root, vec![entry])
+    }
+
+    #[test]
+    fn typed_asset_path_serializes_resolves_and_loads() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let asset_id = AssetId::new();
+        let config = write_manifest(
+            dir.path(),
+            AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "clip.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            },
+        )?
+        .with_package_root("packages/base")
+        .with_package_file("bundles/base.skybundle");
+        let expected_source_path = config.asset_root.join("clip.dummy");
+        let expected_cooked_path = config.cooked_root().join("clip.dummyc");
+        let expected_package_path = config.asset_root.join("packages/base/clip.dummyc");
+        let expected_package_file = config.asset_root.join("bundles/base.skybundle");
+        std::fs::write(config.cooked_root().join("clip.dummyc"), b"ready")?;
+
+        let server = Assets::new(config)?;
+        server.register_factory(DummyFactory);
+        let path = AssetPath::<DummyAsset>::new("clip.dummy");
+        let serialized = serde_json::to_string(&path)?;
+        assert_eq!(serialized, "\"clip.dummy\"");
+        let decoded: AssetPath<DummyAsset> = serde_json::from_str(&serialized)?;
+        assert_eq!(decoded.as_path(), Path::new("clip.dummy"));
+
+        assert_eq!(
+            server.source_path(asset_id),
+            Some(PathBuf::from("clip.dummy"))
+        );
+        assert_eq!(server.asset_path::<DummyAsset>(asset_id)?, path);
+        let metadata = server.metadata(asset_id).expect("metadata should resolve");
+        assert_eq!(metadata.asset_id, asset_id);
+        assert_eq!(metadata.asset_type, "dummy");
+        assert_eq!(metadata.source_path, "clip.dummy");
+        assert_eq!(metadata.cooked_path, "clip.dummyc");
+        assert!(metadata.dependencies.is_empty());
+        let watch_paths = server.watch_paths(asset_id).expect("watch paths");
+        assert_eq!(watch_paths.source_path, expected_source_path);
+        assert_eq!(watch_paths.cooked_path, expected_cooked_path);
+        assert_eq!(watch_paths.package_paths, vec![expected_package_path]);
+        assert_eq!(watch_paths.package_files, vec![expected_package_file]);
+
+        let weak = server.resolve_asset_path(&decoded)?;
+        assert_eq!(weak.id(), asset_id);
+        let handle = server.load_path(&path)?;
+        assert_eq!(handle.id(), asset_id);
+        server.update()?;
+        assert_eq!(server.get(&handle)?.0, "ready");
+
+        let wrong_type_path = AssetPath::<FontAsset>::new("clip.dummy");
+        let err = server.resolve_asset_path(&wrong_type_path).unwrap_err();
+        assert!(matches!(
+            err,
+            AssetError::AssetTypeMismatch {
+                expected,
+                actual,
+                ..
+            } if expected == FontAsset::TYPE && actual == "dummy"
+        ));
+        let err = server.asset_path::<FontAsset>(asset_id).unwrap_err();
+        assert!(matches!(
+            err,
+            AssetError::AssetTypeMismatch {
+                expected,
+                actual,
+                ..
+            } if expected == FontAsset::TYPE && actual == "dummy"
+        ));
+        Ok(())
     }
 
     #[test]
@@ -2243,12 +1656,512 @@ mod tests {
         let dir = tempdir().expect("temporary asset root");
         let config = AssetConfig::new(dir.path(), "native")
             .with_io_worker_threads(1)
-            .with_io_queue_capacity(3);
+            .with_io_queue_capacity(3)
+            .with_io_default_priority(7);
         let server = Assets::with_empty_manifest(config);
         let inner = server.inner.lock().expect("assets mutex poisoned");
 
-        assert_eq!(inner.io.worker_count(), 1);
-        assert_eq!(inner.io.queue_capacity(), 3);
+        assert_eq!(inner.load_queue.worker_count(), 1);
+        assert_eq!(inner.load_queue.queue_capacity(), 3);
+        assert_eq!(inner.config.io_default_priority, 7);
+    }
+
+    #[test]
+    fn queued_request_is_canceled_when_last_lease_is_dropped_before_update(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let asset_id = AssetId::new();
+        let config = write_manifest(
+            dir.path(),
+            AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "missing.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            },
+        )?;
+
+        let server = Assets::new(config)?;
+        server.register_factory(DummyFactory);
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
+        drop(handle);
+
+        server.update()?;
+
+        assert_eq!(server.state_untyped(asset_id), AssetState::Unloaded);
+        let stats = server.stats();
+        assert_eq!(stats.submitted_requests, 1);
+        assert_eq!(stats.activated_requests, 0);
+        assert_eq!(stats.canceled_requests, 1);
+        let canceled = server.canceled_request_snapshots();
+        assert_eq!(canceled.len(), 1);
+        assert_eq!(canceled[0].asset_id, asset_id);
+        assert_eq!(canceled[0].status, AssetRequestStatus::Canceled);
+        Ok(())
+    }
+
+    #[test]
+    fn asset_events_include_backend_residency_context() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let dependency_id = AssetId::new();
+        let asset_id = AssetId::new();
+        let config = write_manifest_entries(
+            dir.path(),
+            vec![
+                AssetManifestEntry {
+                    asset_id: asset_id,
+                    asset_type: "dummy".to_string(),
+                    importer: "dummy".to_string(),
+                    cooker: "dummy".to_string(),
+                    version: 1,
+                    source_path: "clip.dummy".to_string(),
+                    cooked_path: "clip.dummyc".to_string(),
+                    dependencies: vec![dependency_id],
+                    import_settings: serde_json::Value::Null,
+                },
+                AssetManifestEntry {
+                    asset_id: dependency_id,
+                    asset_type: "dummy".to_string(),
+                    importer: "dummy".to_string(),
+                    cooker: "dummy".to_string(),
+                    version: 1,
+                    source_path: "dependency.dummy".to_string(),
+                    cooked_path: "dependency.dummyc".to_string(),
+                    dependencies: Vec::new(),
+                    import_settings: serde_json::Value::Null,
+                },
+            ],
+        )?;
+        let cooked_path = config.cooked_root().join("clip.dummyc");
+        std::fs::write(&cooked_path, b"ready")?;
+        std::fs::write(
+            config.cooked_root().join("dependency.dummyc"),
+            b"dependency",
+        )?;
+
+        let server = Assets::new(config)?;
+        server.register_factory(DummyFactory);
+        let mut events = server.event_cursor();
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
+
+        server.update()?;
+
+        let installed_events = server.events_since(&mut events);
+        let loaded = installed_events
+            .iter()
+            .find(|event| event.id == asset_id && event.kind == AssetEventKind::Loaded)
+            .expect("parent asset should emit loaded event");
+        assert_eq!(loaded.state, AssetState::Loaded);
+        assert_eq!(loaded.generation, 1);
+        assert_eq!(loaded.asset_type, "dummy");
+        assert_eq!(loaded.dependencies, vec![dependency_id]);
+        assert!(loaded.manifest_fingerprint.is_some());
+        assert!(loaded.content_hash.is_some());
+        assert!(!loaded.reload_pending);
+        let installed = installed_events
+            .iter()
+            .find(|event| event.id == asset_id && event.kind == AssetEventKind::Installed)
+            .expect("parent asset should emit installed event");
+        assert_eq!(installed.state, AssetState::Installed);
+        assert_eq!(installed.generation, 1);
+        assert_eq!(installed.asset_type, "dummy");
+        assert_eq!(installed.dependencies, vec![dependency_id]);
+        assert!(installed.manifest_fingerprint.is_some());
+        assert!(installed.content_hash.is_some());
+        assert!(!installed.reload_pending);
+
+        std::fs::write(&cooked_path, b"fresh")?;
+        let report = server.reload_changed_with_report()?;
+        assert_eq!(report.changed_roots, vec![asset_id]);
+        let reload_events = server.events_since(&mut events);
+        let reload = reload_events
+            .iter()
+            .find(|event| event.id == asset_id && event.kind == AssetEventKind::ReloadQueued)
+            .expect("parent asset should emit reload queued event");
+        assert_eq!(reload.generation, 2);
+        assert_eq!(reload.asset_type, "dummy");
+        assert!(reload.content_hash.is_none());
+        assert!(reload.reload_pending);
+
+        server.update()?;
+        assert_eq!(server.get(&handle)?.0, "fresh");
+        let reloaded_events = server.events_since(&mut events);
+        let reloaded = reloaded_events
+            .iter()
+            .find(|event| event.id == asset_id && event.kind == AssetEventKind::Reloaded)
+            .expect("parent asset should emit reloaded event");
+        assert_eq!(reloaded.state, AssetState::Installed);
+        assert_eq!(reloaded.generation, 2);
+        assert_eq!(reloaded.asset_type, "dummy");
+        assert_eq!(reloaded.dependencies, vec![dependency_id]);
+        assert!(reloaded.manifest_fingerprint.is_some());
+        assert!(reloaded.content_hash.is_some());
+        assert!(!reloaded.reload_pending);
+        Ok(())
+    }
+
+    #[test]
+    fn memory_provider_loads_cooked_asset_without_filesystem_bytes(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let asset_id = AssetId::new();
+        let entry = AssetManifestEntry {
+            asset_id,
+            asset_type: "dummy".to_string(),
+            importer: "dummy".to_string(),
+            cooker: "dummy".to_string(),
+            version: 1,
+            source_path: "memory.dummy".to_string(),
+            cooked_path: "memory.dummyc".to_string(),
+            dependencies: Vec::new(),
+            import_settings: serde_json::Value::Null,
+        };
+        let manifest = AssetRegistryManifest {
+            version: ASSET_SYSTEM_VERSION,
+            target: "native".to_string(),
+            provenance: Vec::new(),
+            assets: vec![entry],
+        };
+        let provider = MemoryAssetProvider::new().with_asset(asset_id, b"from-memory".to_vec());
+        let server = Assets::with_manifest_and_provider(
+            AssetConfig::new("memory-root", "native"),
+            manifest,
+            provider,
+        );
+        server.register_factory(DummyFactory);
+
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
+        server.update()?;
+
+        assert_eq!(server.get(&handle)?.0, "from-memory");
+        Ok(())
+    }
+
+    #[test]
+    fn registry_loader_supplies_manifest_without_local_manifest_file(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let config = AssetConfig::new(dir.path(), "native");
+        std::fs::create_dir_all(config.cooked_root())?;
+        assert!(matches!(
+            load_manifest(&config),
+            Err(AssetError::ManifestMissing { .. })
+        ));
+
+        let asset_id = AssetId::new();
+        let manifest = AssetRegistryManifest {
+            version: ASSET_SYSTEM_VERSION,
+            target: "native".to_string(),
+            provenance: Vec::new(),
+            assets: vec![AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "virtual.dummy".to_string(),
+                cooked_path: "virtual.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            }],
+        };
+        let loads = Arc::new(AtomicUsize::new(0));
+        let provider = MemoryAssetProvider::new().with_asset(asset_id, b"from-registry".to_vec());
+        let server = Assets::with_registry_loader_and_provider(
+            config,
+            StaticRegistryLoader {
+                manifest,
+                loads: loads.clone(),
+            },
+            provider,
+        )?;
+        server.register_factory(DummyFactory);
+
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
+        server.update()?;
+        assert_eq!(server.get(&handle)?.0, "from-registry");
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+
+        server.reload_manifest()?;
+        assert_eq!(loads.load(Ordering::SeqCst), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn memory_provider_read_failure_records_failed_request_without_filesystem(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let asset_id = AssetId::new();
+        let entry = AssetManifestEntry {
+            asset_id,
+            asset_type: "dummy".to_string(),
+            importer: "dummy".to_string(),
+            cooker: "dummy".to_string(),
+            version: 1,
+            source_path: "memory.dummy".to_string(),
+            cooked_path: "memory.dummyc".to_string(),
+            dependencies: Vec::new(),
+            import_settings: serde_json::Value::Null,
+        };
+        let manifest = AssetRegistryManifest {
+            version: ASSET_SYSTEM_VERSION,
+            target: "native".to_string(),
+            provenance: Vec::new(),
+            assets: vec![entry],
+        };
+        let read_error = AssetError::Io {
+            path: PathBuf::from(format!("memory://{asset_id}")),
+            message: "simulated read failure".to_string(),
+        };
+        let provider = MemoryAssetProvider::new().with_read_error(asset_id, read_error.clone());
+        let server = Assets::with_manifest_and_provider(
+            AssetConfig::new("memory-root", "native"),
+            manifest,
+            provider,
+        );
+        server.register_factory(DummyFactory);
+
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
+        let error = server
+            .update()
+            .expect_err("memory read failure should surface through normal update");
+
+        assert_eq!(error, read_error);
+        assert_eq!(server.state(&handle), AssetState::Failed);
+        assert_eq!(server.failure_phase(&handle), Some(AssetFailurePhase::Read));
+        let failed = server.failed_request_snapshots();
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].asset_id, asset_id);
+        assert_eq!(failed[0].status, AssetRequestStatus::Failed);
+        assert_eq!(failed[0].generation, 1);
+        assert!(failed[0]
+            .last_error
+            .as_deref()
+            .is_some_and(|message| message.contains("simulated read failure")));
+        Ok(())
+    }
+
+    #[test]
+    fn memory_provider_delayed_source_stays_inflight_without_filesystem(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let asset_id = AssetId::new();
+        let entry = AssetManifestEntry {
+            asset_id,
+            asset_type: "dummy".to_string(),
+            importer: "dummy".to_string(),
+            cooker: "dummy".to_string(),
+            version: 1,
+            source_path: "memory.dummy".to_string(),
+            cooked_path: "memory.dummyc".to_string(),
+            dependencies: Vec::new(),
+            import_settings: serde_json::Value::Null,
+        };
+        let manifest = AssetRegistryManifest {
+            version: ASSET_SYSTEM_VERSION,
+            target: "native".to_string(),
+            provenance: Vec::new(),
+            assets: vec![entry],
+        };
+        let provider = MemoryAssetProvider::new().with_delayed_asset(
+            asset_id,
+            b"delayed-memory".to_vec(),
+            Duration::from_millis(60),
+        );
+        let server = Assets::with_manifest_and_provider(
+            AssetConfig::new("memory-root", "native").with_background_loading(true),
+            manifest,
+            provider,
+        );
+        server.register_factory(DummyFactory);
+
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
+        server.update()?;
+
+        assert_eq!(server.state(&handle), AssetState::Loading);
+        assert_eq!(server.stats().inflight_loads, 1);
+        let active = server.active_request_snapshots();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].asset_id, asset_id);
+        assert_eq!(active[0].status, AssetRequestStatus::Loading);
+
+        std::thread::sleep(Duration::from_millis(90));
+        server.update()?;
+
+        assert_eq!(server.state(&handle), AssetState::Installed);
+        assert_eq!(server.get(&handle)?.0, "delayed-memory");
+        assert_eq!(server.stats().inflight_loads, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn memory_provider_loads_dependency_chain_without_filesystem(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let parent_id = AssetId::new();
+        let dependency_id = AssetId::new();
+        let manifest = AssetRegistryManifest {
+            version: ASSET_SYSTEM_VERSION,
+            target: "native".to_string(),
+            provenance: Vec::new(),
+            assets: vec![
+                AssetManifestEntry {
+                    asset_id: parent_id,
+                    asset_type: "dummy".to_string(),
+                    importer: "dummy".to_string(),
+                    cooker: "dummy".to_string(),
+                    version: 1,
+                    source_path: "parent.dummy".to_string(),
+                    cooked_path: "parent.dummyc".to_string(),
+                    dependencies: vec![dependency_id],
+                    import_settings: serde_json::Value::Null,
+                },
+                AssetManifestEntry {
+                    asset_id: dependency_id,
+                    asset_type: "dummy".to_string(),
+                    importer: "dummy".to_string(),
+                    cooker: "dummy".to_string(),
+                    version: 1,
+                    source_path: "dependency.dummy".to_string(),
+                    cooked_path: "dependency.dummyc".to_string(),
+                    dependencies: Vec::new(),
+                    import_settings: serde_json::Value::Null,
+                },
+            ],
+        };
+        let provider = MemoryAssetProvider::new()
+            .with_asset(parent_id, b"parent".to_vec())
+            .with_asset(dependency_id, b"dependency".to_vec());
+        let server = Assets::with_manifest_and_provider(
+            AssetConfig::new("memory-root", "native"),
+            manifest,
+            provider,
+        );
+        server.register_factory(DummyFactory);
+
+        let parent = server.load_id::<DummyAsset>(parent_id)?;
+        server.update()?;
+
+        assert_eq!(server.state(&parent), AssetState::Installed);
+        assert_eq!(server.get(&parent)?.0, "parent");
+        assert_eq!(server.state_untyped(dependency_id), AssetState::Installed);
+
+        drop(parent);
+        server.update()?;
+
+        assert_eq!(server.state_untyped(parent_id), AssetState::Unloaded);
+        assert_eq!(server.state_untyped(dependency_id), AssetState::Unloaded);
+        Ok(())
+    }
+
+    #[test]
+    fn package_root_cooked_artifact_loads_through_normal_assets_facade(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let asset_id = AssetId::new();
+        let config = write_manifest(
+            dir.path(),
+            AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "clip.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            },
+        )?
+        .with_package_root("packages/base");
+        let package_root = config.asset_root.join("packages/base");
+        std::fs::create_dir_all(&package_root)?;
+        std::fs::write(package_root.join("clip.dummyc"), b"from-package")?;
+
+        let server = Assets::new(config)?;
+        server.register_factory(DummyFactory);
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
+        server.update()?;
+
+        assert_eq!(server.get(&handle)?.0, "from-package");
+        Ok(())
+    }
+
+    #[test]
+    fn package_file_cooked_artifact_loads_through_normal_assets_facade(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let asset_id = AssetId::new();
+        let config = write_manifest(
+            dir.path(),
+            AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "clip.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            },
+        )?
+        .with_package_file("base.skybundle");
+        write_test_bundle(
+            &config.asset_root.join("base.skybundle"),
+            &[("clip.dummyc", b"from-bundle")],
+        )?;
+
+        let server = Assets::new(config)?;
+        server.register_factory(DummyFactory);
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
+        server.update()?;
+
+        assert_eq!(server.get(&handle)?.0, "from-bundle");
+        let stats = server.stats();
+        assert_eq!(stats.provider.package_files, 1);
+        assert_eq!(stats.provider.cached_bundle_indexes, 1);
+        assert_eq!(stats.provider.cached_bundle_index_entries, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn force_reload_reads_rewritten_package_file_bundle() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempdir()?;
+        let asset_id = AssetId::new();
+        let config = write_manifest(
+            dir.path(),
+            AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "clip.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            },
+        )?
+        .with_package_file("base.skybundle");
+        let bundle = config.asset_root.join("base.skybundle");
+        write_test_bundle(&bundle, &[("clip.dummyc", b"from-bundle")])?;
+
+        let server = Assets::new(config)?;
+        server.register_factory(DummyFactory);
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
+        server.update()?;
+        assert_eq!(server.get(&handle)?.0, "from-bundle");
+
+        write_test_bundle(&bundle, &[("clip.dummyc", b"from-updated-bundle")])?;
+        let report = server.force_reload(asset_id)?;
+        assert_eq!(report.changed_roots, vec![asset_id]);
+        server.update()?;
+
+        assert_eq!(server.get(&handle)?.0, "from-updated-bundle");
+        Ok(())
     }
 
     #[test]
@@ -2371,6 +2284,262 @@ mod tests {
             server.failure_phase(&handle),
             Some(AssetFailurePhase::Install)
         );
+        let failures = server.failed_asset_snapshots();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].asset_id, asset_id);
+        assert_eq!(failures[0].asset_type, "dummy");
+        assert_eq!(failures[0].state, AssetState::Failed);
+        assert_eq!(failures[0].phase, Some(AssetFailurePhase::Install));
+        assert!(matches!(failures[0].error, AssetError::Unsupported { .. }));
+        Ok(())
+    }
+
+    #[test]
+    fn install_precondition_failure_records_install_phase_and_failed_request(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let asset_id = AssetId::new();
+        let config = write_manifest(
+            dir.path(),
+            AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "clip.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            },
+        )?;
+        std::fs::write(config.cooked_root().join("clip.dummyc"), b"ready")?;
+
+        let server = Assets::new(config)?;
+        server.register_factory(DummyFactory);
+        let mut events = server.event_cursor();
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
+        {
+            let mut inner = server.inner.lock().expect("assets mutex poisoned");
+            inner
+                .store
+                .force_missing_loaded_payload_for_install_test(asset_id)?;
+        }
+
+        let error = server
+            .update()
+            .expect_err("missing loaded payload should fail install");
+        assert!(matches!(
+            error,
+            AssetError::InvalidState {
+                id,
+                state: AssetState::Installing,
+                ..
+            } if id == asset_id
+        ));
+        assert_eq!(server.state(&handle), AssetState::Failed);
+        assert_eq!(
+            server.failure_phase(&handle),
+            Some(AssetFailurePhase::Install)
+        );
+
+        let failed_events = server.events_since(&mut events);
+        let failed = failed_events
+            .iter()
+            .find(|event| event.id == asset_id && event.kind == AssetEventKind::Failed)
+            .expect("install precondition failure should emit a failed event");
+        assert_eq!(failed.failure_phase, Some(AssetFailurePhase::Install));
+
+        let failed_requests = server.failed_request_snapshots();
+        assert_eq!(failed_requests.len(), 1);
+        assert_eq!(failed_requests[0].asset_id, asset_id);
+        assert_eq!(failed_requests[0].status, AssetRequestStatus::Failed);
+        assert!(failed_requests[0]
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("missing loaded payload")));
+        Ok(())
+    }
+
+    #[test]
+    fn background_provider_resolve_failure_records_lookup_phase_and_failed_request(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let asset_id = AssetId::new();
+        let manifest = AssetRegistryManifest {
+            version: ASSET_SYSTEM_VERSION,
+            target: "native".to_string(),
+            provenance: Vec::new(),
+            assets: vec![AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "clip.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            }],
+        };
+        let provider = MemoryAssetProvider::new()
+            .with_resolve_error(asset_id, AssetError::AssetNotFound { id: asset_id });
+        let server = Assets::with_manifest_and_provider(
+            AssetConfig::new("memory-root", "native").with_background_loading(true),
+            manifest,
+            provider,
+        );
+        server.register_factory(DummyFactory);
+        let mut events = server.event_cursor();
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
+
+        let error = server
+            .update()
+            .expect_err("provider resolve failure should fail during background submit");
+        assert_eq!(error, AssetError::AssetNotFound { id: asset_id });
+        assert_eq!(server.state(&handle), AssetState::Failed);
+        assert_eq!(
+            server.failure_phase(&handle),
+            Some(AssetFailurePhase::Lookup)
+        );
+
+        let failed_events = server.events_since(&mut events);
+        let failed = failed_events
+            .iter()
+            .find(|event| event.id == asset_id && event.kind == AssetEventKind::Failed)
+            .expect("background submit failure should emit a failed event");
+        assert_eq!(failed.failure_phase, Some(AssetFailurePhase::Lookup));
+        assert_eq!(failed.state, AssetState::Failed);
+
+        let failed_requests = server.failed_request_snapshots();
+        assert_eq!(failed_requests.len(), 1);
+        assert_eq!(failed_requests[0].asset_id, asset_id);
+        assert_eq!(failed_requests[0].status, AssetRequestStatus::Failed);
+        assert!(failed_requests[0]
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("not found in manifest")));
+        Ok(())
+    }
+
+    #[test]
+    fn load_blocking_provider_resolve_failure_records_lookup_phase_and_failed_request(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let asset_id = AssetId::new();
+        let manifest = AssetRegistryManifest {
+            version: ASSET_SYSTEM_VERSION,
+            target: "native".to_string(),
+            provenance: Vec::new(),
+            assets: vec![AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "clip.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            }],
+        };
+        let provider = MemoryAssetProvider::new()
+            .with_resolve_error(asset_id, AssetError::AssetNotFound { id: asset_id });
+        let server = Assets::with_manifest_and_provider(
+            AssetConfig::new("memory-root", "native").with_background_loading(true),
+            manifest,
+            provider,
+        );
+        server.register_factory(DummyFactory);
+        let mut events = server.event_cursor();
+
+        let error = server
+            .load_blocking::<DummyAsset>(asset_id)
+            .expect_err("blocking provider resolve failure should fail");
+        assert_eq!(error, AssetError::AssetNotFound { id: asset_id });
+        assert_eq!(server.state_untyped(asset_id), AssetState::Failed);
+        assert_eq!(
+            server.failure_phase_untyped(asset_id),
+            Some(AssetFailurePhase::Lookup)
+        );
+
+        let failed_events = server.events_since(&mut events);
+        let failed = failed_events
+            .iter()
+            .find(|event| event.id == asset_id && event.kind == AssetEventKind::Failed)
+            .expect("blocking provider resolve failure should emit failed event");
+        assert_eq!(failed.failure_phase, Some(AssetFailurePhase::Lookup));
+        assert_eq!(failed.state, AssetState::Failed);
+
+        let failed_requests = server.failed_request_snapshots();
+        assert_eq!(failed_requests.len(), 1);
+        assert_eq!(failed_requests[0].asset_id, asset_id);
+        assert_eq!(failed_requests[0].status, AssetRequestStatus::Failed);
+        assert!(failed_requests[0]
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("not found in manifest")));
+        Ok(())
+    }
+
+    #[test]
+    fn load_blocking_provider_read_failure_records_read_phase_and_failed_request(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let asset_id = AssetId::new();
+        let manifest = AssetRegistryManifest {
+            version: ASSET_SYSTEM_VERSION,
+            target: "native".to_string(),
+            provenance: Vec::new(),
+            assets: vec![AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "clip.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            }],
+        };
+        let read_error = AssetError::Io {
+            path: PathBuf::from(format!("memory://{asset_id}")),
+            message: "blocking read failed".to_string(),
+        };
+        let provider = MemoryAssetProvider::new().with_read_error(asset_id, read_error.clone());
+        let server = Assets::with_manifest_and_provider(
+            AssetConfig::new("memory-root", "native").with_background_loading(true),
+            manifest,
+            provider,
+        );
+        server.register_factory(DummyFactory);
+        let mut events = server.event_cursor();
+
+        let error = server
+            .load_blocking::<DummyAsset>(asset_id)
+            .expect_err("blocking provider read failure should fail");
+        assert_eq!(error, read_error);
+        assert_eq!(server.state_untyped(asset_id), AssetState::Failed);
+        assert_eq!(
+            server.failure_phase_untyped(asset_id),
+            Some(AssetFailurePhase::Read)
+        );
+        assert_eq!(server.stats().load_timings.failed_source_loads, 1);
+
+        let failed_events = server.events_since(&mut events);
+        let failed = failed_events
+            .iter()
+            .find(|event| event.id == asset_id && event.kind == AssetEventKind::Failed)
+            .expect("blocking provider read failure should emit failed event");
+        assert_eq!(failed.failure_phase, Some(AssetFailurePhase::Read));
+        assert_eq!(failed.state, AssetState::Failed);
+
+        let failed_requests = server.failed_request_snapshots();
+        assert_eq!(failed_requests.len(), 1);
+        assert_eq!(failed_requests[0].asset_id, asset_id);
+        assert_eq!(failed_requests[0].status, AssetRequestStatus::Failed);
+        assert!(failed_requests[0]
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("blocking read failed")));
         Ok(())
     }
 
@@ -2409,6 +2578,42 @@ mod tests {
         server.update()?;
         assert_eq!(server.state(&handle), AssetState::Installed);
         assert_eq!(server.get(&handle)?.0, "ready");
+        Ok(())
+    }
+
+    #[test]
+    fn install_time_budget_can_defer_install_task_polling() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempdir()?;
+        let asset_id = AssetId::new();
+        let config = write_manifest(
+            dir.path(),
+            AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "clip.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            },
+        )?
+        .with_install_time_budget(Duration::ZERO);
+        std::fs::write(config.cooked_root().join("clip.dummyc"), b"ready")?;
+
+        let server = Assets::new(config)?;
+        server.register_factory(DeferredInstallFactory { pending_polls: 0 });
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
+
+        server.update()?;
+        assert_eq!(server.state(&handle), AssetState::Installing);
+        assert!(server.try_get(&handle).is_none());
+
+        let asset = server.load_blocking::<DummyAsset>(asset_id)?;
+        assert_eq!(asset.0, "ready");
+        assert_eq!(server.state(&handle), AssetState::Installed);
         Ok(())
     }
 
@@ -2467,6 +2672,58 @@ mod tests {
     }
 
     #[test]
+    fn cooked_runtime_load_reports_schema_mismatch_before_decode(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let asset_id = AssetId::new();
+        let config = write_manifest(
+            dir.path(),
+            AssetManifestEntry {
+                asset_id,
+                asset_type: FontAsset::TYPE.to_string(),
+                importer: "font.raw".to_string(),
+                cooker: "font.legacy".to_string(),
+                version: 99,
+                source_path: "ui.ttf".to_string(),
+                cooked_path: "ui.skyasset".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            },
+        )?;
+        std::fs::write(
+            config.cooked_root().join("ui.skyasset"),
+            crate::asset::font::encode_font_cooked(&FontAsset::new(vec![1, 2, 3, 4])),
+        )?;
+
+        let server = Assets::new(config)?;
+        let error = server
+            .load_blocking::<FontAsset>(asset_id)
+            .expect_err("schema mismatch should fail before font decode");
+
+        match error {
+            AssetError::CookedSchemaMismatch {
+                id,
+                expected_cooker,
+                expected_version,
+                actual_cooker,
+                actual_version,
+            } => {
+                assert_eq!(id, asset_id);
+                assert_eq!(expected_cooker, "font.raw_bytes");
+                assert_eq!(expected_version, 1);
+                assert_eq!(actual_cooker, "font.legacy");
+                assert_eq!(actual_version, 99);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+        assert_eq!(
+            server.failure_phase_untyped(asset_id),
+            Some(AssetFailurePhase::Decode)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn dropping_last_handle_returns_asset_to_unloaded_state(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempdir()?;
@@ -2500,6 +2757,140 @@ mod tests {
     }
 
     #[test]
+    fn queued_release_from_old_generation_preserves_reacquired_weak_handle(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let asset_id = AssetId::new();
+        let config = write_manifest(
+            dir.path(),
+            AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "clip.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            },
+        )?;
+        let cooked_path = config.cooked_root().join("clip.dummyc");
+        std::fs::write(&cooked_path, b"old")?;
+
+        let server = Assets::new(config)?;
+        server.register_factory(DummyFactory);
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
+        server.update()?;
+        assert_eq!(server.get(&handle)?.0, "old");
+
+        let weak = handle.downgrade();
+        drop(handle);
+        std::fs::write(&cooked_path, b"new")?;
+        let report = server.force_reload(asset_id)?;
+        assert_eq!(report.changed_roots, vec![asset_id]);
+
+        let reacquired = server.load_handle(weak)?;
+        server.update()?;
+        assert_eq!(server.state(&reacquired), AssetState::Installed);
+        assert_eq!(server.get(&reacquired)?.0, "new");
+
+        drop(reacquired);
+        server.update()?;
+        assert_eq!(server.state_untyped(asset_id), AssetState::Unloaded);
+        Ok(())
+    }
+
+    #[test]
+    fn dropping_last_handle_calls_factory_uninstall_before_unload(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let asset_id = AssetId::new();
+        let config = write_manifest(
+            dir.path(),
+            AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "clip.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            },
+        )?;
+        std::fs::write(config.cooked_root().join("clip.dummyc"), b"ready")?;
+
+        let server = Assets::new(config)?;
+        let factory = CountingFactory::new();
+        server.register_factory(factory.clone());
+        let mut events = server.event_cursor();
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
+        server.update()?;
+        let _ = server.events_since(&mut events);
+
+        drop(handle);
+        server.update()?;
+
+        assert_eq!(factory.uninstall_count(asset_id), 1);
+        assert_eq!(server.state_untyped(asset_id), AssetState::Unloaded);
+        let emitted = server.events_since(&mut events);
+        assert!(emitted
+            .iter()
+            .any(|event| event.id == asset_id && event.kind == AssetEventKind::Unloaded));
+        Ok(())
+    }
+
+    #[test]
+    fn uninstall_failure_records_phase_and_failed_event() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempdir()?;
+        let asset_id = AssetId::new();
+        let config = write_manifest(
+            dir.path(),
+            AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "clip.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            },
+        )?;
+        std::fs::write(config.cooked_root().join("clip.dummyc"), b"ready")?;
+
+        let server = Assets::new(config)?;
+        server.register_factory(FailingUninstallFactory);
+        let mut events = server.event_cursor();
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
+        server.update()?;
+        let _ = server.events_since(&mut events);
+
+        drop(handle);
+        let error = server
+            .update()
+            .expect_err("uninstall hook failure should surface from update");
+        assert!(matches!(error, AssetError::Unsupported { .. }));
+        assert_eq!(
+            server.failure_phase_untyped(asset_id),
+            Some(AssetFailurePhase::Uninstall)
+        );
+
+        let failed_events = server.events_since(&mut events);
+        let failed = failed_events
+            .iter()
+            .find(|event| event.id == asset_id && event.kind == AssetEventKind::Failed)
+            .expect("failed uninstall should emit a failed event");
+        assert_eq!(failed.failure_phase, Some(AssetFailurePhase::Uninstall));
+        assert_eq!(failed.state, AssetState::Failed);
+        Ok(())
+    }
+
+    #[test]
     fn multiple_loads_hold_independent_leases() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempdir()?;
         let asset_id = AssetId::new();
@@ -2529,6 +2920,46 @@ mod tests {
         server.update()?;
         assert_eq!(server.state(&second), AssetState::Installed);
         assert_eq!(server.get(&second)?.0, "ready");
+
+        let second_id = second.id();
+        drop(second);
+        server.update()?;
+        assert_eq!(server.state_untyped(second_id), AssetState::Unloaded);
+        Ok(())
+    }
+
+    #[test]
+    fn same_frame_drop_and_reacquire_keeps_latest_lease_alive(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let asset_id = AssetId::new();
+        let config = write_manifest(
+            dir.path(),
+            AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "clip.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            },
+        )?;
+        std::fs::write(config.cooked_root().join("clip.dummyc"), b"ready")?;
+
+        let server = Assets::new(config)?;
+        server.register_factory(DummyFactory);
+        let first = server.load_id::<DummyAsset>(asset_id)?;
+        drop(first);
+        let second = server.load_id::<DummyAsset>(asset_id)?;
+
+        server.update()?;
+
+        assert_eq!(server.state(&second), AssetState::Installed);
+        assert_eq!(server.get(&second)?.0, "ready");
+        assert_eq!(server.stats().strong_references, 1);
 
         let second_id = second.id();
         drop(second);
@@ -2753,6 +3184,54 @@ mod tests {
     }
 
     #[test]
+    fn per_request_priority_is_used_for_manifest_and_raw_loads(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        image::save_buffer(
+            dir.path().join("white.png"),
+            &[255, 255, 255, 255],
+            1,
+            1,
+            image::ColorType::Rgba8,
+        )?;
+
+        let manifest_id = AssetId::new();
+        let config = write_manifest(
+            dir.path(),
+            AssetManifestEntry {
+                asset_id: manifest_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "clip.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            },
+        )?;
+        std::fs::write(config.cooked_root().join("clip.dummyc"), b"ready")?;
+
+        let server = Assets::new(config)?;
+        server.register_factory(DummyFactory);
+        let manifest = server.load_id_with_priority::<DummyAsset>(manifest_id, 21)?;
+        let raw = server.load_texture_with_priority("white.png", -3)?;
+
+        let snapshots = server.queued_request_snapshots();
+        let manifest_snapshot = snapshots
+            .iter()
+            .find(|snapshot| snapshot.asset_id == manifest.id())
+            .expect("manifest request snapshot");
+        assert_eq!(manifest_snapshot.priority, 21);
+        let raw_snapshot = snapshots
+            .iter()
+            .find(|snapshot| snapshot.asset_id == raw.id())
+            .expect("raw texture request snapshot");
+        assert_eq!(raw_snapshot.priority, -3);
+        Ok(())
+    }
+
+    #[test]
     fn load_texture_installs_raw_texture_metadata() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempdir()?;
         let pixels = [
@@ -2788,6 +3267,17 @@ mod tests {
         assert_eq!(server.state(&handle), AssetState::Failed);
         assert!(matches!(server.error(&handle), Some(AssetError::Io { .. })));
         assert_eq!(server.failure_phase(&handle), Some(AssetFailurePhase::Read));
+        let failed_requests = server.failed_request_snapshots();
+        assert_eq!(failed_requests.len(), 1);
+        assert_eq!(failed_requests[0].asset_id, handle.id());
+        assert_eq!(
+            failed_requests[0].status,
+            crate::asset::AssetRequestStatus::Failed
+        );
+        assert!(failed_requests[0]
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("I/O error")));
         Ok(())
     }
 
@@ -2882,6 +3372,7 @@ mod tests {
             serde_json::to_vec_pretty(&AssetRegistryManifest {
                 version: ASSET_SYSTEM_VERSION,
                 target: "native".to_string(),
+                provenance: Vec::new(),
                 assets: vec![AssetManifestEntry {
                     asset_id,
                     asset_type: "dummy".to_string(),
@@ -2901,6 +3392,73 @@ mod tests {
             server.resolve_path(asset_root.join("late.dummy")),
             Some(asset_id)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn reload_manifest_invalidates_provider_package_cache() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempdir()?;
+        let config = write_manifest_entries(dir.path(), Vec::new())?;
+        let provider = InvalidationCountingProvider::default();
+        let server = Assets::with_manifest_and_provider(
+            config.clone(),
+            AssetRegistryManifest::default(),
+            provider.clone(),
+        );
+        assert_eq!(provider.invalidate_all_calls(), 0);
+
+        std::fs::write(
+            config.manifest_path(),
+            serde_json::to_vec_pretty(&AssetRegistryManifest {
+                version: ASSET_SYSTEM_VERSION,
+                target: "native".to_string(),
+                provenance: Vec::new(),
+                assets: Vec::new(),
+            })?,
+        )?;
+
+        server.reload_manifest()?;
+
+        assert_eq!(provider.invalidate_all_calls(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn reload_scan_and_force_reload_invalidate_provider_once_per_manifest_refresh(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let asset_id = AssetId::new();
+        let config = write_manifest(
+            dir.path(),
+            AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "clip.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            },
+        )?;
+        let provider = InvalidationCountingProvider::default();
+        let server = Assets::with_manifest_and_provider(
+            config.clone(),
+            load_manifest(&config)?,
+            provider.clone(),
+        );
+        server.register_factory(DummyFactory);
+        let _handle = server.load_id::<DummyAsset>(asset_id)?;
+
+        let report = server.reload_changed_with_report()?;
+        assert!(report.changed_roots.is_empty());
+        assert_eq!(provider.invalidate_all_calls(), 1);
+
+        let report = server.force_reload(asset_id)?;
+        assert_eq!(report.changed_roots, vec![asset_id]);
+        assert_eq!(provider.invalidate_all_calls(), 2);
         Ok(())
     }
 
@@ -3070,6 +3628,74 @@ mod tests {
     }
 
     #[test]
+    fn burst_background_loads_stay_bounded_by_worker_pool_and_queue(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let mut entries = Vec::new();
+        for index in 0..12 {
+            let asset_id = AssetId::new();
+            entries.push(AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: format!("burst-{index}.dummy"),
+                cooked_path: format!("burst-{index}.dummyc"),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            });
+        }
+        let ids = entries
+            .iter()
+            .map(|entry| entry.asset_id)
+            .collect::<Vec<_>>();
+        let config = write_manifest_entries(dir.path(), entries.clone())?
+            .with_background_loading(true)
+            .with_io_worker_threads(2)
+            .with_io_queue_capacity(3);
+        for (index, entry) in entries.iter().enumerate() {
+            std::fs::write(
+                config.cooked_root().join(&entry.cooked_path),
+                format!("ready-{index}"),
+            )?;
+        }
+
+        let server = Assets::new(config)?;
+        server.register_factory(SlowFactory {
+            delay: Duration::from_millis(250),
+        });
+        let handles = ids
+            .iter()
+            .map(|id| server.load_id::<DummyAsset>(*id))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        server.update()?;
+
+        let bounded = server.stats();
+
+        assert_eq!(bounded.load_worker_threads, 2);
+        assert_eq!(bounded.load_queue_capacity, 3);
+        assert!(
+            bounded.inflight_loads <= bounded.load_worker_threads + bounded.load_queue_capacity
+        );
+        assert!(
+            bounded.inflight_loads < handles.len(),
+            "all burst loads entered in-flight state without backpressure: {bounded:?}"
+        );
+        assert_eq!(bounded.active_requests, handles.len());
+        assert_eq!(
+            bounded.source_load_phases.queued
+                + bounded.source_load_phases.reading
+                + bounded.source_load_phases.decoding,
+            bounded.inflight_loads
+        );
+        assert!(bounded.deferred_load_submissions >= handles.len() - bounded.inflight_loads);
+        assert_eq!(bounded.states.loading, handles.len());
+        Ok(())
+    }
+
+    #[test]
     fn asset_stats_report_queue_inflight_and_state_counts() -> Result<(), Box<dyn std::error::Error>>
     {
         let dir = tempdir()?;
@@ -3097,22 +3723,71 @@ mod tests {
         });
         let handle = server.load_id::<DummyAsset>(asset_id)?;
 
-        let queued = server.stats();
+        let diagnostics = server.diagnostics_snapshot();
+        let queued = diagnostics.stats.clone();
         assert_eq!(queued.records, 1);
         assert_eq!(queued.queued_requests, 1);
+        assert_eq!(queued.active_requests, 0);
+        assert_eq!(
+            queued.load_worker_threads,
+            server.config().io_worker_threads
+        );
+        assert_eq!(
+            queued.load_queue_capacity,
+            server.config().io_queue_capacity
+        );
+        assert_eq!(queued.submitted_requests, 1);
+        assert_eq!(queued.activated_requests, 0);
+        assert!(queued.oldest_queued_request_age.is_some());
         assert_eq!(queued.strong_references, 1);
         assert_eq!(queued.states.unloaded, 1);
+        assert_eq!(diagnostics.queued_requests.len(), 1);
+        assert!(diagnostics.active_requests.is_empty());
+        assert!(diagnostics.failures.is_empty());
+        assert!(diagnostics.last_reload_report.is_empty());
+        let snapshots = server.queued_request_snapshots();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].request_id, 0);
+        assert_eq!(snapshots[0].asset_id, asset_id);
+        assert_eq!(snapshots[0].priority, server.config().io_default_priority);
+        assert_eq!(
+            snapshots[0].status,
+            crate::asset::AssetRequestStatus::Queued
+        );
 
         server.update()?;
         let loading = server.stats();
         assert_eq!(loading.queued_requests, 0);
+        assert_eq!(loading.active_requests, 1);
+        assert_eq!(loading.submitted_requests, 1);
+        assert_eq!(loading.activated_requests, 1);
+        assert_eq!(loading.oldest_queued_request_age, None);
         assert_eq!(loading.inflight_loads, 1);
         assert_eq!(loading.states.loading, 1);
+        assert!(server.queued_request_snapshots().is_empty());
+        let active = server.active_request_snapshots();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].request_id, 0);
+        assert_eq!(active[0].asset_id, asset_id);
+        assert_eq!(active[0].generation, 1);
+        assert!(
+            matches!(
+                active[0].status,
+                crate::asset::AssetRequestStatus::Loading
+                    | crate::asset::AssetRequestStatus::Decoding
+            ),
+            "active request may advance from source read to decode before diagnostics are sampled"
+        );
+        assert!(active[0].active_age.is_some());
 
         wait_for_terminal_dummy(&server, &handle)?;
         let installed = server.stats();
+        assert_eq!(installed.active_requests, 0);
         assert_eq!(installed.inflight_loads, 0);
         assert_eq!(installed.states.installed, 1);
+        assert_eq!(installed.load_timings.completed_source_loads, 1);
+        assert_eq!(installed.load_timings.failed_source_loads, 0);
+        assert!(installed.load_timings.average_total_time.is_some());
         assert!(installed.retained_events > 0);
         Ok(())
     }
@@ -3266,9 +3941,13 @@ mod tests {
         )?;
 
         let server = Assets::new(config)?;
+        server.register_factory(SlowTextureFactory {
+            delay: Duration::from_millis(60),
+        });
         let handle = server.load_id::<TextureAsset>(asset_id)?;
         server.update()?;
-        assert_ne!(server.state(&handle), AssetState::Installed);
+        assert_eq!(server.state(&handle), AssetState::Loading);
+        assert_eq!(server.stats().inflight_loads, 1);
 
         wait_for_terminal_texture(&server, &handle)?;
         assert_eq!(server.state(&handle), AssetState::Installed);
@@ -3371,6 +4050,12 @@ mod tests {
 
         let changed = server.reload_changed()?;
         assert!(changed.is_empty());
+        let report = server.last_reload_report();
+        assert!(report.changed_roots.is_empty());
+        assert!(report.impacted.is_empty());
+        assert_eq!(report.skipped.len(), 1);
+        assert_eq!(report.skipped[0].asset_id, asset_id);
+        assert_eq!(report.skipped[0].reason, AssetReloadSkipReason::Unchanged);
         assert_eq!(server.get(&handle)?.0, "ready");
         Ok(())
     }
@@ -3408,6 +4093,393 @@ mod tests {
         server.update()?;
 
         assert_eq!(server.get(&handle)?.0, "fresh");
+        Ok(())
+    }
+
+    #[test]
+    fn failed_reload_keeps_last_good_installed_asset() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let asset_id = AssetId::new();
+        let config = write_manifest(
+            dir.path(),
+            AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "clip.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            },
+        )?;
+        let cooked_path = config.cooked_root().join("clip.dummyc");
+        std::fs::write(&cooked_path, b"ready")?;
+
+        let server = Assets::new(config)?;
+        server.register_factory(DummyFactory);
+        let mut events = server.event_cursor();
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
+        server.update()?;
+        assert_eq!(server.get(&handle)?.0, "ready");
+        let _ = server.events_since(&mut events);
+
+        std::fs::write(&cooked_path, [0xff, 0xfe, 0xfd])?;
+        let changed = server.reload_changed()?;
+        assert_eq!(changed, vec![asset_id]);
+        let error = server
+            .update()
+            .expect_err("invalid reload payload should report a read failure");
+        assert!(matches!(error, AssetError::InvalidCookedAsset { .. }));
+
+        assert_eq!(server.state(&handle), AssetState::Installed);
+        assert_eq!(server.get(&handle)?.0, "ready");
+        assert!(matches!(
+            server.error(&handle),
+            Some(AssetError::InvalidCookedAsset { .. })
+        ));
+        assert_eq!(
+            server.failure_phase(&handle),
+            Some(AssetFailurePhase::Decode)
+        );
+        let failed_events = server.events_since(&mut events);
+        let failed = failed_events
+            .iter()
+            .find(|event| event.id == asset_id && event.kind == AssetEventKind::Failed)
+            .expect("failed reload should emit a diagnostic event");
+        assert_eq!(failed.state, AssetState::Installed);
+        assert_eq!(failed.failure_phase, Some(AssetFailurePhase::Decode));
+        let failures = server.failed_asset_snapshots();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].asset_id, asset_id);
+        assert_eq!(failures[0].state, AssetState::Installed);
+        assert_eq!(failures[0].phase, Some(AssetFailurePhase::Decode));
+
+        std::fs::write(&cooked_path, b"fresh")?;
+        let changed = server.reload_changed()?;
+        assert_eq!(changed, vec![asset_id]);
+        server.update()?;
+        assert_eq!(server.get(&handle)?.0, "fresh");
+        assert!(server.error(&handle).is_none());
+        assert!(server.failed_asset_snapshots().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn auto_reload_reloads_modified_asset_on_update() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let asset_id = AssetId::new();
+        let config = write_manifest(
+            dir.path(),
+            AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "clip.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            },
+        )?
+        .with_auto_reload(true)
+        .with_auto_reload_interval(Duration::ZERO);
+        let cooked_path = config.cooked_root().join("clip.dummyc");
+        std::fs::write(&cooked_path, b"ready")?;
+
+        let server = Assets::new(config)?;
+        server.register_factory(DummyFactory);
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
+        server.update()?;
+        assert_eq!(server.get(&handle)?.0, "ready");
+        assert!(server.last_reload_report().is_empty());
+
+        std::fs::write(&cooked_path, b"fresh")?;
+        server.update()?;
+
+        assert_eq!(server.get(&handle)?.0, "fresh");
+        let report = server.last_reload_report();
+        assert_eq!(report.changed_roots, vec![asset_id]);
+        assert_eq!(report.impacted, vec![asset_id]);
+        Ok(())
+    }
+
+    #[test]
+    fn auto_reload_debounces_modified_asset_on_update() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let asset_id = AssetId::new();
+        let config = write_manifest(
+            dir.path(),
+            AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "clip.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            },
+        )?
+        .with_auto_reload(true)
+        .with_auto_reload_interval(Duration::ZERO)
+        .with_auto_reload_debounce(Duration::from_millis(40));
+        let cooked_path = config.cooked_root().join("clip.dummyc");
+        std::fs::write(&cooked_path, b"ready")?;
+
+        let server = Assets::new(config)?;
+        server.register_factory(DummyFactory);
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
+        server.update()?;
+        assert_eq!(server.get(&handle)?.0, "ready");
+
+        std::fs::write(&cooked_path, b"fresh")?;
+        server.update()?;
+        assert_eq!(server.get(&handle)?.0, "ready");
+        let pending = server.reload_status();
+        assert_eq!(pending.pending_roots, vec![asset_id]);
+        assert!(pending.last_report.is_empty());
+
+        std::thread::sleep(Duration::from_millis(70));
+        server.update()?;
+        assert_eq!(server.get(&handle)?.0, "fresh");
+        let reloaded = server.reload_status();
+        assert!(reloaded.pending_roots.is_empty());
+        assert_eq!(reloaded.last_report.changed_roots, vec![asset_id]);
+        assert_eq!(reloaded.last_report.impacted, vec![asset_id]);
+        Ok(())
+    }
+
+    #[test]
+    fn auto_reload_freeze_delays_scan_until_unfrozen() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let asset_id = AssetId::new();
+        let config = write_manifest(
+            dir.path(),
+            AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "clip.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            },
+        )?
+        .with_auto_reload(true)
+        .with_auto_reload_interval(Duration::ZERO);
+        let cooked_path = config.cooked_root().join("clip.dummyc");
+        std::fs::write(&cooked_path, b"ready")?;
+
+        let server = Assets::new(config)?;
+        server.register_factory(DummyFactory);
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
+        server.update()?;
+        assert_eq!(server.get(&handle)?.0, "ready");
+
+        server.set_auto_reload_frozen(true);
+        std::fs::write(&cooked_path, b"fresh")?;
+        server.update()?;
+        assert_eq!(server.get(&handle)?.0, "ready");
+        let frozen = server.reload_status();
+        assert!(frozen.auto_reload_frozen);
+        assert!(frozen.pending_roots.is_empty());
+
+        server.set_auto_reload_frozen(false);
+        server.update()?;
+        assert_eq!(server.get(&handle)?.0, "fresh");
+        let reloaded = server.reload_status();
+        assert!(!reloaded.auto_reload_frozen);
+        assert_eq!(reloaded.last_report.changed_roots, vec![asset_id]);
+        Ok(())
+    }
+
+    #[cfg(feature = "asset-watch")]
+    #[test]
+    fn file_watcher_triggers_auto_reload_before_poll_interval(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let asset_id = AssetId::new();
+        let config = write_manifest(
+            dir.path(),
+            AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "clip.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            },
+        )?
+        .with_auto_reload(true)
+        .with_auto_reload_interval(Duration::from_secs(60))
+        .with_file_watcher(true);
+        let cooked_path = config.cooked_root().join("clip.dummyc");
+        std::fs::write(&cooked_path, b"ready")?;
+
+        let server = Assets::new(config)?;
+        server.register_factory(DummyFactory);
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
+        server.update()?;
+        assert_eq!(server.get(&handle)?.0, "ready");
+
+        std::fs::write(&cooked_path, b"fresh")?;
+        for _ in 0..100 {
+            server.update()?;
+            if server.get(&handle)?.0 == "fresh" {
+                let report = server.last_reload_report();
+                assert_eq!(report.changed_roots, vec![asset_id]);
+                assert_eq!(report.impacted, vec![asset_id]);
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+
+        panic!("asset watcher did not trigger reload before poll interval");
+    }
+
+    #[cfg(feature = "asset-watch")]
+    #[test]
+    fn file_watcher_triggers_auto_reload_for_external_package_root(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let package_dir = tempdir()?;
+        let asset_id = AssetId::new();
+        let config = write_manifest(
+            dir.path(),
+            AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "clip.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            },
+        )?
+        .with_package_root(package_dir.path())
+        .with_auto_reload(true)
+        .with_auto_reload_interval(Duration::from_secs(60))
+        .with_file_watcher(true);
+        let package_cooked_path = package_dir.path().join("clip.dummyc");
+        std::fs::write(&package_cooked_path, b"ready")?;
+
+        let server = Assets::new(config)?;
+        server.register_factory(DummyFactory);
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
+        server.update()?;
+        assert_eq!(server.get(&handle)?.0, "ready");
+
+        std::fs::write(&package_cooked_path, b"fresh")?;
+        for _ in 0..100 {
+            server.update()?;
+            if server.get(&handle)?.0 == "fresh" {
+                let report = server.last_reload_report();
+                assert_eq!(report.changed_roots, vec![asset_id]);
+                assert_eq!(report.impacted, vec![asset_id]);
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+
+        panic!("external package root watcher did not trigger reload before poll interval");
+    }
+
+    #[cfg(feature = "asset-watch")]
+    #[test]
+    fn file_watcher_triggers_auto_reload_for_external_package_file(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let package_dir = tempdir()?;
+        let asset_id = AssetId::new();
+        let package_file = package_dir.path().join("base.skybundle");
+        let config = write_manifest(
+            dir.path(),
+            AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "clip.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            },
+        )?
+        .with_package_file(&package_file)
+        .with_auto_reload(true)
+        .with_auto_reload_interval(Duration::from_secs(60))
+        .with_file_watcher(true);
+        write_test_bundle(&package_file, &[("clip.dummyc", b"ready")])?;
+
+        let server = Assets::new(config)?;
+        server.register_factory(DummyFactory);
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
+        server.update()?;
+        assert_eq!(server.get(&handle)?.0, "ready");
+
+        write_test_bundle(&package_file, &[("clip.dummyc", b"fresh")])?;
+        for _ in 0..100 {
+            server.update()?;
+            if server.get(&handle)?.0 == "fresh" {
+                let report = server.last_reload_report();
+                assert_eq!(report.changed_roots, vec![asset_id]);
+                assert_eq!(report.impacted, vec![asset_id]);
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+
+        panic!("external package file watcher did not trigger reload before poll interval");
+    }
+
+    #[test]
+    fn force_reload_reloads_asset_even_when_hash_is_unchanged(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let asset_id = AssetId::new();
+        let config = write_manifest(
+            dir.path(),
+            AssetManifestEntry {
+                asset_id,
+                asset_type: "dummy".to_string(),
+                importer: "dummy".to_string(),
+                cooker: "dummy".to_string(),
+                version: 1,
+                source_path: "clip.dummy".to_string(),
+                cooked_path: "clip.dummyc".to_string(),
+                dependencies: Vec::new(),
+                import_settings: serde_json::Value::Null,
+            },
+        )?;
+        std::fs::write(config.cooked_root().join("clip.dummyc"), b"ready")?;
+
+        let server = Assets::new(config)?;
+        let factory = CountingFactory::new();
+        server.register_factory(factory.clone());
+        let handle = server.load_id::<DummyAsset>(asset_id)?;
+        server.update()?;
+        assert_eq!(server.get(&handle)?.0, "ready");
+        assert_eq!(factory.load_count(asset_id), 1);
+
+        let report = server.force_reload(asset_id)?;
+        assert_eq!(report.changed_roots, vec![asset_id]);
+        assert_eq!(report.impacted, vec![asset_id]);
+        server.update()?;
+        assert_eq!(server.get(&handle)?.0, "ready");
+        assert_eq!(factory.load_count(asset_id), 2);
+        assert_eq!(factory.install_count(asset_id), 2);
         Ok(())
     }
 
@@ -3460,8 +4532,9 @@ mod tests {
         assert_eq!(factory.install_count(dependency_id), 1);
 
         std::fs::write(&dependency_path, b"dependency-v2")?;
-        let changed = server.reload_changed()?;
-        let changed_ids: HashSet<_> = changed.into_iter().collect();
+        let report = server.reload_changed_with_report()?;
+        assert_eq!(report.changed_roots, vec![dependency_id]);
+        let changed_ids: HashSet<_> = report.impacted.into_iter().collect();
         assert_eq!(changed_ids, HashSet::from([parent_id, dependency_id]));
 
         server.update()?;
@@ -3469,6 +4542,96 @@ mod tests {
         assert_eq!(factory.load_count(dependency_id), 2);
         assert_eq!(factory.install_count(parent_id), 2);
         assert_eq!(factory.install_count(dependency_id), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn large_dependency_graph_loads_reloads_and_releases_closure(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        const ASSET_COUNT: usize = 63;
+
+        let dir = tempdir()?;
+        let ids: Vec<_> = (0..ASSET_COUNT).map(|_| AssetId::new()).collect();
+        let entries = ids
+            .iter()
+            .enumerate()
+            .map(|(index, &asset_id)| {
+                let dependencies = [index * 2 + 1, index * 2 + 2]
+                    .into_iter()
+                    .filter_map(|child| ids.get(child).copied())
+                    .collect();
+                AssetManifestEntry {
+                    asset_id,
+                    asset_type: "dummy".to_string(),
+                    importer: "dummy".to_string(),
+                    cooker: "dummy".to_string(),
+                    version: 1,
+                    source_path: format!("asset-{index}.dummy"),
+                    cooked_path: format!("asset-{index}.dummyc"),
+                    dependencies,
+                    import_settings: serde_json::Value::Null,
+                }
+            })
+            .collect();
+        let config = write_manifest_entries(dir.path(), entries)?;
+        let cooked_root = config.cooked_root().to_path_buf();
+        for index in 0..ASSET_COUNT {
+            std::fs::write(
+                cooked_root.join(format!("asset-{index}.dummyc")),
+                format!("asset-{index}-v1"),
+            )?;
+        }
+
+        let server = Assets::new(config)?;
+        let factory = CountingFactory::new();
+        server.register_factory(factory.clone());
+        let root = server.load_id::<DummyAsset>(ids[0])?;
+        server.update()?;
+
+        assert_eq!(server.get(&root)?.0, "asset-0-v1");
+        assert_eq!(server.stats().states.installed, ASSET_COUNT);
+        for &id in &ids {
+            assert_eq!(server.state_untyped(id), AssetState::Installed);
+            assert_eq!(factory.load_count(id), 1);
+            assert_eq!(factory.install_count(id), 1);
+        }
+
+        let leaf_indexes: Vec<_> = (0..ASSET_COUNT)
+            .filter(|index| index * 2 + 1 >= ASSET_COUNT)
+            .collect();
+        for &index in &leaf_indexes {
+            std::fs::write(
+                cooked_root.join(format!("asset-{index}.dummyc")),
+                format!("asset-{index}-v2"),
+            )?;
+        }
+
+        let report = server.reload_changed_with_report()?;
+        let changed_roots: HashSet<_> = report.changed_roots.into_iter().collect();
+        let expected_roots: HashSet<_> = leaf_indexes.iter().map(|&index| ids[index]).collect();
+        assert_eq!(changed_roots, expected_roots);
+        let impacted: HashSet<_> = report.impacted.into_iter().collect();
+        let expected_impacted: HashSet<_> = ids.iter().copied().collect();
+        assert_eq!(impacted, expected_impacted);
+
+        for _ in 0..ASSET_COUNT {
+            server.update()?;
+            if ids.iter().all(|&id| factory.install_count(id) == 2) {
+                break;
+            }
+        }
+
+        assert_eq!(server.get(&root)?.0, "asset-0-v1");
+        assert_eq!(server.stats().states.installed, ASSET_COUNT);
+        for &id in &ids {
+            assert_eq!(server.state_untyped(id), AssetState::Installed);
+            assert_eq!(factory.load_count(id), 2);
+            assert_eq!(factory.install_count(id), 2);
+        }
+
+        drop(root);
+        server.update()?;
+        assert_eq!(server.stats().states.unloaded, ASSET_COUNT);
         Ok(())
     }
 }

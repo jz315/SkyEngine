@@ -12,5 +12,5 @@ pub use commands::AudioCommands;
 pub use server::AudioServer;
 pub use types::{
     AudioBusId, AudioConfig, AudioEmitter2D, AudioEmitterAsset, AudioError, AudioInstanceId,
-    AudioListener2D, AudioPlaybackSettings, AudioSpatialSettings, AudioTween,
+    AudioListener2D, AudioPlaybackSettings, AudioServerStats, AudioSpatialSettings, AudioTween,
 };

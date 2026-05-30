@@ -44,6 +44,19 @@ impl AudioBusId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct AudioInstanceId(pub u64);
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AudioServerStats {
+    pub backend_available: bool,
+    pub disabled_reason: Option<String>,
+    pub configured_buses: usize,
+    pub backend_instances: usize,
+    pub backend_spatial_instances: usize,
+    pub direct_instances: usize,
+    pub emitter_instances: usize,
+    pub failed_play_requests: u64,
+    pub last_play_failure: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AudioTween {
     pub duration: Duration,

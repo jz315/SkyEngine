@@ -118,6 +118,11 @@ impl GpuVideoFrameBuffer {
         self.height
     }
 
+    #[must_use]
+    pub fn resident_bytes(&self) -> Option<usize> {
+        self.texture.resident_bytes()
+    }
+
     pub fn write_rgba8(&self, gpu: &GpuContext, pixels: &[u8]) -> Result<(), VideoError> {
         self.texture.write_rgba8(gpu, pixels)?;
         Ok(())
@@ -129,6 +134,25 @@ mod tests {
     use crate::asset::{AssetConfig, TextureColorSpace};
 
     use super::*;
+
+    fn create_test_device() -> (wgpu::Device, wgpu::Queue) {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .expect("No suitable GPU adapter found for video streaming tests");
+
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("video_streaming_test_device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            ..Default::default()
+        }))
+        .expect("Failed to create test GPU device")
+    }
 
     #[test]
     fn frame_buffer_reuses_handle_when_pixels_change() {
@@ -143,5 +167,16 @@ mod tests {
         let texture = assets.get(&handle).unwrap();
         assert_eq!(handle, buffer.handle());
         assert_eq!(texture.pixels(), &[255, 0, 0, 255, 0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn gpu_frame_buffer_reports_own_resident_bytes() {
+        let (device, queue) = create_test_device();
+        let gpu =
+            GpuContext::new_headless(device, queue, wgpu::TextureFormat::Bgra8Unorm, [16, 16]);
+        let frame =
+            GpuVideoFrameBuffer::new(&gpu, 2, 3, wgpu::TextureFormat::Rgba8UnormSrgb).unwrap();
+
+        assert_eq!(frame.resident_bytes(), Some(24));
     }
 }

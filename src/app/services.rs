@@ -17,11 +17,12 @@ pub(crate) fn install_assets(world: &mut World, config: crate::asset::AssetConfi
     world.insert_resource(assets);
 }
 
-pub(crate) fn update_assets(world: &World) {
+pub(crate) fn update_assets(world: &mut World) {
     if let Some(assets) = world.get_resource::<crate::asset::Assets>().cloned() {
         if let Err(error) = assets.update() {
-            eprintln!("[SkyEngine] Asset update failed: {error}");
+            log::error!(target: "sky_engine::asset", "asset update failed: {error}");
         }
+        crate::app::asset_diagnostics::publish_asset_diagnostics(world, &assets);
     }
 }
 
@@ -55,6 +56,7 @@ pub(crate) fn update_audio_after_frame(world: &mut World) {
             eprintln!("[SkyEngine] Audio world sync failed: {error}");
         }
         audio_server.update();
+        crate::app::media_diagnostics::publish_audio_diagnostics(world, &audio_server);
     }
 
     #[cfg(not(feature = "audio"))]
@@ -92,6 +94,7 @@ pub(crate) fn update_video(world: &mut World, frame_delta: f32) {
         if let Err(error) = video_server.sync_world(world) {
             eprintln!("[SkyEngine] Video world sync failed: {error}");
         }
+        crate::app::media_diagnostics::publish_video_diagnostics(world, &video_server);
     }
 
     #[cfg(not(feature = "video"))]
@@ -116,4 +119,63 @@ fn ensure_assets(world: &mut World) -> crate::asset::Assets {
     };
     world.insert_resource(assets.clone());
     assets
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(any(feature = "audio", feature = "video"))]
+    use crate::diagnostics::Diagnostics;
+    #[cfg(any(feature = "audio", feature = "video"))]
+    use crate::ecs::World;
+
+    #[cfg(any(feature = "audio", feature = "video"))]
+    use super::*;
+
+    #[cfg(feature = "audio")]
+    #[test]
+    fn update_audio_after_frame_publishes_audio_stats_diagnostics() {
+        let assets =
+            crate::asset::Assets::with_empty_manifest(crate::asset::AssetConfig::default());
+        let audio = crate::audio::AudioServer::new(
+            crate::audio::AudioConfig {
+                enabled: false,
+                ..Default::default()
+            },
+            assets,
+        );
+        let mut world = World::new();
+        world.insert_resource(audio);
+
+        update_audio_after_frame(&mut world);
+
+        let diagnostics = world.get_resource::<Diagnostics>().unwrap();
+        assert!(diagnostics
+            .events()
+            .iter()
+            .any(|event| event.code == "audio.stats"));
+    }
+
+    #[cfg(feature = "video")]
+    #[test]
+    fn update_video_publishes_video_stats_diagnostics() {
+        let assets =
+            crate::asset::Assets::with_empty_manifest(crate::asset::AssetConfig::default());
+        let texture = assets.insert_runtime(crate::asset::TextureAsset::white_pixel());
+        let clip = crate::video::VideoClip::from_textures(1, 1, 10.0, [texture]).unwrap();
+        let clip = assets.insert_runtime(clip);
+        let video = crate::video::VideoServer::new(assets);
+        video
+            .play(clip, crate::video::VideoPlaybackSettings::default())
+            .unwrap();
+        let mut world = World::new();
+        world.insert_resource(video);
+
+        update_video(&mut world, 0.016);
+
+        let diagnostics = world.get_resource::<Diagnostics>().unwrap();
+        assert!(diagnostics
+            .events()
+            .iter()
+            .any(|event| event.code == "video.stats"));
+    }
 }

@@ -4,6 +4,7 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Weak};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -11,6 +12,9 @@ use uuid::Uuid;
 pub const ASSET_SYSTEM_VERSION: u32 = 1;
 pub const DEFAULT_ASSET_IO_WORKER_THREADS: usize = 2;
 pub const DEFAULT_ASSET_IO_QUEUE_CAPACITY: usize = 256;
+pub const DEFAULT_ASSET_IO_PRIORITY: i32 = 0;
+pub const DEFAULT_ASSET_IO_SHUTDOWN_TIMEOUT: Option<Duration> = None;
+pub const DEFAULT_ASSET_INSTALL_TIME_BUDGET: Duration = Duration::from_millis(4);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -220,6 +224,110 @@ impl<T: Asset> std::hash::Hash for Handle<T> {
     }
 }
 
+/// Typed asset source path.
+///
+/// This is an editor/serialized reference to an asset source key. It does not
+/// keep runtime residency alive; resolve it through [`Assets`](crate::asset::Assets)
+/// when a strong [`Handle<T>`] or weak [`WeakHandle<T>`] is needed.
+pub struct AssetPath<T: Asset> {
+    path: PathBuf,
+    marker: PhantomData<fn() -> T>,
+}
+
+impl<T: Asset> AssetPath<T> {
+    #[must_use]
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            marker: PhantomData,
+        }
+    }
+
+    #[must_use]
+    pub fn as_path(&self) -> &Path {
+        &self.path
+    }
+
+    #[must_use]
+    pub fn into_path_buf(self) -> PathBuf {
+        self.path
+    }
+}
+
+impl<T: Asset> Clone for AssetPath<T> {
+    fn clone(&self) -> Self {
+        Self::new(self.path.clone())
+    }
+}
+
+impl<T: Asset> std::fmt::Debug for AssetPath<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("AssetPath").field(&self.path).finish()
+    }
+}
+
+impl<T: Asset> Display for AssetPath<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.path.display())
+    }
+}
+
+impl<T: Asset> PartialEq for AssetPath<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.path == other.path
+    }
+}
+
+impl<T: Asset> Eq for AssetPath<T> {}
+
+impl<T: Asset> std::hash::Hash for AssetPath<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.path.hash(state);
+    }
+}
+
+impl<T: Asset> AsRef<Path> for AssetPath<T> {
+    fn as_ref(&self) -> &Path {
+        self.as_path()
+    }
+}
+
+impl<T: Asset> From<PathBuf> for AssetPath<T> {
+    fn from(path: PathBuf) -> Self {
+        Self::new(path)
+    }
+}
+
+impl<T: Asset> From<&Path> for AssetPath<T> {
+    fn from(path: &Path) -> Self {
+        Self::new(path)
+    }
+}
+
+impl<T: Asset> From<&str> for AssetPath<T> {
+    fn from(path: &str) -> Self {
+        Self::new(path)
+    }
+}
+
+impl<T: Asset> Serialize for AssetPath<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.path.serialize(serializer)
+    }
+}
+
+impl<'de, T: Asset> Deserialize<'de> for AssetPath<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        PathBuf::deserialize(deserializer).map(Self::new)
+    }
+}
+
 /// Weak typed asset identity.
 ///
 /// This does not keep the asset loaded. Use it for serialized data, editor
@@ -334,30 +442,274 @@ impl AssetStateCounts {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AssetRequestPhaseTimingStats {
+    pub samples: usize,
+    pub average: Option<Duration>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AssetRequestTimingStats {
+    pub completed_requests: usize,
+    pub average_queue_wait: Option<Duration>,
+    pub average_canceled_queue_wait: Option<Duration>,
+    pub average_active_time: Option<Duration>,
+    pub average_total_time: Option<Duration>,
+    pub loading: AssetRequestPhaseTimingStats,
+    pub decoding: AssetRequestPhaseTimingStats,
+    pub waiting_dependencies: AssetRequestPhaseTimingStats,
+    pub ready_to_install: AssetRequestPhaseTimingStats,
+    pub installing: AssetRequestPhaseTimingStats,
+    pub unloading: AssetRequestPhaseTimingStats,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AssetLoadTimingStats {
+    pub completed_source_loads: usize,
+    pub failed_source_loads: usize,
+    pub average_read_time: Option<Duration>,
+    pub average_decode_time: Option<Duration>,
+    pub average_total_time: Option<Duration>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AssetSourceLoadPhaseCounts {
+    pub queued: usize,
+    pub reading: usize,
+    pub decoding: usize,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AssetProviderStats {
+    pub package_roots: usize,
+    pub package_files: usize,
+    pub cached_bundle_indexes: usize,
+    pub cached_bundle_index_entries: usize,
+    pub resolved_raw_sources: usize,
+    pub resolved_cooked_sources: usize,
+    pub resolved_package_sources: usize,
+    pub resolved_bundle_sources: usize,
+    pub resolve_errors: usize,
+    pub cache_invalidations: usize,
+    pub full_cache_invalidations: usize,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AssetActiveStateAgeStats {
+    pub loading: Option<Duration>,
+    pub loaded: Option<Duration>,
+    pub waiting_dependencies: Option<Duration>,
+    pub installing: Option<Duration>,
+    pub uninstalling: Option<Duration>,
+    pub unloading: Option<Duration>,
+}
+
+impl AssetActiveStateAgeStats {
+    pub(crate) fn record(&mut self, state: AssetState, age: Duration) {
+        match state {
+            AssetState::Loading => record_oldest(&mut self.loading, age),
+            AssetState::Loaded => record_oldest(&mut self.loaded, age),
+            AssetState::WaitingDependencies => record_oldest(&mut self.waiting_dependencies, age),
+            AssetState::Installing => record_oldest(&mut self.installing, age),
+            AssetState::Uninstalling => record_oldest(&mut self.uninstalling, age),
+            AssetState::Unloading => record_oldest(&mut self.unloading, age),
+            AssetState::Unloaded | AssetState::Installed | AssetState::Failed => {}
+        }
+    }
+}
+
+fn record_oldest(slot: &mut Option<Duration>, age: Duration) {
+    if slot.map_or(true, |current| age > current) {
+        *slot = Some(age);
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AssetStats {
     pub records: usize,
     pub queued_requests: usize,
+    pub active_requests: usize,
+    pub submitted_requests: usize,
+    pub activated_requests: usize,
+    pub canceled_requests: usize,
+    pub failed_requests: usize,
+    pub oldest_queued_request_age: Option<Duration>,
+    pub oldest_active_request_age: Option<Duration>,
+    pub request_timings: AssetRequestTimingStats,
+    pub load_timings: AssetLoadTimingStats,
     pub inflight_loads: usize,
+    pub load_worker_threads: usize,
+    pub running_load_jobs: usize,
+    pub queued_load_jobs: usize,
+    pub load_queue_capacity: usize,
+    pub oldest_queued_load_job_age: Option<Duration>,
+    pub source_load_phases: AssetSourceLoadPhaseCounts,
+    pub deferred_load_submissions: usize,
+    pub provider: AssetProviderStats,
     pub retained_events: usize,
     pub strong_references: usize,
     pub dependency_references: usize,
     pub states: AssetStateCounts,
+    pub active_state_ages: AssetActiveStateAgeStats,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssetRequestStatus {
+    Queued,
+    Loading,
+    Decoding,
+    WaitingDependencies,
+    ReadyToInstall,
+    Installing,
+    Installed,
+    Unloading,
+    Unloaded,
+    Failed,
+    Canceled,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssetRequestProgress {
+    pub completed_steps: u8,
+    pub total_steps: u8,
+    pub label: String,
+}
+
+impl AssetRequestProgress {
+    #[must_use]
+    pub fn new(completed_steps: u8, total_steps: u8, label: impl Into<String>) -> Self {
+        Self {
+            completed_steps,
+            total_steps,
+            label: label.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn percent(&self) -> u8 {
+        if self.total_steps == 0 {
+            return 0;
+        }
+        let percent =
+            u16::from(self.completed_steps).saturating_mul(100) / u16::from(self.total_steps);
+        u8::try_from(percent.min(100)).unwrap_or(100)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssetRequestSnapshot {
+    pub request_id: u64,
+    pub asset_id: AssetId,
+    pub generation: u64,
+    pub priority: i32,
+    pub status: AssetRequestStatus,
+    pub failure_phase: Option<AssetFailurePhase>,
+    pub progress: AssetRequestProgress,
+    pub queued_age: Duration,
+    pub active_age: Option<Duration>,
+    pub phase_age: Duration,
+    pub dependency_blockers: Vec<AssetId>,
+    pub dependency_blocker_details: Vec<AssetDependencyBlocker>,
+    pub dependency_cycle: Vec<AssetId>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssetDependencyBlockerReason {
+    Missing,
+    Failed,
+    Waiting,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssetDependencyBlocker {
+    pub asset_id: AssetId,
+    pub reason: AssetDependencyBlockerReason,
+    pub state: Option<AssetState>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssetFailureSnapshot {
+    pub asset_id: AssetId,
+    pub asset_type: String,
+    pub state: AssetState,
+    pub generation: u64,
+    pub phase: Option<AssetFailurePhase>,
+    pub error: AssetError,
+    pub reload_pending: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AssetDiagnosticsSnapshot {
+    pub stats: AssetStats,
+    pub queued_requests: Vec<AssetRequestSnapshot>,
+    pub active_requests: Vec<AssetRequestSnapshot>,
+    pub canceled_requests: Vec<AssetRequestSnapshot>,
+    pub failed_requests: Vec<AssetRequestSnapshot>,
+    pub failures: Vec<AssetFailureSnapshot>,
+    pub reload_status: AssetReloadStatus,
+    pub last_reload_report: AssetReloadReport,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AssetReloadReport {
+    pub changed_roots: Vec<AssetId>,
+    pub impacted: Vec<AssetId>,
+    pub skipped: Vec<AssetReloadSkipped>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssetReloadSkipped {
+    pub asset_id: AssetId,
+    pub reason: AssetReloadSkipReason,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssetReloadSkipReason {
+    UntrackedRecord,
+    MissingManifestEntry,
+    Unchanged,
+}
+
+impl AssetReloadReport {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.changed_roots.is_empty() && self.impacted.is_empty() && self.skipped.is_empty()
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AssetReloadStatus {
+    pub auto_reload_enabled: bool,
+    pub file_watcher_enabled: bool,
+    pub auto_reload_frozen: bool,
+    pub pending_roots: Vec<AssetId>,
+    pub pending_age: Option<Duration>,
+    pub last_report: AssetReloadReport,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AssetEventKind {
     ReloadQueued,
+    Loaded,
     Installed,
+    Reloaded,
     Unloaded,
     Failed,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AssetEvent {
     pub sequence: u64,
     pub id: AssetId,
     pub kind: AssetEventKind,
     pub state: AssetState,
+    pub generation: u64,
+    pub asset_type: String,
+    pub failure_phase: Option<AssetFailurePhase>,
+    pub manifest_fingerprint: Option<String>,
+    pub content_hash: Option<String>,
+    pub dependencies: Vec<AssetId>,
+    pub reload_pending: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -367,6 +719,7 @@ pub enum AssetFailurePhase {
     Decode,
     Dependency,
     Install,
+    Uninstall,
     Runtime,
     Verification,
 }
@@ -383,6 +736,7 @@ impl AssetFailurePhase {
             AssetError::MissingCookedArtifact { .. } | AssetError::Io { .. } => Self::Read,
             AssetError::Json { .. }
             | AssetError::InvalidCookedAsset { .. }
+            | AssetError::CookedSchemaMismatch { .. }
             | AssetError::VersionMismatch { .. } => Self::Decode,
             AssetError::MissingDependency { .. }
             | AssetError::DependencyFailed { .. }
@@ -486,6 +840,13 @@ pub enum AssetError {
         id: Option<AssetId>,
         message: String,
     },
+    CookedSchemaMismatch {
+        id: AssetId,
+        expected_cooker: String,
+        expected_version: u32,
+        actual_cooker: String,
+        actual_version: u32,
+    },
     VerificationFailed {
         issues: Vec<String>,
     },
@@ -558,6 +919,16 @@ impl Display for AssetError {
                 Some(id) => write!(f, "Invalid cooked asset `{id}`: {message}"),
                 None => write!(f, "Invalid cooked asset: {message}"),
             },
+            Self::CookedSchemaMismatch {
+                id,
+                expected_cooker,
+                expected_version,
+                actual_cooker,
+                actual_version,
+            } => write!(
+                f,
+                "Cooked schema mismatch for asset `{id}`: manifest uses `{actual_cooker}` v{actual_version}, runtime factory expects `{expected_cooker}` v{expected_version}"
+            ),
             Self::VerificationFailed { issues } => {
                 write!(f, "Asset verification failed: {}", issues.join("; "))
             }
@@ -604,11 +975,86 @@ pub struct AssetManifestEntry {
     pub import_settings: serde_json::Value,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AssetMetadata {
+    pub asset_id: AssetId,
+    pub asset_type: String,
+    pub importer: String,
+    pub cooker: String,
+    pub version: u32,
+    pub source_path: String,
+    pub cooked_path: String,
+    pub dependencies: Vec<AssetId>,
+    pub import_settings: serde_json::Value,
+}
+
+impl From<&AssetManifestEntry> for AssetMetadata {
+    fn from(entry: &AssetManifestEntry) -> Self {
+        Self {
+            asset_id: entry.asset_id,
+            asset_type: entry.asset_type.clone(),
+            importer: entry.importer.clone(),
+            cooker: entry.cooker.clone(),
+            version: entry.version,
+            source_path: entry.source_path.clone(),
+            cooked_path: entry.cooked_path.clone(),
+            dependencies: entry.dependencies.clone(),
+            import_settings: entry.import_settings.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssetWatchPaths {
+    pub source_path: PathBuf,
+    pub cooked_path: PathBuf,
+    pub package_paths: Vec<PathBuf>,
+    pub package_files: Vec<PathBuf>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AssetRegistryManifest {
     pub version: u32,
     pub target: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provenance: Vec<AssetManifestProvenance>,
     pub assets: Vec<AssetManifestEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssetManifestProvenance {
+    pub asset_id: AssetId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cooked_hash: Option<String>,
+    pub dependency_hash: String,
+    pub platform: String,
+    pub profile: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AssetCookedSchema {
+    pub cooker: &'static str,
+    pub version: u32,
+    pub dependency_schema: Option<&'static str>,
+}
+
+impl AssetCookedSchema {
+    #[must_use]
+    pub const fn new(cooker: &'static str, version: u32) -> Self {
+        Self {
+            cooker,
+            version,
+            dependency_schema: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_dependency_schema(mut self, dependency_schema: &'static str) -> Self {
+        self.dependency_schema = Some(dependency_schema);
+        self
+    }
 }
 
 impl Default for AssetRegistryManifest {
@@ -616,6 +1062,7 @@ impl Default for AssetRegistryManifest {
         Self {
             version: ASSET_SYSTEM_VERSION,
             target: AssetConfig::default_target(),
+            provenance: Vec::new(),
             assets: Vec::new(),
         }
     }
@@ -625,10 +1072,20 @@ impl Default for AssetRegistryManifest {
 pub struct AssetConfig {
     pub asset_root: PathBuf,
     pub target: String,
+    pub profile: String,
     pub background_loading: bool,
     pub install_budget_per_update: Option<usize>,
+    pub install_time_budget: Option<Duration>,
+    pub auto_reload: bool,
+    pub auto_reload_interval: Duration,
+    pub auto_reload_debounce: Duration,
+    pub file_watcher: bool,
+    pub package_roots: Vec<PathBuf>,
+    pub package_files: Vec<PathBuf>,
     pub io_worker_threads: usize,
     pub io_queue_capacity: usize,
+    pub io_default_priority: i32,
+    pub io_shutdown_timeout: Option<Duration>,
 }
 
 impl AssetConfig {
@@ -637,10 +1094,20 @@ impl AssetConfig {
         Self {
             asset_root: asset_root.into(),
             target: target.into(),
+            profile: "default".to_string(),
             background_loading: false,
             install_budget_per_update: None,
+            install_time_budget: None,
+            auto_reload: false,
+            auto_reload_interval: Duration::from_millis(250),
+            auto_reload_debounce: Duration::ZERO,
+            file_watcher: false,
+            package_roots: Vec::new(),
+            package_files: Vec::new(),
             io_worker_threads: DEFAULT_ASSET_IO_WORKER_THREADS,
             io_queue_capacity: DEFAULT_ASSET_IO_QUEUE_CAPACITY,
+            io_default_priority: DEFAULT_ASSET_IO_PRIORITY,
+            io_shutdown_timeout: DEFAULT_ASSET_IO_SHUTDOWN_TIMEOUT,
         }
     }
 
@@ -651,8 +1118,94 @@ impl AssetConfig {
     }
 
     #[must_use]
+    pub fn with_profile(mut self, profile: impl Into<String>) -> Self {
+        self.profile = profile.into();
+        self
+    }
+
+    #[must_use]
     pub fn with_install_budget_per_update(mut self, budget: usize) -> Self {
         self.install_budget_per_update = Some(budget);
+        self
+    }
+
+    #[must_use]
+    pub fn with_install_time_budget(mut self, budget: Duration) -> Self {
+        self.install_time_budget = Some(budget);
+        self
+    }
+
+    #[must_use]
+    pub fn without_install_time_budget(mut self) -> Self {
+        self.install_time_budget = None;
+        self
+    }
+
+    #[must_use]
+    pub fn with_auto_reload(mut self, enabled: bool) -> Self {
+        self.auto_reload = enabled;
+        self
+    }
+
+    #[must_use]
+    pub fn with_auto_reload_interval(mut self, interval: Duration) -> Self {
+        self.auto_reload_interval = interval;
+        self
+    }
+
+    #[must_use]
+    pub fn with_auto_reload_debounce(mut self, debounce: Duration) -> Self {
+        self.auto_reload_debounce = debounce;
+        self
+    }
+
+    #[must_use]
+    pub fn with_file_watcher(mut self, enabled: bool) -> Self {
+        self.file_watcher = enabled;
+        self
+    }
+
+    #[must_use]
+    pub fn with_package_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.package_roots.push(root.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_package_roots<I, P>(mut self, roots: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: Into<PathBuf>,
+    {
+        self.package_roots.extend(roots.into_iter().map(Into::into));
+        self
+    }
+
+    #[must_use]
+    pub fn without_package_roots(mut self) -> Self {
+        self.package_roots.clear();
+        self
+    }
+
+    #[must_use]
+    pub fn with_package_file(mut self, file: impl Into<PathBuf>) -> Self {
+        self.package_files.push(file.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_package_files<I, P>(mut self, files: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: Into<PathBuf>,
+    {
+        self.package_files.extend(files.into_iter().map(Into::into));
+        self
+    }
+
+    #[must_use]
+    pub fn without_package_files(mut self) -> Self {
+        self.package_files.clear();
         self
     }
 
@@ -665,6 +1218,24 @@ impl AssetConfig {
     #[must_use]
     pub fn with_io_queue_capacity(mut self, queue_capacity: usize) -> Self {
         self.io_queue_capacity = queue_capacity.max(1);
+        self
+    }
+
+    #[must_use]
+    pub fn with_io_default_priority(mut self, priority: i32) -> Self {
+        self.io_default_priority = priority;
+        self
+    }
+
+    #[must_use]
+    pub fn with_io_shutdown_timeout(mut self, timeout: Duration) -> Self {
+        self.io_shutdown_timeout = Some(timeout);
+        self
+    }
+
+    #[must_use]
+    pub fn without_io_shutdown_timeout(mut self) -> Self {
+        self.io_shutdown_timeout = None;
         self
     }
 
@@ -683,6 +1254,34 @@ impl AssetConfig {
             .join(".sky")
             .join("cooked")
             .join(&self.target)
+    }
+
+    #[must_use]
+    pub fn package_roots(&self) -> Vec<PathBuf> {
+        self.package_roots
+            .iter()
+            .map(|root| {
+                if root.is_absolute() {
+                    root.clone()
+                } else {
+                    self.asset_root.join(root)
+                }
+            })
+            .collect()
+    }
+
+    #[must_use]
+    pub fn package_files(&self) -> Vec<PathBuf> {
+        self.package_files
+            .iter()
+            .map(|file| {
+                if file.is_absolute() {
+                    file.clone()
+                } else {
+                    self.asset_root.join(file)
+                }
+            })
+            .collect()
     }
 
     #[must_use]
@@ -723,30 +1322,6 @@ pub struct AssetLoadContext<'a> {
     pub bytes: &'a [u8],
     pub asset_root: &'a Path,
     pub cooked_root: &'a Path,
-}
-
-pub struct AssetInstallContext<'a> {
-    pub asset_id: AssetId,
-    pub entry: &'a AssetManifestEntry,
-}
-
-pub enum AssetInstallPoll<T> {
-    Pending,
-    Ready(T),
-}
-
-pub trait AssetInstallTask: Send + 'static {
-    type Output: Send + Sync + 'static;
-
-    fn poll_install(
-        &mut self,
-        ctx: AssetInstallContext<'_>,
-    ) -> Result<AssetInstallPoll<Self::Output>, AssetError>;
-}
-
-pub enum AssetInstallResult<T: Send + Sync + 'static> {
-    Ready(T),
-    Pending(Box<dyn AssetInstallTask<Output = T>>),
 }
 
 pub struct LoadedAsset<T> {

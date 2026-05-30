@@ -16,4 +16,5 @@ pub use server::VideoServer;
 pub use streaming::{GpuVideoFrameBuffer, VideoFrameBuffer};
 pub use types::{
     VideoError, VideoInstanceId, VideoPlaybackSettings, VideoPlaybackState, VideoPlayer2D,
+    VideoServerStats,
 };

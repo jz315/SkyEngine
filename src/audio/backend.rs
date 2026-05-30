@@ -16,6 +16,13 @@ use super::types::{
     AudioSpatialSettings, AudioTween,
 };
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct AudioBackendStats {
+    pub available: bool,
+    pub live_instances: usize,
+    pub spatial_instances: usize,
+}
+
 pub(crate) struct AudioBackend {
     state: BackendState,
 }
@@ -239,6 +246,20 @@ impl AudioBackend {
         }
     }
 
+    pub(crate) fn contains_instance(&self, instance: AudioInstanceId) -> bool {
+        match &self.state {
+            BackendState::Ready(backend) => backend.instances.contains_key(&instance),
+            BackendState::Disabled { .. } => false,
+        }
+    }
+
+    pub(crate) fn stats(&self) -> AudioBackendStats {
+        match &self.state {
+            BackendState::Ready(backend) => backend.stats(),
+            BackendState::Disabled { .. } => AudioBackendStats::default(),
+        }
+    }
+
     fn with_instance(
         &mut self,
         instance: AudioInstanceId,
@@ -447,6 +468,27 @@ impl KiraBackend {
             None => Err(AudioError::BusNotFound { bus }),
         }
     }
+
+    fn stats(&self) -> AudioBackendStats {
+        AudioBackendStats {
+            available: true,
+            live_instances: self.instances.len(),
+            spatial_instances: spatial_instance_count(&self.instances),
+        }
+    }
+}
+
+#[cfg(feature = "app")]
+fn spatial_instance_count(instances: &HashMap<AudioInstanceId, InstanceRecord>) -> usize {
+    instances
+        .values()
+        .filter(|record| record.spatial.is_some())
+        .count()
+}
+
+#[cfg(not(feature = "app"))]
+fn spatial_instance_count(_instances: &HashMap<AudioInstanceId, InstanceRecord>) -> usize {
+    0
 }
 
 enum BusHandle {

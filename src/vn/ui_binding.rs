@@ -481,7 +481,7 @@ fn draw_centered_text(
 mod tests {
     use super::*;
     use crate::plugin::Plugin;
-    use crate::ui::neo::{PointerEvent, Runtime};
+    use crate::ui::neo::{FrameInput, PointerEvent, Runtime};
     use crate::vn::dialogue::VnDialogueChoice;
     use crate::vn::script::YarnLine;
     use crate::vn::VnPlugin;
@@ -540,9 +540,12 @@ mod tests {
             },
         };
         let mut runtime = Runtime::new("vn-test");
-        runtime.compose(640.0, 480.0, |ui, screen| {
-            draw_vn_ui(ui, screen, &snapshot, &sink);
-        });
+        runtime.frame(
+            FrameInput::new(Screen::new(640.0, 480.0), 0.0),
+            |ui, screen| {
+                draw_vn_ui(ui, screen, &snapshot, &sink);
+            },
+        );
 
         runtime.update_pointer(PointerEvent::pressed_at(124.0, 170.0));
         runtime.update_pointer(PointerEvent::released_at(124.0, 170.0));
@@ -568,9 +571,12 @@ mod tests {
         let sink = VnUiActionSink::default();
         let mut runtime = Runtime::new("vn-test");
 
-        runtime.compose(1280.0, 720.0, |ui, screen| {
-            draw_vn_ui(ui, screen, &snapshot, &sink);
-        });
+        runtime.frame(
+            FrameInput::new(Screen::new(1280.0, 720.0), 0.0),
+            |ui, screen| {
+                draw_vn_ui(ui, screen, &snapshot, &sink);
+            },
+        );
 
         assert!(runtime.roots().is_empty());
     }

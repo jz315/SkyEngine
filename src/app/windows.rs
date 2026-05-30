@@ -228,8 +228,10 @@ impl WindowRuntime {
                     input: &self.input,
                     dt,
                 });
-                self.window.pre_present_notify();
-                frame.mark_pre_present_notified();
+                if !frame.pre_present_notified() {
+                    self.window.pre_present_notify();
+                    frame.mark_pre_present_notified();
+                }
                 self.renderer.end_frame(frame);
             }
             Err(SceneRendererError::Wgpu(crate::gpu::GpuError::SurfaceLost)) => {
@@ -242,6 +244,9 @@ impl WindowRuntime {
             Err(SceneRendererError::Wgpu(crate::gpu::GpuError::Timeout)) => {
                 self.last_frame_time = None;
                 self.window.request_redraw();
+            }
+            Err(SceneRendererError::Wgpu(crate::gpu::GpuError::Occluded)) => {
+                self.last_frame_time = None;
             }
             Err(SceneRendererError::Wgpu(crate::gpu::GpuError::OutOfMemory)) => {
                 self.close_requested = true;

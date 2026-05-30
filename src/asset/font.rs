@@ -1,10 +1,8 @@
 use std::sync::Arc;
 
+use super::install::{AssetInstallContext, AssetInstallResult};
 use super::registry::AssetRuntimeFactory;
-use super::types::{
-    Asset, AssetError, AssetId, AssetInstallContext, AssetInstallResult, AssetLoadContext,
-    LoadedAsset,
-};
+use super::types::{Asset, AssetCookedSchema, AssetError, AssetId, AssetLoadContext, LoadedAsset};
 
 const FONT_COOKED_MAGIC: &[u8; 8] = b"SKYFNT01";
 const FONT_COOKED_VERSION: u32 = 1;
@@ -42,6 +40,10 @@ pub(crate) struct FontAssetFactory;
 impl AssetRuntimeFactory for FontAssetFactory {
     type Asset = FontAsset;
     type Loaded = FontAsset;
+
+    fn cooked_schema(&self) -> Option<AssetCookedSchema> {
+        Some(AssetCookedSchema::new("font.raw_bytes", 1))
+    }
 
     fn load(&self, ctx: AssetLoadContext<'_>) -> Result<LoadedAsset<Self::Loaded>, AssetError> {
         let font = decode_font_cooked(ctx.asset_id, ctx.bytes)?;

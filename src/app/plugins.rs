@@ -6,6 +6,7 @@
 //! lifetimes.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::app::config::{RunnerOptions, WindowOptions};
 use crate::asset::AssetConfig;
@@ -233,6 +234,68 @@ impl AssetPlugin {
     }
 
     #[inline]
+    pub fn with_install_time_budget(mut self, budget: Duration) -> Self {
+        self.config = self.config.with_install_time_budget(budget);
+        self
+    }
+
+    #[inline]
+    pub fn with_auto_reload(mut self, enabled: bool) -> Self {
+        self.config = self.config.with_auto_reload(enabled);
+        self
+    }
+
+    #[inline]
+    pub fn with_auto_reload_interval(mut self, interval: Duration) -> Self {
+        self.config = self.config.with_auto_reload_interval(interval);
+        self
+    }
+
+    #[inline]
+    pub fn with_auto_reload_debounce(mut self, debounce: Duration) -> Self {
+        self.config = self.config.with_auto_reload_debounce(debounce);
+        self
+    }
+
+    #[inline]
+    pub fn with_file_watcher(mut self, enabled: bool) -> Self {
+        self.config = self.config.with_file_watcher(enabled);
+        self
+    }
+
+    #[inline]
+    pub fn with_package_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.config = self.config.with_package_root(root);
+        self
+    }
+
+    #[inline]
+    pub fn with_package_roots<I, P>(mut self, roots: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: Into<PathBuf>,
+    {
+        self.config = self.config.with_package_roots(roots);
+        self
+    }
+
+    #[inline]
+    pub fn with_package_file(mut self, file: impl Into<PathBuf>) -> Self {
+        self.config = self.config.with_package_file(file);
+        self
+    }
+
+    #[inline]
+    pub fn with_package_files<I, P>(mut self, files: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: Into<PathBuf>,
+    {
+        self.config = self.config.with_package_files(files);
+        self
+    }
+
+    #[inline]
     pub fn with_io_worker_threads(mut self, worker_threads: usize) -> Self {
         self.config = self.config.with_io_worker_threads(worker_threads);
         self
@@ -241,6 +304,24 @@ impl AssetPlugin {
     #[inline]
     pub fn with_io_queue_capacity(mut self, queue_capacity: usize) -> Self {
         self.config = self.config.with_io_queue_capacity(queue_capacity);
+        self
+    }
+
+    #[inline]
+    pub fn with_io_default_priority(mut self, priority: i32) -> Self {
+        self.config = self.config.with_io_default_priority(priority);
+        self
+    }
+
+    #[inline]
+    pub fn with_io_shutdown_timeout(mut self, timeout: Duration) -> Self {
+        self.config = self.config.with_io_shutdown_timeout(timeout);
+        self
+    }
+
+    #[inline]
+    pub fn without_io_shutdown_timeout(mut self) -> Self {
+        self.config = self.config.without_io_shutdown_timeout();
         self
     }
 }
@@ -420,5 +501,33 @@ mod tests {
         assert_eq!(options.level, log::LevelFilter::Debug);
         assert_eq!(options.console, LogConsole::All);
         assert_eq!(options.capacity, 64);
+    }
+
+    #[test]
+    fn asset_plugin_installs_io_and_package_config() {
+        let mut world = World::new();
+        world
+            .install(
+                AssetPlugin::new("game_assets")
+                    .with_package_root("packages/base")
+                    .with_package_file("bundles/base.skybundle")
+                    .with_io_worker_threads(3)
+                    .with_io_queue_capacity(17)
+                    .with_io_default_priority(4)
+                    .with_io_shutdown_timeout(Duration::from_secs(2)),
+            )
+            .unwrap();
+
+        let config = world.get_resource::<AssetConfig>().unwrap();
+        assert_eq!(config.asset_root, PathBuf::from("game_assets"));
+        assert_eq!(config.package_roots, vec![PathBuf::from("packages/base")]);
+        assert_eq!(
+            config.package_files,
+            vec![PathBuf::from("bundles/base.skybundle")]
+        );
+        assert_eq!(config.io_worker_threads, 3);
+        assert_eq!(config.io_queue_capacity, 17);
+        assert_eq!(config.io_default_priority, 4);
+        assert_eq!(config.io_shutdown_timeout, Some(Duration::from_secs(2)));
     }
 }

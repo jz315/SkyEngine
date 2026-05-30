@@ -6,6 +6,20 @@ use crate::video::assets::VideoClip;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct VideoInstanceId(pub u64);
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct VideoServerStats {
+    pub instances: usize,
+    pub playing_instances: usize,
+    pub paused_instances: usize,
+    pub finished_instances: usize,
+    pub stopped_instances: usize,
+    pub distinct_clips: usize,
+    pub current_frame_textures: usize,
+    pub current_frame_texture_bytes: usize,
+    pub failed_play_requests: u64,
+    pub last_play_failure: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VideoPlaybackSettings {
     pub looped: bool,

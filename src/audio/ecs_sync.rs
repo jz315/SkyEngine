@@ -9,6 +9,8 @@ use super::{AudioEmitter2D, AudioListener2D};
 
 impl AudioServer {
     pub fn sync_world(&self, world: &World) -> Result<(), AudioError> {
+        self.consume_asset_events();
+
         let (listener_position, listener_rotation) = find_listener_pose(world);
         self.set_listener_pose(listener_position, listener_rotation)?;
 

@@ -4,8 +4,8 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::asset::{
-    Asset, AssetError, AssetId, AssetInstallContext, AssetInstallResult, AssetLoadContext,
-    AssetRuntimeFactory, Assets, Handle, LoadedAsset, TextureAsset, WeakHandle,
+    Asset, AssetCookedSchema, AssetError, AssetId, AssetInstallContext, AssetInstallResult,
+    AssetLoadContext, AssetRuntimeFactory, Assets, Handle, LoadedAsset, TextureAsset, WeakHandle,
 };
 use crate::video::types::VideoError;
 
@@ -167,6 +167,13 @@ pub(crate) struct VideoClipFactory;
 impl AssetRuntimeFactory for VideoClipFactory {
     type Asset = VideoClip;
     type Loaded = VideoClipDescriptor;
+
+    fn cooked_schema(&self) -> Option<AssetCookedSchema> {
+        Some(
+            AssetCookedSchema::new("video.clip_json", 1)
+                .with_dependency_schema("video.frames.texture"),
+        )
+    }
 
     fn load(&self, ctx: AssetLoadContext<'_>) -> Result<LoadedAsset<Self::Loaded>, AssetError> {
         let descriptor: VideoClipDescriptor =
