@@ -5,14 +5,23 @@
 //! and transient uploads.
 
 use std::borrow::Cow;
+#[cfg(feature = "profile-gpu")]
+use std::collections::VecDeque;
 use std::num::NonZeroU64;
 use std::ops::{Deref, DerefMut, Range};
 use std::path::Path;
-use std::sync::{mpsc, Arc};
+#[cfg(feature = "profile-gpu")]
+use std::sync::mpsc::Receiver;
+use std::sync::{mpsc, Arc, OnceLock};
+use std::time::Instant;
 
 const INITIAL_VERTEX_UPLOAD_BYTES: u64 = 256 * 1024;
 const INITIAL_INDEX_UPLOAD_BYTES: u64 = 128 * 1024;
 const INITIAL_DYNAMIC_UNIFORM_CAPACITY: u64 = 64;
+#[cfg(feature = "profile-gpu")]
+const GPU_TIMESTAMP_QUERY_COUNT: u32 = 2048;
+#[cfg(feature = "profile-gpu")]
+const GPU_TIMESTAMP_READBACKS: usize = 4;
 
 /// GPU initialization errors.
 #[derive(Debug)]
@@ -39,6 +48,7 @@ impl std::error::Error for GpuInitError {}
 pub enum GpuError {
     SurfaceLost,
     Timeout,
+    Occluded,
     OutOfMemory,
     Other(String),
 }
@@ -48,6 +58,7 @@ impl std::fmt::Display for GpuError {
         match self {
             Self::SurfaceLost => write!(f, "Surface lost"),
             Self::Timeout => write!(f, "Surface acquisition timed out"),
+            Self::Occluded => write!(f, "Surface is occluded"),
             Self::OutOfMemory => write!(f, "Out of GPU memory"),
             Self::Other(msg) => write!(f, "{msg}"),
         }
@@ -55,6 +66,137 @@ impl std::fmt::Display for GpuError {
 }
 
 impl std::error::Error for GpuError {}
+
+#[derive(Debug, Default)]
+struct GpuInitProfileSamples {
+    instance_ms: f32,
+    surface_ms: f32,
+    adapter_ms: f32,
+    device_ms: f32,
+    configure_ms: f32,
+    samplers_ms: f32,
+}
+
+struct GpuInitProfile {
+    enabled: bool,
+    start: Instant,
+    last: Instant,
+}
+
+impl GpuInitProfile {
+    fn new() -> Self {
+        let now = Instant::now();
+        Self {
+            enabled: gpu_init_profile_enabled(),
+            start: now,
+            last: now,
+        }
+    }
+
+    fn mark(&mut self) -> f32 {
+        if !self.enabled {
+            return 0.0;
+        }
+        let now = Instant::now();
+        let elapsed_ms = now.duration_since(self.last).as_secs_f32() * 1000.0;
+        self.last = now;
+        elapsed_ms
+    }
+
+    fn print(
+        &self,
+        samples: &GpuInitProfileSamples,
+        adapter_name: &str,
+        backend_name: &str,
+        format: wgpu::TextureFormat,
+    ) {
+        if !self.enabled {
+            return;
+        }
+        let total_ms = self.start.elapsed().as_secs_f32() * 1000.0;
+        eprintln!(
+            concat!(
+                "[SkyEngine][GpuInitProfile] total={:.3}ms ",
+                "instance={:.3} surface={:.3} adapter={:.3} device={:.3} configure={:.3} samplers={:.3} ",
+                "adapter_name=\"{}\" backend={} format={:?}"
+            ),
+            total_ms,
+            samples.instance_ms,
+            samples.surface_ms,
+            samples.adapter_ms,
+            samples.device_ms,
+            samples.configure_ms,
+            samples.samplers_ms,
+            adapter_name,
+            backend_name,
+            format,
+        );
+    }
+}
+
+fn gpu_init_profile_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var_os("SKY_GPU_PROFILE")
+            .or_else(|| std::env::var_os("SKY_APP_STARTUP_PROFILE"))
+            .or_else(|| std::env::var_os("SKY_APP_PROFILE"))
+            .or_else(|| std::env::var_os("SKY_PROFILE"))
+            .is_some_and(env_flag_enabled)
+    })
+}
+
+fn env_flag_enabled(value: std::ffi::OsString) -> bool {
+    let value = value.to_string_lossy();
+    !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+}
+
+#[cfg(feature = "profile")]
+fn record_gpu_init_profile(
+    start: Instant,
+    samples: &GpuInitProfileSamples,
+    adapter_name: &str,
+    backend_name: &str,
+    format: wgpu::TextureFormat,
+) {
+    if !sky_profile::enabled() {
+        return;
+    }
+    let run_id = sky_profile::run_id();
+    let mut cursor_ns = sky_profile::elapsed_ns_since_start(start);
+    let segments = [
+        ("instance", samples.instance_ms),
+        ("surface", samples.surface_ms),
+        ("adapter", samples.adapter_ms),
+        ("device", samples.device_ms),
+        ("configure", samples.configure_ms),
+        ("samplers", samples.samplers_ms),
+    ];
+    for (name, elapsed_ms) in segments {
+        let duration_ns = profile_ms_to_ns(elapsed_ms);
+        let event = sky_profile::ProfileEvent::new(
+            run_id.clone(),
+            None,
+            "gpu_init",
+            name,
+            cursor_ns,
+            duration_ns,
+        )
+        .with_metadata("adapter_name", adapter_name.to_string())
+        .with_metadata("backend", backend_name.to_string())
+        .with_metadata("surface_format", format!("{format:?}"));
+        sky_profile::record_event(event);
+        cursor_ns = cursor_ns.saturating_add(duration_ns);
+    }
+    sky_profile::flush();
+}
+
+#[cfg(feature = "profile")]
+fn profile_ms_to_ns(ms: f32) -> u64 {
+    if !ms.is_finite() || ms <= 0.0 {
+        return 0;
+    }
+    (f64::from(ms) * 1_000_000.0).round().min(u64::MAX as f64) as u64
+}
 
 /// Errors returned while reading the current surface frame back to the CPU.
 #[derive(Debug)]
@@ -542,6 +684,45 @@ struct FrameState {
     encoder: wgpu::CommandEncoder,
 }
 
+#[cfg(feature = "profile-gpu")]
+#[derive(Debug, Clone)]
+struct GpuTimestampSample {
+    category: &'static str,
+    name: String,
+    cpu_start_ns: u64,
+    cpu_duration_ns: u64,
+    start_index: u32,
+    end_index: u32,
+}
+
+#[cfg(feature = "profile-gpu")]
+struct PendingGpuTimestampReadback {
+    readback_index: usize,
+    query_count: u32,
+    samples: Vec<GpuTimestampSample>,
+    receiver: Receiver<Result<(), wgpu::BufferAsyncError>>,
+}
+
+#[cfg(feature = "profile-gpu")]
+struct GpuTimestampProfiler {
+    enabled: bool,
+    query_set: Option<wgpu::QuerySet>,
+    resolve_buffer: Option<wgpu::Buffer>,
+    readback_buffers: Vec<wgpu::Buffer>,
+    next_readback: usize,
+    query_count: u32,
+    samples: Vec<GpuTimestampSample>,
+    pending: VecDeque<PendingGpuTimestampReadback>,
+    timestamp_period_ns: f64,
+}
+
+#[cfg(feature = "profile-gpu")]
+pub struct GpuProfileScope {
+    sample_index: usize,
+    cpu_start: Instant,
+    cpu_start_ns: u64,
+}
+
 /// Lightweight wrapper around wgpu device, queue, and optional surface.
 ///
 /// Owns the frame lifecycle (`begin_frame` / `end_frame`) and surface
@@ -558,6 +739,8 @@ pub struct GpuContext {
     uploads: FrameUploadArena,
     sampler_linear: wgpu::Sampler,
     sampler_nearest: wgpu::Sampler,
+    #[cfg(feature = "profile-gpu")]
+    timestamps: GpuTimestampProfiler,
 }
 
 /// Explicit frame recorder backed by an active [`GpuContext`] frame.
@@ -612,6 +795,287 @@ impl<'a> Deref for GpuComputePass<'a> {
 impl<'a> DerefMut for GpuComputePass<'a> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.inner
+    }
+}
+
+#[cfg(feature = "profile-gpu")]
+impl GpuTimestampProfiler {
+    fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
+        let requested = sky_profile::config().gpu_enabled;
+        let has_required_features = device.features().contains(profile_gpu_required_features());
+        let enabled = requested && has_required_features;
+        if !enabled {
+            if requested {
+                record_gpu_timestamp_capability(false);
+            }
+            return Self {
+                enabled: false,
+                query_set: None,
+                resolve_buffer: None,
+                readback_buffers: Vec::new(),
+                next_readback: 0,
+                query_count: 0,
+                samples: Vec::new(),
+                pending: VecDeque::new(),
+                timestamp_period_ns: 1.0,
+            };
+        }
+        record_gpu_timestamp_capability(true);
+
+        let query_set = device.create_query_set(&wgpu::QuerySetDescriptor {
+            label: Some("sky_profile_timestamp_queries"),
+            ty: wgpu::QueryType::Timestamp,
+            count: GPU_TIMESTAMP_QUERY_COUNT,
+        });
+        let buffer_size = u64::from(GPU_TIMESTAMP_QUERY_COUNT) * u64::from(wgpu::QUERY_SIZE);
+        let resolve_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("sky_profile_timestamp_resolve"),
+            size: buffer_size,
+            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let readback_buffers = (0..GPU_TIMESTAMP_READBACKS)
+            .map(|index| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(&format!("sky_profile_timestamp_readback_{index}")),
+                    size: buffer_size,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                })
+            })
+            .collect();
+
+        Self {
+            enabled: true,
+            query_set: Some(query_set),
+            resolve_buffer: Some(resolve_buffer),
+            readback_buffers,
+            next_readback: 0,
+            query_count: 0,
+            samples: Vec::new(),
+            pending: VecDeque::new(),
+            timestamp_period_ns: f64::from(queue.get_timestamp_period()),
+        }
+    }
+
+    fn begin_frame(&mut self, device: &wgpu::Device) {
+        self.poll_completed(device);
+        self.query_count = 0;
+        self.samples.clear();
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    fn begin_scope(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        category: &'static str,
+        name: impl Into<String>,
+    ) -> Option<GpuProfileScope> {
+        if !self.enabled || self.query_count + 2 > GPU_TIMESTAMP_QUERY_COUNT {
+            return None;
+        }
+        let query_set = self.query_set.as_ref()?;
+        let start_index = self.query_count;
+        let end_index = self.query_count + 1;
+        self.query_count += 2;
+        encoder.write_timestamp(query_set, start_index);
+        let cpu_start = Instant::now();
+        let cpu_start_ns = sky_profile::elapsed_ns_since_start(cpu_start);
+        let sample_index = self.samples.len();
+        self.samples.push(GpuTimestampSample {
+            category,
+            name: name.into(),
+            cpu_start_ns,
+            cpu_duration_ns: 0,
+            start_index,
+            end_index,
+        });
+        Some(GpuProfileScope {
+            sample_index,
+            cpu_start,
+            cpu_start_ns,
+        })
+    }
+
+    fn end_scope(&mut self, encoder: &mut wgpu::CommandEncoder, scope: GpuProfileScope) {
+        if !self.enabled {
+            return;
+        }
+        let Some(sample) = self.samples.get_mut(scope.sample_index) else {
+            return;
+        };
+        if let Some(query_set) = self.query_set.as_ref() {
+            encoder.write_timestamp(query_set, sample.end_index);
+        }
+        sample.cpu_start_ns = scope.cpu_start_ns;
+        sample.cpu_duration_ns = scope
+            .cpu_start
+            .elapsed()
+            .as_nanos()
+            .min(u128::from(u64::MAX)) as u64;
+    }
+
+    fn resolve_frame(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        if !self.enabled || self.query_count == 0 || self.samples.is_empty() {
+            return;
+        }
+        let Some(readback_index) = self.available_readback_index() else {
+            self.samples.clear();
+            self.query_count = 0;
+            return;
+        };
+        let Some(query_set) = self.query_set.as_ref() else {
+            return;
+        };
+        let Some(resolve_buffer) = self.resolve_buffer.as_ref() else {
+            return;
+        };
+        let bytes = u64::from(self.query_count) * u64::from(wgpu::QUERY_SIZE);
+        encoder.resolve_query_set(query_set, 0..self.query_count, resolve_buffer, 0);
+        encoder.copy_buffer_to_buffer(
+            resolve_buffer,
+            0,
+            &self.readback_buffers[readback_index],
+            0,
+            bytes,
+        );
+
+        let slice = self.readback_buffers[readback_index].slice(0..bytes);
+        let (sender, receiver) = mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+        self.pending.push_back(PendingGpuTimestampReadback {
+            readback_index,
+            query_count: self.query_count,
+            samples: std::mem::take(&mut self.samples),
+            receiver,
+        });
+        self.next_readback = (readback_index + 1) % self.readback_buffers.len();
+        self.query_count = 0;
+    }
+
+    fn poll_completed(&mut self, device: &wgpu::Device) {
+        if !self.enabled {
+            return;
+        }
+        let _ = device.poll(wgpu::PollType::Poll);
+        let mut index = 0;
+        while index < self.pending.len() {
+            let ready = match self.pending[index].receiver.try_recv() {
+                Ok(Ok(())) => true,
+                Ok(Err(_)) => {
+                    let pending = self.pending.remove(index).unwrap();
+                    self.readback_buffers[pending.readback_index].unmap();
+                    continue;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    index += 1;
+                    continue;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    let pending = self.pending.remove(index).unwrap();
+                    self.readback_buffers[pending.readback_index].unmap();
+                    continue;
+                }
+            };
+            if ready {
+                let pending = self.pending.remove(index).unwrap();
+                self.record_pending(pending);
+            }
+        }
+    }
+
+    fn record_pending(&mut self, pending: PendingGpuTimestampReadback) {
+        let bytes = u64::from(pending.query_count) * u64::from(wgpu::QUERY_SIZE);
+        {
+            let mapped = self.readback_buffers[pending.readback_index]
+                .slice(0..bytes)
+                .get_mapped_range();
+            for sample in &pending.samples {
+                let Some(start) = read_timestamp_value(&mapped, sample.start_index) else {
+                    continue;
+                };
+                let Some(end) = read_timestamp_value(&mapped, sample.end_index) else {
+                    continue;
+                };
+                if end < start {
+                    continue;
+                }
+                let gpu_duration_ns =
+                    ((end - start) as f64 * self.timestamp_period_ns).round() as u64;
+                sky_profile::record_gpu_event(
+                    sample.category,
+                    sample.name.clone(),
+                    sample.cpu_start_ns,
+                    sample.cpu_duration_ns,
+                    gpu_duration_ns,
+                );
+            }
+        }
+        self.readback_buffers[pending.readback_index].unmap();
+    }
+
+    fn available_readback_index(&self) -> Option<usize> {
+        for offset in 0..self.readback_buffers.len() {
+            let index = (self.next_readback + offset) % self.readback_buffers.len();
+            if self
+                .pending
+                .iter()
+                .all(|pending| pending.readback_index != index)
+            {
+                return Some(index);
+            }
+        }
+        None
+    }
+}
+
+#[cfg(feature = "profile-gpu")]
+fn read_timestamp_value(mapped: &[u8], index: u32) -> Option<u64> {
+    let offset = index as usize * wgpu::QUERY_SIZE as usize;
+    let bytes = mapped.get(offset..offset + wgpu::QUERY_SIZE as usize)?;
+    Some(u64::from_ne_bytes(bytes.try_into().ok()?))
+}
+
+#[cfg(feature = "profile-gpu")]
+fn record_gpu_timestamp_capability(supported: bool) {
+    if !sky_profile::enabled() {
+        return;
+    }
+    let now = Instant::now();
+    let event = sky_profile::ProfileEvent::new(
+        sky_profile::run_id(),
+        sky_profile::current_frame(),
+        "gpu",
+        "timestamp_profile_capability",
+        sky_profile::elapsed_ns_since_start(now),
+        0,
+    )
+    .with_metadata("gpu_supported", supported);
+    sky_profile::record_event(event);
+}
+
+#[cfg(feature = "profile-gpu")]
+fn profile_gpu_required_features() -> wgpu::Features {
+    wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
+}
+
+#[cfg(feature = "profile-gpu")]
+fn profile_gpu_adapter_features(adapter: &wgpu::Adapter) -> wgpu::Features {
+    let required = profile_gpu_required_features();
+    if sky_profile::config().gpu_enabled && adapter.features().contains(required) {
+        required
+    } else {
+        if sky_profile::config().gpu_enabled && !adapter.features().contains(required) {
+            eprintln!(
+                "[SkyEngine][Profile] GPU timestamp profiling disabled: adapter lacks {required:?}"
+            );
+        }
+        wgpu::Features::empty()
     }
 }
 
@@ -733,14 +1197,21 @@ impl GpuContext {
     ///
     /// Blocks on adapter/device creation via `pollster`.
     pub fn try_new(window: Arc<winit::window::Window>, vsync: bool) -> Result<Self, GpuInitError> {
+        let mut init_profile = GpuInitProfile::new();
+        let mut init_samples = GpuInitProfileSamples::default();
+        #[cfg(feature = "profile")]
+        let _profile_scope = sky_profile::profile_scope!("gpu", "GpuContext::try_new");
+
         let mut instance_desc = wgpu::InstanceDescriptor::new_without_display_handle();
         instance_desc.backends =
             wgpu::Backends::VULKAN | wgpu::Backends::METAL | wgpu::Backends::DX12;
         let instance = wgpu::Instance::new(instance_desc);
+        init_samples.instance_ms = init_profile.mark();
 
         let surface = instance
             .create_surface(window.clone())
             .map_err(|e| GpuInitError::SurfaceCreation(e.to_string()))?;
+        init_samples.surface_ms = init_profile.mark();
 
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -748,19 +1219,25 @@ impl GpuContext {
             force_fallback_adapter: false,
         }))
         .map_err(|_| GpuInitError::AdapterUnavailable)?;
+        init_samples.adapter_ms = init_profile.mark();
 
         let adapter_info = adapter.get_info();
         let adapter_name = adapter_info.name.clone();
         let backend_name = format!("{:?}", adapter_info.backend);
+        #[cfg(feature = "profile-gpu")]
+        let required_features = profile_gpu_adapter_features(&adapter);
+        #[cfg(not(feature = "profile-gpu"))]
+        let required_features = wgpu::Features::empty();
 
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("SkyEngine Device"),
-            required_features: wgpu::Features::empty(),
+            required_features,
             required_limits: wgpu::Limits::default(),
             memory_hints: wgpu::MemoryHints::Performance,
             ..Default::default()
         }))
         .map_err(|e| GpuInitError::DeviceCreation(e.to_string()))?;
+        init_samples.device_ms = init_profile.mark();
 
         let size = window.inner_size();
         let caps = surface.get_capabilities(&adapter);
@@ -791,6 +1268,7 @@ impl GpuContext {
             desired_maximum_frame_latency: 2,
         };
         surface.configure(&device, &surface_config);
+        init_samples.configure_ms = init_profile.mark();
 
         let sampler_linear = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("default_linear_sampler"),
@@ -810,11 +1288,23 @@ impl GpuContext {
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
+        init_samples.samplers_ms = init_profile.mark();
 
         eprintln!(
             "[SkyEngine GPU] Adapter: {} | Backend: {} | Format: {:?}",
             adapter_name, backend_name, format
         );
+        init_profile.print(&init_samples, &adapter_name, &backend_name, format);
+        #[cfg(feature = "profile")]
+        record_gpu_init_profile(
+            init_profile.start,
+            &init_samples,
+            &adapter_name,
+            &backend_name,
+            format,
+        );
+        #[cfg(feature = "profile-gpu")]
+        let timestamps = GpuTimestampProfiler::new(&device, &queue);
 
         Ok(Self {
             device,
@@ -827,6 +1317,8 @@ impl GpuContext {
             uploads: FrameUploadArena::default(),
             sampler_linear,
             sampler_nearest,
+            #[cfg(feature = "profile-gpu")]
+            timestamps,
         })
     }
 
@@ -919,9 +1411,10 @@ impl GpuContext {
                     surface.configure(&self.device, &self.surface_config);
                     return Err(GpuError::SurfaceLost);
                 }
-                wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                wgpu::CurrentSurfaceTexture::Timeout => {
                     return Err(GpuError::Timeout);
                 }
+                wgpu::CurrentSurfaceTexture::Occluded => return Err(GpuError::Occluded),
                 wgpu::CurrentSurfaceTexture::Validation => {
                     return Err(GpuError::Other(
                         "surface texture acquisition failed validation".into(),
@@ -947,6 +1440,8 @@ impl GpuContext {
             surface_view,
             encoder,
         });
+        #[cfg(feature = "profile-gpu")]
+        self.timestamps.begin_frame(&self.device);
         Ok(())
     }
 
@@ -1137,6 +1632,30 @@ impl GpuContext {
         self.frame.is_some()
     }
 
+    #[cfg(feature = "profile-gpu")]
+    pub fn gpu_profile_supported(&self) -> bool {
+        self.timestamps.is_enabled()
+    }
+
+    #[cfg(feature = "profile-gpu")]
+    pub fn begin_gpu_profile_scope(
+        &mut self,
+        category: &'static str,
+        name: impl Into<String>,
+    ) -> Option<GpuProfileScope> {
+        let frame = self.frame.as_mut()?;
+        self.timestamps
+            .begin_scope(&mut frame.encoder, category, name)
+    }
+
+    #[cfg(feature = "profile-gpu")]
+    pub fn end_gpu_profile_scope(&mut self, scope: GpuProfileScope) {
+        let Some(frame) = self.frame.as_mut() else {
+            return;
+        };
+        self.timestamps.end_scope(&mut frame.encoder, scope);
+    }
+
     /// Upload transient vertex data into the frame arena.
     pub fn upload_vertices<T: bytemuck::Pod>(&mut self, data: &[T]) -> UploadSlice {
         let device = &self.device;
@@ -1303,14 +1822,18 @@ impl GpuContext {
 
     /// Finish the frame: submit the command encoder and present the surface.
     pub fn end_frame(&mut self) {
-        let frame = self
+        let mut frame = self
             .frame
             .take()
             .expect("end_frame called without begin_frame");
+        #[cfg(feature = "profile-gpu")]
+        self.timestamps.resolve_frame(&mut frame.encoder);
         self.queue.submit(std::iter::once(frame.encoder.finish()));
         if let Some(surface_texture) = frame.surface_texture {
             surface_texture.present();
         }
+        #[cfg(feature = "profile-gpu")]
+        self.timestamps.poll_completed(&self.device);
     }
 }
 
@@ -1337,6 +1860,8 @@ impl GpuContext {
             min_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
+        #[cfg(feature = "profile-gpu")]
+        let timestamps = GpuTimestampProfiler::new(&device, &queue);
         Self {
             device,
             queue,
@@ -1357,6 +1882,8 @@ impl GpuContext {
             uploads: FrameUploadArena::default(),
             sampler_linear,
             sampler_nearest,
+            #[cfg(feature = "profile-gpu")]
+            timestamps,
         }
     }
 }

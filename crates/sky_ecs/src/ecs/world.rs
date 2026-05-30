@@ -204,6 +204,9 @@ impl World {
     }
 
     fn run_schedule(&mut self, schedule: &mut Schedule, frame_delta: f32, raw_delta: f32) {
+        #[cfg(feature = "profile")]
+        let _schedule_scope = sky_profile::profile_scope!("ecs", "World::run_schedule");
+
         let raw_delta = raw_delta.max(0.0);
         let frame_delta = frame_delta.max(0.0);
         let scaled_delta = frame_delta * self.time.time_scale;
@@ -213,10 +216,19 @@ impl World {
         self.time.frame_count += 1;
 
         for group in &mut schedule.groups {
+            #[cfg(feature = "profile")]
+            let _group_scope = sky_profile::profile_scope!("ecs", format!("group:{}", group.name));
+
             match group.tick_policy {
                 TickPolicy::EveryFrame => {
                     self.time.delta = scaled_delta;
                     for registered in &mut group.systems {
+                        #[cfg(feature = "profile")]
+                        let _system_scope = sky_profile::profile_scope!(
+                            "ecs",
+                            format!("system:{}", registered.name)
+                        );
+
                         if !registered.initialized {
                             registered.system.init(self);
                             registered.initialized = true;
@@ -227,8 +239,21 @@ impl World {
                 TickPolicy::Fixed(fixed_dt) => {
                     group.accumulator += scaled_delta;
                     self.time.delta = fixed_dt;
+                    let mut substep_index = 0u32;
                     while group.accumulator >= fixed_dt {
+                        #[cfg(feature = "profile")]
+                        let _substep_scope = sky_profile::profile_scope!(
+                            "ecs",
+                            format!("fixed_substep:{}#{substep_index}", group.name)
+                        );
+
                         for registered in &mut group.systems {
+                            #[cfg(feature = "profile")]
+                            let _system_scope = sky_profile::profile_scope!(
+                                "ecs",
+                                format!("system:{}", registered.name)
+                            );
+
                             if !registered.initialized {
                                 registered.system.init(self);
                                 registered.initialized = true;
@@ -236,6 +261,7 @@ impl World {
                             registered.system.run(self);
                         }
                         group.accumulator -= fixed_dt;
+                        substep_index = substep_index.wrapping_add(1);
                     }
                 }
             }

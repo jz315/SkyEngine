@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use winit::window::Window;
 
 use crate::asset::{Assets, Handle, TextureAsset};
+use crate::diagnostics::Diagnostics;
 use crate::ecs::{Time, World};
 use crate::gpu::GpuContext;
 use crate::input::raw::Input;
@@ -78,8 +79,11 @@ impl<'a> FrameContext<'a> {
     }
 
     /// Execute the installed render pipeline.
-    #[must_use]
     pub fn render(&mut self) -> SceneRenderOutcome {
+        if self.renderer.presents_during_render() && !self.frame.pre_present_notified() {
+            self.window.pre_present_notify();
+            self.frame.mark_pre_present_notified();
+        }
         self.renderer.render_world(self.frame, self.world)
     }
 
@@ -237,6 +241,12 @@ impl<'a> FrameContext<'a> {
     pub fn logs(&self) -> &LogStore {
         crate::logging::drain_logger(self.logs);
         self.logs
+    }
+
+    /// Structured diagnostic events published by app-owned services.
+    #[inline]
+    pub fn diagnostics(&self) -> Option<Diagnostics> {
+        self.world.get_resource::<Diagnostics>().cloned()
     }
 
     /// Create or resolve backend-neutral render assets.

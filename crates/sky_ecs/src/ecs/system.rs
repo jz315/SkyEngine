@@ -31,10 +31,22 @@ where
 
 pub(crate) struct RegisteredSystem {
     pub initialized: bool,
+    #[cfg(feature = "profile")]
+    pub name: String,
     pub system: Box<dyn System>,
 }
 
 impl RegisteredSystem {
+    #[cfg(feature = "profile")]
+    fn new<S: System>(name: String, system: S) -> Self {
+        Self {
+            initialized: false,
+            name,
+            system: Box::new(system),
+        }
+    }
+
+    #[cfg(not(feature = "profile"))]
     fn new<S: System>(system: S) -> Self {
         Self {
             initialized: false,
@@ -119,9 +131,34 @@ impl<'a> GroupBuilder<'a> {
     /// Adds a system to this group. Systems within a group run in the
     /// order they are added.
     pub fn add<S: System>(&mut self, system: S) -> &mut Self {
-        self.schedule.groups[self.group_index]
-            .systems
-            .push(RegisteredSystem::new(system));
+        #[cfg(feature = "profile")]
+        {
+            self.add_named(std::any::type_name::<S>(), system)
+        }
+        #[cfg(not(feature = "profile"))]
+        {
+            self.schedule.groups[self.group_index]
+                .systems
+                .push(RegisteredSystem::new(system));
+            self
+        }
+    }
+
+    /// Adds a system with a stable profiling/debug name.
+    pub fn add_named<S: System>(&mut self, name: impl Into<String>, system: S) -> &mut Self {
+        #[cfg(feature = "profile")]
+        {
+            self.schedule.groups[self.group_index]
+                .systems
+                .push(RegisteredSystem::new(name.into(), system));
+        }
+        #[cfg(not(feature = "profile"))]
+        {
+            let _ = name;
+            self.schedule.groups[self.group_index]
+                .systems
+                .push(RegisteredSystem::new(system));
+        }
         self
     }
 }
@@ -319,6 +356,16 @@ mod tests {
         assert!((world.time.elapsed - 0.05).abs() < f32::EPSILON);
         assert_eq!(world.time.raw_elapsed, 0.25);
         assert_eq!(world.time.frame_count, 1);
+    }
+
+    #[cfg(feature = "profile")]
+    #[test]
+    fn add_named_sets_system_profile_name() {
+        let mut schedule = super::Schedule::default();
+        let index = schedule.find_or_create_group("named");
+        super::GroupBuilder::new(&mut schedule, index).add_named("stable_name", |_: &mut World| {});
+
+        assert_eq!(schedule.groups[0].systems[0].name, "stable_name");
     }
 
     #[test]

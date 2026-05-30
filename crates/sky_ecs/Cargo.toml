@@ -10,4 +10,9 @@ lazy_static = "1.4.0"
 rayon = "1.10"
 rustc-hash = "2.1.2"
 sky_type = { path = "../sky_type" }
+sky_profile = { path = "../sky_profile", optional = true }
 smallvec = "1.13.2"
+
+[features]
+default = []
+profile = ["dep:sky_profile"]

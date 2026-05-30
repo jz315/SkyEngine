@@ -25,6 +25,7 @@ use winit::event_loop::EventLoop;
 use winit::window::Window;
 
 use crate::app::frame::FrameContext;
+use crate::diagnostics::Diagnostics;
 use crate::ecs::World;
 use crate::gpu::GpuContext;
 use crate::logging::LogStore;
@@ -162,6 +163,12 @@ impl<'a> SetupContext<'a> {
     pub fn logs(&self) -> &LogStore {
         crate::logging::drain_logger(self.logs);
         self.logs
+    }
+
+    /// Structured diagnostic events published by app-owned services.
+    #[inline]
+    pub fn diagnostics(&self) -> Option<Diagnostics> {
+        self.world.get_resource::<Diagnostics>().cloned()
     }
 
     /// Direct access to the wgpu backend when the active renderer is wgpu.

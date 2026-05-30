@@ -49,6 +49,7 @@ pub(in crate::app) struct RunnerHandler {
     pending_redraw: bool,
     kajiya_debug_frames: u64,
     app_profile_frames: u64,
+    startup_start: Instant,
     did_shutdown: bool,
 }
 
@@ -89,6 +90,7 @@ impl RunnerHandler {
             pending_redraw: false,
             kajiya_debug_frames: 0,
             app_profile_frames: 0,
+            startup_start: Instant::now(),
             did_shutdown: false,
         }
     }
@@ -157,6 +159,10 @@ impl RunnerHandler {
         let now = Instant::now();
         let mut app_profile = AppFrameProfile::new(self.app_profile_frames, now);
         let mut app_profile_samples = AppFrameProfileSamples::default();
+        #[cfg(feature = "profile")]
+        let _profile_frame = sky_profile::profile_frame!(self.app_profile_frames);
+        #[cfg(feature = "profile")]
+        let _profile_scope = sky_profile::profile_scope!("app", "App::run_frame");
         let raw_dt = self
             .runtime
             .as_ref()
@@ -171,6 +177,8 @@ impl RunnerHandler {
         let mut request_redraw = false;
         let mut should_exit = false;
         let mut aux_window_requests = Vec::new();
+        #[cfg(feature = "profile")]
+        let mut profile_render_stats = None;
         let logs = Arc::clone(&self.logs);
         app_profile_samples.frame_setup_ms = app_profile.mark();
 
@@ -284,11 +292,22 @@ impl RunnerHandler {
                             &mut screenshot_requests,
                         );
                         app_profile_samples.screenshot_ms = app_profile.mark();
-                        rt.window.pre_present_notify();
-                        renderer_frame.mark_pre_present_notified();
+                        if !renderer_frame.pre_present_notified() {
+                            rt.window.pre_present_notify();
+                            renderer_frame.mark_pre_present_notified();
+                        }
                         app_profile_samples.pre_present_ms = app_profile.mark();
                         rt.renderer.end_frame(renderer_frame);
                         app_profile_samples.end_frame_ms = app_profile.mark();
+                        let render_stats = rt.renderer.stats();
+                        crate::app::render_diagnostics::publish_render_diagnostics(
+                            world,
+                            render_stats,
+                        );
+                        #[cfg(feature = "profile")]
+                        {
+                            profile_render_stats = Some(render_stats);
+                        }
                         rt.input.begin_frame();
                         app_profile_samples.input_reset_ms = app_profile.mark();
 
@@ -305,6 +324,9 @@ impl RunnerHandler {
                     Err(SceneRendererError::Wgpu(crate::gpu::GpuError::Timeout)) => {
                         rt.last_frame_time = None;
                         request_redraw = true;
+                    }
+                    Err(SceneRendererError::Wgpu(crate::gpu::GpuError::Occluded)) => {
+                        rt.last_frame_time = None;
                     }
                     Err(SceneRendererError::Wgpu(crate::gpu::GpuError::OutOfMemory)) => {
                         should_exit = true;
@@ -339,6 +361,15 @@ impl RunnerHandler {
         }
         app_profile_samples.shutdown_ms = app_profile.mark();
         app_profile.print(&app_profile_samples, request_redraw, should_exit);
+        #[cfg(feature = "profile")]
+        record_app_profile_frame(
+            self.app_profile_frames,
+            app_profile.start,
+            &app_profile_samples,
+            profile_render_stats,
+            request_redraw,
+            should_exit,
+        );
         self.app_profile_frames = self.app_profile_frames.wrapping_add(1);
         if should_exit {
             self.shutdown_and_exit(event_loop);
@@ -417,6 +448,10 @@ impl ApplicationHandler for RunnerHandler {
         }
 
         // First resume — create window, GPU backend, and optional render pipeline.
+        let mut startup_profile = AppStartupProfile::new(self.startup_start);
+        let mut startup_samples = AppStartupProfileSamples::default();
+        #[cfg(feature = "profile")]
+        let _startup_scope = sky_profile::profile_scope!("app", "App::startup");
         let Some(window_options) = self.window_options.clone() else {
             eprintln!(
                 "[SkyEngine] Windowed App::run requires WindowPlugin. Install it with world.install(WindowPlugin::new(...))."
@@ -442,6 +477,7 @@ impl ApplicationHandler for RunnerHandler {
                 .create_window(attrs)
                 .expect("Failed to create window"),
         );
+        startup_samples.window_ms = startup_profile.mark();
 
         let pipeline = self.pipeline.take();
         let mut renderer =
@@ -453,6 +489,7 @@ impl ApplicationHandler for RunnerHandler {
                     return;
                 }
             };
+        startup_samples.renderer_ms = startup_profile.mark();
 
         let title = format!(
             "{} | {} ({})",
@@ -461,6 +498,7 @@ impl ApplicationHandler for RunnerHandler {
             renderer.backend_name()
         );
         window.set_title(&title);
+        startup_samples.title_ms = startup_profile.mark();
 
         let world = self.world.as_mut().expect("world must be present");
 
@@ -469,6 +507,7 @@ impl ApplicationHandler for RunnerHandler {
             // Insert Input resource into the World (updated in-place each frame).
             world.insert_resource(input);
         }
+        startup_samples.input_ms = startup_profile.mark();
 
         if let Some(asset_config) = self.asset_config.clone() {
             crate::app::services::install_assets(world, asset_config);
@@ -481,6 +520,7 @@ impl ApplicationHandler for RunnerHandler {
         if self.video_enabled {
             crate::app::services::install_video(world);
         }
+        startup_samples.services_ms = startup_profile.mark();
 
         // Run one-time setup.
         {
@@ -491,6 +531,7 @@ impl ApplicationHandler for RunnerHandler {
             self.app_state.setup(&mut setup_ctx);
             logging::drain_logger(self.logs.as_ref());
         }
+        startup_samples.setup_ms = startup_profile.mark();
 
         #[cfg(feature = "egui")]
         let egui = renderer.wgpu().map(|gpu| {
@@ -500,6 +541,10 @@ impl ApplicationHandler for RunnerHandler {
                 gpu.surface_format(),
             )
         });
+        #[cfg(feature = "egui")]
+        {
+            startup_samples.egui_ms = startup_profile.mark();
+        }
 
         self.runtime = Some(RuntimeState {
             window,
@@ -511,6 +556,7 @@ impl ApplicationHandler for RunnerHandler {
             #[cfg(feature = "egui")]
             egui,
         });
+        startup_samples.runtime_ms = startup_profile.mark();
         if let Some(rt) = self.runtime.as_ref() {
             if rt.renderer.backend_kind() == RenderBackendKind::Kajiya && kajiya_trace_enabled() {
                 eprintln!(
@@ -521,6 +567,10 @@ impl ApplicationHandler for RunnerHandler {
             }
         }
         self.request_redraw();
+        startup_samples.request_redraw_ms = startup_profile.mark();
+        startup_profile.print(&startup_samples);
+        #[cfg(feature = "profile")]
+        record_app_startup_profile(startup_profile.start, &startup_samples);
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
@@ -694,11 +744,115 @@ impl ApplicationHandler for RunnerHandler {
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.shutdown_world();
+        #[cfg(feature = "profile")]
+        sky_profile::flush();
     }
 }
 
 fn should_trace_kajiya_runner_frame(frame_index: u64) -> bool {
     kajiya_trace_enabled() && (frame_index < 8 || frame_index % 120 == 0)
+}
+
+#[cfg(feature = "profile")]
+fn record_app_profile_frame(
+    frame: u64,
+    start: Instant,
+    samples: &AppFrameProfileSamples,
+    render_stats: Option<crate::render::RenderStats>,
+    request_redraw: bool,
+    should_exit: bool,
+) {
+    let segments = [
+        ("frame_setup", samples.frame_setup_ms),
+        ("input_sync", samples.input_sync_ms),
+        ("actions", samples.actions_ms),
+        ("assets", samples.assets_ms),
+        ("tick", samples.tick_ms),
+        ("video", samples.video_ms),
+        ("surface_begin", samples.begin_frame_ms),
+        ("update", samples.update_ms),
+        ("audio", samples.audio_ms),
+        ("egui", samples.egui_ms),
+        ("screenshot", samples.screenshot_ms),
+        ("pre_present", samples.pre_present_ms),
+        ("end_submit_present", samples.end_frame_ms),
+        ("input_reset", samples.input_reset_ms),
+        ("log_drain", samples.log_drain_ms),
+        ("redraw_request", samples.redraw_request_ms),
+        ("aux_windows", samples.aux_windows_ms),
+        ("prune_windows", samples.prune_windows_ms),
+        ("shutdown", samples.shutdown_ms),
+    ];
+    record_profile_segments(Some(frame), start, "app", &segments);
+
+    let mut profile_frame = sky_profile::ProfileFrame::new(sky_profile::run_id(), frame);
+    profile_frame.cpu_frame_ms = start.elapsed().as_secs_f32() * 1000.0;
+    if let Some(render_stats) = render_stats {
+        profile_frame.draw_calls = render_stats.draw_calls;
+        profile_frame.passes = render_stats.passes;
+        profile_frame.uploaded_render_assets = render_stats.uploaded_render_assets;
+        profile_frame.uploaded_render_asset_bytes = render_stats.uploaded_render_asset_bytes;
+        profile_frame.gpu_frame_ms = None;
+        profile_frame = profile_frame
+            .with_metadata("render_execute_ms", render_stats.timings.execute_ms)
+            .with_metadata("render_upload_ms", render_stats.timings.upload_ms)
+            .with_metadata("render_frame_ms", render_stats.timings.frame_ms);
+    }
+    profile_frame = profile_frame
+        .with_metadata("request_redraw", request_redraw)
+        .with_metadata("should_exit", should_exit);
+    sky_profile::record_frame(profile_frame);
+}
+
+#[cfg(feature = "profile")]
+fn record_app_startup_profile(start: Instant, samples: &AppStartupProfileSamples) {
+    let segments = [
+        ("window", samples.window_ms),
+        ("renderer", samples.renderer_ms),
+        ("title", samples.title_ms),
+        ("input", samples.input_ms),
+        ("services", samples.services_ms),
+        ("setup", samples.setup_ms),
+        ("egui", app_startup_profile_egui_ms(samples)),
+        ("runtime", samples.runtime_ms),
+        ("request_redraw", samples.request_redraw_ms),
+    ];
+    record_profile_segments(None, start, "app_startup", &segments);
+    sky_profile::flush();
+}
+
+#[cfg(feature = "profile")]
+fn record_profile_segments(
+    frame: Option<u64>,
+    start: Instant,
+    category: &'static str,
+    segments: &[(&'static str, f32)],
+) {
+    if !sky_profile::enabled() {
+        return;
+    }
+    let run_id = sky_profile::run_id();
+    let mut cursor_ns = sky_profile::elapsed_ns_since_start(start);
+    for &(name, elapsed_ms) in segments {
+        let duration_ns = profile_ms_to_ns(elapsed_ms);
+        sky_profile::record_event(sky_profile::ProfileEvent::new(
+            run_id.clone(),
+            frame,
+            category,
+            name,
+            cursor_ns,
+            duration_ns,
+        ));
+        cursor_ns = cursor_ns.saturating_add(duration_ns);
+    }
+}
+
+#[cfg(feature = "profile")]
+fn profile_ms_to_ns(ms: f32) -> u64 {
+    if !ms.is_finite() || ms <= 0.0 {
+        return 0;
+    }
+    (f64::from(ms) * 1_000_000.0).round().min(u64::MAX as f64) as u64
 }
 
 #[derive(Debug, Default)]
@@ -791,13 +945,101 @@ impl AppFrameProfile {
     }
 }
 
+#[derive(Debug, Default)]
+struct AppStartupProfileSamples {
+    window_ms: f32,
+    renderer_ms: f32,
+    title_ms: f32,
+    input_ms: f32,
+    services_ms: f32,
+    setup_ms: f32,
+    #[cfg(feature = "egui")]
+    egui_ms: f32,
+    runtime_ms: f32,
+    request_redraw_ms: f32,
+}
+
+struct AppStartupProfile {
+    enabled: bool,
+    start: Instant,
+    last: Instant,
+}
+
+impl AppStartupProfile {
+    fn new(start: Instant) -> Self {
+        Self {
+            enabled: app_startup_profile_enabled(),
+            start,
+            last: start,
+        }
+    }
+
+    fn mark(&mut self) -> f32 {
+        if !self.enabled {
+            return 0.0;
+        }
+        let now = Instant::now();
+        let elapsed_ms = now.duration_since(self.last).as_secs_f32() * 1000.0;
+        self.last = now;
+        elapsed_ms
+    }
+
+    fn print(&self, samples: &AppStartupProfileSamples) {
+        if !self.enabled {
+            return;
+        }
+        let total_ms = self.start.elapsed().as_secs_f32() * 1000.0;
+        eprintln!(
+            concat!(
+                "[SkyEngine][StartupProfile] total={:.3}ms ",
+                "window={:.3} renderer={:.3} title={:.3} input={:.3} services={:.3} setup={:.3} ",
+                "egui={:.3} runtime={:.3} request_redraw={:.3}"
+            ),
+            total_ms,
+            samples.window_ms,
+            samples.renderer_ms,
+            samples.title_ms,
+            samples.input_ms,
+            samples.services_ms,
+            samples.setup_ms,
+            app_startup_profile_egui_ms(samples),
+            samples.runtime_ms,
+            samples.request_redraw_ms,
+        );
+    }
+}
+
+#[cfg(feature = "egui")]
+fn app_startup_profile_egui_ms(samples: &AppStartupProfileSamples) -> f32 {
+    samples.egui_ms
+}
+
+#[cfg(not(feature = "egui"))]
+fn app_startup_profile_egui_ms(_samples: &AppStartupProfileSamples) -> f32 {
+    0.0
+}
+
 fn should_trace_app_profile_frame(frame_index: u64) -> bool {
     frame_index < 8 || frame_index % 120 == 0
 }
 
+fn app_startup_profile_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var_os("SKY_APP_STARTUP_PROFILE")
+            .or_else(|| std::env::var_os("SKY_APP_PROFILE"))
+            .or_else(|| std::env::var_os("SKY_PROFILE"))
+            .is_some_and(env_flag_enabled)
+    })
+}
+
 fn app_profile_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("SKY_APP_PROFILE").is_some_and(env_flag_enabled))
+    *ENABLED.get_or_init(|| {
+        std::env::var_os("SKY_APP_PROFILE")
+            .or_else(|| std::env::var_os("SKY_PROFILE"))
+            .is_some_and(env_flag_enabled)
+    })
 }
 
 fn kajiya_trace_enabled() -> bool {
