@@ -13,7 +13,7 @@ use crate::callbacks::{
     LayerDismissCallbackId, PressCallbackId, ScrollCallbackId, TextInputCallbackId,
     TimerCallbackId, UiCallbacks,
 };
-use crate::clock::{preserve_reused_scope_clock_dependency, ClockPeriodMap, UiClock};
+use crate::clock::{ClockPeriodMap, UiClock};
 use crate::retained::{
     dirty_root_ids_for_scopes, RetainedComposeEvent, RetainedComposeReason, RetainedComposeStats,
     RetainedRoot, RetainedTiming, ScopeComposeRecord, ScopeId, ScopeRoots, ScopeSet,
@@ -460,16 +460,14 @@ impl Ui {
             .plan(id.as_str(), has_dirty_ancestor)
         });
         let reuse = apply_retained_reuse_plan(
+            id,
             reuse_plan,
             &mut self.callbacks,
             &mut self.previous_callbacks,
-        )?;
-        preserve_reused_scope_clock_dependency(
-            id,
             self.previous_clock_periods.as_ref(),
             &mut self.clock_ids,
             &mut self.clock_periods,
-        );
+        )?;
         let children = children_at_path_mut(&mut self.roots, &self.path);
         children.extend(reuse.elements.clone());
         self.record_scope_compose_record(reuse.compose_record(id.clone()));

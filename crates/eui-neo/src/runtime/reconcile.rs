@@ -1,6 +1,7 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::callbacks::UiCallbacks;
+use crate::clock::{preserve_reused_scope_clock_dependency, ClockPeriodMap};
 use crate::retained::{
     previous_elements_for_scope, retained_scope_contains_dirty_root,
     structural_incompatibility_reports, structurally_incompatible_dirty_scopes,
@@ -38,6 +39,7 @@ pub(crate) struct RetainedReuseApplied {
     pub root_count: usize,
     pub element_count: usize,
     pub callback_transfers: CallbackTransferStats,
+    pub preserved_clock_dependency: bool,
 }
 
 impl RetainedReuseApplied {
@@ -160,9 +162,13 @@ impl<'a> RetainedReuseContext<'a> {
 }
 
 pub(crate) fn apply_retained_reuse_plan(
+    id: &ScopeId,
     plan: RetainedReusePlan,
     callbacks: &mut UiCallbacks,
     previous_callbacks: &mut UiCallbacks,
+    previous_clock_periods: Option<&ClockPeriodMap>,
+    clock_ids: &mut ScopeSet,
+    clock_periods: &mut Option<ClockPeriodMap>,
 ) -> Result<RetainedReuseApplied, RetainedComposeReason> {
     let elements = match plan {
         RetainedReusePlan::Reuse { elements } => elements,
@@ -172,12 +178,19 @@ pub(crate) fn apply_retained_reuse_plan(
     let element_count = count_elements(&elements);
     let retained_roots = RetainedRoot::from_elements(&elements);
     let callback_transfers = callbacks.transfer_for_elements(previous_callbacks, &elements);
+    let preserved_clock_dependency = preserve_reused_scope_clock_dependency(
+        id,
+        previous_clock_periods,
+        clock_ids,
+        clock_periods,
+    );
     Ok(RetainedReuseApplied {
         elements,
         retained_roots,
         root_count,
         element_count,
         callback_transfers,
+        preserved_clock_dependency,
     })
 }
 
