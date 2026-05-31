@@ -5339,10 +5339,10 @@ dependencies = [
  "serde",
  "serde_json",
  "sky_ecs",
- "sky_engine_reflect_derive",
  "sky_math",
  "sky_profile",
  "sky_reflect",
+ "sky_reflect_derive",
  "tempfile",
  "toml",
  "turbosloth",
@@ -5356,16 +5356,6 @@ dependencies = [
  "yakui-wgpu",
  "yakui-winit",
  "yarnspinner",
-]
-
-[[package]]
-name = "sky_engine_reflect_derive"
-version = "0.1.0"
-dependencies = [
- "proc-macro-crate",
- "proc-macro2",
- "quote",
- "syn 2.0.117",
 ]
 
 [[package]]
@@ -5392,8 +5382,18 @@ version = "0.1.0"
 dependencies = [
  "rustc-hash 2.1.2",
  "serde",
- "sky_engine_reflect_derive",
+ "sky_reflect_derive",
  "sky_type",
+]
+
+[[package]]
+name = "sky_reflect_derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]

@@ -1,5 +1,5 @@
 [package]
-name = "sky_engine_reflect_derive"
+name = "sky_reflect_derive"
 version = "0.1.0"
 edition = "2021"
 description = "Derive macro for SkyEngine inspector reflection"

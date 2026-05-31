@@ -27,7 +27,7 @@ pub use persistence::{
     Persist, PersistDocument, PersistPrefabInstance, PersistRegistration, PersistWorldInstance,
     Persistence,
 };
-pub use sky_engine_reflect_derive::persist;
+pub use sky_reflect_derive::persist;
 pub(crate) use value::PersistValue;
 
 #[doc(hidden)]

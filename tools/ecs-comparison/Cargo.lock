@@ -3955,9 +3955,9 @@ dependencies = [
  "mimalloc",
  "rustc-hash 2.1.2",
  "sky_ecs",
- "sky_engine_reflect_derive",
  "sky_math",
  "sky_reflect",
+ "sky_reflect_derive",
 ]
 
 [[package]]
@@ -3976,16 +3976,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sky_engine_reflect_derive"
-version = "0.1.0"
-dependencies = [
- "proc-macro-crate",
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "sky_math"
 version = "0.1.0"
 dependencies = [
@@ -3998,8 +3988,18 @@ name = "sky_reflect"
 version = "0.1.0"
 dependencies = [
  "rustc-hash 2.1.2",
- "sky_engine_reflect_derive",
+ "sky_reflect_derive",
  "sky_type",
+]
+
+[[package]]
+name = "sky_reflect_derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

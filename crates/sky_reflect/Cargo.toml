@@ -12,5 +12,5 @@ serde = ["dep:serde"]
 [dependencies]
 rustc-hash = "2.1.2"
 serde = { version = "1", features = ["derive"], optional = true }
-sky_engine_reflect_derive = { path = "../sky_engine_reflect_derive" }
+sky_reflect_derive = { path = "../sky_reflect_derive" }
 sky_type = { path = "../sky_type" }
