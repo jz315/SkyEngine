@@ -395,17 +395,21 @@ impl World {
     /// More efficient than calling [`spawn`](Self::spawn) in a loop because
     /// the archetype lookup and entity record allocation are amortised.
     pub fn spawn_batch<B: Bundle>(&mut self, bundles: impl IntoIterator<Item = B>) {
+        let mut iter = bundles.into_iter();
+        let (lower, _) = iter.size_hint();
+        let Some(first) = iter.next() else {
+            return;
+        };
+
         let (archetype, columns) = B::cached_meta();
         let data_index = self.ensure_data_index(archetype);
-        let iter = bundles.into_iter();
-        let (lower, _) = iter.size_hint();
 
         // Pre-reserve entity record storage to avoid per-entity Vec reallocation.
         if lower > 0 {
             self.entities.reserve(lower);
         }
 
-        for bundle in iter {
+        for bundle in std::iter::once(first).chain(iter) {
             let entity = self.allocate_entity();
             let location = unsafe { self.data[data_index].add_entity(entity) };
             self.set_entity_location(
@@ -1289,6 +1293,19 @@ mod tests {
         actual.sort_by(|(left, _), (right, _)| left.x.total_cmp(&right.x));
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn spawn_batch_empty_iterator_is_noop() {
+        let mut world = World::new();
+
+        world.spawn_batch(Vec::<(Position,)>::new());
+
+        assert_eq!(world.entity_count(), 0);
+        assert_eq!(world.archetype_count(), 0);
+        let mut positions = world.query::<&Position>();
+        assert!(positions.is_empty(&world));
+        assert_eq!(positions.cached_archetype_count(), 0);
     }
 
     #[test]
