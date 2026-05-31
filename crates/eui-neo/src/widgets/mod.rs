@@ -76,16 +76,18 @@ pub use virtual_list::{virtual_list, VirtualListBuilder, VirtualListItem, Virtua
 mod tests {
     use super::scroll::scrollbar;
     use super::{
-        badge, button, checkbox, context_menu, date_picker, dialog, dropdown, image_with_style,
-        input, nav_group, popover, progress, radio, segmented, skin_button, slider, switch, tabs,
-        time_picker, toast, PopoverPlacement,
+        badge, button, checkbox, color_picker, context_menu, date_picker, dialog, dropdown,
+        image_with_style, input, nav_group, popover, progress, radio, segmented, skin_button,
+        slider, switch, tabs, time_picker, toast, PopoverPlacement,
     };
     use crate::expert::UiDrawCommand;
     use crate::test_support::compose;
     use crate::Color;
     use crate::{
-        ButtonSkin, DirtyInput, EdgeInsets, FontRef, FrameInput, ImageFit, ImageRef, KeyboardEvent,
-        NeoSkin, PointerEvent, Runtime, Screen, ScrollEvent, Size, Slice, State,
+        ButtonSkin, DirtyInput, EdgeInsets, FontRef, FrameInput, ImageFit, ImageRef,
+        InvalidationTarget, KeyboardEvent, LayerAnchorSource, LayerKind, LayerLifecycleAction,
+        LayerPlacement, LayerPointerAction, LayoutRect, NeoSkin, OutsideClickPolicy, PointerEvent,
+        Runtime, Screen, ScrollEvent, Size, Slice, State,
     };
     use std::cell::Cell;
     use std::rc::Rc;
@@ -236,7 +238,6 @@ mod tests {
         assert!(checked.get());
     }
 
-    #[derive(Default)]
     struct BoundWidgetState {
         checked: bool,
         slider: f32,
@@ -246,6 +247,23 @@ mod tests {
         offset: f32,
         date: [i32; 3],
         time: [i32; 2],
+        color: Color,
+    }
+
+    impl Default for BoundWidgetState {
+        fn default() -> Self {
+            Self {
+                checked: false,
+                slider: 0.0,
+                text: String::new(),
+                selected: 0,
+                open: false,
+                offset: 0.0,
+                date: [0, 0, 0],
+                time: [0, 0],
+                color: Color::WHITE,
+            }
+        }
     }
 
     #[test]
@@ -691,30 +709,421 @@ mod tests {
     #[test]
     fn popover_composes_on_root_layer_from_previous_anchor_frame() {
         let mut runtime = Runtime::new("page");
-        for _ in 0..2 {
-            compose(&mut runtime, 320.0, 180.0, |ui, _| {
-                ui.column("panel")
-                    .position(20.0, 30.0)
-                    .size(120.0, 80.0)
-                    .content(|ui| {
-                        ui.rect("anchor").size(50.0, 20.0).build();
-                        popover(ui, "menu")
-                            .anchor("anchor")
-                            .placement(PopoverPlacement::BottomStart)
-                            .gap(4.0)
-                            .size(80.0, 60.0)
-                            .content(|ui| {
-                                ui.rect("menu.bg").size(Size::fill(), Size::fill()).build();
-                            });
-                    });
-            });
-        }
+        compose(&mut runtime, 320.0, 180.0, |ui, _| {
+            ui.column("panel")
+                .position(20.0, 30.0)
+                .size(120.0, 80.0)
+                .content(|ui| {
+                    ui.rect("anchor").size(50.0, 20.0).build();
+                    popover(ui, "menu")
+                        .anchor("anchor")
+                        .placement(PopoverPlacement::BottomStart)
+                        .gap(4.0)
+                        .size(80.0, 60.0)
+                        .content(|ui| {
+                            ui.rect("menu.bg").size(Size::fill(), Size::fill()).build();
+                        });
+                });
+        });
+        assert_eq!(runtime.debug_snapshot().layers[0].id, "page.menu");
+        assert_eq!(
+            runtime.debug_snapshot().layers[0].anchor_source,
+            LayerAnchorSource::Missing
+        );
+        assert_eq!(
+            runtime.debug_snapshot().layers[0].action,
+            LayerLifecycleAction::Created
+        );
+
+        compose(&mut runtime, 320.0, 180.0, |ui, _| {
+            ui.column("panel")
+                .position(20.0, 30.0)
+                .size(120.0, 80.0)
+                .content(|ui| {
+                    ui.rect("anchor").size(50.0, 20.0).build();
+                    popover(ui, "menu")
+                        .anchor("anchor")
+                        .placement(PopoverPlacement::BottomStart)
+                        .gap(4.0)
+                        .size(80.0, 60.0)
+                        .content(|ui| {
+                            ui.rect("menu.bg").size(Size::fill(), Size::fill()).build();
+                        });
+                });
+        });
 
         assert_eq!(runtime.roots().len(), 2);
         assert_eq!(runtime.roots()[0].id, "page.panel");
         assert_eq!(runtime.roots()[1].id, "page.menu");
         assert_eq!(runtime.find("menu").unwrap().frame.x, 20.0);
         assert_eq!(runtime.find("menu").unwrap().frame.y, 54.0);
+        assert_eq!(runtime.debug_snapshot().layers.len(), 1);
+        let layer = &runtime.debug_snapshot().layers[0];
+        assert_eq!(layer.id, "page.menu");
+        assert_eq!(layer.owner, "page.menu");
+        assert_eq!(layer.anchor.as_deref(), Some("page.anchor"));
+        assert_eq!(layer.anchor_source, LayerAnchorSource::PreviousFrame);
+        assert_eq!(layer.kind, LayerKind::Popover);
+        assert_eq!(layer.placement, LayerPlacement::BottomStart);
+        assert_eq!(layer.action, LayerLifecycleAction::Reused);
+
+        compose(&mut runtime, 320.0, 180.0, |ui, _| {
+            ui.column("panel")
+                .position(20.0, 30.0)
+                .size(120.0, 80.0)
+                .content(|ui| {
+                    ui.rect("anchor").size(50.0, 20.0).build();
+                });
+        });
+        assert!(runtime.debug_snapshot().layers.iter().any(|layer| {
+            layer.id == "page.menu" && layer.action == LayerLifecycleAction::Removed
+        }));
+    }
+
+    #[test]
+    fn closed_popover_records_closed_layer_intent_without_root_content() {
+        let mut runtime = Runtime::new("page");
+        compose(&mut runtime, 320.0, 180.0, |ui, _| {
+            ui.column("panel")
+                .position(20.0, 30.0)
+                .size(120.0, 80.0)
+                .content(|ui| {
+                    ui.rect("anchor").size(50.0, 20.0).build();
+                    popover(ui, "menu")
+                        .anchor("anchor")
+                        .placement(PopoverPlacement::BottomStart)
+                        .gap(4.0)
+                        .size(80.0, 60.0)
+                        .open(false)
+                        .content(|ui| {
+                            ui.rect("menu.bg").size(Size::fill(), Size::fill()).build();
+                        });
+                });
+        });
+
+        assert!(runtime.find("menu").is_none());
+        assert_eq!(runtime.debug_snapshot().layers.len(), 1);
+        let layer = &runtime.debug_snapshot().layers[0];
+        assert_eq!(layer.id, "page.menu");
+        assert!(!layer.open);
+        assert_eq!(layer.anchor_source, LayerAnchorSource::Closed);
+        assert_eq!(layer.action, LayerLifecycleAction::Closed);
+    }
+
+    #[test]
+    fn blocking_popover_blocks_outside_pointer_without_blocking_inside_pointer() {
+        let mut runtime = Runtime::new("page");
+        let under_clicks = Rc::new(Cell::new(0));
+        let menu_clicks = Rc::new(Cell::new(0));
+
+        compose(&mut runtime, 320.0, 180.0, |ui, _| {
+            ui.rect("under")
+                .position(0.0, 0.0)
+                .size(320.0, 180.0)
+                .on_click({
+                    let under_clicks = under_clicks.clone();
+                    move || under_clicks.set(under_clicks.get() + 1)
+                })
+                .build();
+            ui.rect("anchor")
+                .position(20.0, 20.0)
+                .size(40.0, 20.0)
+                .build();
+            popover(ui, "menu")
+                .anchor("anchor")
+                .fallback_anchor(LayoutRect::new(20.0, 20.0, 40.0, 20.0))
+                .placement(PopoverPlacement::BottomStart)
+                .gap(0.0)
+                .size(80.0, 60.0)
+                .outside_click(OutsideClickPolicy::Block)
+                .content(|ui| {
+                    ui.rect("menu.hit")
+                        .size(Size::fill(), Size::fill())
+                        .on_click({
+                            let menu_clicks = menu_clicks.clone();
+                            move || menu_clicks.set(menu_clicks.get() + 1)
+                        })
+                        .build();
+                });
+        });
+
+        runtime.update_pointer(PointerEvent::pressed_at(10.0, 10.0));
+        runtime.update_pointer(PointerEvent::released_at(10.0, 10.0));
+        assert_eq!(under_clicks.get(), 0);
+        assert_eq!(menu_clicks.get(), 0);
+        assert_eq!(
+            runtime.debug_snapshot().layers[0].outside_click,
+            OutsideClickPolicy::Block
+        );
+        let layer_pointer = &runtime.debug_snapshot_current().layer_pointer[0];
+        assert_eq!(layer_pointer.action, LayerPointerAction::Blocked);
+        assert_eq!(layer_pointer.layer.as_deref(), Some("page.menu"));
+        assert_eq!(layer_pointer.policy, OutsideClickPolicy::Block);
+
+        runtime.update_pointer(PointerEvent::pressed_at(30.0, 45.0));
+        runtime.update_pointer(PointerEvent::released_at(30.0, 45.0));
+        assert_eq!(under_clicks.get(), 0);
+        assert_eq!(menu_clicks.get(), 1);
+        let layer_pointer = &runtime.debug_snapshot_current().layer_pointer[0];
+        assert_eq!(layer_pointer.action, LayerPointerAction::HitLayer);
+        assert_eq!(layer_pointer.hit_layer.as_deref(), Some("page.menu"));
+    }
+
+    #[test]
+    fn blocking_popover_blocks_outside_scroll_without_blocking_inside_scroll() {
+        let mut runtime = Runtime::new("page");
+        let under_scroll = Rc::new(Cell::new(0.0));
+        let menu_scroll = Rc::new(Cell::new(0.0));
+
+        compose(&mut runtime, 320.0, 180.0, |ui, _| {
+            ui.rect("under")
+                .position(0.0, 0.0)
+                .size(320.0, 180.0)
+                .on_scroll({
+                    let under_scroll = under_scroll.clone();
+                    move |event| under_scroll.set(under_scroll.get() + event.y)
+                })
+                .build();
+            ui.rect("anchor")
+                .position(20.0, 20.0)
+                .size(40.0, 20.0)
+                .build();
+            popover(ui, "menu")
+                .anchor("anchor")
+                .fallback_anchor(LayoutRect::new(20.0, 20.0, 40.0, 20.0))
+                .placement(PopoverPlacement::BottomStart)
+                .gap(0.0)
+                .size(80.0, 60.0)
+                .outside_click(OutsideClickPolicy::Block)
+                .content(|ui| {
+                    ui.rect("menu.scroll")
+                        .size(Size::fill(), Size::fill())
+                        .on_scroll({
+                            let menu_scroll = menu_scroll.clone();
+                            move |event| menu_scroll.set(menu_scroll.get() + event.y)
+                        })
+                        .build();
+                });
+        });
+
+        runtime.update_pointer(PointerEvent::at(10.0, 10.0));
+        runtime.update_scroll(ScrollEvent { x: 0.0, y: 4.0 });
+        assert_eq!(under_scroll.get(), 0.0);
+        assert_eq!(menu_scroll.get(), 0.0);
+        let layer_pointer = &runtime.debug_snapshot_current().layer_pointer[0];
+        assert_eq!(layer_pointer.action, LayerPointerAction::Blocked);
+        assert_eq!(layer_pointer.layer.as_deref(), Some("page.menu"));
+
+        runtime.update_pointer(PointerEvent::at(30.0, 45.0));
+        runtime.update_scroll(ScrollEvent { x: 0.0, y: 5.0 });
+        assert_eq!(under_scroll.get(), 0.0);
+        assert_eq!(menu_scroll.get(), 5.0);
+        let layer_pointer = &runtime.debug_snapshot_current().layer_pointer[0];
+        assert_eq!(layer_pointer.action, LayerPointerAction::HitLayer);
+        assert_eq!(layer_pointer.hit_layer.as_deref(), Some("page.menu"));
+        assert!(runtime.debug_snapshot_current().events.iter().any(|event| {
+            event.raw_event == "scroll"
+                && event.target.role() == "scroll"
+                && event.target.id() == "page.menu.scroll"
+                && event.command == "scroll"
+                && event.callback
+        }));
+    }
+
+    #[test]
+    fn blocking_popover_clears_underlying_focus_allows_layer_focus_and_restores_on_close() {
+        let mut runtime = Runtime::new("page");
+        let under_text = Rc::new(std::cell::RefCell::new(String::new()));
+        let menu_text = Rc::new(std::cell::RefCell::new(String::new()));
+
+        compose(&mut runtime, 320.0, 180.0, |ui, _| {
+            ui.rect("under.input")
+                .position(0.0, 0.0)
+                .size(80.0, 24.0)
+                .on_text_input({
+                    let under_text = under_text.clone();
+                    move |event| under_text.borrow_mut().push_str(&event.text)
+                })
+                .build();
+        });
+        runtime.update_pointer(PointerEvent::pressed_at(5.0, 5.0));
+        runtime.update_keyboard(KeyboardEvent {
+            text: "A".to_string(),
+            ..KeyboardEvent::default()
+        });
+        assert_eq!(under_text.borrow().as_str(), "A");
+        assert_eq!(runtime.text_focused_id(), Some("page.under.input"));
+
+        compose(&mut runtime, 320.0, 180.0, |ui, _| {
+            ui.rect("under.input")
+                .position(0.0, 0.0)
+                .size(80.0, 24.0)
+                .on_text_input({
+                    let under_text = under_text.clone();
+                    move |event| under_text.borrow_mut().push_str(&event.text)
+                })
+                .build();
+            ui.rect("anchor")
+                .position(100.0, 20.0)
+                .size(40.0, 20.0)
+                .build();
+            popover(ui, "menu")
+                .anchor("anchor")
+                .fallback_anchor(LayoutRect::new(100.0, 20.0, 40.0, 20.0))
+                .placement(PopoverPlacement::BottomStart)
+                .gap(0.0)
+                .size(90.0, 44.0)
+                .outside_click(OutsideClickPolicy::Block)
+                .content(|ui| {
+                    ui.rect("menu.input")
+                        .size(Size::fill(), Size::fill())
+                        .on_text_input({
+                            let menu_text = menu_text.clone();
+                            move |event| menu_text.borrow_mut().push_str(&event.text)
+                        })
+                        .build();
+                });
+        });
+
+        assert!(runtime.has_keyboard_capture());
+        assert_eq!(runtime.focused_id(), None);
+        assert_eq!(runtime.text_focused_id(), None);
+        assert!(!runtime.update_keyboard(KeyboardEvent {
+            text: "B".to_string(),
+            ..KeyboardEvent::default()
+        }));
+        assert_eq!(under_text.borrow().as_str(), "A");
+        assert_eq!(menu_text.borrow().as_str(), "");
+
+        runtime.update_pointer(PointerEvent::pressed_at(110.0, 50.0));
+        assert_eq!(runtime.text_focused_id(), Some("page.menu.input"));
+        assert!(runtime.update_keyboard(KeyboardEvent {
+            text: "C".to_string(),
+            ..KeyboardEvent::default()
+        }));
+        assert_eq!(under_text.borrow().as_str(), "A");
+        assert_eq!(menu_text.borrow().as_str(), "C");
+
+        compose(&mut runtime, 320.0, 180.0, |ui, _| {
+            ui.rect("under.input")
+                .position(0.0, 0.0)
+                .size(80.0, 24.0)
+                .on_text_input({
+                    let under_text = under_text.clone();
+                    move |event| under_text.borrow_mut().push_str(&event.text)
+                })
+                .build();
+        });
+
+        assert_eq!(runtime.text_focused_id(), Some("page.under.input"));
+        assert!(runtime.update_keyboard(KeyboardEvent {
+            text: "D".to_string(),
+            ..KeyboardEvent::default()
+        }));
+        assert_eq!(under_text.borrow().as_str(), "AD");
+        assert_eq!(menu_text.borrow().as_str(), "C");
+    }
+
+    #[test]
+    fn close_popover_records_dismissal_and_blocks_outside_pointer() {
+        let mut runtime = Runtime::new("page");
+        let under_clicks = Rc::new(Cell::new(0));
+
+        compose(&mut runtime, 320.0, 180.0, |ui, _| {
+            ui.rect("under")
+                .position(0.0, 0.0)
+                .size(320.0, 180.0)
+                .on_click({
+                    let under_clicks = under_clicks.clone();
+                    move || under_clicks.set(under_clicks.get() + 1)
+                })
+                .build();
+            ui.rect("anchor")
+                .position(20.0, 20.0)
+                .size(40.0, 20.0)
+                .build();
+            popover(ui, "menu")
+                .anchor("anchor")
+                .fallback_anchor(LayoutRect::new(20.0, 20.0, 40.0, 20.0))
+                .placement(PopoverPlacement::BottomStart)
+                .gap(0.0)
+                .size(80.0, 60.0)
+                .outside_click(OutsideClickPolicy::Close)
+                .content(|ui| {
+                    ui.rect("menu.bg").size(Size::fill(), Size::fill()).build();
+                });
+        });
+
+        runtime.update_pointer(PointerEvent::pressed_at(10.0, 10.0));
+        runtime.update_pointer(PointerEvent::released_at(10.0, 10.0));
+
+        assert_eq!(under_clicks.get(), 0);
+        assert_eq!(runtime.debug_snapshot_current().layer_dismissals.len(), 1);
+        let dismissal = &runtime.debug_snapshot_current().layer_dismissals[0];
+        assert_eq!(dismissal.id, "page.menu");
+        assert_eq!(dismissal.owner, "page.menu");
+        assert_eq!(dismissal.policy, OutsideClickPolicy::Close);
+        let layer_pointer = &runtime.debug_snapshot_current().layer_pointer[0];
+        assert_eq!(layer_pointer.action, LayerPointerAction::Dismissed);
+        assert_eq!(layer_pointer.layer.as_deref(), Some("page.menu"));
+    }
+
+    #[test]
+    fn upper_layer_hit_does_not_dismiss_lower_close_layer() {
+        let mut runtime = Runtime::new("page");
+        let lower_dismissed = Rc::new(Cell::new(false));
+        let upper_clicks = Rc::new(Cell::new(0));
+
+        compose(&mut runtime, 240.0, 120.0, |ui, _| {
+            popover(ui, "lower")
+                .fallback_anchor(LayoutRect::new(20.0, 20.0, 0.0, 0.0))
+                .placement(PopoverPlacement::BottomStart)
+                .gap(0.0)
+                .size(50.0, 50.0)
+                .z_index(10)
+                .outside_click(OutsideClickPolicy::Close)
+                .on_dismiss({
+                    let lower_dismissed = lower_dismissed.clone();
+                    move || lower_dismissed.set(true)
+                })
+                .content(|ui| {
+                    ui.rect("lower.bg").size(Size::fill(), Size::fill()).build();
+                });
+            popover(ui, "upper")
+                .fallback_anchor(LayoutRect::new(100.0, 20.0, 0.0, 0.0))
+                .placement(PopoverPlacement::BottomStart)
+                .gap(0.0)
+                .size(50.0, 50.0)
+                .z_index(20)
+                .outside_click(OutsideClickPolicy::Ignore)
+                .content(|ui| {
+                    ui.rect("upper.hit")
+                        .size(Size::fill(), Size::fill())
+                        .on_click({
+                            let upper_clicks = upper_clicks.clone();
+                            move || upper_clicks.set(upper_clicks.get() + 1)
+                        })
+                        .build();
+                });
+        });
+
+        runtime.update_pointer(PointerEvent::pressed_at(110.0, 30.0));
+        runtime.update_pointer(PointerEvent::released_at(110.0, 30.0));
+
+        assert!(!lower_dismissed.get());
+        assert_eq!(upper_clicks.get(), 1);
+        assert!(runtime.debug_snapshot_current().layer_dismissals.is_empty());
+        let layer_pointer = &runtime.debug_snapshot_current().layer_pointer[0];
+        assert_eq!(layer_pointer.action, LayerPointerAction::HitLayer);
+        assert_eq!(layer_pointer.layer.as_deref(), Some("page.upper"));
+        assert_eq!(layer_pointer.hit_layer.as_deref(), Some("page.upper"));
+        assert_eq!(layer_pointer.policy, OutsideClickPolicy::Ignore);
+        assert!(runtime.debug_snapshot_current().events.iter().any(|event| {
+            event.target.role() == "node"
+                && event.target.id() == "page.upper.hit"
+                && event.command == "click"
+                && event.callback
+        }));
     }
 
     #[test]
@@ -1052,12 +1461,104 @@ mod tests {
     }
 
     #[test]
-    fn dialog_backdrop_reports_close() {
+    fn dropdown_outside_click_dismisses_open_signal_through_layer_policy() {
+        let state = State::new(BoundWidgetState {
+            open: true,
+            ..BoundWidgetState::default()
+        });
+        let mut runtime = Runtime::new("page");
+
+        let frame = |runtime: &mut Runtime, pointer_events: Vec<PointerEvent>| {
+            let dirty_state = state.clone();
+            let compose_state = state.clone();
+            runtime.frame_incremental(
+                FrameInput::new(Screen::new(320.0, 220.0), 0.0).pointer_events(pointer_events),
+                move || dirty_state.take_dirty(),
+                move |ui, _| {
+                    let selected = compose_state.signal(
+                        "selected",
+                        |state| state.selected,
+                        |state, value| state.selected = value,
+                    );
+                    let open = compose_state.signal(
+                        "open",
+                        |state| state.open,
+                        |state, value| state.open = value,
+                    );
+                    dropdown(ui, "quality")
+                        .items(["Low", "Medium", "High"])
+                        .value_signal(selected)
+                        .open_signal(open)
+                        .build();
+                },
+            );
+        };
+
+        frame(&mut runtime, Vec::new());
+        frame(&mut runtime, Vec::new());
+        assert!(runtime.find("quality.popup.surface").is_some());
+
+        frame(
+            &mut runtime,
+            vec![
+                PointerEvent::pressed_at(300.0, 200.0),
+                PointerEvent::released_at(300.0, 200.0),
+            ],
+        );
+
+        assert!(!state.read(|state| state.open));
+        assert!(runtime.find("quality.popup.surface").is_none());
+        assert_eq!(runtime.debug_snapshot_current().layer_dismissals.len(), 1);
+        assert_eq!(
+            runtime.debug_snapshot_current().layer_dismissals[0].id,
+            "page.quality.popup"
+        );
+        assert!(runtime.debug_snapshot().events.iter().any(|event| {
+            event.target.role() == "layer"
+                && event.target.id() == "page.quality.popup"
+                && matches!(
+                    &event.target,
+                    crate::runtime::EventTargetId::Layer(layer)
+                        if layer.as_str() == "page.quality.popup"
+                )
+                && event.command == "dismiss"
+                && event.callback
+                && event.invalidation.as_ref().is_some_and(|invalidation| {
+                    invalidation.target.kind() == "layer"
+                        && invalidation.target.id() == "page.quality.popup"
+                        && invalidation.source.kind() == "event"
+                        && invalidation.source.label() == "dismiss"
+                })
+        }));
+        assert!(runtime
+            .debug_snapshot()
+            .invalidations
+            .iter()
+            .any(|invalidation| {
+                matches!(
+                    &invalidation.target,
+                    InvalidationTarget::Layer(layer) if layer.as_str() == "page.quality.popup"
+                ) && invalidation.target.kind() == "layer"
+                    && invalidation.source.kind() == "event"
+                    && invalidation.source.label() == "dismiss"
+            }));
+    }
+
+    #[test]
+    fn dialog_backdrop_dismisses_through_layer_policy() {
         let closed = Rc::new(Cell::new(false));
+        let under_clicks = Rc::new(Cell::new(0));
         let callback_closed = closed.clone();
+        let callback_under = under_clicks.clone();
         let mut runtime = Runtime::new("page");
         compose(&mut runtime, 400.0, 300.0, move |ui, _| {
             let callback_closed = callback_closed.clone();
+            let callback_under = callback_under.clone();
+            ui.rect("under")
+                .position(0.0, 0.0)
+                .size(400.0, 300.0)
+                .on_click(move || callback_under.set(callback_under.get() + 1))
+                .build();
             dialog(ui, "confirm")
                 .open(true)
                 .screen(400.0, 300.0)
@@ -1069,6 +1570,24 @@ mod tests {
         runtime.update_pointer(PointerEvent::released_at(8.0, 8.0));
 
         assert!(closed.get());
+        assert_eq!(under_clicks.get(), 0);
+        assert_eq!(runtime.debug_snapshot_current().layer_dismissals.len(), 1);
+        let dismissal = &runtime.debug_snapshot_current().layer_dismissals[0];
+        assert_eq!(dismissal.id, "page.confirm.panel");
+        assert_eq!(dismissal.owner, "page.confirm");
+        assert_eq!(dismissal.policy, OutsideClickPolicy::Close);
+        assert!(runtime.debug_snapshot().layers.iter().any(|layer| {
+            layer.id == "page.confirm.panel"
+                && layer.owner == "page.confirm"
+                && layer.kind == LayerKind::Modal
+                && layer.outside_click == OutsideClickPolicy::Close
+        }));
+        assert!(runtime.debug_snapshot_current().events.iter().any(|event| {
+            event.target.role() == "layer"
+                && event.target.id() == "page.confirm.panel"
+                && event.command == "dismiss"
+                && event.callback
+        }));
     }
 
     #[test]
@@ -1174,6 +1693,48 @@ mod tests {
     }
 
     #[test]
+    fn context_menu_outside_click_dismisses_through_layer_policy() {
+        let dismissed = Rc::new(Cell::new(false));
+        let under_clicks = Rc::new(Cell::new(0));
+        let callback_dismissed = dismissed.clone();
+        let callback_under = under_clicks.clone();
+        let mut runtime = Runtime::new("page");
+        compose(&mut runtime, 320.0, 220.0, move |ui, _| {
+            let callback_dismissed = callback_dismissed.clone();
+            let callback_under = callback_under.clone();
+            ui.rect("under")
+                .position(0.0, 0.0)
+                .size(320.0, 220.0)
+                .on_click(move || callback_under.set(callback_under.get() + 1))
+                .build();
+            context_menu(ui, "menu")
+                .open(true)
+                .screen(320.0, 220.0)
+                .position(40.0, 40.0)
+                .items(["Copy", "Delete"])
+                .on_dismiss(move || callback_dismissed.set(true))
+                .build();
+        });
+
+        runtime.update_pointer(PointerEvent::pressed_at(4.0, 4.0));
+        runtime.update_pointer(PointerEvent::released_at(4.0, 4.0));
+
+        assert!(dismissed.get());
+        assert_eq!(under_clicks.get(), 0);
+        assert_eq!(runtime.debug_snapshot_current().layer_dismissals.len(), 1);
+        let dismissal = &runtime.debug_snapshot_current().layer_dismissals[0];
+        assert_eq!(dismissal.id, "page.menu");
+        assert_eq!(dismissal.owner, "page.menu");
+        assert_eq!(dismissal.policy, OutsideClickPolicy::Close);
+        assert!(runtime.debug_snapshot_current().events.iter().any(|event| {
+            event.target.role() == "layer"
+                && event.target.id() == "page.menu"
+                && event.command == "dismiss"
+                && event.callback
+        }));
+    }
+
+    #[test]
     fn date_picker_signal_writes_done_value_to_state() {
         let state = State::new(BoundWidgetState {
             open: true,
@@ -1207,6 +1768,78 @@ mod tests {
 
         assert_eq!(state.read(|state| state.date), [2026, 5, 28]);
         assert!(!state.read(|state| state.open));
+    }
+
+    #[test]
+    fn date_picker_outside_click_dismisses_open_signal_through_layer_policy() {
+        let state = State::new(BoundWidgetState {
+            open: true,
+            date: [2026, 4, 28],
+            ..BoundWidgetState::default()
+        });
+        let under_clicks = Rc::new(Cell::new(0));
+        let mut runtime = Runtime::new("page");
+
+        let frame = |runtime: &mut Runtime, pointer_events: Vec<PointerEvent>| {
+            let dirty_state = state.clone();
+            let compose_state = state.clone();
+            let callback_under = under_clicks.clone();
+            runtime.frame_incremental(
+                FrameInput::new(Screen::new(480.0, 360.0), 0.0).pointer_events(pointer_events),
+                move || dirty_state.take_dirty(),
+                move |ui, _| {
+                    let callback_under = callback_under.clone();
+                    ui.rect("under")
+                        .position(0.0, 0.0)
+                        .size(480.0, 360.0)
+                        .on_click(move || callback_under.set(callback_under.get() + 1))
+                        .build();
+                    let open = compose_state.signal(
+                        "test.open",
+                        |state| state.open,
+                        |state, value| state.open = value,
+                    );
+                    let date = compose_state.signal(
+                        "test.date",
+                        |state| state.date,
+                        |state, value| state.date = value,
+                    );
+                    date_picker(ui, "date")
+                        .open_signal(open)
+                        .value_signal(date)
+                        .screen(480.0, 360.0)
+                        .build();
+                },
+            );
+        };
+
+        frame(&mut runtime, Vec::new());
+        assert!(runtime.find("date.panel").is_some());
+
+        frame(
+            &mut runtime,
+            vec![
+                PointerEvent::pressed_at(8.0, 8.0),
+                PointerEvent::released_at(8.0, 8.0),
+            ],
+        );
+
+        assert!(!state.read(|state| state.open));
+        assert_eq!(under_clicks.get(), 0);
+        assert_eq!(runtime.debug_snapshot_current().layer_dismissals.len(), 1);
+        let dismissal = &runtime.debug_snapshot_current().layer_dismissals[0];
+        assert_eq!(dismissal.id, "page.date");
+        assert_eq!(dismissal.owner, "page.date");
+        assert_eq!(dismissal.policy, OutsideClickPolicy::Close);
+        assert!(runtime.debug_snapshot().events.iter().any(|event| {
+            event.target.role() == "layer"
+                && event.target.id() == "page.date"
+                && event.command == "dismiss"
+                && event.callback
+        }));
+
+        frame(&mut runtime, Vec::new());
+        assert!(runtime.find("date.panel").is_none());
     }
 
     #[test]
@@ -1246,6 +1879,150 @@ mod tests {
     }
 
     #[test]
+    fn time_picker_outside_click_dismisses_open_signal_through_layer_policy() {
+        let state = State::new(BoundWidgetState {
+            open: true,
+            time: [9, 30],
+            ..BoundWidgetState::default()
+        });
+        let under_clicks = Rc::new(Cell::new(0));
+        let mut runtime = Runtime::new("page");
+
+        let frame = |runtime: &mut Runtime, pointer_events: Vec<PointerEvent>| {
+            let dirty_state = state.clone();
+            let compose_state = state.clone();
+            let callback_under = under_clicks.clone();
+            runtime.frame_incremental(
+                FrameInput::new(Screen::new(480.0, 360.0), 0.0).pointer_events(pointer_events),
+                move || dirty_state.take_dirty(),
+                move |ui, _| {
+                    let callback_under = callback_under.clone();
+                    ui.rect("under")
+                        .position(0.0, 0.0)
+                        .size(480.0, 360.0)
+                        .on_click(move || callback_under.set(callback_under.get() + 1))
+                        .build();
+                    let open = compose_state.signal(
+                        "test.open",
+                        |state| state.open,
+                        |state, value| state.open = value,
+                    );
+                    let time = compose_state.signal(
+                        "test.time",
+                        |state| state.time,
+                        |state, value| state.time = value,
+                    );
+                    time_picker(ui, "time")
+                        .open_signal(open)
+                        .value_signal(time)
+                        .screen(480.0, 360.0)
+                        .build();
+                },
+            );
+        };
+
+        frame(&mut runtime, Vec::new());
+        assert!(runtime.find("time.panel").is_some());
+
+        frame(
+            &mut runtime,
+            vec![
+                PointerEvent::pressed_at(8.0, 8.0),
+                PointerEvent::released_at(8.0, 8.0),
+            ],
+        );
+
+        assert!(!state.read(|state| state.open));
+        assert_eq!(under_clicks.get(), 0);
+        assert_eq!(runtime.debug_snapshot_current().layer_dismissals.len(), 1);
+        let dismissal = &runtime.debug_snapshot_current().layer_dismissals[0];
+        assert_eq!(dismissal.id, "page.time");
+        assert_eq!(dismissal.owner, "page.time");
+        assert_eq!(dismissal.policy, OutsideClickPolicy::Close);
+        assert!(runtime.debug_snapshot().events.iter().any(|event| {
+            event.target.role() == "layer"
+                && event.target.id() == "page.time"
+                && event.command == "dismiss"
+                && event.callback
+        }));
+
+        frame(&mut runtime, Vec::new());
+        assert!(runtime.find("time.panel").is_none());
+    }
+
+    #[test]
+    fn color_picker_outside_click_dismisses_open_signal_through_layer_policy() {
+        let state = State::new(BoundWidgetState {
+            open: true,
+            color: Color::rgba8(64, 128, 192, 255),
+            ..BoundWidgetState::default()
+        });
+        let under_clicks = Rc::new(Cell::new(0));
+        let mut runtime = Runtime::new("page");
+
+        let frame = |runtime: &mut Runtime, pointer_events: Vec<PointerEvent>| {
+            let dirty_state = state.clone();
+            let compose_state = state.clone();
+            let callback_under = under_clicks.clone();
+            runtime.frame_incremental(
+                FrameInput::new(Screen::new(480.0, 360.0), 0.0).pointer_events(pointer_events),
+                move || dirty_state.take_dirty(),
+                move |ui, _| {
+                    let callback_under = callback_under.clone();
+                    ui.rect("under")
+                        .position(0.0, 0.0)
+                        .size(480.0, 360.0)
+                        .on_click(move || callback_under.set(callback_under.get() + 1))
+                        .build();
+                    let open = compose_state.signal(
+                        "test.open",
+                        |state| state.open,
+                        |state, value| state.open = value,
+                    );
+                    let color = compose_state.signal(
+                        "test.color",
+                        |state| state.color,
+                        |state, value| state.color = value,
+                    );
+                    color_picker(ui, "color")
+                        .open_signal(open)
+                        .value_signal(color)
+                        .screen(480.0, 360.0)
+                        .build();
+                },
+            );
+        };
+
+        frame(&mut runtime, Vec::new());
+        assert!(runtime.find("color.panel").is_some());
+
+        frame(
+            &mut runtime,
+            vec![
+                PointerEvent::pressed_at(8.0, 8.0),
+                PointerEvent::released_at(8.0, 8.0),
+            ],
+        );
+
+        assert!(!state.read(|state| state.open));
+        assert_eq!(under_clicks.get(), 0);
+        assert_eq!(runtime.debug_snapshot_current().layer_dismissals.len(), 1);
+        let dismissal = &runtime.debug_snapshot_current().layer_dismissals[0];
+        assert_eq!(dismissal.id, "page.color");
+        assert_eq!(dismissal.owner, "page.color");
+        assert_eq!(dismissal.policy, OutsideClickPolicy::Close);
+        assert!(runtime.debug_snapshot().events.iter().any(|event| {
+            event.target.role() == "layer"
+                && event.target.id() == "page.color"
+                && event.command == "dismiss"
+                && event.callback
+        }));
+
+        frame(&mut runtime, Vec::new());
+        assert!(runtime.find("color.panel").is_none());
+    }
+
+    #[test]
     fn toast_auto_dismiss_timer_runs_when_visible() {
         let dismissed = Rc::new(Cell::new(false));
         let callback_dismissed = dismissed.clone();
@@ -1260,6 +2037,16 @@ mod tests {
                 .build();
         });
 
+        let layer = runtime
+            .debug_snapshot()
+            .layers
+            .iter()
+            .find(|layer| layer.id == "page.saved")
+            .expect("toast should register a layer intent");
+        assert!(layer.open);
+        assert_eq!(layer.kind, LayerKind::Toast);
+        assert_eq!(layer.placement, LayerPlacement::BottomEnd);
+        assert_eq!(layer.outside_click, OutsideClickPolicy::Ignore);
         assert!(!runtime.tick_timers(0.05));
         assert!(runtime.tick_timers(0.05));
         assert!(dismissed.get());

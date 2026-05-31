@@ -5,13 +5,70 @@
 //! merges these two invalidation sources before `Ui` decides which scopes can
 //! be reused.
 
+use std::borrow::Borrow;
+use std::fmt;
+use std::ops::Deref;
 use std::time::Instant;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{Element, ElementKind, LayoutRect};
 
-pub(crate) type ScopeId = String;
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ScopeId(String);
+
+impl ScopeId {
+    pub(crate) fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub(crate) fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl AsRef<str> for ScopeId {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl Borrow<str> for ScopeId {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl Deref for ScopeId {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_str()
+    }
+}
+
+impl fmt::Display for ScopeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<String> for ScopeId {
+    fn from(value: String) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<&str> for ScopeId {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
 pub(crate) type ScopeRoots = FxHashMap<ScopeId, Vec<RetainedRoot>>;
 pub(crate) type ScopeSet = FxHashSet<ScopeId>;
 
@@ -105,6 +162,33 @@ pub struct RetainedComposeEvent {
     pub reason: RetainedComposeReason,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CallbackTransferStats {
+    pub click: usize,
+    pub press: usize,
+    pub context_menu: usize,
+    pub focus_changed: usize,
+    pub text_input: usize,
+    pub scroll: usize,
+    pub drag: usize,
+    pub layer_dismiss: usize,
+    pub timer: usize,
+}
+
+impl CallbackTransferStats {
+    pub fn total(self) -> usize {
+        self.click
+            + self.press
+            + self.context_menu
+            + self.focus_changed
+            + self.text_input
+            + self.scroll
+            + self.drag
+            + self.layer_dismiss
+            + self.timer
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScopeComposeRecord {
     pub id: ScopeId,
@@ -115,6 +199,7 @@ pub struct ScopeComposeRecord {
     pub previous_roots: usize,
     pub current_roots: usize,
     pub element_count: usize,
+    pub callback_transfers: CallbackTransferStats,
 }
 
 #[derive(Debug, Default)]
@@ -301,6 +386,40 @@ pub(crate) fn normalize_dirty_scopes_with_roots(
     normalized
 }
 
+pub(crate) fn dirty_root_ids_for_scopes(
+    dirty_scopes: &ScopeSet,
+    previous_scope_roots: &ScopeRoots,
+) -> FxHashSet<String> {
+    dirty_scopes
+        .iter()
+        .filter_map(|dirty| previous_scope_roots.get(dirty))
+        .flat_map(|roots| roots.iter().map(|root| root.id.clone()))
+        .collect()
+}
+
+pub(crate) fn retained_scope_contains_dirty_root(
+    dirty_root_ids: &FxHashSet<String>,
+    previous_scope_roots: &ScopeRoots,
+    id: &str,
+) -> bool {
+    previous_scope_roots
+        .get(id)
+        .is_some_and(|elements| element_tree_contains_any(elements, dirty_root_ids))
+}
+
+pub(crate) fn previous_elements_for_scope(
+    previous_roots: &[Element],
+    previous_scope_roots: &ScopeRoots,
+    id: &str,
+) -> Option<Vec<Element>> {
+    let roots = previous_scope_roots.get(id)?;
+    let mut elements = Vec::with_capacity(roots.len());
+    for root in roots {
+        elements.push(find_element(previous_roots, &root.id)?.clone());
+    }
+    Some(elements)
+}
+
 fn dirty_scope_contains(candidate: &str, scope: &str, previous_scope_roots: &ScopeRoots) -> bool {
     let Some(scope_roots) = previous_scope_roots.get(scope) else {
         return false;
@@ -321,6 +440,24 @@ fn element_contains_id(element: &RetainedRoot, id: &str) -> bool {
             .children
             .iter()
             .any(|child| element_contains_id(child, id))
+}
+
+fn element_tree_contains_any(elements: &[RetainedRoot], ids: &FxHashSet<String>) -> bool {
+    elements.iter().any(|element| {
+        ids.contains(&element.id) || element_tree_contains_any(&element.children, ids)
+    })
+}
+
+fn find_element<'a>(elements: &'a [Element], id: &str) -> Option<&'a Element> {
+    for element in elements {
+        if element.id == id {
+            return Some(element);
+        }
+        if let Some(found) = find_element(&element.children, id) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 fn dirty_scope_is_structurally_compatible(
@@ -510,10 +647,13 @@ fn same_f32(previous: f32, next: f32) -> bool {
 mod tests {
     use crate::{Element, ElementKind};
 
-    use super::{normalize_dirty_scopes_with_roots, RetainedRoot, ScopeRoots, ScopeSet};
+    use super::{
+        normalize_dirty_scopes_with_roots, previous_elements_for_scope, RetainedRoot, ScopeId,
+        ScopeRoots, ScopeSet,
+    };
 
     fn scopes(ids: &[&str]) -> ScopeSet {
-        ids.iter().map(|id| (*id).to_string()).collect()
+        ids.iter().map(|id| ScopeId::new(*id)).collect()
     }
 
     #[test]
@@ -569,12 +709,12 @@ mod tests {
 
         let mut roots = ScopeRoots::default();
         roots.insert(
-            "page.interactions.scroll".to_string(),
+            ScopeId::new("page.interactions.scroll"),
             RetainedRoot::from_elements(&[scroll]),
         );
         let cards = Element::new(ElementKind::Row, "page.interactions.cards");
         roots.insert(
-            "page.interactions.cards".to_string(),
+            ScopeId::new("page.interactions.cards"),
             RetainedRoot::from_elements(&[cards]),
         );
 
@@ -589,8 +729,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn previous_elements_for_scope_clones_roots_from_committed_tree() {
+        let mut retained_a = Element::new(ElementKind::Row, "page.scope.a");
+        retained_a
+            .children
+            .push(Element::new(ElementKind::Text, "page.scope.a.label"));
+        let retained_b = Element::new(ElementKind::Rect, "page.scope.b");
+        let mut unrelated = Element::new(ElementKind::Column, "page.unrelated");
+        unrelated.children.push(retained_b.clone());
+
+        let previous_roots = vec![retained_a.clone(), unrelated];
+        let mut scope_roots = ScopeRoots::default();
+        scope_roots.insert(
+            ScopeId::new("page.scope"),
+            RetainedRoot::from_elements(&[retained_a, retained_b]),
+        );
+
+        let elements = previous_elements_for_scope(&previous_roots, &scope_roots, "page.scope")
+            .expect("scope roots should resolve to committed elements");
+
+        assert_eq!(elements.len(), 2);
+        assert_eq!(elements[0].id, "page.scope.a");
+        assert_eq!(elements[0].children[0].id, "page.scope.a.label");
+        assert_eq!(elements[1].id, "page.scope.b");
+    }
+
+    #[test]
+    fn previous_elements_for_scope_fails_when_a_root_is_missing() {
+        let previous_roots = vec![Element::new(ElementKind::Row, "page.scope.a")];
+        let mut scope_roots = ScopeRoots::default();
+        scope_roots.insert(
+            ScopeId::new("page.scope"),
+            RetainedRoot::from_elements(&[
+                Element::new(ElementKind::Row, "page.scope.a"),
+                Element::new(ElementKind::Rect, "page.scope.missing"),
+            ]),
+        );
+
+        assert!(previous_elements_for_scope(&previous_roots, &scope_roots, "page.scope").is_none());
+    }
+
     fn sorted(scopes: &ScopeSet) -> Vec<String> {
-        let mut scopes: Vec<_> = scopes.iter().cloned().collect();
+        let mut scopes: Vec<_> = scopes
+            .iter()
+            .map(|scope| scope.as_str().to_string())
+            .collect();
         scopes.sort();
         scopes
     }

@@ -6,7 +6,8 @@ use std::rc::Rc;
 use crate::Color;
 
 use super::super::{
-    AnimProperty, HorizontalAlign, Response, Shadow, Signal, Transition, Ui, VerticalAlign,
+    AnimProperty, HorizontalAlign, LayerId, LayerIntent, LayerKind, LayerPlacement, LayerSize,
+    LayoutRect, OutsideClickPolicy, Response, Shadow, Signal, Transition, Ui, VerticalAlign,
 };
 use super::theme::{self, ThemeColorTokens};
 
@@ -217,97 +218,118 @@ impl<'ui> ToastBuilder<'ui> {
             .on_auto_dismiss
             .clone()
             .or_else(|| self.on_dismiss.clone());
+        let resolved_id = self.ui.resolve_id(&id);
 
-        self.ui
-            .stack(id.clone())
-            .x(x)
-            .y(y)
-            .size(width, height)
-            .z_index(self.z_index)
-            .opacity(visible)
-            .translate(toast_offset_x, toast_offset_y)
-            .transition(self.transition)
-            .animate(AnimProperty::OPACITY | AnimProperty::TRANSFORM)
-            .content(|ui| {
-                ui.rect(format!("{id}.bg"))
-                    .size(width, height)
-                    .color(self.style.background)
-                    .radius(self.style.radius)
-                    .border(1.0, self.style.border)
-                    .shadow_style(self.style.shadow)
-                    .build();
+        self.ui.register_layer_intent(LayerIntent {
+            id: LayerId::new(resolved_id.clone()),
+            owner: resolved_id,
+            anchor: None,
+            fallback_anchor: Some(LayoutRect::new(
+                0.0,
+                0.0,
+                self.screen_width,
+                self.screen_height,
+            )),
+            open: self.visible,
+            kind: LayerKind::Toast,
+            placement: LayerPlacement::BottomEnd,
+            size: LayerSize::new(width.into(), height.into()),
+            z_index: self.z_index,
+            outside_click: OutsideClickPolicy::Ignore,
+        });
 
-                ui.text(format!("{id}.icon"))
-                    .x(20.0)
-                    .y(20.0)
-                    .size(icon_size, icon_size)
-                    .icon(self.icon.clone())
-                    .font_size(icon_size)
-                    .line_height(icon_size)
-                    .color(self.style.accent)
-                    .horizontal_align(HorizontalAlign::Center)
-                    .build();
-
-                ui.text(format!("{id}.title"))
-                    .x(text_x)
-                    .y(16.0)
-                    .size(text_width, 24.0)
-                    .text(self.title.clone())
-                    .font_size(18.0)
-                    .line_height(22.0)
-                    .color(self.style.text)
-                    .build();
-
-                ui.text(format!("{id}.message"))
-                    .x(text_x)
-                    .y(42.0)
-                    .size(text_width, (height - 50.0).max(0.0))
-                    .text(self.message.clone())
-                    .font_size(14.0)
-                    .line_height(18.0)
-                    .max_width(text_width)
-                    .wrap(true)
-                    .color(self.style.muted_text)
-                    .build();
-
-                let dismiss = on_dismiss.clone();
-                ui.rect(format!("{id}.close.hit"))
-                    .x((width - close_size - 12.0).max(0.0))
-                    .y(12.0)
-                    .size(close_size, close_size)
-                    .states(
-                        theme::color(0.0, 0.0, 0.0, 0.0),
-                        theme::with_opacity(self.style.border, 0.36),
-                        theme::with_opacity(self.style.border, 0.56),
-                    )
-                    .radius(8.0)
-                    .disabled(!self.visible)
-                    .on_click(move || call_click(&dismiss))
-                    .build();
-
-                ui.text(format!("{id}.close"))
-                    .x((width - close_size - 12.0).max(0.0))
-                    .y(17.0)
-                    .size(close_size, close_size)
-                    .icon_codepoint(0xF00D)
-                    .font_size(15.0)
-                    .line_height(18.0)
-                    .color(self.style.muted_text)
-                    .horizontal_align(HorizontalAlign::Center)
-                    .vertical_align(VerticalAlign::Top)
-                    .build();
-
-                let timer = ui.stack(format!("{id}.timer")).size(0.0, 0.0);
-                if self.visible && self.auto_dismiss_seconds > 0.0 && on_auto_dismiss.is_some() {
-                    timer
-                        .on_timer(self.auto_dismiss_seconds, move || {
-                            call_click(&on_auto_dismiss)
-                        })
+        self.ui.with_root_layer(|ui| {
+            ui.stack(id.clone())
+                .x(x)
+                .y(y)
+                .size(width, height)
+                .z_index(self.z_index)
+                .opacity(visible)
+                .translate(toast_offset_x, toast_offset_y)
+                .transition(self.transition)
+                .animate(AnimProperty::OPACITY | AnimProperty::TRANSFORM)
+                .content(|ui| {
+                    ui.rect(format!("{id}.bg"))
+                        .size(width, height)
+                        .color(self.style.background)
+                        .radius(self.style.radius)
+                        .border(1.0, self.style.border)
+                        .shadow_style(self.style.shadow)
                         .build();
-                } else {
-                    timer.build();
-                }
-            });
+
+                    ui.text(format!("{id}.icon"))
+                        .x(20.0)
+                        .y(20.0)
+                        .size(icon_size, icon_size)
+                        .icon(self.icon.clone())
+                        .font_size(icon_size)
+                        .line_height(icon_size)
+                        .color(self.style.accent)
+                        .horizontal_align(HorizontalAlign::Center)
+                        .build();
+
+                    ui.text(format!("{id}.title"))
+                        .x(text_x)
+                        .y(16.0)
+                        .size(text_width, 24.0)
+                        .text(self.title.clone())
+                        .font_size(18.0)
+                        .line_height(22.0)
+                        .color(self.style.text)
+                        .build();
+
+                    ui.text(format!("{id}.message"))
+                        .x(text_x)
+                        .y(42.0)
+                        .size(text_width, (height - 50.0).max(0.0))
+                        .text(self.message.clone())
+                        .font_size(14.0)
+                        .line_height(18.0)
+                        .max_width(text_width)
+                        .wrap(true)
+                        .color(self.style.muted_text)
+                        .build();
+
+                    let dismiss = on_dismiss.clone();
+                    ui.rect(format!("{id}.close.hit"))
+                        .x((width - close_size - 12.0).max(0.0))
+                        .y(12.0)
+                        .size(close_size, close_size)
+                        .states(
+                            theme::color(0.0, 0.0, 0.0, 0.0),
+                            theme::with_opacity(self.style.border, 0.36),
+                            theme::with_opacity(self.style.border, 0.56),
+                        )
+                        .radius(8.0)
+                        .disabled(!self.visible)
+                        .on_click(move || call_click(&dismiss))
+                        .build();
+
+                    ui.text(format!("{id}.close"))
+                        .x((width - close_size - 12.0).max(0.0))
+                        .y(17.0)
+                        .size(close_size, close_size)
+                        .icon_codepoint(0xF00D)
+                        .font_size(15.0)
+                        .line_height(18.0)
+                        .color(self.style.muted_text)
+                        .horizontal_align(HorizontalAlign::Center)
+                        .vertical_align(VerticalAlign::Top)
+                        .build();
+
+                    let timer = ui.stack(format!("{id}.timer")).size(0.0, 0.0);
+                    if self.visible && self.auto_dismiss_seconds > 0.0 && on_auto_dismiss.is_some()
+                    {
+                        timer
+                            .on_timer(self.auto_dismiss_seconds, move || {
+                                call_click(&on_auto_dismiss)
+                            })
+                            .build();
+                    } else {
+                        timer.build();
+                    }
+                });
+        });
 
         self.ui.response(&id)
     }

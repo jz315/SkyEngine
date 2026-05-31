@@ -1,6 +1,9 @@
 //! Root-layer popup composition helper.
 
-use super::super::{LayoutRect, Response, Size, Ui};
+use super::super::{
+    LayerId, LayerIntent, LayerKind, LayerPlacement, LayerSize, LayoutRect, OutsideClickPolicy,
+    Response, Size, Ui,
+};
 use super::layout::WidgetLayout;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -28,6 +31,8 @@ pub struct PopoverBuilder<'ui> {
     offset: [f32; 2],
     gap: f32,
     z_index: i32,
+    outside_click: OutsideClickPolicy,
+    on_dismiss: Option<Box<dyn FnMut()>>,
 }
 
 impl<'ui> PopoverBuilder<'ui> {
@@ -43,6 +48,8 @@ impl<'ui> PopoverBuilder<'ui> {
             offset: [0.0, 0.0],
             gap: 8.0,
             z_index: 100,
+            outside_click: OutsideClickPolicy::Ignore,
+            on_dismiss: None,
         }
     }
 
@@ -120,8 +127,39 @@ impl<'ui> PopoverBuilder<'ui> {
         self.z_index(value)
     }
 
+    pub fn outside_click(mut self, value: OutsideClickPolicy) -> Self {
+        self.outside_click = value;
+        self
+    }
+
+    pub fn on_dismiss(mut self, callback: impl FnMut() + 'static) -> Self {
+        self.on_dismiss = Some(Box::new(callback));
+        self
+    }
+
     pub fn content(self, content: impl FnOnce(&mut Ui)) -> Response {
         let id = self.id.clone();
+        let resolved_id = self.ui.resolve_id(&id);
+        let resolved_anchor = self
+            .anchor
+            .as_deref()
+            .map(|anchor| self.ui.resolve_id(anchor));
+        self.ui.register_layer_intent(LayerIntent {
+            id: LayerId::new(resolved_id.clone()),
+            owner: resolved_id.clone(),
+            anchor: resolved_anchor.clone(),
+            fallback_anchor: self.fallback_anchor,
+            open: self.open,
+            kind: LayerKind::Popover,
+            placement: self.placement.into(),
+            size: LayerSize::new(self.layout.width, self.layout.height),
+            z_index: self.z_index,
+            outside_click: self.outside_click,
+        });
+        if let Some(callback) = self.on_dismiss {
+            self.ui
+                .register_on_layer_dismiss(resolved_id.clone(), callback);
+        }
         if !self.open {
             return self.ui.response(&id);
         }
@@ -150,6 +188,22 @@ impl<'ui> PopoverBuilder<'ui> {
 
 pub fn popover(ui: &mut Ui, id: impl Into<String>) -> PopoverBuilder<'_> {
     PopoverBuilder::new(ui, id)
+}
+
+impl From<PopoverPlacement> for LayerPlacement {
+    fn from(value: PopoverPlacement) -> Self {
+        match value {
+            PopoverPlacement::BottomStart => Self::BottomStart,
+            PopoverPlacement::BottomEnd => Self::BottomEnd,
+            PopoverPlacement::TopStart => Self::TopStart,
+            PopoverPlacement::TopEnd => Self::TopEnd,
+            PopoverPlacement::RightStart => Self::RightStart,
+            PopoverPlacement::RightEnd => Self::RightEnd,
+            PopoverPlacement::LeftStart => Self::LeftStart,
+            PopoverPlacement::LeftEnd => Self::LeftEnd,
+            PopoverPlacement::Center => Self::Center,
+        }
+    }
 }
 
 fn popover_position(

@@ -5,7 +5,10 @@ use std::rc::Rc;
 
 use crate::Color;
 
-use super::super::{AnimProperty, Response, Shadow, Signal, Transition, Ui};
+use super::super::{
+    AnimProperty, LayoutRect, OutsideClickPolicy, Response, Shadow, Signal, Transition, Ui,
+};
+use super::popover::{popover, PopoverPlacement};
 use super::theme::{self, ThemeColorTokens};
 
 type SelectCallback = Rc<RefCell<Box<dyn FnMut(i32)>>>;
@@ -180,35 +183,24 @@ impl<'ui> ContextMenuBuilder<'ui> {
         let y = self
             .y
             .clamp(8.0, 8.0_f32.max(self.screen_height - height - 8.0));
-        let visible = if self.open { 1.0 } else { 0.0 };
-        let menu_scale = if self.open { 1.0 } else { 0.94 };
-        let menu_offset_y = if self.open { 0.0 } else { -4.0 };
+        let menu_scale = 1.0;
+        let menu_offset_y = 0.0;
         let on_dismiss = self.on_dismiss.clone();
         let on_select = self.on_select.clone();
 
-        self.ui
-            .stack(id.clone())
-            .size(self.screen_width, self.screen_height)
+        popover(self.ui, id.clone())
+            .open(self.open)
+            .fallback_anchor(LayoutRect::new(x, y, 0.0, 0.0))
+            .placement(PopoverPlacement::BottomStart)
+            .gap(0.0)
+            .size(width, height)
             .z_index(self.z_index)
+            .outside_click(OutsideClickPolicy::Close)
+            .on_dismiss(move || call_dismiss(&on_dismiss))
             .content(|ui| {
-                let dismiss = on_dismiss.clone();
-                ui.rect(format!("{id}.dismiss"))
-                    .size(self.screen_width, self.screen_height)
-                    .states(
-                        theme::color(0.0, 0.0, 0.0, 0.0),
-                        theme::color(0.0, 0.0, 0.0, 0.0),
-                        theme::color(0.0, 0.0, 0.0, 0.0),
-                    )
-                    .disabled(!self.open)
-                    .on_click(move || call_dismiss(&dismiss))
-                    .on_scroll(|_| {})
-                    .build();
-
-                ui.stack(format!("{id}.menu"))
-                    .x(x)
-                    .y(y)
+                ui.stack(format!("{id}.surface"))
                     .size(width, height)
-                    .opacity(visible)
+                    .opacity(1.0)
                     .translate_y(menu_offset_y)
                     .scale(menu_scale)
                     .transform_origin(0.0, 0.0)

@@ -37,6 +37,16 @@ impl Runtime {
         }
     }
 
+    pub(super) fn record_event_debug(&mut self, event: EventDebugRecord) {
+        self.debug.events.push(event);
+    }
+
+    pub(super) fn clear_committed_event_debug_records(&mut self) {
+        if !self.debug.events.is_empty() {
+            self.debug.events.clear();
+        }
+    }
+
     pub(super) fn mark_full_redraw_dirty(&mut self) {
         self.render.full_redraw = true;
         self.mark_render_dirty();

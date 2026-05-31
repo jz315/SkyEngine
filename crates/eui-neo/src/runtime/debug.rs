@@ -18,8 +18,8 @@ impl Runtime {
         snapshot.needs_render = self.render.needs_render;
         snapshot.needs_compose = self.render.needs_compose;
         snapshot.full_redraw = self.render.full_redraw;
-        snapshot.focused_id = self.input.owners.keyboard_focus.clone();
-        snapshot.active_id = self.input.owners.pointer_active.clone();
+        snapshot.focused_id = self.input.owners.keyboard_focus_string();
+        snapshot.active_id = self.input.owners.pointer_active_string();
         snapshot.hovered_id = hovered_id(&self.input.interactions);
         snapshot.active_animation_count = self
             .animation
@@ -29,6 +29,10 @@ impl Runtime {
             .count();
         snapshot.invalidations = self.invalidation.snapshot();
         snapshot.pass_flags = self.invalidation.pass_flags();
+        snapshot.events = self.debug.events.clone();
+        snapshot.layers = self.layers.debug_records.clone();
+        snapshot.layer_dismissals = self.layers.dismissal_records.clone();
+        snapshot.layer_pointer = self.layers.pointer_records.clone();
         snapshot
     }
 }
@@ -59,6 +63,10 @@ pub(super) fn build_runtime_debug_snapshot(
             full_redraw: runtime.render.full_redraw,
             invalidations: runtime.invalidation.snapshot(),
             pass_flags: runtime.invalidation.pass_flags(),
+            events: runtime.debug.events.clone(),
+            layers: runtime.layers.debug_records.clone(),
+            layer_dismissals: runtime.layers.dismissal_records.clone(),
+            layer_pointer: runtime.layers.pointer_records.clone(),
             ..UiDebugSnapshot::default()
         };
     }
@@ -72,6 +80,10 @@ pub(super) fn build_runtime_debug_snapshot(
         clock_ids: sorted_scope_set(&runtime.tree.clock_ids),
         retained: source.scope_debug_records,
         elements: source.element_debug_records,
+        events: runtime.debug.events.clone(),
+        layers: runtime.layers.debug_records.clone(),
+        layer_dismissals: runtime.layers.dismissal_records.clone(),
+        layer_pointer: runtime.layers.pointer_records.clone(),
         retained_events: source.retained_events,
         scope_compose: source.scope_compose_records,
         retained_stats: runtime.tree.retained_stats,
@@ -79,8 +91,8 @@ pub(super) fn build_runtime_debug_snapshot(
         needs_render: runtime.render.needs_render,
         needs_compose: runtime.render.needs_compose,
         full_redraw: runtime.render.full_redraw,
-        focused_id: runtime.input.owners.keyboard_focus.clone(),
-        active_id: runtime.input.owners.pointer_active.clone(),
+        focused_id: runtime.input.owners.keyboard_focus_string(),
+        active_id: runtime.input.owners.pointer_active_string(),
         hovered_id: hovered_id(&runtime.input.interactions),
         active_animation_count: runtime
             .animation
@@ -129,6 +141,43 @@ pub(super) fn trace_debug_snapshot(snapshot: &UiDebugSnapshot) {
     );
     for event in &snapshot.retained_events {
         eprintln!("[eui-neo retained] {:?} {}", event.action, event.id);
+    }
+    for event in &snapshot.events {
+        eprintln!(
+            "[eui-neo event] raw={} command={} target={}:{} callback={} invalidation={}",
+            event.raw_event,
+            event.command,
+            event.target.role(),
+            event.target.id(),
+            event.callback,
+            event.invalidation.is_some(),
+        );
+    }
+    for layer in &snapshot.layers {
+        eprintln!(
+            "[eui-neo layer] {:?} id={} owner={} anchor={:?} source={:?} open={} kind={:?} placement={:?} z={}",
+            layer.action,
+            layer.id,
+            layer.owner,
+            layer.anchor,
+            layer.anchor_source,
+            layer.open,
+            layer.kind,
+            layer.placement,
+            layer.z_index,
+        );
+    }
+    for dismissal in &snapshot.layer_dismissals {
+        eprintln!(
+            "[eui-neo layer-dismiss] id={} owner={} policy={:?}",
+            dismissal.id, dismissal.owner, dismissal.policy,
+        );
+    }
+    for pointer in &snapshot.layer_pointer {
+        eprintln!(
+            "[eui-neo layer-pointer] action={:?} layer={:?} hit={:?} policy={:?}",
+            pointer.action, pointer.layer, pointer.hit_layer, pointer.policy,
+        );
     }
     trace_debug_filters(snapshot);
 }
@@ -193,7 +242,10 @@ pub(super) fn trace_debug_filters(snapshot: &UiDebugSnapshot) {
 }
 
 pub(super) fn sorted_scope_set(scopes: &ScopeSet) -> Vec<String> {
-    let mut scopes: Vec<_> = scopes.iter().cloned().collect();
+    let mut scopes: Vec<_> = scopes
+        .iter()
+        .map(|scope| scope.as_str().to_string())
+        .collect();
     scopes.sort();
     scopes
 }
@@ -238,19 +290,20 @@ pub(super) fn collect_scope_debug_records(
     scope_ids_sorted
         .into_iter()
         .map(|scope| {
+            let scope_id = ScopeId::new(scope.clone());
             let first_current_root = current_scope_roots
-                .get(&scope)
+                .get(scope.as_str())
                 .and_then(|roots| roots.first())
                 .map(|element| element.id.as_str());
             let first_previous_root = previous_scope_roots
-                .get(&scope)
+                .get(scope.as_str())
                 .and_then(|roots| roots.first());
             let current_record = first_current_root.and_then(|id| element_by_id.get(id).copied());
             RetainedDebugRecord {
                 parent_id: retained_parent_for_scope(&scope, current_scope_roots, &element_by_id),
-                dirty: dirty_ids.contains(&scope),
-                raw_dirty: input_dirty_ids.contains(&scope),
-                normalized_dirty_root: normalized_dirty_ids.contains(&scope),
+                dirty: dirty_ids.contains(scope.as_str()),
+                raw_dirty: input_dirty_ids.contains(scope.as_str()),
+                normalized_dirty_root: normalized_dirty_ids.contains(scope.as_str()),
                 dirty_reasons: dirty_reasons_for_scope(
                     &scope,
                     input_dirty_ids,
@@ -259,13 +312,13 @@ pub(super) fn collect_scope_debug_records(
                     dirty_ids,
                     previous_scope_roots,
                 ),
-                action: action_by_scope.get(&scope).copied(),
-                compose_reason: reason_by_scope.get(&scope).copied(),
+                action: action_by_scope.get(&scope_id).copied(),
+                compose_reason: reason_by_scope.get(&scope_id).copied(),
                 previous_roots: previous_scope_roots
-                    .get(&scope)
+                    .get(scope.as_str())
                     .map_or(0, |roots| roots.len()),
                 current_roots: current_scope_roots
-                    .get(&scope)
+                    .get(scope.as_str())
                     .map_or(0, |roots| roots.len()),
                 layout_anchor: first_previous_root
                     .map(|element| element.frame)
@@ -397,7 +450,7 @@ pub(super) fn collect_element_debug_record(
         draw_frame: Some(draw_frame),
     });
 
-    let next_scroll_ancestor = if callbacks.on_scroll.contains_key(&element.id) {
+    let next_scroll_ancestor = if callbacks.has_scroll(&element.id) {
         Some(element.id.as_str())
     } else {
         scroll_ancestor
@@ -429,7 +482,7 @@ pub(super) fn scope_by_root_id(scope_roots: &ScopeRoots) -> FxHashMap<String, St
             candidates
                 .entry(root.id.clone())
                 .or_default()
-                .push(scope.clone());
+                .push(scope.as_str().to_string());
         }
     }
     let mut map = FxHashMap::default();

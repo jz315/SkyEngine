@@ -1,57 +1,28 @@
+use super::event_command::UiEventCommand;
+use super::layers::{
+    layer_blocks_element_target, layer_pointer_policy, layer_requests_keyboard_capture,
+};
 use super::tree::z_order_is_stable;
 use super::*;
-use crate::DirtyFlags;
-
-#[derive(Debug, Clone)]
-pub(super) enum UiEventCommand {
-    Press {
-        id: String,
-        event: PointerEvent,
-        frame: LayoutRect,
-    },
-    Click {
-        id: String,
-    },
-    ContextMenu {
-        id: String,
-        event: PointerEvent,
-        frame: LayoutRect,
-    },
-    Drag {
-        id: String,
-        event: DragEvent,
-    },
-    TextInput {
-        id: String,
-        event: KeyboardEvent,
-    },
-    Scroll {
-        id: String,
-        event: ScrollEvent,
-    },
-    FocusChanged {
-        id: String,
-        focused: bool,
-    },
-}
 
 impl Runtime {
     pub fn focused_id(&self) -> Option<&str> {
-        self.input.owners.keyboard_focus.as_deref()
+        self.input.owners.keyboard_focus_id()
     }
 
     pub fn text_focused_id(&self) -> Option<&str> {
-        self.input.owners.text_focus.as_deref()
+        self.input.owners.text_focus_id()
     }
 
     pub fn has_keyboard_capture(&self) -> bool {
         self.input.owners.keyboard_focus.is_some()
             || self.input.owners.text_focus.is_some()
             || self.input.owners.ime_owner.is_some()
+            || layer_requests_keyboard_capture(&self.layers.intents)
     }
 
     pub fn focused_ime_rect(&self) -> Option<LayoutRect> {
-        let element = self.find(self.input.owners.ime_owner.as_deref()?)?;
+        let element = self.find(self.input.owners.ime_owner_id()?)?;
         if !element.has_ime_rect {
             return None;
         }
@@ -90,19 +61,37 @@ impl Runtime {
         if position.is_some() {
             self.input.pointer_position = position;
         }
-        let hit_id = hit_test_interactive(&self.tree.roots, position);
-        let focus_target = event
-            .pressed_this_frame
-            .then(|| hit_test_focusable(&self.tree.roots, position));
+        let mut commands = Vec::new();
+        let layer_policy = layer_pointer_policy(&self.layers.intents, &self.tree.roots, position);
         if event.pressed_this_frame {
-            self.input.owners.pointer_active = hit_id.clone();
-            self.input.owners.pointer_capture = hit_id.clone();
+            self.layers.dismissal_records.clear();
+            self.layers.pointer_records.clear();
+            if let Some(record) = layer_policy.debug.clone() {
+                self.layers.pointer_records.push(record);
+            }
+            if let Some(dismissal) = layer_policy.dismissal.clone() {
+                commands.push(UiEventCommand::LayerDismiss {
+                    target: EventTargetId::layer(dismissal.id.clone()),
+                });
+                self.layers.dismissal_records.push(dismissal);
+            }
+        }
+        let hit_id = (!layer_policy.block_pointer)
+            .then(|| hit_test_interactive(&self.tree.roots, position))
+            .flatten();
+        let focus_target = event.pressed_this_frame.then(|| {
+            (!layer_policy.block_pointer)
+                .then(|| hit_test_focusable(&self.tree.roots, position))
+                .flatten()
+        });
+        if event.pressed_this_frame {
+            self.input.owners.set_pointer_press_target(hit_id.clone());
             self.input.drag_origin = position;
         }
 
-        let captured_id = self.input.owners.pointer_capture.clone();
+        let captured_id = self.input.owners.pointer_capture_string();
         let hover_id = captured_id.clone().or(hit_id.clone());
-        self.input.owners.pointer_hover = hover_id.clone();
+        self.input.owners.set_pointer_hover(hover_id.clone());
         let mut ids = FxHashSet::default();
         ids.extend(self.input.interactions.keys().cloned());
         if let Some(id) = captured_id.as_ref() {
@@ -112,7 +101,6 @@ impl Runtime {
             ids.insert(id.clone());
         }
 
-        let mut commands = Vec::new();
         if event.right_pressed_this_frame {
             if let Some(target_id) = hit_id.as_deref() {
                 let frame = self
@@ -120,7 +108,7 @@ impl Runtime {
                     .map(|element| element.frame)
                     .unwrap_or_default();
                 commands.push(UiEventCommand::ContextMenu {
-                    id: target_id.to_string(),
+                    target: EventTargetId::node(target_id),
                     event,
                     frame,
                 });
@@ -181,22 +169,21 @@ impl Runtime {
                     .map(|element| element.frame)
                     .unwrap_or_default();
                 commands.push(UiEventCommand::Press {
-                    id: id.clone(),
+                    target: EventTargetId::node(id.clone()),
                     event,
                     frame,
                 });
             }
             if clicked {
-                commands.push(UiEventCommand::Click { id: id.clone() });
+                commands.push(UiEventCommand::Click {
+                    target: EventTargetId::node(id.clone()),
+                });
             }
-            if pressed
-                && (delta != [0.0, 0.0] || dragging)
-                && self.input.callbacks.on_drag.contains_key(&id)
-            {
+            if pressed && (delta != [0.0, 0.0] || dragging) && self.input.callbacks.has_drag(&id) {
                 let [x, y] = position.unwrap_or_default();
-                self.input.owners.drag_owner = Some(id.clone());
+                self.input.owners.set_drag_owner(id.clone());
                 commands.push(UiEventCommand::Drag {
-                    id: id.clone(),
+                    target: EventTargetId::node(id.clone()),
                     event: DragEvent {
                         x,
                         y,
@@ -225,9 +212,7 @@ impl Runtime {
         }
 
         if event.released_this_frame {
-            self.input.owners.pointer_active = None;
-            self.input.owners.pointer_capture = None;
-            self.input.owners.drag_owner = None;
+            self.input.owners.clear_pointer_press();
             self.input.drag_origin = None;
         }
 
@@ -242,44 +227,30 @@ impl Runtime {
 
     pub(super) fn commit_pointer_event_pass(&mut self, pass: PointerEventPass) -> bool {
         let mut changed = pass.changed;
-        if let Some(focus_target) = pass.focus_target {
-            changed |= self.set_focused_id(focus_target);
-        }
+        let mut commands = pass.commands;
+        changed |= self.apply_focus_target(pass.focus_target, &mut commands);
         if changed {
             self.mark_render_dirty();
         }
         self.input.interactions = pass.interactions;
         self.input.responses = pass.responses;
-        let callbacks_changed = self.execute_event_commands(pass.commands);
+        let callbacks_changed = self.execute_event_commands(commands);
         changed |= callbacks_changed;
         changed
     }
 
     pub fn update_scroll(&mut self, event: ScrollEvent) -> bool {
-        if !event.active() {
-            return false;
-        }
-        let target = hit_test(&self.tree.roots, self.input.pointer_position, |element| {
-            self.input.callbacks.on_scroll.contains_key(&element.id) && !element.disabled
-        });
-        let Some(target) = target else {
+        let Some(command) = self.collect_scroll_command(event) else {
             return false;
         };
-        self.input.owners.scroll_owner = Some(target.clone());
-        self.execute_event_commands(vec![UiEventCommand::Scroll { id: target, event }])
+        self.execute_event_commands(vec![command])
     }
 
     pub fn update_keyboard(&mut self, event: KeyboardEvent) -> bool {
-        if !event.has_input() {
-            return false;
-        }
-        let Some(focused_id) = self.input.owners.text_focus.clone() else {
+        let Some(command) = self.collect_keyboard_command(event) else {
             return false;
         };
-        self.execute_event_commands(vec![UiEventCommand::TextInput {
-            id: focused_id,
-            event,
-        }])
+        self.execute_event_commands(vec![command])
     }
 
     pub(super) fn update_events_and_timers(
@@ -290,128 +261,136 @@ impl Runtime {
         delta_seconds: f32,
     ) -> bool {
         self.timing.clock_seconds += f64::from(delta_seconds.max(0.0));
-        let mut changed = self.update_pointer(pointer);
-        changed |= self.update_scroll(scroll);
-        changed |= self.update_keyboard(keyboard);
+        let mut changed = false;
+        let mut commands = Vec::new();
+        changed |= self.collect_frame_pointer_commands([pointer], &mut commands);
+        if let Some(command) = self.collect_scroll_command(scroll) {
+            commands.push(command);
+        }
+        if let Some(command) = self.collect_keyboard_command(keyboard) {
+            commands.push(command);
+        }
+        changed |= self.execute_event_commands(commands);
         changed |= self.tick_timers(delta_seconds);
         changed
     }
 
-    fn set_focused_id(&mut self, focused: Option<String>) -> bool {
-        if self.input.owners.keyboard_focus == focused {
+    pub(super) fn update_events_and_timers_from_pointer_events(
+        &mut self,
+        pointer_events: &[PointerEvent],
+        scroll: ScrollEvent,
+        keyboard: KeyboardEvent,
+        delta_seconds: f32,
+    ) -> bool {
+        self.timing.clock_seconds += f64::from(delta_seconds.max(0.0));
+        let mut changed = false;
+        let mut commands = Vec::new();
+        changed |=
+            self.collect_frame_pointer_commands(pointer_events.iter().copied(), &mut commands);
+        if let Some(command) = self.collect_scroll_command(scroll) {
+            commands.push(command);
+        }
+        if let Some(command) = self.collect_keyboard_command(keyboard) {
+            commands.push(command);
+        }
+        changed |= self.execute_event_commands(commands);
+        changed |= self.tick_timers(delta_seconds);
+        changed
+    }
+
+    fn collect_frame_pointer_commands(
+        &mut self,
+        pointer_events: impl IntoIterator<Item = PointerEvent>,
+        commands: &mut Vec<UiEventCommand>,
+    ) -> bool {
+        let mut changed = false;
+        for event in pointer_events {
+            let pointer_pass = self.collect_pointer_event_pass(event);
+            changed |= self.apply_focus_target(pointer_pass.focus_target, commands);
+            changed |= pointer_pass.changed;
+            self.input.interactions = pointer_pass.interactions;
+            self.input.responses = pointer_pass.responses;
+            commands.extend(pointer_pass.commands);
+        }
+        if changed {
+            self.mark_render_dirty();
+        }
+        changed
+    }
+
+    fn apply_focus_target(
+        &mut self,
+        focused: Option<Option<String>>,
+        commands: &mut Vec<UiEventCommand>,
+    ) -> bool {
+        let Some(focused) = focused else {
+            return false;
+        };
+        if self.input.owners.keyboard_focus_id() == focused.as_deref() {
             return false;
         }
-        let old = self.input.owners.keyboard_focus.clone();
-        self.input.owners.keyboard_focus = focused.clone();
-        self.input.owners.text_focus = focused
+        let old = self.input.owners.keyboard_focus_string();
+        let text_enabled = focused
             .as_ref()
-            .filter(|id| self.input.callbacks.on_text_input.contains_key(id.as_str()))
-            .cloned();
-        self.input.owners.ime_owner = self.input.owners.text_focus.clone();
+            .filter(|id| self.input.callbacks.has_text_input(id))
+            .is_some();
+        self.input
+            .owners
+            .set_keyboard_focus(focused.clone(), text_enabled);
 
-        let mut commands = Vec::new();
         if let Some(old) = old {
             commands.push(UiEventCommand::FocusChanged {
-                id: old,
+                target: EventTargetId::focus(old),
                 focused: false,
             });
         }
         if let Some(new) = focused {
             commands.push(UiEventCommand::FocusChanged {
-                id: new,
+                target: EventTargetId::focus(new),
                 focused: true,
             });
         }
-        self.execute_event_commands(commands)
+        true
     }
 
-    fn execute_event_commands(&mut self, commands: Vec<UiEventCommand>) -> bool {
-        let mut changed = false;
-        for command in commands {
-            match command {
-                UiEventCommand::Press { id, event, frame } => {
-                    if let Some(callback) = self.input.callbacks.on_press.get_mut(&id) {
-                        callback(event, frame);
-                        self.record_invalidation(Invalidation::event(
-                            id,
-                            "press",
-                            DirtyFlags::COMPOSE | DirtyFlags::DRAW,
-                        ));
-                        changed = true;
-                    }
-                }
-                UiEventCommand::Click { id } => {
-                    if let Some(callback) = self.input.callbacks.on_click.get_mut(&id) {
-                        callback();
-                        self.record_invalidation(Invalidation::event(
-                            id,
-                            "click",
-                            DirtyFlags::COMPOSE | DirtyFlags::DRAW,
-                        ));
-                        changed = true;
-                    }
-                }
-                UiEventCommand::ContextMenu { id, event, frame } => {
-                    if let Some(callback) = self.input.callbacks.on_context_menu.get_mut(&id) {
-                        callback(event, frame);
-                        self.record_invalidation(Invalidation::event(
-                            id,
-                            "context_menu",
-                            DirtyFlags::COMPOSE | DirtyFlags::DRAW,
-                        ));
-                        changed = true;
-                    }
-                }
-                UiEventCommand::Drag { id, event } => {
-                    if let Some(callback) = self.input.callbacks.on_drag.get_mut(&id) {
-                        callback(event);
-                        self.record_invalidation(Invalidation::event(
-                            id,
-                            "drag",
-                            DirtyFlags::COMPOSE | DirtyFlags::DRAW,
-                        ));
-                        changed = true;
-                    }
-                }
-                UiEventCommand::TextInput { id, event } => {
-                    if let Some(callback) = self.input.callbacks.on_text_input.get_mut(&id) {
-                        callback(event);
-                        self.record_invalidation(Invalidation::event(
-                            id,
-                            "text_input",
-                            DirtyFlags::COMPOSE | DirtyFlags::DRAW,
-                        ));
-                        changed = true;
-                    }
-                }
-                UiEventCommand::Scroll { id, event } => {
-                    if let Some(callback) = self.input.callbacks.on_scroll.get_mut(&id) {
-                        callback(event);
-                        self.record_invalidation(Invalidation::event(
-                            id,
-                            "scroll",
-                            DirtyFlags::COMPOSE | DirtyFlags::DRAW,
-                        ));
-                        changed = true;
-                    }
-                }
-                UiEventCommand::FocusChanged { id, focused } => {
-                    if let Some(callback) = self.input.callbacks.on_focus_changed.get_mut(&id) {
-                        callback(focused);
-                        self.record_invalidation(Invalidation::event(
-                            id,
-                            "focus",
-                            DirtyFlags::COMPOSE | DirtyFlags::DRAW,
-                        ));
-                        changed = true;
-                    }
-                }
-            }
+    fn collect_scroll_command(&mut self, event: ScrollEvent) -> Option<UiEventCommand> {
+        if !event.active() {
+            return None;
         }
-        if changed {
-            self.mark_compose_dirty();
+        let layer_policy = layer_pointer_policy(
+            &self.layers.intents,
+            &self.tree.roots,
+            self.input.pointer_position,
+        );
+        self.layers.pointer_records.clear();
+        if let Some(record) = layer_policy.debug.clone() {
+            self.layers.pointer_records.push(record);
         }
-        changed
+        if layer_policy.block_pointer {
+            return None;
+        }
+        let target = hit_test(&self.tree.roots, self.input.pointer_position, |element| {
+            self.input.callbacks.has_scroll(&element.id) && !element.disabled
+        })?;
+        self.input.owners.set_scroll_owner(target.clone());
+        Some(UiEventCommand::Scroll {
+            target: EventTargetId::scroll(target),
+            event,
+        })
+    }
+
+    fn collect_keyboard_command(&self, event: KeyboardEvent) -> Option<UiEventCommand> {
+        if !event.has_input() {
+            return None;
+        }
+        let focused_id = self.input.owners.text_focus_string()?;
+        if layer_blocks_element_target(&self.layers.intents, &self.tree.roots, &focused_id) {
+            return None;
+        }
+        Some(UiEventCommand::TextInput {
+            target: EventTargetId::text(focused_id),
+            event,
+        })
     }
 }
 

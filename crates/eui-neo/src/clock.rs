@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use rustc_hash::FxHashMap;
 
-use crate::retained::ScopeSet;
+use crate::retained::{ScopeId, ScopeSet};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ClockTick {
@@ -11,13 +11,32 @@ pub struct ClockTick {
     pub period: Duration,
 }
 
-pub(crate) type ClockPeriodMap = FxHashMap<String, Duration>;
+pub(crate) type ClockPeriodMap = FxHashMap<ScopeId, Duration>;
+
+pub(crate) fn preserve_reused_scope_clock_dependency(
+    id: &ScopeId,
+    previous_clock_periods: Option<&ClockPeriodMap>,
+    clock_ids: &mut ScopeSet,
+    clock_periods: &mut Option<ClockPeriodMap>,
+) -> bool {
+    let Some(previous_clock_periods) = previous_clock_periods else {
+        return false;
+    };
+    let Some(period) = previous_clock_periods.get(id).copied() else {
+        return false;
+    };
+    clock_ids.insert(id.clone());
+    clock_periods
+        .get_or_insert_with(ClockPeriodMap::default)
+        .insert(id.clone(), period);
+    true
+}
 
 #[derive(Debug)]
 pub struct UiClock<'ui> {
     pub(crate) seconds: f64,
     pub(crate) frame_index: u64,
-    pub(crate) owner: Option<String>,
+    pub(crate) owner: Option<ScopeId>,
     pub(crate) live_scopes: &'ui mut ScopeSet,
     pub(crate) clock_ids: &'ui mut ScopeSet,
     pub(crate) clock_periods: &'ui mut Option<ClockPeriodMap>,
@@ -61,5 +80,57 @@ impl UiClock<'_> {
                     .insert(owner.clone(), period);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use crate::retained::{ScopeId, ScopeSet};
+
+    use super::{preserve_reused_scope_clock_dependency, ClockPeriodMap};
+
+    #[test]
+    fn reused_scope_preserves_previous_periodic_clock_dependency() {
+        let id = ScopeId::new("page.clock");
+        let mut previous_clock_periods = ClockPeriodMap::default();
+        previous_clock_periods.insert(id.clone(), Duration::from_millis(250));
+        let mut clock_ids = ScopeSet::default();
+        let mut clock_periods = None;
+
+        let preserved = preserve_reused_scope_clock_dependency(
+            &id,
+            Some(&previous_clock_periods),
+            &mut clock_ids,
+            &mut clock_periods,
+        );
+
+        assert!(preserved);
+        assert!(clock_ids.contains(id.as_str()));
+        assert_eq!(
+            clock_periods.as_ref().and_then(|periods| periods.get(&id)),
+            Some(&Duration::from_millis(250))
+        );
+    }
+
+    #[test]
+    fn reused_scope_without_previous_clock_dependency_is_ignored() {
+        let id = ScopeId::new("page.clean");
+        let mut previous_clock_periods = ClockPeriodMap::default();
+        previous_clock_periods.insert(ScopeId::new("page.other"), Duration::from_millis(250));
+        let mut clock_ids = ScopeSet::default();
+        let mut clock_periods = None;
+
+        let preserved = preserve_reused_scope_clock_dependency(
+            &id,
+            Some(&previous_clock_periods),
+            &mut clock_ids,
+            &mut clock_periods,
+        );
+
+        assert!(!preserved);
+        assert!(clock_ids.is_empty());
+        assert!(clock_periods.is_none());
     }
 }

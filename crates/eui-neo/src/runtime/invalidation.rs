@@ -14,7 +14,7 @@ pub struct PassFlags {
 }
 
 impl PassFlags {
-    fn union(&mut self, other: Self) {
+    pub(super) fn union(&mut self, other: Self) {
         self.request_compose_ui |= other.request_compose_ui;
         self.request_reconcile |= other.request_reconcile;
         self.request_layout |= other.request_layout;
@@ -26,18 +26,65 @@ impl PassFlags {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub(super) struct NormalizedDirtyInput {
+    pub(super) invalidations: Vec<Invalidation>,
+    pub(super) compose_scopes: ScopeSet,
+    pub(super) layout_scopes: ScopeSet,
+    pub(super) pass_flags: PassFlags,
+}
+
+impl NormalizedDirtyInput {
+    pub(super) fn from_optional_dirty_inputs(records: Option<Vec<DirtyInput>>) -> Option<Self> {
+        records.map(|records| Self::from_dirty_inputs(records))
+    }
+
+    pub(super) fn from_dirty_inputs(records: Vec<DirtyInput>) -> Self {
+        Self::from_dirty_input_slice(&records)
+    }
+
+    pub(super) fn from_dirty_input_slice(records: &[DirtyInput]) -> Self {
+        let mut normalized = Self::default();
+        for record in records {
+            let invalidation = Invalidation::dirty_input(record);
+            normalized.pass_flags.union(invalidation.pass_flags);
+            if invalidation.pass_flags.request_compose_ui {
+                normalized
+                    .compose_scopes
+                    .insert(ScopeId::new(record.id.clone()));
+            }
+            if invalidation.pass_flags.request_layout {
+                normalized
+                    .layout_scopes
+                    .insert(ScopeId::new(record.id.clone()));
+            }
+            normalized.invalidations.push(invalidation);
+        }
+        normalized
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum InvalidationTarget {
-    Scope(String),
-    Node(String),
-    Element(String),
-    Layer(String),
+    Scope(ScopeId),
+    Node(NodeId),
+    Focus(NodeId),
+    Text(NodeId),
+    Scroll(NodeId),
+    Element(NodeId),
+    Layer(LayerId),
 }
 
 impl InvalidationTarget {
     pub fn id(&self) -> &str {
         match self {
-            Self::Scope(id) | Self::Node(id) | Self::Element(id) | Self::Layer(id) => id,
+            Self::Scope(id) => id.as_str(),
+            Self::Node(id)
+            | Self::Focus(id)
+            | Self::Text(id)
+            | Self::Scroll(id)
+            | Self::Element(id) => id.as_str(),
+            Self::Layer(id) => id.as_str(),
         }
     }
 
@@ -45,6 +92,9 @@ impl InvalidationTarget {
         match self {
             Self::Scope(_) => "scope",
             Self::Node(_) => "node",
+            Self::Focus(_) => "focus",
+            Self::Text(_) => "text",
+            Self::Scroll(_) => "scroll",
             Self::Element(_) => "element",
             Self::Layer(_) => "layer",
         }
@@ -121,12 +171,19 @@ pub struct Invalidation {
 
 impl Invalidation {
     pub(super) fn event(
-        target: impl Into<String>,
+        target: EventTargetId,
         source: impl Into<String>,
         flags: DirtyFlags,
     ) -> Self {
+        let target = match target {
+            EventTargetId::Node(id) => InvalidationTarget::Node(id),
+            EventTargetId::Focus(id) => InvalidationTarget::Focus(id),
+            EventTargetId::Scroll(id) => InvalidationTarget::Scroll(id),
+            EventTargetId::Text(id) => InvalidationTarget::Text(id),
+            EventTargetId::Layer(id) => InvalidationTarget::Layer(id),
+        };
         Self {
-            target: InvalidationTarget::Node(target.into()),
+            target,
             source: InvalidationSource::Event(source.into()),
             flags,
             pass_flags: pass_flags_for_dirty_flags(flags),
@@ -135,7 +192,7 @@ impl Invalidation {
     }
 
     pub(super) fn signal(
-        target: impl Into<String>,
+        target: impl Into<ScopeId>,
         source: impl Into<String>,
         flags: DirtyFlags,
     ) -> Self {
@@ -148,9 +205,26 @@ impl Invalidation {
         }
     }
 
+    pub(super) fn dirty_input(record: &DirtyInput) -> Self {
+        if let Some(source) = record.source.as_ref() {
+            return Self::signal(
+                ScopeId::new(record.id.clone()),
+                source.clone(),
+                record.flags,
+            );
+        }
+        Self {
+            target: InvalidationTarget::Scope(ScopeId::new(record.id.clone())),
+            source: InvalidationSource::Runtime("dirty_input"),
+            flags: record.flags,
+            pass_flags: pass_flags_for_dirty_flags(record.flags),
+            propagation: InvalidationPropagation::SelfOnly,
+        }
+    }
+
     pub(super) fn timer(target: impl Into<String>) -> Self {
         Self {
-            target: InvalidationTarget::Node(target.into()),
+            target: InvalidationTarget::Node(NodeId::new(target)),
             source: InvalidationSource::Timer("timer".to_string()),
             flags: DirtyFlags::COMPOSE | DirtyFlags::DRAW,
             pass_flags: pass_flags_for_dirty_flags(DirtyFlags::COMPOSE | DirtyFlags::DRAW),
@@ -160,7 +234,7 @@ impl Invalidation {
 
     pub(super) fn resource(target: impl Into<String>, source: impl Into<String>) -> Self {
         Self {
-            target: InvalidationTarget::Element(target.into()),
+            target: InvalidationTarget::Element(NodeId::new(target)),
             source: InvalidationSource::Resource(source.into()),
             flags: DirtyFlags::COMPOSE | DirtyFlags::DRAW,
             pass_flags: pass_flags_for_dirty_flags(DirtyFlags::COMPOSE | DirtyFlags::DRAW),

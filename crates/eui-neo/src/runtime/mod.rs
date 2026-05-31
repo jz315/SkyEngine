@@ -13,10 +13,9 @@ use super::event::InteractionState;
 use super::fonts::FontRef;
 use super::layout::{layout_element_in_frame_with_text_system, layout_roots_with_text_system};
 use super::retained::{
-    begin_scope_frame, normalize_dirty_scopes_with_roots, structural_incompatibility_reports,
-    structurally_incompatible_dirty_scopes, FullLayoutReason, LayoutMode, RetainedComposeAction,
-    RetainedComposeEvent, RetainedComposeReason, RetainedComposeStats, RetainedRoot,
-    ScopeComposeRecord, ScopeFrame, ScopeRoots, ScopeSet,
+    begin_scope_frame, normalize_dirty_scopes_with_roots, FullLayoutReason, LayoutMode,
+    RetainedComposeAction, RetainedComposeEvent, RetainedComposeReason, RetainedComposeStats,
+    RetainedRoot, ScopeComposeRecord, ScopeFrame, ScopeId, ScopeRoots, ScopeSet,
 };
 use super::skin::{NeoSkin, SkinRegistry};
 use super::text_measure::{DefaultTextSystem, TextSystem};
@@ -31,20 +30,32 @@ mod animation;
 mod composition;
 mod debug;
 mod dirty;
+mod event_command;
+mod frame;
+mod ids;
 mod interaction;
 mod invalidation;
+mod layers;
+pub(crate) mod reconcile;
 mod resources;
 mod timing;
 mod tree;
 
 use animation::{ElementAnimation, FrameTargetState};
-#[cfg(test)]
-use composition::refresh_scope_roots_from_tree;
 use dirty::DrawListCacheKey;
+use ids::InputOwners;
+pub use ids::{EventTargetId, NodeId};
 use invalidation::InvalidationStore;
 pub use invalidation::{
     Invalidation, InvalidationPropagation, InvalidationSource, InvalidationTarget, PassFlags,
 };
+pub use layers::{
+    LayerAnchorSource, LayerDebugRecord, LayerDismissalRecord, LayerId, LayerIntent, LayerKind,
+    LayerLifecycleAction, LayerPlacement, LayerPointerAction, LayerPointerDebugRecord, LayerSize,
+    OutsideClickPolicy,
+};
+#[cfg(test)]
+use reconcile::refresh_scope_roots_from_tree;
 use timing::TimerState;
 
 /// Compact structure snapshot used to detect tree-level and paint changes.
@@ -96,6 +107,15 @@ pub struct ElementDebugRecord {
     pub draw_frame: Option<LayoutRect>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventDebugRecord {
+    pub raw_event: &'static str,
+    pub target: EventTargetId,
+    pub command: &'static str,
+    pub callback: bool,
+    pub invalidation: Option<Invalidation>,
+}
+
 #[derive(Clone, PartialEq)]
 pub struct UiDebugSnapshot {
     pub frame_index: u64,
@@ -106,6 +126,10 @@ pub struct UiDebugSnapshot {
     pub clock_ids: Vec<String>,
     pub retained: Vec<RetainedDebugRecord>,
     pub elements: Vec<ElementDebugRecord>,
+    pub events: Vec<EventDebugRecord>,
+    pub layers: Vec<LayerDebugRecord>,
+    pub layer_dismissals: Vec<LayerDismissalRecord>,
+    pub layer_pointer: Vec<LayerPointerDebugRecord>,
     pub retained_events: Vec<RetainedComposeEvent>,
     pub scope_compose: Vec<ScopeComposeRecord>,
     pub retained_stats: RetainedComposeStats,
@@ -132,6 +156,10 @@ impl std::fmt::Debug for UiDebugSnapshot {
             .field("clock_ids", &self.clock_ids)
             .field("retained", &self.retained)
             .field("element_count", &self.elements.len())
+            .field("events", &self.events)
+            .field("layers", &self.layers)
+            .field("layer_dismissals", &self.layer_dismissals)
+            .field("layer_pointer", &self.layer_pointer)
             .field("retained_events", &self.retained_events)
             .field("scope_compose", &self.scope_compose)
             .field("retained_stats", &self.retained_stats)
@@ -160,6 +188,10 @@ impl Default for UiDebugSnapshot {
             clock_ids: Vec::new(),
             retained: Vec::new(),
             elements: Vec::new(),
+            events: Vec::new(),
+            layers: Vec::new(),
+            layer_dismissals: Vec::new(),
+            layer_pointer: Vec::new(),
             retained_events: Vec::new(),
             scope_compose: Vec::new(),
             retained_stats: RetainedComposeStats::default(),
@@ -301,6 +333,7 @@ pub struct Runtime {
     timing: TimingRuntimeState,
     animation: AnimationRuntimeState,
     resources: ResourceRuntimeState,
+    layers: LayerRuntimeState,
     render: RenderRuntimeState,
     invalidation: InvalidationStore,
     debug: DebugRuntimeState,
@@ -313,11 +346,20 @@ struct TreeRuntimeState {
     live_ids: ScopeSet,
     clock_ids: ScopeSet,
     clock_periods: Option<ClockPeriodMap>,
-    clock_period_ticks: Option<FxHashMap<String, u64>>,
+    clock_period_ticks: Option<FxHashMap<ScopeId, u64>>,
     structure: Vec<ElementSnapshot>,
     screen: Screen,
     retained_stats: RetainedComposeStats,
     frame_index: u64,
+}
+
+#[derive(Debug, Default)]
+struct LayerRuntimeState {
+    intents: Vec<LayerIntent>,
+    debug_records: Vec<LayerDebugRecord>,
+    dismissal_records: Vec<LayerDismissalRecord>,
+    pointer_records: Vec<LayerPointerDebugRecord>,
+    focus_restore: Option<String>,
 }
 
 struct InputRuntimeState {
@@ -327,18 +369,6 @@ struct InputRuntimeState {
     owners: InputOwners,
     drag_origin: Option<[f32; 2]>,
     pointer_position: Option<[f32; 2]>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct InputOwners {
-    pointer_hover: Option<String>,
-    pointer_active: Option<String>,
-    pointer_capture: Option<String>,
-    keyboard_focus: Option<String>,
-    text_focus: Option<String>,
-    ime_owner: Option<String>,
-    scroll_owner: Option<String>,
-    drag_owner: Option<String>,
 }
 
 struct TimingRuntimeState {
@@ -366,6 +396,7 @@ struct RenderRuntimeState {
 
 struct DebugRuntimeState {
     snapshot: UiDebugSnapshot,
+    events: Vec<EventDebugRecord>,
 }
 
 impl std::fmt::Debug for Runtime {
@@ -430,6 +461,7 @@ impl Runtime {
                 skins: SkinRegistry::default(),
                 text_system: Box::new(text_system),
             },
+            layers: LayerRuntimeState::default(),
             render: RenderRuntimeState {
                 needs_render: true,
                 needs_compose: false,
@@ -440,6 +472,7 @@ impl Runtime {
             invalidation: InvalidationStore::default(),
             debug: DebugRuntimeState {
                 snapshot: UiDebugSnapshot::default(),
+                events: Vec::new(),
             },
         }
     }

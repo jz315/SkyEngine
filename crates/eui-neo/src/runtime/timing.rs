@@ -1,4 +1,5 @@
 use super::*;
+use crate::callbacks::TimerCallbackId;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct TimerState {
@@ -27,7 +28,12 @@ impl Runtime {
             state.elapsed += delta_seconds.max(0.0);
             if state.active && state.elapsed >= state.seconds {
                 state.active = false;
-                if let Some(callback) = self.input.callbacks.on_timer.get_mut(&id) {
+                if let Some(callback) = self
+                    .input
+                    .callbacks
+                    .on_timer
+                    .get_mut(&TimerCallbackId::new(&id))
+                {
                     callback();
                     self.record_invalidation(Invalidation::timer(id.clone()));
                     self.mark_compose_dirty();
@@ -63,7 +69,7 @@ impl Runtime {
 pub(super) fn sync_clock_period_ticks(
     seconds: f64,
     periods: Option<&ClockPeriodMap>,
-    ticks: &mut Option<FxHashMap<String, u64>>,
+    ticks: &mut Option<FxHashMap<ScopeId, u64>>,
 ) {
     let Some(periods) = periods else {
         *ticks = None;

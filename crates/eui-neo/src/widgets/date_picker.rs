@@ -8,9 +8,10 @@ use rustc_hash::FxHashMap;
 use crate::Color;
 
 use super::super::{
-    AnimProperty, DragEvent, HorizontalAlign, LayoutRect, PointerEvent, Response, ScrollEvent,
-    Shadow, Signal, Transition, Ui, VerticalAlign,
+    AnimProperty, DragEvent, HorizontalAlign, LayoutRect, OutsideClickPolicy, PointerEvent,
+    Response, ScrollEvent, Shadow, Signal, Transition, Ui, VerticalAlign,
 };
+use super::popover::{popover, PopoverPlacement};
 use super::theme::{self, ThemeColorTokens};
 
 type DateChangeCallback = Rc<RefCell<Box<dyn FnMut(i32, i32, i32)>>>;
@@ -251,30 +252,31 @@ impl<'ui> DatePickerBuilder<'ui> {
         let draft = sync_date_draft(&id, self.open, self.year, self.month, self.day);
         let open_change = self.on_open_change.clone();
 
-        self.ui
-            .stack(id.clone())
-            .size(self.screen_width, self.screen_height)
-            .z_index(self.z_index)
-            .content(|ui| {
-                let backdrop_open_change = open_change.clone();
+        if self.open {
+            self.ui.with_root_layer(|ui| {
                 ui.rect(format!("{id}.backdrop"))
+                    .position(0.0, 0.0)
                     .size(self.screen_width, self.screen_height)
-                    .states(
-                        self.style.backdrop,
-                        self.style.backdrop,
-                        self.style.backdrop,
-                    )
+                    .color(self.style.backdrop)
                     .opacity(visible)
+                    .z_index(self.z_index)
                     .transition(self.transition)
                     .animate(AnimProperty::OPACITY)
-                    .disabled(!self.open)
-                    .on_click(move || call_open_change(&backdrop_open_change, false))
-                    .on_scroll(|_| {})
                     .build();
+            });
+        }
 
+        popover(self.ui, id.clone())
+            .open(self.open)
+            .fallback_anchor(LayoutRect::new(panel_x, panel_y, 0.0, 0.0))
+            .placement(PopoverPlacement::BottomStart)
+            .gap(0.0)
+            .size(panel_width, panel_height)
+            .z_index(self.z_index + 1)
+            .outside_click(OutsideClickPolicy::Close)
+            .on_dismiss(move || call_open_change(&open_change, false))
+            .content(|ui| {
                 ui.stack(format!("{id}.panel"))
-                    .x(panel_x)
-                    .y(panel_y)
                     .size(panel_width, panel_height)
                     .opacity(visible)
                     .translate_y(panel_offset_y)

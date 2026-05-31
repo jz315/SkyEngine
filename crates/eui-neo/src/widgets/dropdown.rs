@@ -286,6 +286,15 @@ impl<'ui> DropdownBuilder<'ui> {
             .gap(popup_gap)
             .size(self.width, popup_height)
             .z_index(self.z_index + 1)
+            .outside_click(super::super::OutsideClickPolicy::Close)
+            .on_dismiss({
+                let open_change = on_open_change.clone();
+                move || {
+                    if let Some(callback) = &open_change {
+                        (callback.borrow_mut())(false);
+                    }
+                }
+            })
             .content(|ui| {
                 ui.stack(format!("{id}.popup.surface"))
                     .size(self.width, popup_height)

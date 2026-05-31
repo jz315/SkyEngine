@@ -5,7 +5,10 @@ use std::rc::Rc;
 
 use crate::Color;
 
-use super::super::{AnimProperty, Response, Shadow, Signal, Transition, Ui};
+use super::super::{
+    AnimProperty, LayerId, LayerIntent, LayerKind, LayerPlacement, LayerSize, LayoutRect,
+    OutsideClickPolicy, Response, Shadow, Signal, Transition, Ui,
+};
 use super::button::button;
 use super::theme::{self, ThemeColorTokens};
 
@@ -206,129 +209,155 @@ impl<'ui> DialogBuilder<'ui> {
         let on_close = self.on_close.clone();
         let on_primary = self.on_primary.clone();
         let on_secondary = self.on_secondary.clone().or_else(|| self.on_close.clone());
+        let panel_id = format!("{id}.panel");
+        let resolved_panel_id = self.ui.resolve_id(&panel_id);
+        let outside_click = if on_close.is_some() {
+            OutsideClickPolicy::Close
+        } else {
+            OutsideClickPolicy::Block
+        };
 
-        self.ui
-            .stack(id.clone())
-            .size(self.screen_width, self.screen_height)
-            .z_index(self.z_index)
-            .content(|ui| {
-                let backdrop_close = on_close.clone();
-                ui.rect(format!("{id}.backdrop"))
-                    .size(self.screen_width, self.screen_height)
-                    .states(
-                        self.style.backdrop,
-                        self.style.backdrop,
-                        self.style.backdrop,
-                    )
-                    .opacity(visible)
-                    .transition(self.transition)
-                    .animate(AnimProperty::OPACITY)
-                    .disabled(!self.open)
-                    .on_click(move || call_click(&backdrop_close))
-                    .on_scroll(|_| {})
-                    .build();
+        self.ui.register_layer_intent(LayerIntent {
+            id: LayerId::new(resolved_panel_id.clone()),
+            owner: self.ui.resolve_id(&id),
+            anchor: None,
+            fallback_anchor: Some(LayoutRect::new(
+                0.0,
+                0.0,
+                self.screen_width,
+                self.screen_height,
+            )),
+            open: self.open,
+            kind: LayerKind::Modal,
+            placement: LayerPlacement::Center,
+            size: LayerSize::new(width.into(), height.into()),
+            z_index: self.z_index + 1,
+            outside_click,
+        });
+        if let Some(layer_close) = on_close.clone() {
+            self.ui.register_on_layer_dismiss(
+                resolved_panel_id,
+                Box::new(move || {
+                    (layer_close.borrow_mut())();
+                }),
+            );
+        }
 
-                ui.stack(format!("{id}.panel"))
-                    .x(x)
-                    .y(y)
-                    .size(width, height)
-                    .opacity(visible)
-                    .translate_y(panel_offset_y)
-                    .scale(panel_scale)
-                    .transform_origin(0.5, 0.5)
-                    .transition(self.transition)
-                    .animate(AnimProperty::OPACITY | AnimProperty::TRANSFORM)
-                    .content(|ui| {
-                        ui.rect(format!("{id}.panel.bg"))
-                            .size(width, height)
-                            .color(self.style.surface)
-                            .radius(self.style.radius)
-                            .border(1.0, self.style.border)
-                            .shadow_style(self.style.shadow)
-                            .build();
+        self.ui.with_root_layer(|ui| {
+            ui.rect(format!("{id}.backdrop"))
+                .size(self.screen_width, self.screen_height)
+                .z_index(self.z_index)
+                .states(
+                    self.style.backdrop,
+                    self.style.backdrop,
+                    self.style.backdrop,
+                )
+                .opacity(visible)
+                .transition(self.transition)
+                .animate(AnimProperty::OPACITY)
+                .disabled(!self.open)
+                .on_scroll(|_| {})
+                .build();
+        });
 
-                        ui.rect(format!("{id}.panel.hit"))
-                            .size(width, height)
-                            .states(
-                                theme::color(0.0, 0.0, 0.0, 0.0),
-                                theme::color(0.0, 0.0, 0.0, 0.0),
-                                theme::color(0.0, 0.0, 0.0, 0.0),
-                            )
-                            .disabled(!self.open)
-                            .on_click(|| {})
-                            .build();
+        self.ui.with_root_layer(|ui| {
+            ui.stack(panel_id)
+                .x(x)
+                .y(y)
+                .size(width, height)
+                .z_index(self.z_index + 1)
+                .opacity(visible)
+                .translate_y(panel_offset_y)
+                .scale(panel_scale)
+                .transform_origin(0.5, 0.5)
+                .transition(self.transition)
+                .animate(AnimProperty::OPACITY | AnimProperty::TRANSFORM)
+                .content(|ui| {
+                    ui.rect(format!("{id}.panel.bg"))
+                        .size(width, height)
+                        .color(self.style.surface)
+                        .radius(self.style.radius)
+                        .border(1.0, self.style.border)
+                        .shadow_style(self.style.shadow)
+                        .build();
 
-                        ui.text(format!("{id}.title"))
-                            .x(24.0)
-                            .y(22.0)
-                            .size(content_width, 32.0)
-                            .text(self.title.clone())
-                            .font_size(24.0)
-                            .line_height(30.0)
-                            .color(self.style.title)
-                            .build();
+                    ui.rect(format!("{id}.panel.hit"))
+                        .size(width, height)
+                        .states(
+                            theme::color(0.0, 0.0, 0.0, 0.0),
+                            theme::color(0.0, 0.0, 0.0, 0.0),
+                            theme::color(0.0, 0.0, 0.0, 0.0),
+                        )
+                        .disabled(!self.open)
+                        .on_click(|| {})
+                        .build();
 
-                        ui.text(format!("{id}.message"))
-                            .x(24.0)
-                            .y(64.0)
-                            .size(content_width, (height - 138.0).max(0.0))
-                            .text(self.message.clone())
-                            .font_size(17.0)
-                            .line_height(24.0)
-                            .max_width(content_width)
-                            .wrap(true)
-                            .color(self.style.message)
-                            .build();
+                    ui.text(format!("{id}.title"))
+                        .x(24.0)
+                        .y(22.0)
+                        .size(content_width, 32.0)
+                        .text(self.title.clone())
+                        .font_size(24.0)
+                        .line_height(30.0)
+                        .color(self.style.title)
+                        .build();
 
-                        ui.row(format!("{id}.actions"))
-                            .x(24.0_f32.max(width - button_row_width - 24.0))
-                            .y(88.0_f32.max(height - 58.0))
-                            .size(button_row_width, 42.0)
-                            .gap(12.0)
-                            .content(|ui| {
-                                let secondary = on_secondary.clone();
-                                button(ui, format!("{id}.secondary"))
-                                    .size(button_width, 42.0)
-                                    .text(self.secondary_text.clone())
-                                    .font_size(16.0)
-                                    .colors(
-                                        self.style.secondary,
-                                        self.style.secondary_hover,
-                                        self.style.secondary_pressed,
-                                    )
-                                    .text_color(self.style.title)
-                                    .icon_color(self.style.title)
-                                    .radius(10.0)
-                                    .border(1.0, self.style.border)
-                                    .shadow(0.0, 0.0, 0.0, theme::color(0.0, 0.0, 0.0, 0.0))
-                                    .disabled(!self.open)
-                                    .on_click(move || call_click(&secondary))
-                                    .build();
+                    ui.text(format!("{id}.message"))
+                        .x(24.0)
+                        .y(64.0)
+                        .size(content_width, (height - 138.0).max(0.0))
+                        .text(self.message.clone())
+                        .font_size(17.0)
+                        .line_height(24.0)
+                        .max_width(content_width)
+                        .wrap(true)
+                        .color(self.style.message)
+                        .build();
 
-                                let primary = on_primary.clone();
-                                button(ui, format!("{id}.primary"))
-                                    .size(button_width, 42.0)
-                                    .text(self.primary_text.clone())
-                                    .font_size(16.0)
-                                    .colors(
-                                        self.style.primary,
-                                        self.style.primary_hover,
-                                        self.style.primary_pressed,
-                                    )
-                                    .radius(10.0)
-                                    .border(1.0, theme::with_alpha(self.style.primary, 0.64))
-                                    .shadow(
-                                        10.0,
-                                        0.0,
-                                        3.0,
-                                        theme::with_alpha(self.style.primary, 0.18),
-                                    )
-                                    .disabled(!self.open)
-                                    .on_click(move || call_click(&primary))
-                                    .build();
-                            });
-                    });
-            });
+                    ui.row(format!("{id}.actions"))
+                        .x(24.0_f32.max(width - button_row_width - 24.0))
+                        .y(88.0_f32.max(height - 58.0))
+                        .size(button_row_width, 42.0)
+                        .gap(12.0)
+                        .content(|ui| {
+                            let secondary = on_secondary.clone();
+                            button(ui, format!("{id}.secondary"))
+                                .size(button_width, 42.0)
+                                .text(self.secondary_text.clone())
+                                .font_size(16.0)
+                                .colors(
+                                    self.style.secondary,
+                                    self.style.secondary_hover,
+                                    self.style.secondary_pressed,
+                                )
+                                .text_color(self.style.title)
+                                .icon_color(self.style.title)
+                                .radius(10.0)
+                                .border(1.0, self.style.border)
+                                .shadow(0.0, 0.0, 0.0, theme::color(0.0, 0.0, 0.0, 0.0))
+                                .disabled(!self.open)
+                                .on_click(move || call_click(&secondary))
+                                .build();
+
+                            let primary = on_primary.clone();
+                            button(ui, format!("{id}.primary"))
+                                .size(button_width, 42.0)
+                                .text(self.primary_text.clone())
+                                .font_size(16.0)
+                                .colors(
+                                    self.style.primary,
+                                    self.style.primary_hover,
+                                    self.style.primary_pressed,
+                                )
+                                .radius(10.0)
+                                .border(1.0, theme::with_alpha(self.style.primary, 0.64))
+                                .shadow(10.0, 0.0, 3.0, theme::with_alpha(self.style.primary, 0.18))
+                                .disabled(!self.open)
+                                .on_click(move || call_click(&primary))
+                                .build();
+                        });
+                });
+        });
 
         self.ui.response(&id)
     }

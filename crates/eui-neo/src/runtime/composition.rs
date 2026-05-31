@@ -3,6 +3,11 @@ use super::debug::{
     neo_debug_trace_enabled, neo_diagnostics_enabled, neo_structure_trace_enabled,
     trace_debug_snapshot, RuntimeDebugSnapshotInput,
 };
+use super::invalidation::NormalizedDirtyInput;
+use super::layers::{collect_layer_debug_records, layer_blocks_element_target};
+use super::reconcile::{
+    apply_removed_retained_scopes, refresh_scope_roots_from_tree, retained_layout_reuse_plan,
+};
 use super::timing::sync_clock_period_ticks;
 use super::tree::{
     collect_structure, find_element, layout_structures_match, visual_structures_match,
@@ -10,12 +15,30 @@ use super::tree::{
 use super::*;
 use crate::dsl::UiParts;
 
+type ElementIdSet = FxHashSet<String>;
+
 impl Runtime {
+    #[cfg(test)]
     pub(crate) fn compose_tree_with_dirty(
         &mut self,
         width: f32,
         height: f32,
         dirty: Option<Vec<DirtyInput>>,
+        compose: impl FnOnce(&mut Ui, Screen),
+    ) {
+        self.compose_tree_with_normalized_dirty(
+            width,
+            height,
+            NormalizedDirtyInput::from_optional_dirty_inputs(dirty),
+            compose,
+        );
+    }
+
+    pub(super) fn compose_tree_with_normalized_dirty(
+        &mut self,
+        width: f32,
+        height: f32,
+        dirty: Option<NormalizedDirtyInput>,
         compose: impl FnOnce(&mut Ui, Screen),
     ) {
         #[cfg(feature = "profile")]
@@ -41,7 +64,16 @@ impl Runtime {
         built_frame.refresh_scope_roots();
         let next_structure = collect_next_structure(self, input.screen, &built_frame.roots);
         let retained_context = built_frame.take_retained_context();
+        cleanup_removed_scope_dependencies(&retained_context.previous_scope_roots, &built_frame);
+        let previous_layers = std::mem::take(&mut self.layers.intents);
+        let layer_debug_records = collect_layer_debug_records(
+            &previous_layers,
+            &built_frame.layer_intents,
+            &built_frame.previous_roots,
+        );
         commit_composition(self, built_frame.into_commit(input.screen, next_structure));
+        self.layers.debug_records = layer_debug_records;
+        cleanup_stale_retained_state(self);
         finish_composition_diagnostics(
             self,
             DiagnosticsInput {
@@ -54,151 +86,18 @@ impl Runtime {
             },
         );
     }
-
-    pub fn current_frame(&self) -> Frame {
-        Frame {
-            screen: self.tree.screen,
-            draw_list: self.draw_list(),
-            needs_render: self.render.needs_render,
-            needs_compose: self.render.needs_compose,
-            full_redraw: self.render.full_redraw,
-            focused_ime_rect: self.focused_ime_rect(),
-        }
-    }
-
-    pub fn frame<R>(
-        &mut self,
-        input: FrameInput,
-        compose: impl FnOnce(&mut Ui, Screen) -> R,
-    ) -> FrameResult<R> {
-        self.run_frame(input, None::<fn() -> Vec<DirtyInput>>, compose)
-    }
-
-    pub fn frame_incremental<R>(
-        &mut self,
-        input: FrameInput,
-        dirty: impl FnOnce() -> Vec<DirtyInput>,
-        compose: impl FnOnce(&mut Ui, Screen) -> R,
-    ) -> FrameResult<R> {
-        self.run_frame(input, Some(dirty), compose)
-    }
-
-    fn run_frame<R>(
-        &mut self,
-        input: FrameInput,
-        dirty_after_input: Option<impl FnOnce() -> Vec<DirtyInput>>,
-        compose: impl FnOnce(&mut Ui, Screen) -> R,
-    ) -> FrameResult<R> {
-        let mut frame_pass = FramePass::from_input(input);
-        self.run_input_pass(&mut frame_pass);
-        frame_pass.collect_dirty(dirty_after_input);
-
-        let mut value = None;
-        if frame_pass.should_full_compose(self) {
-            self.run_compose_pass(&frame_pass, None, |ui, screen| {
-                value = Some(compose(ui, screen));
-            });
-        } else {
-            let dirty = frame_pass.dirty.take();
-            self.run_compose_pass(&frame_pass, dirty, |ui, screen| {
-                value = Some(compose(ui, screen));
-            });
-        }
-        self.run_animation_pass(&frame_pass);
-        FrameResult {
-            value: value.expect("frame compose closure did not run"),
-            frame: self.run_output_pass(),
-        }
-    }
-
-    fn run_input_pass(&mut self, pass: &mut FramePass) {
-        let keyboard = std::mem::take(&mut pass.keyboard);
-        if let Some((last, leading)) = pass.pointer_events.split_last() {
-            for event in leading {
-                self.update_pointer(*event);
-            }
-            self.update_events_and_timers(*last, pass.scroll, keyboard, pass.delta_seconds);
-        } else {
-            self.update_events_and_timers(pass.pointer, pass.scroll, keyboard, pass.delta_seconds);
-        }
-    }
-
-    fn run_compose_pass(
-        &mut self,
-        pass: &FramePass,
-        dirty: Option<Vec<DirtyInput>>,
-        compose: impl FnOnce(&mut Ui, Screen),
-    ) {
-        self.compose_tree_with_dirty(pass.screen.width, pass.screen.height, dirty, compose);
-    }
-
-    fn run_animation_pass(&mut self, pass: &FramePass) {
-        self.tick_animations(pass.delta_seconds);
-    }
-
-    fn run_output_pass(&self) -> Frame {
-        self.current_frame()
-    }
-}
-
-struct FramePass {
-    screen: Screen,
-    delta_seconds: f32,
-    pointer: PointerEvent,
-    pointer_events: Vec<PointerEvent>,
-    scroll: ScrollEvent,
-    keyboard: KeyboardEvent,
-    dirty: Option<Vec<DirtyInput>>,
-    force_full_compose: bool,
-}
-
-impl FramePass {
-    fn from_input(input: FrameInput) -> Self {
-        let FrameInput {
-            screen,
-            delta_seconds,
-            pointer,
-            pointer_events,
-            scroll,
-            keyboard,
-            dirty,
-            force_full_compose,
-        } = input;
-        Self {
-            screen,
-            delta_seconds: delta_seconds.max(0.0),
-            pointer,
-            pointer_events,
-            scroll,
-            keyboard,
-            dirty,
-            force_full_compose,
-        }
-    }
-
-    fn collect_dirty(&mut self, dirty_after_input: Option<impl FnOnce() -> Vec<DirtyInput>>) {
-        self.dirty = dirty_after_input
-            .map(|collect| collect())
-            .or(self.dirty.take());
-    }
-
-    fn should_full_compose(&self, runtime: &Runtime) -> bool {
-        self.force_full_compose
-            || (runtime.needs_compose() && self.dirty.as_ref().is_none_or(Vec::is_empty))
-            || self.dirty.is_none()
-    }
 }
 
 struct CompositionInput {
     screen: Screen,
-    dirty: Option<Vec<DirtyInput>>,
+    dirty: Option<NormalizedDirtyInput>,
     profile_timing: bool,
     diagnostics_enabled: bool,
     debug_trace: bool,
 }
 
 impl CompositionInput {
-    fn new(width: f32, height: f32, dirty: Option<Vec<DirtyInput>>) -> Self {
+    fn new(width: f32, height: f32, dirty: Option<NormalizedDirtyInput>) -> Self {
         let debug_trace = neo_debug_trace_enabled();
         Self {
             screen: Screen { width, height },
@@ -214,6 +113,7 @@ struct CompositionFrame {
     previous_clock_ids: ScopeSet,
     previous_clock_periods_for_reuse: Option<ClockPeriodMap>,
     scope_frame: ScopeFrame,
+    layout_dirty_scopes: ScopeSet,
 }
 
 impl CompositionFrame {
@@ -221,24 +121,18 @@ impl CompositionFrame {
         #[cfg(feature = "profile")]
         ::profiling::scope!("eui_neo.runtime.begin_frame");
         runtime.render.needs_compose = false;
-        let dirty_records = input.dirty.take();
-        let dirty_ids = dirty_records.as_ref().map(|records| {
-            records
-                .iter()
-                .map(|record| record.id.clone())
-                .collect::<FxHashSet<_>>()
-        });
+        let dirty_input = input.dirty.take();
+        let dirty_ids = dirty_input
+            .as_ref()
+            .map(|dirty| dirty.compose_scopes.clone());
+        let layout_dirty_scopes = dirty_input
+            .as_ref()
+            .map(|dirty| dirty.layout_scopes.clone())
+            .unwrap_or_default();
         let can_reuse_scopes = dirty_ids.is_some() && runtime.tree.screen == input.screen;
-        if let Some(records) = dirty_records.as_ref() {
-            for record in records {
-                runtime.record_invalidation(Invalidation::signal(
-                    record.id.clone(),
-                    record
-                        .source
-                        .clone()
-                        .unwrap_or_else(|| "dirty_input".to_string()),
-                    record.flags,
-                ));
+        if let Some(dirty) = dirty_input {
+            for invalidation in dirty.invalidations {
+                runtime.record_invalidation(invalidation);
             }
         }
         if can_reuse_scopes {
@@ -263,6 +157,7 @@ impl CompositionFrame {
             previous_clock_ids,
             previous_clock_periods_for_reuse,
             scope_frame,
+            layout_dirty_scopes,
         }
     }
 
@@ -294,7 +189,7 @@ fn new_frame_ui(runtime: &Runtime, input: &CompositionInput) -> Ui {
     ::profiling::scope!("eui_neo.runtime.ui_setup");
     let mut ui = Ui::new(runtime.tree.page_id.clone());
     ui.set_skins(runtime.resources.skins.clone());
-    ui.set_focused_id(runtime.input.owners.keyboard_focus.clone());
+    ui.set_focused_id(runtime.input.owners.keyboard_focus_string());
     ui.set_clock(runtime.timing.clock_seconds, runtime.tree.frame_index);
     ui.set_profile_timing(input.profile_timing);
     ui.set_diagnostics_enabled(input.diagnostics_enabled);
@@ -325,6 +220,7 @@ struct BuiltUiFrame {
     retained_stats: RetainedComposeStats,
     retained_events: Vec<RetainedComposeEvent>,
     scope_compose_records: Vec<ScopeComposeRecord>,
+    layer_intents: Vec<LayerIntent>,
     previous_scope_roots: ScopeRoots,
     previous_roots: Vec<Element>,
 }
@@ -343,6 +239,7 @@ impl BuiltUiFrame {
             retained_stats: parts.retained_stats,
             retained_events: parts.retained_events,
             scope_compose_records: parts.scope_compose_records,
+            layer_intents: parts.layer_intents,
             previous_scope_roots: parts.previous_scope_roots,
             previous_roots: parts.previous_roots,
         }
@@ -355,22 +252,29 @@ impl BuiltUiFrame {
     fn layout_input(&self, frame: &CompositionFrame, input: &CompositionInput) -> LayoutInput {
         #[cfg(feature = "profile")]
         ::profiling::scope!("eui_neo.runtime.layout_input");
+        let mut layout_dirty_scopes = frame.dirty_scopes().clone();
+        layout_dirty_scopes.extend(frame.layout_dirty_scopes.iter().cloned());
         LayoutInput {
             screen: input.screen,
             can_reuse_scopes: frame.can_reuse_scopes(),
-            normalized_dirty_ids: self.normalize_dirty_ids(frame.dirty_scopes()),
+            normalized_dirty_ids: self.normalize_dirty_ids(&layout_dirty_scopes),
         }
     }
 
     fn layout_blocker(&self, input: &LayoutInput) -> Option<FullLayoutReason> {
         #[cfg(feature = "profile")]
         ::profiling::scope!("eui_neo.runtime.layout_plan");
-        partial_layout_blocker_for_scope_reuse(
+        let plan = retained_layout_reuse_plan(
             input.can_reuse_scopes,
             &input.normalized_dirty_ids,
             &self.previous_scope_roots,
             &self.scope_roots,
-        )
+            neo_structure_trace_enabled(),
+        );
+        for report in plan.structural_reports {
+            eprintln!("[eui-neo structure] {report}");
+        }
+        plan.blocker
     }
 
     fn execute_layout(
@@ -423,6 +327,7 @@ impl BuiltUiFrame {
             clock_ids: self.clock_ids,
             clock_periods: self.clock_periods,
             callbacks: self.callbacks,
+            layer_intents: self.layer_intents,
             retained_stats: self.retained_stats,
             structure,
         }
@@ -483,6 +388,7 @@ fn finish_composition_diagnostics(runtime: &mut Runtime, source: DiagnosticsInpu
         trace_debug_snapshot(&runtime.debug.snapshot);
     }
     runtime.clear_committed_invalidations();
+    runtime.clear_committed_event_debug_records();
 }
 
 struct CompositionCommit {
@@ -493,6 +399,7 @@ struct CompositionCommit {
     clock_ids: ScopeSet,
     clock_periods: Option<ClockPeriodMap>,
     callbacks: UiCallbacks,
+    layer_intents: Vec<LayerIntent>,
     retained_stats: RetainedComposeStats,
     structure: Vec<ElementSnapshot>,
 }
@@ -513,8 +420,124 @@ fn commit_composition(runtime: &mut Runtime, commit: CompositionCommit) {
         &mut runtime.tree.clock_period_ticks,
     );
     runtime.input.callbacks = commit.callbacks;
+    runtime.layers.intents = commit.layer_intents;
     runtime.tree.retained_stats = commit.retained_stats;
     runtime.tree.frame_index = runtime.tree.frame_index.saturating_add(1);
+}
+
+fn cleanup_removed_scope_dependencies(previous_scope_roots: &ScopeRoots, frame: &BuiltUiFrame) {
+    apply_removed_retained_scopes(previous_scope_roots, &frame.scope_roots);
+}
+
+fn cleanup_stale_retained_state(runtime: &mut Runtime) {
+    let existing_ids = collect_existing_element_ids(&runtime.tree.roots);
+    let mut changed = cleanup_stale_input_owners(runtime, &existing_ids);
+    changed |= cleanup_layer_blocked_focus(runtime, &existing_ids);
+    changed |= cleanup_stale_animation_state(runtime, &existing_ids);
+    changed |= cleanup_stale_timer_state(runtime, &existing_ids);
+    if changed {
+        runtime.mark_render_dirty();
+    }
+}
+
+fn cleanup_stale_input_owners(runtime: &mut Runtime, existing_ids: &ElementIdSet) -> bool {
+    let mut changed = runtime
+        .input
+        .owners
+        .retain_existing(|id| existing_ids.contains(id));
+    let previous_interactions = runtime.input.interactions.len();
+    runtime
+        .input
+        .interactions
+        .retain(|id, _| existing_ids.contains(id));
+    changed |= runtime.input.interactions.len() != previous_interactions;
+    let previous_responses = runtime.input.responses.len();
+    runtime
+        .input
+        .responses
+        .retain(|id, _| existing_ids.contains(id));
+    changed |= runtime.input.responses.len() != previous_responses;
+    changed
+}
+
+fn cleanup_layer_blocked_focus(runtime: &mut Runtime, existing_ids: &ElementIdSet) -> bool {
+    let mut changed = false;
+    if runtime
+        .layers
+        .focus_restore
+        .as_ref()
+        .is_some_and(|id| !existing_ids.contains(id))
+    {
+        runtime.layers.focus_restore = None;
+        changed = true;
+    }
+
+    if let Some(focused_id) = runtime.input.owners.keyboard_focus_string() {
+        if layer_blocks_element_target(&runtime.layers.intents, &runtime.tree.roots, &focused_id) {
+            if runtime.layers.focus_restore.is_none() {
+                runtime.layers.focus_restore = Some(focused_id);
+            }
+            runtime.input.owners.set_keyboard_focus(None, false);
+            return true;
+        }
+        return changed;
+    }
+
+    let Some(restore_id) = runtime.layers.focus_restore.clone() else {
+        return changed;
+    };
+    if layer_blocks_element_target(&runtime.layers.intents, &runtime.tree.roots, &restore_id) {
+        return changed;
+    }
+    if !existing_ids.contains(&restore_id) {
+        runtime.layers.focus_restore = None;
+        return true;
+    }
+
+    let text_enabled = runtime.input.callbacks.has_text_input(&restore_id);
+    runtime
+        .input
+        .owners
+        .set_keyboard_focus(Some(restore_id), text_enabled);
+    runtime.layers.focus_restore = None;
+    true
+}
+
+fn cleanup_stale_animation_state(runtime: &mut Runtime, existing_ids: &ElementIdSet) -> bool {
+    let previous_animations = runtime.animation.animations.len();
+    runtime
+        .animation
+        .animations
+        .retain(|id, _| existing_ids.contains(id));
+    let previous_frame_targets = runtime.animation.frame_targets.len();
+    runtime
+        .animation
+        .frame_targets
+        .retain(|id, _| existing_ids.contains(id));
+    runtime.animation.animations.len() != previous_animations
+        || runtime.animation.frame_targets.len() != previous_frame_targets
+}
+
+fn cleanup_stale_timer_state(runtime: &mut Runtime, existing_ids: &ElementIdSet) -> bool {
+    let previous_timers = runtime.timing.timers.len();
+    runtime
+        .timing
+        .timers
+        .retain(|id, _| existing_ids.contains(id));
+    runtime.timing.timers.len() != previous_timers
+}
+
+fn collect_existing_element_ids(elements: &[Element]) -> ElementIdSet {
+    let mut ids = ElementIdSet::default();
+    collect_existing_element_ids_into(elements, &mut ids);
+    ids
+}
+
+fn collect_existing_element_ids_into(elements: &[Element], ids: &mut ElementIdSet) {
+    for element in elements {
+        ids.insert(element.id.clone());
+        collect_existing_element_ids_into(&element.children, ids);
+    }
 }
 
 fn collect_next_structure(
@@ -617,33 +640,6 @@ fn build_debug_snapshot(
     build_runtime_debug_snapshot(runtime, input)
 }
 
-fn partial_layout_blocker_for_scope_reuse(
-    can_reuse_scopes: bool,
-    normalized_dirty_ids: &ScopeSet,
-    previous_scope_roots: &ScopeRoots,
-    scope_roots: &ScopeRoots,
-) -> Option<FullLayoutReason> {
-    partial_layout_blocker(can_reuse_scopes, normalized_dirty_ids, previous_scope_roots).or_else(
-        || {
-            let scopes = structurally_incompatible_dirty_scopes(
-                normalized_dirty_ids,
-                previous_scope_roots,
-                scope_roots,
-            );
-            if !scopes.is_empty() && neo_structure_trace_enabled() {
-                for report in structural_incompatibility_reports(
-                    normalized_dirty_ids,
-                    previous_scope_roots,
-                    scope_roots,
-                ) {
-                    eprintln!("[eui-neo structure] {report}");
-                }
-            }
-            (!scopes.is_empty()).then_some(FullLayoutReason::StructureChanged { ids: scopes })
-        },
-    )
-}
-
 fn execute_layout_plan(
     roots: &mut Vec<Element>,
     plan: LayoutPlan<'_>,
@@ -684,7 +680,7 @@ fn execute_layout_plan(
 
 pub(super) fn layout_dirty_ids_with_text_system(
     roots: &mut [Element],
-    dirty_ids: &FxHashSet<String>,
+    dirty_ids: &ScopeSet,
     previous_scope_roots: &ScopeRoots,
     text_system: &mut dyn TextSystem,
 ) -> bool {
@@ -702,59 +698,6 @@ pub(super) fn layout_dirty_ids_with_text_system(
         }
     }
     true
-}
-
-pub(super) fn partial_layout_blocker(
-    can_reuse_scopes: bool,
-    layout_dirty_scopes: &ScopeSet,
-    previous_scope_roots: &ScopeRoots,
-) -> Option<FullLayoutReason> {
-    if !can_reuse_scopes {
-        return Some(FullLayoutReason::RetainedReuseUnavailable);
-    }
-    layout_dirty_scopes.iter().find_map(|scope| {
-        (!previous_scope_roots.contains_key(scope))
-            .then(|| FullLayoutReason::MissingPreviousRetainedRoot { id: scope.clone() })
-    })
-}
-
-pub(super) fn refresh_scope_roots_from_tree(scope_roots: &mut ScopeRoots, roots: &[Element]) {
-    let mut elements_by_id = FxHashMap::default();
-    collect_elements_by_id(roots, &mut elements_by_id);
-    for elements in scope_roots.values_mut() {
-        for element in elements {
-            if let Some(updated) = elements_by_id.get(element.id.as_str()) {
-                refresh_retained_root_layout_frames(element, updated);
-            }
-        }
-    }
-}
-
-pub(super) fn collect_elements_by_id<'a>(
-    elements: &'a [Element],
-    index: &mut FxHashMap<&'a str, &'a Element>,
-) {
-    for element in elements {
-        index.entry(element.id.as_str()).or_insert(element);
-        collect_elements_by_id(&element.children, index);
-    }
-}
-
-pub(super) fn refresh_retained_root_layout_frames(element: &mut RetainedRoot, updated: &Element) {
-    // Layout mutates only Element::frame. Retained scope roots keep the same
-    // visual/callback data unless their structure changed, so refresh frames
-    // in place and fall back to replacement only when the tree no longer matches.
-    if element.kind != updated.kind
-        || element.id != updated.id
-        || element.children.len() != updated.children.len()
-    {
-        *element = RetainedRoot::from_element(updated);
-        return;
-    }
-    element.frame = updated.frame;
-    for (child, updated_child) in element.children.iter_mut().zip(&updated.children) {
-        refresh_retained_root_layout_frames(child, updated_child);
-    }
 }
 
 pub(super) fn copy_previous_frames(elements: &mut [Element], previous_roots: &[Element]) {

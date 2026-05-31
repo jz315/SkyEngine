@@ -296,7 +296,7 @@ impl<T, V: Clone> Signal<T, V> {
             self.state
                 .graph
                 .borrow_mut()
-                .record_watch(self.key.clone(), scope);
+                .record_watch(self.key.clone(), scope.into_string());
         }
         self.peek()
     }
