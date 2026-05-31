@@ -57,8 +57,8 @@ Implemented so far:
 - Phase 7 partial: manual reload scans now return skipped explanations in `AssetReloadReport::skipped`, including unchanged content, missing manifest entries, and untracked records. Automatic polling still only enters pending reload when changed roots exist, so the extra explanation does not turn every idle scan into diagnostics noise.
 - Phase 7 partial: app `asset.reload` diagnostics now publish reload explanation fields, including changed/impacted asset id lists, skipped reason counts, and `asset_id:reason` skipped details, so editor/dev tooling can inspect reload closure output without parsing logs or reaching into asset internals.
 - Phase 9 partial: asset examples now cover `asset_load_texture`, `asset_hot_reload_texture`, `asset_load_with_dependency`, and `asset_custom_factory`. `README.md`, `README_zh.md`, `examples/README.md`, and `docs/reference/asset.md` point users at the same public `Assets` / strong `Handle<T>` / `AssetPath<T>` / custom factory surface instead of reviving older `AssetServer` or weak-handle terminology.
-- Phase 9 partial: older broad asset planning docs are now marked as historical/superseded where they conflict, so this Sakura adaptation plan plus the strong-handle plan remain the current planning authority without deleting useful background analysis.
-- Phase 9 partial: `docs/plan/asset_resource_system_standard.md` and `docs/plan/world_resource_governance_plan.md` now use the current strong `Handle<T>` plus weak `WeakHandle<T>` / `AssetPath<T>` terminology in their active checklist/standard sections, instead of preserving the obsolete weak-`Handle<T>` / strong-`AssetRef<T>` target model.
+- Phase 9 partial: older broad asset planning docs that conflicted with current strong-handle semantics have been removed, so this Sakura adaptation plan plus the strong-handle and residency-cache plans remain the current planning authority.
+- Phase 9 partial: `docs/plan/world_resource_governance_plan.md` now uses the current strong `Handle<T>` plus weak `WeakHandle<T>` / `AssetPath<T>` terminology in its active checklist/standard sections, instead of preserving the obsolete weak-`Handle<T>` / strong-`AssetRef<T>` target model.
 - Phase 9 verification slice: the broad default and app-feature gates have been re-run on the current tree (`cargo test`, `cargo test --features app`, and `cargo check --examples --features app`), covering the public facade, asset internals, app diagnostics, render runtime asset paths, and example compatibility.
 - Phase 1-5/7/8 verification slice: the current asset-feature suite has been re-run (`cargo test --features asset`; 257 unit tests plus the asset doctest), covering blocking loads, bounded I/O, request/lease/store/load/install/reload/provider/registry/cooking/diagnostics paths while keeping runtime residency outside asset core and avoiding a centralized resource god class.
 - Phase 5/7 verification slice: the current watcher-enabled asset suite has been re-run (`cargo test --features asset-watch asset::`; 250 asset tests), covering file-watcher auto reload, external package roots/files, watch-path resolution, provider invalidation, and reload scan handoff without moving watcher policy into a monolithic resource manager.
@@ -432,7 +432,7 @@ Verified:
 - `cargo check --features asset`
 - `git diff --check -- src/asset/install.rs src/asset/server.rs src/audio/assets.rs src/render/asset/runtime_factory.rs src/render/asset/tests.rs src/render/asset/mod.rs docs/reference/asset.md docs/plan/sakura_resource_system_adaptation_plan.md`
 - `git diff --check -- src/asset/types.rs src/asset/mod.rs src/asset/registry.rs src/asset/load.rs src/asset/texture.rs src/asset/font.rs src/asset/cook.rs src/asset/server.rs src/audio/assets.rs src/video/assets.rs docs/reference/asset.md docs/plan/sakura_resource_system_adaptation_plan.md`
-- `git diff --check -- docs/plan/asset_resource_system_standard.md docs/plan/world_resource_governance_plan.md docs/plan/sakura_resource_system_adaptation_plan.md`
+- `git diff --check -- docs/plan/world_resource_governance_plan.md docs/plan/sakura_resource_system_adaptation_plan.md`
 - `rg --glob '!docs/plan/sakura_resource_system_adaptation_plan.md' -n "Handle<T> is a typed weak|AssetRef<T> is the runtime strong|Keep Handle<T> as weak|Handle<T> is weak identity|AssetRef<T> is strong" docs README.md README_zh.md examples`
 - `rg -n "Sky 最大短[板]|背景加载直[接]|install 同步完[成]|AssetEvent 有[限]|还没有 request object [化]|install 目前只有数量预[算]" docs/plan/sakura_resource_system_adaptation_plan.md`
 - `git diff --check -- docs/plan/sakura_resource_system_adaptation_plan.md`
@@ -444,14 +444,13 @@ Current authority order for asset-resource work:
 1. Current source code in `src/asset/`, `src/app/services.rs`, and backend caches.
 2. This Sakura adaptation plan, because it tracks the active implementation.
 3. `docs/plan/asset_smart_handle_migration_plan.md` for handle lifetime semantics.
-4. `docs/plan/asset_resource_system_plan.md` for broad long-term production goals.
-5. `docs/plan/asset_resource_system_standard.md` only where it does not conflict with the strong-handle direction below.
+4. `docs/plan/backend_residency_cache_contract.md` for backend-owned GPU/audio/video residency rules.
 
 Reconciled decisions:
 
 - `Handle<T>` is the normal strong runtime handle. It is `Clone`, not `Copy`, and owns a lease through `AssetLease`.
 - `WeakHandle<T>` is the weak identity handle. Serialized/editor references should use `AssetId`, `WeakHandle<T>`, or a later typed `AssetPath<T>`, not a strong runtime handle.
-- The older `asset_resource_system_standard.md` language that says `Handle<T>` is weak and `AssetRef<T>` is strong is superseded by `asset_smart_handle_migration_plan.md` and the current implementation.
+- Older asset planning drafts that described `Handle<T>` as weak and `AssetRef<T>` as strong have been removed; the current implementation and strong-handle plan are authoritative.
 - `Assets` remains the only normal public facade. Internal pieces such as request queue, provider, I/O service, install queue, and diagnostics should stay private unless exposed as snapshots/reports. New execution logic should land in focused internal modules or backend caches, not broaden `Assets` / `server.rs` into a god class.
 - No god-class rule: asset core owns identity, CPU payload state, dependencies, leases, request progress, and semantic events only; GPU/audio/video/native residency, memory pressure policy, playback refresh, and renderer-specific cache invalidation must remain in their backend modules.
 - `AssetRuntimeFactory::begin_install` is the single runtime install entry, and `AssetRuntimeFactory::uninstall` is the optional per-type uninstall hook. The older synchronous erased install compatibility path has been intentionally removed.
@@ -540,8 +539,6 @@ SkyEngine 当前实现重点对照：
 - `src/app/frame.rs`
 - `src/audio/assets.rs`
 - `src/video/assets.rs`
-- `docs/plan/asset_resource_system_plan.md`
-- `docs/plan/asset_resource_system_standard.md`
 - `docs/plan/asset_smart_handle_migration_plan.md`
 - `docs/plan/world_resource_governance_plan.md`
 
@@ -704,7 +701,7 @@ Public API 目标：
 
 工作项：
 
-1. 对 `docs/plan/asset_resource_system_plan.md`、`docs/plan/asset_resource_system_standard.md`、`docs/plan/asset_smart_handle_migration_plan.md` 做一次只读审计，列出已完成、过时、仍有效的条目。
+1. 对 `docs/plan/asset_smart_handle_migration_plan.md`、`docs/plan/backend_residency_cache_contract.md`、`docs/plan/world_resource_governance_plan.md` 做一次只读审计，列出已完成、过时、仍有效的条目。
 2. 明确 strong handle 标准：`Handle<T>` 保持资源 lease，`WeakHandle<T>` 仅身份。
 3. 明确 `Assets` 是 app-facing facade，不新增全局 `ResourceSystem`。
 4. 给未来代码改造建立 issue-style checklist，避免同一问题散落多个计划文件。

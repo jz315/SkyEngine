@@ -522,7 +522,8 @@ Tasks:
 - Update `docs/reference/asset.md` from `AssetServer` to `Assets`.
 - Update event examples to match actual events or new planned events.
 - Add a short "current vs target" note while migration is in progress.
-- Mark `asset_resource_system_standard.md` as superseded where it conflicts
+- Keep `docs/plan/sakura_resource_system_adaptation_plan.md` as the current
+  asset-system status record where older asset planning drafts used to conflict
   with strong `Handle<T>`.
 
 Validation:

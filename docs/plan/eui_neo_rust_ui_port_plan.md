@@ -1173,6 +1173,412 @@ platform effects
 - Debug snapshot 已包含 retained reason、invalidations、pass flags。
 - Public API 目前已经有 `prelude`、`widgets`、`testing`、`expert` 分层雏形，但分层语义还没有完全收束。
 
+最新执行进展：
+
+- Phase 1 已推进一刀：`DirtyInput` 进入 runtime 后会先规范化为 typed
+  `Invalidation`、`PassFlags`、compose scope 集合和 layout scope 集合。
+- `FramePass` 的 full-compose fallback 判断已改为读取 typed `PassFlags`，不再只根据
+  dirty vec 是否存在决定是否可以增量 compose。
+- Full-compose fallback 仍会记录本帧 dirty input 对应的 typed invalidation，避免
+  trace/debug snapshot 丢失 redraw 来源。
+- Visual/draw-only dirty 已有回归测试，确保它记录 invalidation 和 draw pass，但不被误当作
+  retained compose dirty scope。
+- `FramePass` 和 composition 内部已改为携带 `NormalizedDirtyInput`；raw `DirtyInput`
+  只保留在 public/testing 边界，进入 runtime 后立即转换。
+- 无 signal source 的 external `DirtyInput` 现在归类为 runtime dirty source；signal dirty
+  继续归类为 signal source，debug snapshot 不再把外部 dirty 伪装成 signal。
+- Composition commit 会清理已移除 scope 的 signal dependencies；被条件移除的 retained
+  scope 不会在后续 signal write 时继续产生 stale dirty record。
+- Composition commit 会清理指向已移除 element 的 input owners；focused text element
+  被移除后，keyboard focus、text focus、IME owner 和 keyboard capture 会立即清空。
+- Composition commit 会清理已移除 element 的 committed interaction/response cache；
+  hover/pressed/clicked 状态不会在元素消失后继续被 replay 到下一帧。
+- Composition commit 会清理已移除 element 的 animation 和 frame target cache；
+  animated element 被删除后，active animation/debug state 不需要等下一次 animation tick 才收敛。
+- Composition commit 会清理已移除 element 的 timer cache；timer element 被删除后，
+  runtime 不再等下一次 timer tick 才丢弃旧 timer state。
+- Debug snapshot 已开始记录 event command trace：raw event category、target role/id、
+  command、callback 命中状态和对应 typed invalidation，便于定位 event target 与 callback
+  execution 的边界。
+- Frame input path 已开始收束到 command collection：同一帧的 pointer event queue 会先更新
+  input/focus state 并收集 `UiEventCommand`，再统一执行 callback 和 invalidation；
+  scroll、keyboard command 也在该 frame input pass 中合流。
+- `runtime/frame.rs` 已落地初始 pass coordinator：`FramePass`、input pass、compose pass、
+  animation pass 和 output pass 从 composition commit 代码中拆出，frame order 开始显式化。
+- `runtime/event_command.rs` 已落地初始 event command executor：`UiEventCommand` 类型、
+  callback execution、typed event invalidation 和 event debug trace 从 pointer/input routing
+  中拆出，event targeting 与 callback execution 的边界更清晰。
+- Phase 3 已开始铺路：event debug trace 的 target 从 `target_role + target_id` 字符串对
+  收束为 `EventTargetId`，先在 event command/debug 边界表达 role-specific identity。
+- `UiEventCommand` 自身的 target 也已从裸 `String` 改为 `EventTargetId`；event command
+  collection、callback lookup、typed invalidation 和 debug trace 现在共享同一个 target 表示。
+- `EventTargetId` 已从单一 `Node` 扩展出 `Focus`、`Text`、`Scroll` roles；pointer click/press
+  仍以 node 为 target，但 focus changed、keyboard text input 和 wheel scroll 的 debug trace
+  已不再全部伪装成普通 node event。
+- 新增回归断言覆盖 focus/text/scroll event trace，确保 role-specific identity 先在
+  event command 边界稳定下来，再继续推进到 InputOwners 和 layer/scope ids。
+- Phase 3 继续向 input ownership 内部推进：`keyboard_focus`、`text_focus`、`ime_owner` 和
+  `scroll_owner` 已换成 runtime-private typed owner ids，public `focused_id()` /
+  `text_focused_id()` / IME rect API 继续输出兼容的 string view。
+- Focus/text/IME/scroll owner 的创建、event trace 和 removed-element cleanup 均已有测试覆盖；
+  下一步可以把 callback/layer/scope id 继续从裸 string 中拆出。
+- Pointer ownership 也已进入 typed owner path：`pointer_hover`、`pointer_active`、
+  `pointer_capture` 和 `drag_owner` 已换成 runtime-private typed owner ids，debug snapshot
+  继续输出兼容的 readable active id。
+- Pointer hover、press/capture、drag callback owner 和 release cleanup 已有回归断言；drag owner
+  语义保持为“有 drag callback 的 event owner”，普通 pointer movement 仍只依赖 capture。
+- Callback storage 也开始按 role 拆分 identity：`on_click`、`on_press`、
+  `on_context_menu`、`on_focus_changed`、`on_text_input`、`on_scroll`、`on_drag` 和
+  `on_timer` 分别使用 runtime-private typed callback keys，不再把同一个裸 string 直接作为所有
+  callback map 的 lookup key。
+- DSL registration、event command execution、scroll/text/drag capability checks 和 timer tick
+  已切到 typed callback keys；public builder/widget callback API 保持不变。
+- Callback transfer 新增回归断言，覆盖同一 element id 下 click/drag callback role 不串位；
+  本轮验证已通过 `cargo test --manifest-path crates/eui-neo/Cargo.toml` 和
+  `cargo test --features ui-neo ui::neo`。
+- Scope identity 也开始进入 typed path：`ScopeId` 已从 `String` alias 收束为 retained
+  subsystem newtype，`ScopeRoots`、`ScopeSet`、retained compose events/records、live scope、
+  clock scope 和 periodic clock tick storage 都改用 typed scope id。
+- Debug snapshot 继续输出 readable string labels，但 retained event/compose record 内部携带
+  typed `ScopeId`；新增回归断言覆盖 typed scope id、非前缀树关系和 clock live scope 的组合。
+- 本轮 scope id 验证已通过 `cargo test --manifest-path crates/eui-neo/Cargo.toml`
+  和 `cargo test --features ui-neo ui::neo`；后者仍只有既存
+  `src/gpu/context.rs:1825 unused_mut` warning。
+- Phase 5 也开始有可追踪入口：`runtime/layers.rs` 已接入 runtime，新增 typed `LayerId`、
+  committed layer intents、layer lifecycle debug records，并把 layer records 纳入
+  `UiDebugSnapshot` 和 debug trace。
+- `popover` 现在在保持既有 root-layer composition 行为不变的同时注册 `LayerIntent`；
+  debug trace 能看到 created/reused/removed/closed、owner、anchor、kind、placement 和 z-index。
+- 新增回归断言覆盖 popover layer intent 的 created/reused/removed lifecycle，以及 closed
+  popover 只记录 layer intent、不注入 root content；本轮验证已通过
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml` 和
+  `cargo test --features ui-neo ui::neo`。
+- Layer policy 开始参与 runtime pointer targeting：`PopoverBuilder::outside_click(...)`
+  可声明 `OutsideClickPolicy::Block`，打开的 blocking layer 会阻断 layer 外部的底层
+  interactive/focusable hit-test，但不会阻断 layer 自身内部点击。
+- 新增回归断言覆盖 blocking popover 的 outside pointer blocking 和 inside pointer passthrough；
+  popover/dropdown 聚焦测试、`cargo test --manifest-path crates/eui-neo/Cargo.toml`
+  和 `cargo test --features ui-neo ui::neo` 均已通过，后者仍只有既存
+  `src/gpu/context.rs:1825 unused_mut` warning。
+- `OutsideClickPolicy::Close` 现在也进入 runtime layer policy：layer 外部 pointer press
+  会产生 typed `LayerDismissalRecord`，记录 id、owner 和 policy，并同样阻断底层 hit-test；
+  `UiDebugSnapshot` 和 debug trace 已能显示 layer dismissal。
+- 新增回归断言覆盖 close popover 的 outside-click dismissal record 与底层点击阻断；
+  本轮 `popover_`、`dropdown_` 聚焦测试、`cargo test --manifest-path crates/eui-neo/Cargo.toml`
+  和 `cargo test --features ui-neo ui::neo` 均已通过。
+- Layer dismissal 已接入 event command executor：新增 role-specific `on_layer_dismiss`
+  callback storage 和 `UiEventCommand::LayerDismiss`，outside-click close 不再停留在 debug
+  record，而是通过 typed layer target 执行 callback、记录 event trace，并产生 typed event
+  invalidation。
+- `popover` 提供 `.on_dismiss(...)`，`dropdown` popup 已迁到 `OutsideClickPolicy::Close`
+  并通过 layer dismissal callback 写回 open signal；新增回归断言覆盖 dropdown outside-click
+  关闭 popup、写回 open state、记录 layer dismiss event。
+- 本轮验证已通过 `popover_`、`dropdown_` 聚焦测试、
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml` 和
+  `cargo test --features ui-neo ui::neo`；后者仍只有既存
+  `src/gpu/context.rs:1825 unused_mut` warning。
+- `context_menu` 已从组件内部全屏透明 dismiss rect 迁到 layer manager：菜单通过
+  `popover` 注册 `OutsideClickPolicy::Close` 的 `LayerIntent`，outside click 由 runtime
+  产生 `LayerDismiss` command、执行 dismiss callback、记录 dismissal trace，并阻断底层点击。
+- 新增回归断言覆盖 context menu outside-click dismissal、底层 hit-test 阻断、typed layer
+  dismiss event trace；本轮 `context_menu`、`popover_`、`dropdown_` 聚焦测试和
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml` 已通过。
+- Date picker 和 time picker 已按同一方向迁移：backdrop 保留为 root-layer 视觉元素，
+  picker panel 本身通过 `popover` 注册 `OutsideClickPolicy::Close` 的 `LayerIntent`，
+  outside click 不再由 picker-local backdrop callback 关闭，而是通过 runtime layer dismissal
+  写回 open signal。
+- 新增回归断言覆盖 date/time picker outside-click dismissal、底层 hit-test 阻断、typed layer
+  dismiss event trace、关闭后移除 panel；本轮 `date_picker`、`time_picker` 聚焦测试和
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml` 已通过。
+- Color picker 也已迁到同一 picker layer path：backdrop 仅保留视觉，panel 通过
+  `LayerIntent` 参与 outside-click close，open signal 写回、dismissal record 和 typed layer
+  event trace 均由 runtime layer dismissal 统一产生。
+- 新增回归断言覆盖 color picker outside-click dismissal、底层 hit-test 阻断和关闭后移除
+  panel；本轮 `color_picker` 聚焦测试和
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml` 已通过。
+- Dialog 已注册为 modal layer：dialog panel 作为 `LayerKind::Modal` 的 layer root，
+  backdrop 外部点击通过 runtime `LayerDismiss` command 执行 close callback，并由
+  layer policy 阻断底层 hit-test；无 close callback 时仍作为 blocking modal layer。
+- Toast 已注册为 `LayerKind::Toast` layer intent，保持原有 close button 和 timer
+  行为，同时让 debug snapshot 能看到 toast 的 root-layer lifecycle、placement 和尺寸。
+- 新增回归断言覆盖 dialog outside-click dismissal、底层 hit-test 阻断、typed layer
+  dismiss event trace，以及 toast layer intent；本轮
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml` 和
+  `cargo test --features ui-neo ui::neo` 均已通过，后者仍只有既存
+  `src/gpu/context.rs:1825 unused_mut` warning。
+- Layer pointer policy 已改为按 layer stack 自顶向下处理：pointer 命中任一上层
+  open layer 时不再把该事件当成下层 layer 的 outside-click；未命中任何上层 layer 时，
+  才由 topmost blocking/closing layer 阻断或产生 dismissal，声明顺序作为同 z-index 的
+  deterministic tie-break。
+- 新增回归断言覆盖“命中上层 layer 不误 dismiss 下层 close layer”、ignore layer 命中保护
+  下层 close layer，以及同 z-index 时按声明顺序选择 topmost dismissal；本轮
+  `runtime::layers::tests` 和 `upper_layer_hit_does_not_dismiss_lower_close_layer` 聚焦测试
+  已通过。
+- Layer debug trace 现在显式记录 anchor source：previous committed frame、fallback、
+  missing、closed、removed 或 unanchored。`collect_layer_debug_records` 会使用本帧 composition
+  携带的 previous roots 判断 anchor 是否来自上一帧，而不是在 runtime roots 被移交给 `Ui`
+  后猜测。
+- 新增回归断言覆盖 previous-frame anchor、fallback anchor、missing anchor、closed layer
+  和 removed layer 的 anchor source；popover root-layer 测试也断言首帧 missing、次帧
+  previous-frame source。
+- Layer pointer policy 现在会产出 `LayerPointerDebugRecord`：可区分 passthrough、
+  hit-layer、blocked 和 dismissed，并记录参与决策的 layer、命中的 layer 与 outside-click
+  policy。`UiDebugSnapshot` 和 trace 输出会保留最近一次 pointer press 的 layer decision，
+  block-only modal/popover 不再是不可观察路径。
+- 新增回归断言覆盖 layer pointer hit/block/dismiss/pass-through decision，以及真实 popover
+  事件路径中的 blocked、dismissed 和 upper-layer-hit trace；本轮 `runtime::layers::tests`
+  与相关 popover 聚焦测试已通过。
+- Scroll routing now consults the same layer stack policy before scrollable hit testing. Outside
+  scroll over a blocking/closing layer is blocked before reaching underlying scroll containers,
+  while scroll inside the active layer still routes to that layer's scroll target and records the
+  corresponding layer pointer decision.
+- 新增回归断言覆盖 blocking popover 外部 wheel 不再滚动底层内容、内部 wheel 仍能滚动
+  layer content，并确认 scroll event trace 仍指向 layer 内 scroll target。
+- Keyboard capture and text-input dispatch now also consult layer state. Open blocking/closing
+  layers request keyboard capture even without a focused text field, and text input is suppressed
+  when the focused text owner is outside the active blocking layer stack while remaining allowed
+  for focused text owners inside the layer.
+- 新增回归断言覆盖 underlay text focus 被 blocking popover 打开后不再接收 keyboard text，
+  focus 移到 popover 内 text target 后 keyboard text 正常进入 layer content。
+- Layer focus ownership now clears an underlay keyboard/text/IME owner when a blocking/closing
+  layer covers it, keeps that owner as a restore target, and restores it after the layer is gone
+  if the target still exists and no active layer still blocks it.
+- 新增回归断言覆盖 blocking popover 打开时清空底层 text focus、layer 内 text target 可重新
+  获得焦点、popover 关闭后底层 text focus 自动恢复并继续接收 keyboard text。
+- 本轮验证已通过 `cargo test --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`、
+  `cargo test --features ui-neo ui::neo`、`cargo check --examples --features ui-neo`
+  和 `git diff --check`；后两项仍只有既存
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF 提示。
+- Event invalidation target identity now follows `EventTargetId` role instead of collapsing every
+  callback hit to `node`: focus callbacks record `focus`, text input records `text`, scroll records
+  `scroll`, and layer dismissal records `layer` invalidations while pointer node callbacks remain
+  `node`.
+- 新增回归断言覆盖 focus/text/scroll/layer event trace 中的 role-specific invalidation target，
+  继续把 Phase 3 的 typed identity 从 event debug 边界推进到 dirty/invalidation trace。
+- 本轮验证已通过 `cargo test --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`、
+  `cargo test --features ui-neo ui::neo`、`cargo check --examples --features ui-neo`
+  和 `git diff --check`；后两项仍只有既存
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF 提示。
+- Invalidation target internals now use typed ids for retained scopes and layers:
+  `InvalidationTarget::Scope` carries `ScopeId`, and `InvalidationTarget::Layer` carries
+  `LayerId`, while public debug helpers still expose readable `kind()` / `id()` strings.
+- 新增/收紧回归断言覆盖 external dirty、signal dirty 和 layer dismiss invalidation 的 typed
+  target payload，继续减少 dirty/invalidation trace 中的 raw string role overloading。
+- 本轮验证已通过 `cargo test --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`、
+  `cargo test --features ui-neo ui::neo`、`cargo check --examples --features ui-neo`
+  和 `git diff --check`；后两项仍只有既存
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF 提示。
+- Event/debug target identity now also carries typed payloads for node-like roles:
+  `EventTargetId::{Node, Focus, Text, Scroll}` and
+  `InvalidationTarget::{Node, Focus, Text, Scroll, Element}` use `NodeId`; layer event targets
+  use `LayerId`. The debug-facing `.role()` / `.kind()` / `.id()` helpers continue to provide
+  readable strings for diagnostics and tests.
+- 新增/收紧回归断言覆盖 pointer node、focus、text、scroll 和 layer dismiss event target payloads
+  与 invalidation payloads，继续把 Phase 3 的 role-specific identity 从 trace label 推进到
+  runtime data model。
+- 本轮验证已通过 `cargo test --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`、
+  `cargo test --features ui-neo ui::neo`、`cargo check --examples --features ui-neo`
+  和 `git diff --check`；后两项仍只有既存
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF 提示。
+- `runtime/ids.rs` is now the dedicated home for role-specific runtime ids and input ownership:
+  `NodeId`, `EventTargetId`, pointer/focus/text/IME/scroll/drag owner ids, `InputOwners`, and
+  stale-owner cleanup moved out of `runtime/mod.rs`.
+- 回归断言不再 destructure owner tuple internals，而是通过 owner id `.as_str()` 验证
+  pointer capture、hover、drag、keyboard focus、text focus、IME 和 scroll owner 的 typed
+  payload，避免测试继续依赖旧内部字段形状。
+- 本轮验证已通过 `cargo test --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`、
+  `cargo test --features ui-neo ui::neo`、`cargo check --examples --features ui-neo`
+  和 `git diff --check`；后两项仍只有既存
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF 提示。
+- Callback transfer during retained reuse now returns `CallbackTransferStats` and records
+  per-role transfer counts on `ScopeComposeRecord`, so clean scope reuse traces show whether
+  click/press/context/text/scroll/drag/layer/timer callbacks were inherited instead of hiding
+  callback movement as an implicit side effect.
+- 新增回归断言覆盖 retained sibling reuse 时 button click callback 被转移并继续可触发，同时
+  callback transfer 单元测试断言同一 element id 下 click/drag role 的统计不串位。
+- 本轮验证已通过 `cargo test --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`、
+  `cargo test --features ui-neo ui::neo`、`cargo check --examples --features ui-neo`
+  和 `git diff --check`；后两项仍只有既存
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF 提示。
+- Phase 4 的 reconciler 边界继续外移：retained reuse blocker 规则现在集中在
+  `RetainedReuseDecision` / `retained_reuse_decision`，DSL 只消费 decision 和 reason，
+  不再自己拼装 reuse-unavailable、missing-roots、dirty-scope、dirty-descendant 的判断链。
+- 新增 retained 单元测试覆盖 reuse decision 的所有 blocker reason 和 clean reuse 分支，
+  为后续把 element retrieval、callback transfer 和 mount/unmount 继续移入 reconciler 留出
+  一个可回归的决策入口。
+- 本轮验证已通过 `cargo test --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`、
+  `cargo test --features ui-neo ui::neo`、`cargo check --examples --features ui-neo`
+  和 `git diff --check`；后两项仍只有既存
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF 提示。
+- Retained reuse 计划现在把 decision 和 previous element lookup 合并为
+  `RetainedReusePlan::{Reuse { elements }, Rebuild(reason)}`；`dsl.rs` 的 retained scope
+  与 retained element content 两个入口都走同一个 `try_reuse_retained_scope`，不再各自重复
+  decision、element lookup、callback transfer、clock preservation 和 compose trace recording。
+- 新增 retained 单元测试覆盖 committed tree 中按 retained roots 找回元素、root 缺失时返回
+  `MissingPreviousElement`，以及 `RetainedReusePlan` 同时携带 reusable elements 或 rebuild
+  reason；这为后续把 callback transfer / mount-unmount 继续整体移到 reconciler 边界提供
+  更明确的 plan object。
+- 本轮验证已通过 `cargo test --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`、
+  `cargo test --features ui-neo ui::neo`、`cargo check --examples --features ui-neo`
+  和 `git diff --check`；后两项仍只有既存
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF 提示。
+- Callback transfer 也已移入 retained reuse application：`apply_retained_reuse_plan`
+  现在消费 `RetainedReusePlan`，返回 `RetainedReuseApplied { elements,
+  callback_transfers }`，并保证 rebuild plan 不会移动 previous callbacks。`dsl.rs`
+  只负责把 applied elements 接回当前 roots、保留 clock dependency、记录 compose trace。
+- 新增 retained 单元测试覆盖 reuse application 会按 reused elements 转移 click/drag
+  callbacks 并产生 transfer stats，以及 rebuild plan 保留 previous callbacks 不动；这继续
+  收紧 Phase 4 中“DSL/builder 不直接复用 old callbacks”的边界。
+- 本轮验证已通过 `cargo test --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`、
+  `cargo test --features ui-neo ui::neo`、`cargo check --examples --features ui-neo`
+  和 `git diff --check`；后两项仍只有既存
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF 提示。
+- `runtime/reconcile.rs` 已落地为 retained reuse / callback transfer 的初始边界：
+  `RetainedReuseDecision`、`RetainedReusePlan`、`RetainedReuseApplied`、
+  `retained_reuse_plan` 和 `apply_retained_reuse_plan` 已从 `retained.rs` 迁入 runtime
+  reconciler module。`retained.rs` 回到 retained roots、dirty normalization 和 previous
+  element lookup bookkeeping，`dsl.rs` 通过 reconciler module 获取复用决策和应用结果。
+- Reconciler 相关测试也迁入 `runtime::reconcile::tests`，覆盖 blocker reason、reuse
+  plan、callback transfer stats 和 rebuild 不转移 previous callbacks；retained module 测试
+  仅保留 retained roots / dirty normalization / previous element lookup。
+- 本轮验证已通过 `cargo test --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`、
+  `cargo test --features ui-neo ui::neo`、`cargo check --examples --features ui-neo`
+  和 `git diff --check`；后两项仍只有既存
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF 提示。
+- Reconciler input 已收束成 `RetainedReuseContext`，统一持有 reuse enabled、dirty roots、
+  previous roots、previous scope roots 和 dirty scopes。`dsl.rs` 不再把这些参数逐个传给
+  decision/plan 函数，而是在 `try_reuse_retained_scope` 和 build-reason 查询中构造 context
+  并调用 `.plan(...)` / `.rebuild_reason(...)`。
+- `runtime::reconcile::tests` 已改为直接覆盖 context 的 decision/plan 行为，保留 rebuild
+  blocker、missing previous element 和 callback transfer 规则；这让后续把 context 生命周期
+  从 DSL 移到 frame/reconcile pass 时有稳定测试支点。
+- 本轮验证已通过 `cargo test --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`、
+  `cargo test --features ui-neo ui::neo`、`cargo check --examples --features ui-neo`
+  和 `git diff --check`；后两项仍只有既存
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF 提示。
+- Reuse trace metrics now come from reconciler application as well:
+  `RetainedReuseApplied` carries `root_count` and `element_count` alongside
+  `callback_transfers`. `dsl.rs` no longer counts reused trees when recording
+  `ScopeComposeRecord`; it consumes the reconciler result and only attaches that result to the
+  current tree and retained root cache.
+- 新增 `runtime::reconcile::tests::apply_retained_reuse_plan_reports_reused_tree_metrics`，
+  覆盖多 root / nested element 的 reused tree metrics，继续把 “reuse trace 是 reconciler
+  result” 这条边界从 callback transfer 推进到 compose debug data。
+- 本轮验证已通过 `cargo test --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`、
+  `cargo test --features ui-neo ui::neo`、`cargo check --examples --features ui-neo`
+  和 `git diff --check`；后两项仍只有既存
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF 提示。
+- Reused retained-root cache data now comes from reconciler application too:
+  `RetainedReuseApplied` carries `retained_roots`, built from the reused element tree inside
+  `runtime/reconcile.rs`. The reuse path in `dsl.rs` no longer calls
+  `RetainedRoot::from_elements`; it writes the reconciler-provided retained roots into
+  `scope_roots`, while built scopes still record newly composed roots locally.
+- `runtime::reconcile::tests::apply_retained_reuse_plan_reports_reused_tree_metrics` now also
+  validates the nested retained-root metadata emitted for reused trees, further reducing DSL's
+  direct involvement in retained reuse internals.
+- 本轮验证已通过 `cargo test --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`、
+  `cargo test --features ui-neo ui::neo`、`cargo check --examples --features ui-neo`
+  和 `git diff --check`；后两项仍只有既存
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF 提示。
+- Reuse trace record assembly now lives on the reconciler result:
+  `RetainedReuseApplied::compose_record(...)` produces the reused `ScopeComposeRecord`, so
+  `dsl.rs` no longer expands reused root counts, element counts, callback transfer stats, or
+  clean-reuse reason into compose debug records by hand.
+- Reused periodic clock dependencies now go through the clock subsystem helper
+  `preserve_reused_scope_clock_dependency(...)` instead of a DSL-local method, keeping one more
+  piece of retained runtime bookkeeping out of declaration code. New `clock::tests` cover both
+  preserving an existing periodic dependency and ignoring scopes without previous clock state.
+- Rebuilt-scope dependency reset policy now also hangs off `RetainedReuseContext` via
+  `should_reset_rebuilt_scope_dependencies(...)`; `dsl.rs` no longer calls
+  `retained_scope_contains_dirty_root(...)` directly for signal dependency cleanup decisions.
+  The reconciler tests pin the existing semantics for both directly dirty scopes and parent scopes
+  containing dirty retained roots.
+- 本轮验证已通过 `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`、
+  `cargo test --features ui-neo ui::neo`、`cargo check --examples --features ui-neo`
+  和 `git diff --check`；后两项仍只有既存
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF 提示。
+- Built-scope trace/root application now uses the same reconciler boundary:
+  `apply_retained_build(...)` returns `RetainedBuildApplied { retained_roots, record }`,
+  including previous/current root counts, element count, build timing, reason, and default callback
+  transfer stats. `dsl.rs` no longer owns `ScopeComposeMetrics`, local element counting, or direct
+  built compose-record assembly.
+- 新增 `runtime::reconcile::tests::apply_retained_build_reports_built_tree_metrics`，覆盖 built
+  scope 的 retained-root metadata、previous/current root counts、nested element count、build
+  timing 和 zero callback transfer trace，继续把 rebuild trace 从 declaration code 推到
+  reconciler result。
+- Dirty-ancestor rebuild reason selection now lives on `RetainedReuseContext::build_reason(...)`.
+  `dsl.rs` only supplies whether a dirty owner is active, and reuses a local
+  `retained_reuse_context()` helper for non-timed policy queries; this keeps one more rebuild
+  reason rule out of declaration code while preserving the explicit timed lookup path for reuse
+  planning.
+- Removed retained-scope detection has moved behind the reconciler boundary:
+  `apply_removed_retained_scopes(previous, next)` now computes the stable sorted remove set from
+  previous/current scope roots and applies unmounted-scope cleanup. This turns the Phase 4
+  mount/update/remove requirement into explicit reconciler output instead of composition-local
+  map diffing and signal cleanup.
+- 新增 `runtime::reconcile::tests::apply_removed_retained_scopes_reports_missing_previous_scopes_in_order`，
+  覆盖 removed-scope diff 会忽略 kept/new scopes，并以 deterministic order 输出缺失的
+  previous retained scopes。
+- Partial-layout reuse blocking is now a reconciler output too:
+  `retained_layout_reuse_plan(...)` returns `RetainedLayoutReusePlan { blocker,
+  structural_reports }`, covering reuse-unavailable, missing previous retained roots, and
+  structure-changed blockers. `composition.rs` only logs returned structure reports and executes
+  the resulting layout mode, instead of owning the retained structure policy directly.
+- 新增 `runtime::reconcile::tests::retained_layout_reuse_plan_reports_reuse_blockers`，覆盖 clean
+  plan、reuse disabled、missing previous roots、structure changed 和 optional structural report
+  collection，继续把 Phase 4 中 “layout cache / partial layout 基于 reconciler result 决定”
+  的要求落到显式 plan object。
+- 当前 retained UI diff 算法已收敛为 id/scope 驱动的 reconciler，而不是全树虚拟 DOM
+  replacement：`RetainedReuseContext::plan(...)` 先按稳定 scope id、dirty root/ancestor
+  和 previous element index 决定 reuse/rebuild；`apply_retained_reuse_plan(...)` 与
+  `apply_retained_build(...)` 负责 callback transfer、retained root metadata 与 compose
+  trace；`apply_removed_retained_scopes(...)` 输出 remove diff；`retained_layout_reuse_plan(...)`
+  再把 dirty scope 和 previous/current roots 的结构兼容性转换成 full/partial layout
+  决策。DSL/composition 只消费这些结果，不再各自推断 retained reuse 策略。
+- Retained root 的 post-layout refresh 也已移入 reconciler：
+  `refresh_scope_roots_from_tree(...)` 从布局后的 element tree 按 id 建索引，结构兼容时只
+  刷新 retained root frame，kind/id/children shape 不匹配时才用当前 element 替换整段
+  retained root。现有 `runtime::tests::refresh_scope_roots_updates_from_current_tree_by_id`
+  继续覆盖 frame refresh 行为，这把又一段 composition-local tree update 推到 reconciler
+  边界内。
+- Removed retained-scope 的 unmount application 现在也由 reconciler 执行：
+  `apply_removed_retained_scopes(...)` 在同一边界内计算 removed scope diff、清理 unmounted
+  scope 的 signal dependency，并返回 `RetainedUnmountApplied { removed_scopes }` 供 trace/
+  后续 mount-unmount 输出扩展。`composition.rs` 不再直接调用 signal cleanup，只消费这个
+  reconciler application。
+- 新增
+  `runtime::reconcile::tests::apply_removed_retained_scopes_clears_signal_dependencies_for_unmounted_scopes`，
+  覆盖 unmounted scope 的 signal watch 会被清掉，后续 signal set 不会再产生 stale dirty；
+  同时原 removed-scope deterministic diff 覆盖已切到 `apply_removed_retained_scopes(...)`
+  的返回值。
+- Dirty-ancestor reuse blocking now also comes from the reconciler plan:
+  `RetainedReuseContext::plan(id, has_dirty_ancestor)` takes the current dirty-owner fact and
+  returns `RetainedReusePlan::Rebuild(DirtyAncestor)` for otherwise-clean descendants. DSL no
+  longer has a separate dirty-owner early-return before asking for a reuse plan. The reconciler
+  priority is pinned so exact dirty scopes and dirty descendants still report `DirtyScope` /
+  `DirtyDescendant` instead of being overwritten by `DirtyAncestor`.
+- 本轮验证已通过 `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`、
+  `cargo test --features ui-neo ui::neo`、`cargo check --examples --features ui-neo`
+  和 `git diff --check`；后两项仍只有既存
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF 提示。
+
 因此下一步不是重新开荒，而是把这些切片从“局部存在”推进到“作为唯一通路”。
 
 优先执行顺序：
@@ -1181,7 +1587,7 @@ platform effects
 2. Phase 2：frame coordinator 和 event command 成为唯一 event path。
 3. Phase 3：内部 typed ids 逐步替代 string role overloading。
 4. Phase 4：reconciler 抽取，停止 DSL/builder 决定 reuse。
-5. Phase 5：popover/dropdown 迁入 layer manager。
+5. Phase 5：popover/dropdown/dialog/toast/picker 迁入 layer manager。
 6. API pass：同步标注 stable/expert/transitional surface，避免新代码继续依赖旧形状。
 
 ## 11. 禁止项
