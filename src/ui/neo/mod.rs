@@ -15,9 +15,13 @@ mod plugin;
 mod renderer;
 mod window;
 
-/// Re-export of the standalone `eui-neo` core crate.
+/// Stable authoring-facing re-export of the standalone `eui-neo` core crate.
+///
+/// Diagnostics and lower-level runtime internals stay behind `expert`, while
+/// test-driver helpers are re-exported explicitly at `sky_engine::ui::neo`.
 pub mod eui {
-    pub use eui_neo::*;
+    pub use eui_neo::prelude::*;
+    pub use eui_neo::{apply_ease, has_anim_property};
 }
 
 pub use api::{compose, compose_state, open_window, register_skin};
@@ -25,6 +29,7 @@ pub use backend::NeoUiBackend;
 pub use config::{IntoNeoClearColor, NeoUiConfig, NeoWindowConfig};
 pub use eui_neo::expert;
 pub use eui_neo::prelude::*;
+pub use eui_neo::testing::{TargetPoint, UiActionTrace, UiTestDriver, UiTestError};
 pub use eui_neo::{apply_ease, has_anim_property};
 pub use plugin::{install_neo_ui_backend, NeoUiPlugin};
 

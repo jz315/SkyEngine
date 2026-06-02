@@ -547,8 +547,12 @@ mod tests {
             },
         );
 
-        runtime.update_pointer(PointerEvent::pressed_at(124.0, 170.0));
-        runtime.update_pointer(PointerEvent::released_at(124.0, 170.0));
+        runtime.dispatch_frame_input(
+            FrameInput::new(Screen::new(640.0, 480.0), 0.0).pointer_events([
+                PointerEvent::pressed_at(124.0, 170.0),
+                PointerEvent::released_at(124.0, 170.0),
+            ]),
+        );
 
         assert_eq!(sink.drain(), vec![VnAction::Choice(1)]);
     }
@@ -578,7 +582,7 @@ mod tests {
             },
         );
 
-        assert!(runtime.roots().is_empty());
+        assert!(runtime.diagnostics().roots().is_empty());
     }
 
     #[test]

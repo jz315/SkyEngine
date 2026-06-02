@@ -43,16 +43,23 @@ pub fn compose<R>(
     let input = *ctx.input;
     let logical_surface_size = ctx.logical_view_size().to_array();
     let dt = ctx.dt;
-    let mut ui = ctx.ui();
-    ui.with_backend_mut::<NeoUiBackend, _>(|backend| {
-        backend.begin_frame_snapshot(&input, logical_surface_size, dt);
-        let mut output = None;
-        backend.frame(|ui, screen| {
-            output = Some(f(ui, screen));
-        });
-        output
-    })
-    .flatten()
+    let output = {
+        let mut ui = ctx.ui();
+        ui.with_backend_mut::<NeoUiBackend, _>(|backend| {
+            backend.begin_frame_snapshot(&input, logical_surface_size, dt);
+            let mut output = None;
+            backend.frame(|ui, screen| {
+                output = Some(f(ui, screen));
+            });
+            output
+        })
+        .flatten()
+    };
+    let window = ctx.window;
+    let _ = crate::ui::with_ui_backend_mut::<NeoUiBackend, _>(ctx.world, |backend| {
+        backend.apply_platform_effects(Some(window));
+    });
+    output
 }
 
 /// Compose an EUI-NEO UI using incremental invalidation from a [`State`].
@@ -70,17 +77,21 @@ pub fn compose_state<T, R>(
     let input = *ctx.input;
     let logical_surface_size = ctx.logical_view_size().to_array();
     let dt = ctx.dt;
-    let mut ui = ctx.ui();
-    ui.with_backend_mut::<NeoUiBackend, _>(|backend| {
-        backend.begin_frame_snapshot(&input, logical_surface_size, dt);
-        let mut output = None;
-        backend.frame_incremental(
-            || state.take_dirty(),
-            |ui, screen| {
+    let output = {
+        let mut ui = ctx.ui();
+        ui.with_backend_mut::<NeoUiBackend, _>(|backend| {
+            backend.begin_frame_snapshot(&input, logical_surface_size, dt);
+            let mut output = None;
+            backend.frame_state(state, |ui, screen| {
                 output = Some(f(ui, screen));
-            },
-        );
-        output
-    })
-    .flatten()
+            });
+            output
+        })
+        .flatten()
+    };
+    let window = ctx.window;
+    let _ = crate::ui::with_ui_backend_mut::<NeoUiBackend, _>(ctx.world, |backend| {
+        backend.apply_platform_effects(Some(window));
+    });
+    output
 }

@@ -7,8 +7,39 @@ use super::image_provider::SkyNeoImageStore;
 use super::Runtime;
 use crate::asset::Assets;
 use crate::render::SharedRenderAssetCache;
+use eui_neo::{RendererResourceDirty, ResourceDirty};
 
 pub(crate) use eui_neo_wgpu::RenderStatus as NeoRenderStatus;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct NeoRenderResourceStatus {
+    pub(crate) render: NeoRenderStatus,
+    pub(crate) ready_images: bool,
+    pub(crate) ready_fonts: bool,
+}
+
+impl NeoRenderResourceStatus {
+    pub(crate) fn has_pending_resources(self) -> bool {
+        self.render.pending_images || self.render.pending_fonts
+    }
+
+    pub(crate) fn resource_dirty(self) -> Vec<ResourceDirty> {
+        let mut dirty = Vec::with_capacity(4);
+        if self.render.pending_images {
+            dirty.push(ResourceDirty::draw(RendererResourceDirty::PendingImages));
+        }
+        if self.render.pending_fonts {
+            dirty.push(ResourceDirty::draw(RendererResourceDirty::PendingFonts));
+        }
+        if self.ready_images {
+            dirty.push(ResourceDirty::draw(RendererResourceDirty::ReadyImages));
+        }
+        if self.ready_fonts {
+            dirty.push(ResourceDirty::layout(RendererResourceDirty::ReadyFonts));
+        }
+        dirty
+    }
+}
 
 /// Thin SkyEngine surface-frame adapter around [`eui_neo_wgpu::WgpuRenderer`].
 pub(crate) struct NeoRenderer {
@@ -44,16 +75,16 @@ impl NeoRenderer {
         runtime: &mut Runtime,
         asset_server: Option<&Assets>,
         render_assets: Option<&SharedRenderAssetCache>,
-    ) -> NeoRenderStatus {
+    ) -> NeoRenderResourceStatus {
         let frame = runtime.current_frame();
-        let pending_fonts =
+        let font_status =
             self.fonts
                 .prepare(runtime, &mut self.inner, frame.draw_list(), asset_server);
-        let pending_images =
-            self.images
-                .prepare(gpu, frame.draw_list(), asset_server, render_assets);
+        let image_status = self
+            .images
+            .prepare(gpu, frame.draw_list(), asset_server, render_assets);
         let mut resources = self.images.provider();
-        let mut status = gpu.with_surface_frame_parts(|parts| {
+        let mut render_status = gpu.with_surface_frame_parts(|parts| {
             let mut target = eui_neo_wgpu::Target {
                 device: parts.device,
                 queue: parts.queue,
@@ -69,8 +100,75 @@ impl NeoRenderer {
             };
             self.inner.render(&mut target, &frame, &mut resources)
         });
-        status.pending_images |= pending_images;
-        status.pending_fonts |= pending_fonts;
-        status
+        render_status.pending_images |= image_status.pending;
+        render_status.pending_fonts |= font_status.pending;
+        NeoRenderResourceStatus {
+            render: render_status,
+            ready_images: image_status.ready_changed,
+            ready_fonts: font_status.ready_changed,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_resource_status_reports_pending_resources() {
+        assert!(!NeoRenderResourceStatus::default().has_pending_resources());
+        assert!(NeoRenderResourceStatus {
+            render: NeoRenderStatus {
+                pending_images: true,
+                pending_fonts: false,
+            },
+            ready_images: true,
+            ready_fonts: true,
+        }
+        .has_pending_resources());
+    }
+
+    #[test]
+    fn render_resource_status_separates_draw_and_layout_dirty_records() {
+        let status = NeoRenderResourceStatus {
+            render: NeoRenderStatus {
+                pending_images: true,
+                pending_fonts: true,
+            },
+            ready_images: true,
+            ready_fonts: true,
+        };
+
+        let dirty = status.resource_dirty();
+        let sources: Vec<_> = dirty
+            .iter()
+            .map(|dirty| dirty.source_id().renderer_kind())
+            .collect();
+        assert_eq!(
+            sources,
+            vec![
+                Some(RendererResourceDirty::PendingImages),
+                Some(RendererResourceDirty::PendingFonts),
+                Some(RendererResourceDirty::ReadyImages),
+                Some(RendererResourceDirty::ReadyFonts),
+            ]
+        );
+        let labels: Vec<_> = dirty.iter().map(|dirty| dirty.source()).collect();
+        assert_eq!(
+            labels,
+            vec![
+                RendererResourceDirty::PendingImages.label(),
+                RendererResourceDirty::PendingFonts.label(),
+                RendererResourceDirty::ReadyImages.label(),
+                RendererResourceDirty::ReadyFonts.label(),
+            ]
+        );
+        for dirty in dirty.iter().take(3) {
+            assert_eq!(dirty.flags(), eui_neo::DirtyFlags::DRAW);
+        }
+        assert_eq!(
+            dirty.last().unwrap().flags(),
+            eui_neo::DirtyFlags::COMPOSE | eui_neo::DirtyFlags::LAYOUT | eui_neo::DirtyFlags::DRAW
+        );
     }
 }

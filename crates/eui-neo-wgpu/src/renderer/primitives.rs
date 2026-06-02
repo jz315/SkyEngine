@@ -957,7 +957,7 @@ pub(super) fn push_text(
     };
     let frame = LayoutRect::new(frame.x, frame.y, max_width, frame.height);
     text_items.push(TextItem {
-        id: draw.id.clone(),
+        id: TextBufferIdentityKey::from_node(draw.node_id()),
         text: draw.text.clone(),
         font: draw.font.clone(),
         frame,

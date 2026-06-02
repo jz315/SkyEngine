@@ -114,6 +114,8 @@ fn consecutive_text_draws_stay_batched_for_render_order_efficiency() {
     );
 
     assert_eq!(text_items.len(), 2);
+    assert_eq!(text_items[0].id.node_id().as_str(), "page.static");
+    assert_eq!(text_items[1].id.node_id().as_str(), "page.live");
     assert!(matches!(
         render_ops.as_slice(),
         [RenderOp::Text { start: 0, count: 2 }]
@@ -123,23 +125,27 @@ fn consecutive_text_draws_stay_batched_for_render_order_efficiency() {
 #[test]
 fn text_buffer_cache_admission_requires_reuse_and_rejects_volatile_ids() {
     let mut key_history: FxHashMap<TextBufferKey, TextKeyHistory> = FxHashMap::default();
-    let mut identity_history: FxHashMap<String, TextIdentityHistory> = FxHashMap::default();
+    let mut identity_history: FxHashMap<TextBufferIdentityKey, TextIdentityHistory> =
+        FxHashMap::default();
+    let status_id = TextBufferIdentityKey::new("status");
+    let counter_id = TextBufferIdentityKey::new("counter");
     let stable = text_key("Ready");
 
     assert!(!text_buffer_cache_admitted(
         &mut key_history,
         &mut identity_history,
         1,
-        "status",
+        &status_id,
         &stable,
     ));
     assert!(text_buffer_cache_admitted(
         &mut key_history,
         &mut identity_history,
         2,
-        "status",
+        &status_id,
         &stable,
     ));
+    assert!(identity_history.contains_key(&status_id));
 
     let one = text_key("1");
     let two = text_key("2");
@@ -148,30 +154,31 @@ fn text_buffer_cache_admission_requires_reuse_and_rejects_volatile_ids() {
         &mut key_history,
         &mut identity_history,
         3,
-        "counter",
+        &counter_id,
         &one,
     ));
     assert!(!text_buffer_cache_admitted(
         &mut key_history,
         &mut identity_history,
         4,
-        "counter",
+        &counter_id,
         &two,
     ));
     assert!(!text_buffer_cache_admitted(
         &mut key_history,
         &mut identity_history,
         5,
-        "counter",
+        &counter_id,
         &three,
     ));
     assert!(text_buffer_cache_admitted(
         &mut key_history,
         &mut identity_history,
         6,
-        "counter",
+        &counter_id,
         &two,
     ));
+    assert!(identity_history.contains_key(&counter_id));
 }
 
 #[test]

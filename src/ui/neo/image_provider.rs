@@ -24,6 +24,7 @@ pub(crate) struct SkyNeoImageStore {
     pending_remote: FxHashMap<ImageRef, Receiver<Result<TextureAsset, String>>>,
     failed: FxHashMap<ImageRef, Instant>,
     ready: FxHashMap<ImageRef, SkyReadyImage>,
+    revisions: FxHashMap<ImageRef, u64>,
     pending_frame: FxHashSet<ImageRef>,
 }
 
@@ -34,9 +35,16 @@ impl Default for SkyNeoImageStore {
             pending_remote: FxHashMap::default(),
             failed: FxHashMap::default(),
             ready: FxHashMap::default(),
+            revisions: FxHashMap::default(),
             pending_frame: FxHashSet::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct SkyNeoImagePrepareStatus {
+    pub(crate) pending: bool,
+    pub(crate) ready_changed: bool,
 }
 
 impl SkyNeoImageStore {
@@ -46,20 +54,21 @@ impl SkyNeoImageStore {
         draw_list: &UiDrawList,
         asset_server: Option<&Assets>,
         render_assets: Option<&SharedRenderAssetCache>,
-    ) -> bool {
+    ) -> SkyNeoImagePrepareStatus {
         self.ready.clear();
         self.pending_frame.clear();
+        let mut status = SkyNeoImagePrepareStatus::default();
 
         let keys = image_keys(draw_list);
         if keys.is_empty() {
-            return false;
+            return status;
         }
 
         let Some(asset_server) = asset_server else {
-            return false;
+            return status;
         };
         let Some(render_assets) = render_assets else {
-            return false;
+            return status;
         };
         self.poll_remote_images(asset_server);
 
@@ -72,7 +81,8 @@ impl SkyNeoImageStore {
             };
             match cache.texture(gpu, asset_server, &handle) {
                 Some(texture) => {
-                    self.store_ready_texture(asset_server, key, &handle, texture);
+                    status.ready_changed |=
+                        self.store_ready_texture(asset_server, key, &handle, texture);
                 }
                 None => {
                     let readiness = cache.texture_readiness(Some(asset_server), &handle);
@@ -93,11 +103,13 @@ impl SkyNeoImageStore {
         for (key, handle) in pending_handles {
             if let Some(texture) = cache.texture(gpu, asset_server, &handle) {
                 self.pending_frame.remove(&key);
-                self.store_ready_texture(asset_server, &key, &handle, texture);
+                status.ready_changed |=
+                    self.store_ready_texture(asset_server, &key, &handle, texture);
             }
         }
 
-        !self.pending_frame.is_empty() || !self.pending_remote.is_empty()
+        status.pending = !self.pending_frame.is_empty() || !self.pending_remote.is_empty();
+        status
     }
 
     pub(crate) fn provider(&self) -> SkyNeoResources<'_> {
@@ -204,15 +216,17 @@ impl SkyNeoImageStore {
         key: &ImageRef,
         handle: &Handle<TextureAsset>,
         texture: Texture,
-    ) {
+    ) -> bool {
         let Some(asset) = asset_server.try_get(handle) else {
             self.pending_frame.insert(key.clone());
-            return;
+            return false;
         };
         let size = asset.visible_size();
         if size[0] == 0 || size[1] == 0 {
-            return;
+            return false;
         }
+        let revision = texture_revision(&texture);
+        let ready_changed = self.record_ready_revision(key, revision);
         self.ready.insert(
             key.clone(),
             SkyReadyImage {
@@ -221,6 +235,19 @@ impl SkyNeoImageStore {
                 uv_rect: visible_uv_rect(&asset, key.flip_vertically()),
             },
         );
+        ready_changed
+    }
+
+    fn record_ready_revision(&mut self, key: &ImageRef, revision: u64) -> bool {
+        if self
+            .revisions
+            .get(key)
+            .is_some_and(|current| *current == revision)
+        {
+            return false;
+        }
+        self.revisions.insert(key.clone(), revision);
+        true
     }
 }
 
@@ -257,8 +284,12 @@ struct SkyReadyImage {
 
 impl SkyReadyImage {
     fn revision(&self) -> u64 {
-        self.texture.texture() as *const wgpu::Texture as usize as u64
+        texture_revision(&self.texture)
     }
+}
+
+fn texture_revision(texture: &Texture) -> u64 {
+    texture.texture() as *const wgpu::Texture as usize as u64
 }
 
 fn image_keys(draw_list: &UiDrawList) -> Vec<ImageRef> {
@@ -473,6 +504,21 @@ fn remote_image_extension(url: &str) -> &'static str {
 
 fn is_remote_image_source(source: &str) -> bool {
     source.starts_with("http://") || source.starts_with("https://")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ready_image_revision_reports_only_new_texture_versions() {
+        let mut store = SkyNeoImageStore::default();
+        let key = ImageRef::path("button.png");
+
+        assert!(store.record_ready_revision(&key, 7));
+        assert!(!store.record_ready_revision(&key, 7));
+        assert!(store.record_ready_revision(&key, 8));
+    }
 }
 
 #[cfg(feature = "ui-neo-net")]

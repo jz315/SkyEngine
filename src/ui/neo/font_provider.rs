@@ -26,6 +26,12 @@ impl Default for SkyNeoFontStore {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct SkyNeoFontPrepareStatus {
+    pub(crate) pending: bool,
+    pub(crate) ready_changed: bool,
+}
+
 impl SkyNeoFontStore {
     pub(crate) fn prepare(
         &mut self,
@@ -33,15 +39,16 @@ impl SkyNeoFontStore {
         renderer: &mut WgpuRenderer,
         draw_list: &UiDrawList,
         asset_server: Option<&Assets>,
-    ) -> bool {
+    ) -> SkyNeoFontPrepareStatus {
         self.pending_frame.clear();
+        let mut status = SkyNeoFontPrepareStatus::default();
         let keys = font_keys(draw_list);
         if keys.is_empty() {
-            return false;
+            return status;
         }
 
         let Some(asset_server) = asset_server else {
-            return false;
+            return status;
         };
 
         for key in keys {
@@ -49,7 +56,7 @@ impl SkyNeoFontStore {
                 continue;
             };
             if let Some(asset) = asset_server.try_get(&handle) {
-                self.register_ready_font(runtime, renderer, &key, asset);
+                status.ready_changed |= self.register_ready_font(runtime, renderer, &key, asset);
                 self.failed.remove(&key);
                 continue;
             }
@@ -73,7 +80,8 @@ impl SkyNeoFontStore {
             }
         }
 
-        !self.pending_frame.is_empty()
+        status.pending = !self.pending_frame.is_empty();
+        status
     }
 
     fn resolve_handle(
@@ -104,18 +112,26 @@ impl SkyNeoFontStore {
         renderer: &mut WgpuRenderer,
         key: &FontRef,
         asset: Arc<FontAsset>,
-    ) {
+    ) -> bool {
         let revision = Arc::as_ptr(&asset) as usize as u64;
+        if !self.record_ready_revision(key, revision) {
+            return false;
+        }
+        runtime.register_font(key, asset.bytes());
+        renderer.register_font(key, asset.bytes(), revision);
+        true
+    }
+
+    fn record_ready_revision(&mut self, key: &FontRef, revision: u64) -> bool {
         if self
             .revisions
             .get(key)
             .is_some_and(|current| *current == revision)
         {
-            return;
+            return false;
         }
-        runtime.register_font(key, asset.bytes());
-        renderer.register_font(key, asset.bytes(), revision);
         self.revisions.insert(key.clone(), revision);
+        true
     }
 }
 
@@ -161,4 +177,19 @@ fn load_font_handle(asset_server: &Assets, key: &FontRef) -> Result<Handle<FontA
     asset_server
         .load_font(PathBuf::from(source))
         .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ready_font_revision_reports_only_new_asset_versions() {
+        let mut store = SkyNeoFontStore::default();
+        let key = FontRef::asset("font.ttf");
+
+        assert!(store.record_ready_revision(&key, 11));
+        assert!(!store.record_ready_revision(&key, 11));
+        assert!(store.record_ready_revision(&key, 12));
+    }
 }

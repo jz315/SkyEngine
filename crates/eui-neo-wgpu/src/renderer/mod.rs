@@ -4,11 +4,12 @@ use std::hash::{Hash, Hasher};
 
 use crate::{NeoImageVertex, NeoPolygonVertex, NeoRectVertex};
 use eui_neo::expert::{
-    UiDrawCommand, UiDrawList, UiImageDraw, UiNineSliceDraw, UiPolygonDraw, UiRectDraw, UiTextDraw,
+    CacheCell, UiDrawCommand, UiDrawList, UiImageDraw, UiNineSliceDraw, UiPolygonDraw, UiRectDraw,
+    UiTextDraw,
 };
 use eui_neo::{
-    CacheCell, Color, FontRef, Frame, GradientDirection, HorizontalAlign, ImageFit, ImageRef,
-    LayoutRect, Screen, Transform, UiClip, VerticalAlign,
+    Color, FontRef, Frame, GradientDirection, HorizontalAlign, ImageFit, ImageRef, LayoutRect,
+    Screen, Transform, UiClip, VerticalAlign,
 };
 use glyphon::cosmic_text::Align as TextAlign;
 use glyphon::{
@@ -52,7 +53,10 @@ use buffers::{create_linear_sampler, WgpuVertexBuffer};
 use collect::{collect_draw_items, DrawCollectKey, RenderScratch};
 use images::CachedNeoImage;
 use primitives::render_ordered_ops;
-use text::{CachedTextBuffer, TextBufferKey, TextIdentityHistory, TextKeyHistory, TextLayer};
+use text::{
+    CachedTextBuffer, TextBufferIdentityKey, TextBufferKey, TextIdentityHistory, TextKeyHistory,
+    TextLayer,
+};
 
 /// Current wgpu render target supplied by the host application.
 pub struct Target<'a> {
@@ -90,7 +94,7 @@ pub struct WgpuRenderer {
     text_buffer_cache_bytes: usize,
     text_buffer_cache_frame: u64,
     text_buffer_key_history: FxHashMap<TextBufferKey, TextKeyHistory>,
-    text_buffer_identity_history: FxHashMap<String, TextIdentityHistory>,
+    text_buffer_identity_history: FxHashMap<TextBufferIdentityKey, TextIdentityHistory>,
     rect_vertex_buffer: Option<WgpuVertexBuffer>,
     polygon_vertex_buffer: Option<WgpuVertexBuffer>,
     image_vertex_buffer: Option<WgpuVertexBuffer>,

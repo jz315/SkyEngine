@@ -6,20 +6,18 @@ use crate::ui::{
     UiBackend, UiBackendId, UiBeginFrameContext, UiCaptureState, UiError, UiEventContext,
     UiEventResponse, UiRenderContext,
 };
-use eui_neo::Element;
+use eui_neo::{CursorShape, PlatformCaptureState, PlatformEffect};
 use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::event::{ElementState, Ime, WindowEvent};
 use winit::keyboard::ModifiersState;
-use winit::window::Window;
+use winit::window::{CursorIcon, Window};
 
 use super::config::NeoUiConfig;
 use super::input_bridge::{
     keyboard_from_key_event, merge_keyboard_event, pointer_from_input, scroll_from_input,
 };
-use super::renderer::NeoRenderer;
-use super::{
-    FrameInput, KeyboardEvent, LayoutRect, PointerEvent, Runtime, Screen, ScrollEvent, Ui,
-};
+use super::renderer::{NeoRenderResourceStatus, NeoRenderer};
+use super::{FrameInput, KeyboardEvent, PointerEvent, Runtime, Screen, ScrollEvent, State, Ui};
 
 /// Pluggable backend for the neo runtime.
 #[derive(Debug)]
@@ -104,23 +102,23 @@ impl NeoUiBackend {
         self.pending_input.begin_frame(input);
         // Keyboard/text input is sourced from winit events so focused widgets do
         // not receive Backspace/Enter/arrows twice through the raw Input mirror.
-        self.capture = capture_for(&self.runtime, self.screen);
+        self.capture = ui_capture_from_platform(self.runtime.platform_capture_state());
     }
 
     pub fn frame(&mut self, build: impl FnOnce(&mut Ui, Screen)) {
         let input = self.frame_input();
         self.runtime.frame(input, build);
-        self.capture = capture_for(&self.runtime, self.screen);
+        self.capture = ui_capture_from_platform(self.runtime.platform_capture_state());
     }
 
-    pub fn frame_incremental(
-        &mut self,
-        dirty: impl FnOnce() -> Vec<eui_neo::DirtyInput>,
-        build: impl FnOnce(&mut Ui, Screen),
-    ) {
+    pub fn frame_state<T>(&mut self, state: &State<T>, build: impl FnOnce(&mut Ui, Screen)) {
         let input = self.frame_input();
-        self.runtime.frame_incremental(input, dirty, build);
-        self.capture = capture_for(&self.runtime, self.screen);
+        self.runtime.frame_state(input, state, build);
+        self.capture = ui_capture_from_platform(self.runtime.platform_capture_state());
+    }
+
+    pub(crate) fn apply_platform_effects(&mut self, window: Option<&Window>) {
+        apply_window_platform_effects(&mut self.runtime, window, &mut self.capture);
     }
 
     fn frame_input(&mut self) -> FrameInput {
@@ -139,7 +137,7 @@ impl UiBackend for NeoUiBackend {
     }
 
     fn handle_event(&mut self, ctx: UiEventContext<'_>) -> UiEventResponse {
-        sync_window_ime(&self.runtime, ctx.window);
+        apply_window_platform_effects(&mut self.runtime, ctx.window, &mut self.capture);
         match ctx.event {
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers = modifiers.state();
@@ -247,7 +245,7 @@ impl UiBackend for NeoUiBackend {
             ctx.logical_surface_size,
             ctx.world.time.frame_delta(),
         );
-        sync_window_ime(&self.runtime, ctx.window);
+        apply_window_platform_effects(&mut self.runtime, ctx.window, &mut self.capture);
     }
 
     fn render_overlay(&mut self, ctx: UiRenderContext<'_>) -> Result<(), UiError> {
@@ -276,10 +274,9 @@ impl UiBackend for NeoUiBackend {
                     asset_server.as_ref(),
                     ctx.render_assets,
                 );
-                status.pending_images || status.pending_fonts
+                record_render_resource_status(&mut self.runtime, status)
             });
             if pending_resources {
-                self.runtime.mark_full_redraw();
                 return Ok(());
             }
         }
@@ -296,55 +293,55 @@ impl UiBackend for NeoUiBackend {
     }
 }
 
-fn capture_for(runtime: &Runtime, screen: Screen) -> UiCaptureState {
-    let screen_rect = LayoutRect::new(0.0, 0.0, screen.width, screen.height);
-    let wants_pointer = runtime.roots().iter().any(|root| {
-        tree_has_hover_or_active(root, runtime)
-            || tree_has_fullscreen_interactive(root, screen_rect)
-    });
-    let wants_keyboard = runtime.has_keyboard_capture();
-    UiCaptureState::new(wants_pointer, wants_keyboard)
+fn ui_capture_from_platform(state: PlatformCaptureState) -> UiCaptureState {
+    UiCaptureState::new(state.wants_pointer, state.wants_keyboard)
 }
 
-fn sync_window_ime(runtime: &Runtime, window: Option<&Window>) {
-    let Some(window) = window else {
-        return;
-    };
-    let Some(rect) = runtime.focused_ime_rect() else {
-        window.set_ime_allowed(false);
-        return;
-    };
-    window.set_ime_allowed(true);
-    window.set_ime_cursor_area(
-        LogicalPosition::new(rect.x as f64, rect.y as f64),
-        LogicalSize::new(rect.width.max(1.0) as f64, rect.height.max(1.0) as f64),
-    );
+fn apply_window_platform_effects(
+    runtime: &mut Runtime,
+    window: Option<&Window>,
+    capture: &mut UiCaptureState,
+) {
+    for effect in runtime.take_platform_effects() {
+        match effect {
+            PlatformEffect::ImeStart { rect } | PlatformEffect::ImeMove { rect } => {
+                if let Some(window) = window {
+                    window.set_ime_allowed(true);
+                    window.set_ime_cursor_area(
+                        LogicalPosition::new(rect.x as f64, rect.y as f64),
+                        LogicalSize::new(rect.width.max(1.0) as f64, rect.height.max(1.0) as f64),
+                    );
+                }
+            }
+            PlatformEffect::ImeEnd => {
+                if let Some(window) = window {
+                    window.set_ime_allowed(false);
+                }
+            }
+            PlatformEffect::CursorShape { shape } => {
+                if let Some(window) = window {
+                    window.set_cursor(cursor_icon_for(shape));
+                }
+            }
+            PlatformEffect::Capture { state } => {
+                *capture = ui_capture_from_platform(state);
+            }
+        }
+    }
 }
 
-fn tree_has_hover_or_active(element: &Element, runtime: &Runtime) -> bool {
-    let state = runtime.interaction(&element.id);
-    state.hovered
-        || state.active
-        || element
-            .children
-            .iter()
-            .any(|child| tree_has_hover_or_active(child, runtime))
+fn cursor_icon_for(shape: CursorShape) -> CursorIcon {
+    match shape {
+        CursorShape::Arrow => CursorIcon::Default,
+        CursorShape::Hand => CursorIcon::Pointer,
+    }
 }
 
-fn tree_has_fullscreen_interactive(element: &Element, screen: LayoutRect) -> bool {
-    (element.interactive && !element.disabled && rect_covers(element.frame, screen))
-        || element
-            .children
-            .iter()
-            .any(|child| tree_has_fullscreen_interactive(child, screen))
-}
-
-fn rect_covers(rect: LayoutRect, screen: LayoutRect) -> bool {
-    const EPSILON: f32 = 0.5;
-    rect.x <= screen.x + EPSILON
-        && rect.y <= screen.y + EPSILON
-        && rect.right() >= screen.right() - EPSILON
-        && rect.bottom() >= screen.bottom() - EPSILON
+fn record_render_resource_status(runtime: &mut Runtime, status: NeoRenderResourceStatus) -> bool {
+    for dirty in status.resource_dirty() {
+        runtime.request_resource_dirty(dirty);
+    }
+    status.has_pending_resources()
 }
 
 fn physical_cursor_to_logical(
@@ -361,8 +358,8 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
+    use super::super::renderer::NeoRenderStatus;
     use super::*;
-
     #[test]
     fn backend_dispatches_pending_keyboard_before_next_frame() {
         let text = Rc::new(RefCell::new(String::new()));
@@ -385,9 +382,9 @@ mod tests {
                 })
                 .build();
         });
-        backend
-            .runtime
-            .update_pointer(PointerEvent::pressed_at(8.0, 8.0));
+        backend.runtime.dispatch_frame_input(
+            FrameInput::new(backend.screen, 0.0).pointer(PointerEvent::pressed_at(8.0, 8.0)),
+        );
         backend.pending_input.keyboard = KeyboardEvent {
             text: "A".to_string(),
             ..KeyboardEvent::default()
@@ -488,33 +485,34 @@ mod tests {
         };
 
         let run_nav_frame = |backend: &mut NeoUiBackend| {
-            let dirty_state = state.clone();
             let frame_state = state.clone();
             let builds = builds.clone();
-            backend.frame_incremental(
-                move || dirty_state.take_dirty(),
-                move |ui, _| {
-                    ui.column("nav").size(160.0, 80.0).content(|ui| {
-                        builds.set(builds.get() + 1);
-                        let page = frame_state.signal(
-                            "page",
-                            |model| model.page,
-                            |model, value| model.page = value,
-                        );
-                        let selected = page.watch(ui);
-                        eui_neo::widgets::button(ui, "nav.button")
-                            .size(120.0, 40.0)
-                            .text(format!("Page {selected}"))
-                            .on_click(move || page.set(1))
-                            .build();
-                    });
-                },
-            );
+            backend.frame_state(&state, move |ui, _| {
+                ui.column("nav").size(160.0, 80.0).content(|ui| {
+                    builds.set(builds.get() + 1);
+                    let page = frame_state.signal(
+                        "page",
+                        |model| model.page,
+                        |model, value| model.page = value,
+                    );
+                    let selected = page.watch(ui);
+                    eui_neo::widgets::button(ui, "nav.button")
+                        .size(120.0, 40.0)
+                        .text(format!("Page {selected}"))
+                        .on_click(move || page.set(1))
+                        .build();
+                });
+            });
         };
 
         run_nav_frame(&mut backend);
         assert_eq!(builds.get(), 1);
-        let frame = backend.runtime.find("nav.button.bg").unwrap().frame;
+        let frame = backend
+            .runtime
+            .diagnostics()
+            .find("nav.button.bg")
+            .unwrap()
+            .frame;
         backend
             .pending_input
             .pointer_events
@@ -529,7 +527,12 @@ mod tests {
         assert_eq!(state.read(|model| model.page), 1);
         assert_eq!(builds.get(), 2);
         assert_eq!(
-            backend.runtime.find("nav.button.text").unwrap().text,
+            backend
+                .runtime
+                .diagnostics()
+                .find("nav.button.text")
+                .unwrap()
+                .text,
             "Page 1"
         );
     }
@@ -551,31 +554,32 @@ mod tests {
         };
 
         let run_nav_frame = |backend: &mut NeoUiBackend| {
-            let dirty_state = state.clone();
             let frame_state = state.clone();
-            backend.frame_incremental(
-                move || dirty_state.take_dirty(),
-                move |ui, _| {
-                    ui.column("nav").size(240.0, 80.0).content(|ui| {
-                        let page = frame_state.signal(
-                            "page",
-                            |model| model.page,
-                            |model, value| model.page = value,
-                        );
-                        let selected = page.watch(ui);
-                        eui_neo::widgets::tabs(ui, "tabs")
-                            .size(180.0, 40.0)
-                            .items(["One", "Two", "Three"])
-                            .selected(selected)
-                            .on_change(move |next| page.set(next))
-                            .build();
-                    });
-                },
-            );
+            backend.frame_state(&state, move |ui, _| {
+                ui.column("nav").size(240.0, 80.0).content(|ui| {
+                    let page = frame_state.signal(
+                        "page",
+                        |model| model.page,
+                        |model, value| model.page = value,
+                    );
+                    let selected = page.watch(ui);
+                    eui_neo::widgets::tabs(ui, "tabs")
+                        .size(180.0, 40.0)
+                        .items(["One", "Two", "Three"])
+                        .selected(selected)
+                        .on_change(move |next| page.set(next))
+                        .build();
+                });
+            });
         };
 
         run_nav_frame(&mut backend);
-        let label = backend.runtime.find("tabs.label.1").unwrap().frame;
+        let label = backend
+            .runtime
+            .diagnostics()
+            .find("tabs.label.1")
+            .unwrap()
+            .frame;
         let point = [label.x + label.width * 0.5, label.y + label.height * 0.5];
 
         backend.pending_input.event_pointer_position = Some(point);
@@ -592,8 +596,21 @@ mod tests {
 
         assert_eq!(state.read(|model| model.page), 1);
         assert_eq!(
-            backend.runtime.find("tabs.indicator").unwrap().frame.x,
-            backend.runtime.find("tabs.hit.1").unwrap().frame.x + 10.0
+            backend
+                .runtime
+                .diagnostics()
+                .find("tabs.indicator")
+                .unwrap()
+                .frame
+                .x,
+            backend
+                .runtime
+                .diagnostics()
+                .find("tabs.hit.1")
+                .unwrap()
+                .frame
+                .x
+                + 10.0
         );
     }
 
@@ -614,31 +631,32 @@ mod tests {
         };
 
         let run_nav_frame = |backend: &mut NeoUiBackend| {
-            let dirty_state = state.clone();
             let frame_state = state.clone();
-            backend.frame_incremental(
-                move || dirty_state.take_dirty(),
-                move |ui, _| {
-                    ui.column("nav").size(240.0, 80.0).content(|ui| {
-                        let page = frame_state.signal(
-                            "page",
-                            |model| model.page,
-                            |model, value| model.page = value,
-                        );
-                        let selected = page.watch(ui);
-                        eui_neo::widgets::tabs(ui, "tabs")
-                            .size(180.0, 40.0)
-                            .items(["One", "Two", "Three"])
-                            .selected(selected)
-                            .on_change(move |next| page.set(next))
-                            .build();
-                    });
-                },
-            );
+            backend.frame_state(&state, move |ui, _| {
+                ui.column("nav").size(240.0, 80.0).content(|ui| {
+                    let page = frame_state.signal(
+                        "page",
+                        |model| model.page,
+                        |model, value| model.page = value,
+                    );
+                    let selected = page.watch(ui);
+                    eui_neo::widgets::tabs(ui, "tabs")
+                        .size(180.0, 40.0)
+                        .items(["One", "Two", "Three"])
+                        .selected(selected)
+                        .on_change(move |next| page.set(next))
+                        .build();
+                });
+            });
         };
 
         run_nav_frame(&mut backend);
-        let label = backend.runtime.find("tabs.label.1").unwrap().frame;
+        let label = backend
+            .runtime
+            .diagnostics()
+            .find("tabs.label.1")
+            .unwrap()
+            .frame;
         let point = [label.x + label.width * 0.5, label.y + label.height * 0.5];
 
         backend.pending_input.event_pointer_position = Some(point);
@@ -684,7 +702,7 @@ mod tests {
             let page_for_frame = page.clone();
             let page_for_click = page.clone();
             let builds = builds.clone();
-            backend.frame_incremental(Vec::<eui_neo::DirtyInput>::new, move |ui, _| {
+            backend.frame(move |ui, _| {
                 ui.column("panel").size(160.0, 80.0).content(|ui| {
                     builds.set(builds.get() + 1);
                     let selected = page_for_frame.get();
@@ -700,7 +718,12 @@ mod tests {
 
         run_button_frame(&mut backend);
         assert_eq!(builds.get(), 1);
-        let frame = backend.runtime.find("panel.button.bg").unwrap().frame;
+        let frame = backend
+            .runtime
+            .diagnostics()
+            .find("panel.button.bg")
+            .unwrap()
+            .frame;
         let point = [frame.x + frame.width * 0.5, frame.y + frame.height * 0.5];
         backend
             .pending_input
@@ -716,12 +739,93 @@ mod tests {
         assert_eq!(page.get(), 1);
         assert_eq!(builds.get(), 2);
         assert_eq!(
-            backend.runtime.debug_snapshot().layout_mode,
-            eui_neo::LayoutMode::Full(eui_neo::FullLayoutReason::RetainedReuseUnavailable)
+            backend
+                .runtime
+                .diagnostics()
+                .committed_snapshot()
+                .layout_mode,
+            eui_neo::expert::LayoutMode::Full(
+                eui_neo::expert::FullLayoutReason::RetainedReuseUnavailable
+            )
         );
         assert_eq!(
-            backend.runtime.find("panel.button.text").unwrap().text,
+            backend
+                .runtime
+                .diagnostics()
+                .find("panel.button.text")
+                .unwrap()
+                .text,
             "Page 1"
         );
+    }
+
+    #[test]
+    fn renderer_resources_request_precise_dirty() {
+        let mut runtime = Runtime::new("page");
+        runtime.mark_rendered();
+
+        let pending = record_render_resource_status(
+            &mut runtime,
+            NeoRenderResourceStatus {
+                render: NeoRenderStatus {
+                    pending_images: true,
+                    pending_fonts: true,
+                },
+                ready_images: true,
+                ready_fonts: true,
+            },
+        );
+
+        assert!(pending);
+        assert!(runtime.needs_render());
+        assert!(runtime.needs_compose());
+        assert!(!runtime.full_redraw());
+        let snapshot = runtime.diagnostics().current_snapshot();
+        let draw_sources = [
+            eui_neo::RendererResourceDirty::PendingImages,
+            eui_neo::RendererResourceDirty::PendingFonts,
+            eui_neo::RendererResourceDirty::ReadyImages,
+        ];
+        for source in draw_sources {
+            let invalidation = snapshot
+                .invalidations
+                .iter()
+                .find(|record| match &record.source {
+                    eui_neo::expert::InvalidationSource::Resource(source_id) => {
+                        source_id.renderer_kind() == Some(source)
+                    }
+                    _ => false,
+                })
+                .unwrap_or_else(|| panic!("missing resource invalidation for {}", source.label()));
+            assert_eq!(invalidation.source.kind(), "resource");
+            assert_eq!(invalidation.source.label(), source.label());
+            assert_eq!(invalidation.flags, eui_neo::DirtyFlags::DRAW);
+            assert!(invalidation.pass_flags.request_draw);
+            assert!(!invalidation.pass_flags.request_compose_ui);
+            assert!(!invalidation.pass_flags.request_layout);
+        }
+        let font_ready = snapshot
+            .invalidations
+            .iter()
+            .find(|record| match &record.source {
+                eui_neo::expert::InvalidationSource::Resource(source_id) => {
+                    source_id.renderer_kind() == Some(eui_neo::RendererResourceDirty::ReadyFonts)
+                }
+                _ => false,
+            })
+            .expect("missing ready font resource invalidation");
+        assert_eq!(font_ready.source.kind(), "resource");
+        assert_eq!(
+            font_ready.source.label(),
+            eui_neo::RendererResourceDirty::ReadyFonts.label()
+        );
+        assert_eq!(
+            font_ready.flags,
+            eui_neo::DirtyFlags::COMPOSE | eui_neo::DirtyFlags::LAYOUT | eui_neo::DirtyFlags::DRAW
+        );
+        assert!(font_ready.pass_flags.request_compose_ui);
+        assert!(font_ready.pass_flags.request_layout);
+        assert!(font_ready.pass_flags.request_hit);
+        assert!(font_ready.pass_flags.request_draw);
     }
 }

@@ -5,10 +5,11 @@ use super::collect::*;
 use super::images::*;
 use super::primitives::*;
 use super::*;
+use eui_neo::expert::NodeId;
 
 #[derive(Clone)]
 pub(super) struct TextItem {
-    pub(super) id: String,
+    pub(super) id: TextBufferIdentityKey,
     pub(super) text: String,
     pub(super) font: FontRef,
     pub(super) frame: LayoutRect,
@@ -38,6 +39,25 @@ impl TextLayer {
             buffer_keys: Vec::new(),
             area_keys: Vec::new(),
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(super) struct TextBufferIdentityKey(NodeId);
+
+impl TextBufferIdentityKey {
+    #[cfg(test)]
+    pub(super) fn new(id: impl Into<String>) -> Self {
+        Self(NodeId::new(id))
+    }
+
+    pub(super) fn from_node(id: NodeId) -> Self {
+        Self(id)
+    }
+
+    #[cfg(test)]
+    pub(super) fn node_id(&self) -> &NodeId {
+        &self.0
     }
 }
 
@@ -445,13 +465,13 @@ pub(super) fn text_buffer_key(item: &TextItem, metrics: &TextBufferMetrics) -> T
 
 pub(super) fn text_buffer_cache_admitted(
     key_history: &mut FxHashMap<TextBufferKey, TextKeyHistory>,
-    identity_history: &mut FxHashMap<String, TextIdentityHistory>,
+    identity_history: &mut FxHashMap<TextBufferIdentityKey, TextIdentityHistory>,
     frame: u64,
-    id: &str,
+    id: &TextBufferIdentityKey,
     key: &TextBufferKey,
 ) -> bool {
     let identity = identity_history
-        .entry(id.to_string())
+        .entry(id.clone())
         .or_insert_with(TextIdentityHistory::default);
     let changed = identity.last_key.as_ref() != Some(key);
     if changed {
