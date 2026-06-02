@@ -1,16 +1,17 @@
-use super::event_command::UiEventCommand;
+use super::event_command::{UiEventCommand, UiEventCommandReport};
 use super::layers::{
     layer_blocks_element_target, layer_pointer_policy, layer_requests_keyboard_capture,
 };
+use super::reconcile::ElementIdSet;
 use super::tree::z_order_is_stable;
 use super::*;
 
 impl Runtime {
-    pub fn focused_id(&self) -> Option<&str> {
+    pub(crate) fn diagnostic_focused_id(&self) -> Option<&str> {
         self.input.owners.keyboard_focus_id()
     }
 
-    pub fn text_focused_id(&self) -> Option<&str> {
+    pub(crate) fn diagnostic_text_focused_id(&self) -> Option<&str> {
         self.input.owners.text_focus_id()
     }
 
@@ -22,7 +23,7 @@ impl Runtime {
     }
 
     pub fn focused_ime_rect(&self) -> Option<LayoutRect> {
-        let element = self.find(self.input.owners.ime_owner_id()?)?;
+        let element = self.find_node(&self.input.owners.ime_owner_node_id()?)?;
         if !element.has_ime_rect {
             return None;
         }
@@ -34,25 +35,28 @@ impl Runtime {
         ))
     }
 
-    pub fn response(&self, id: &str) -> Response {
-        self.input
-            .responses
-            .get(self.resolve_id_ref(id).as_ref())
-            .copied()
-            .unwrap_or_default()
+    pub(crate) fn diagnostic_response(&self, id: &str) -> Response {
+        let id = self.resolve_node_id(id);
+        self.response_for_node(&id)
     }
 
-    pub fn interaction(&self, id: &str) -> InteractionState {
-        self.input
-            .interactions
-            .get(self.resolve_id_ref(id).as_ref())
-            .copied()
-            .unwrap_or_default()
+    pub(crate) fn response_for_node(&self, id: &NodeId) -> Response {
+        self.input.responses.get(id).copied().unwrap_or_default()
     }
 
-    pub fn update_pointer(&mut self, event: PointerEvent) -> bool {
+    pub(crate) fn diagnostic_interaction(&self, id: &str) -> InteractionState {
+        let id = self.resolve_node_id(id);
+        self.interaction_for_node(&id)
+    }
+
+    pub(crate) fn interaction_for_node(&self, id: &NodeId) -> InteractionState {
+        self.input.interactions.get(id).copied().unwrap_or_default()
+    }
+
+    pub(crate) fn update_pointer(&mut self, event: PointerEvent) -> bool {
         let pointer_pass = self.collect_pointer_event_pass(event);
-        self.commit_pointer_event_pass(pointer_pass)
+        let report = self.commit_pointer_event_pass(pointer_pass);
+        self.record_frame_input_pass(report).changed()
     }
 
     pub(super) fn collect_pointer_event_pass(&mut self, event: PointerEvent) -> PointerEventPass {
@@ -71,9 +75,9 @@ impl Runtime {
             }
             if let Some(dismissal) = layer_policy.dismissal.clone() {
                 commands.push(UiEventCommand::LayerDismiss {
-                    target: EventTargetId::layer(dismissal.id.clone()),
+                    target: dismissal.target(),
                 });
-                self.layers.dismissal_records.push(dismissal);
+                self.layers.dismissal_records.push(dismissal.into_record());
             }
         }
         let hit_id = (!layer_policy.block_pointer)
@@ -89,7 +93,7 @@ impl Runtime {
             self.input.drag_origin = position;
         }
 
-        let captured_id = self.input.owners.pointer_capture_string();
+        let captured_id = self.input.owners.pointer_capture_node_id();
         let hover_id = captured_id.clone().or(hit_id.clone());
         self.input.owners.set_pointer_hover(hover_id.clone());
         let mut ids = FxHashSet::default();
@@ -102,13 +106,13 @@ impl Runtime {
         }
 
         if event.right_pressed_this_frame {
-            if let Some(target_id) = hit_id.as_deref() {
+            if let Some(target_id) = hit_id.as_ref() {
                 let frame = self
-                    .find(target_id)
+                    .find_node(target_id)
                     .map(|element| element.frame)
                     .unwrap_or_default();
                 commands.push(UiEventCommand::ContextMenu {
-                    target: EventTargetId::node(target_id),
+                    target: target_id.clone(),
                     event,
                     frame,
                 });
@@ -125,12 +129,12 @@ impl Runtime {
                 .get(&id)
                 .copied()
                 .unwrap_or_default();
-            let active = captured_id.as_deref() == Some(id.as_ref());
-            let hovered = hover_id.as_deref() == Some(id.as_ref());
+            let active = captured_id.as_ref().is_some_and(|target| target == &id);
+            let hovered = hover_id.as_ref().is_some_and(|target| target == &id);
             let pressed = active && event.down;
             let press_started = active && event.pressed_this_frame;
             let released = active && event.released_this_frame;
-            let clicked = released && hit_id.as_deref() == Some(id.as_ref());
+            let clicked = released && hit_id.as_ref().is_some_and(|target| target == &id);
             let drag_start = if press_started {
                 position.unwrap_or(previous.drag_start)
             } else {
@@ -165,25 +169,23 @@ impl Runtime {
             changed |= state.changed;
             if press_started {
                 let frame = self
-                    .find(&id)
+                    .find_node(&id)
                     .map(|element| element.frame)
                     .unwrap_or_default();
                 commands.push(UiEventCommand::Press {
-                    target: EventTargetId::node(id.clone()),
+                    target: id.clone(),
                     event,
                     frame,
                 });
             }
             if clicked {
-                commands.push(UiEventCommand::Click {
-                    target: EventTargetId::node(id.clone()),
-                });
+                commands.push(UiEventCommand::Click { target: id.clone() });
             }
             if pressed && (delta != [0.0, 0.0] || dragging) && self.input.callbacks.has_drag(&id) {
                 let [x, y] = position.unwrap_or_default();
                 self.input.owners.set_drag_owner(id.clone());
                 commands.push(UiEventCommand::Drag {
-                    target: EventTargetId::node(id.clone()),
+                    target: id.clone(),
                     event: DragEvent {
                         x,
                         y,
@@ -225,32 +227,49 @@ impl Runtime {
         }
     }
 
-    pub(super) fn commit_pointer_event_pass(&mut self, pass: PointerEventPass) -> bool {
-        let mut changed = pass.changed;
+    pub(super) fn commit_pointer_event_pass(
+        &mut self,
+        pass: PointerEventPass,
+    ) -> FrameInputPassReport {
+        let mut input_state_changed = pass.changed;
         let mut commands = pass.commands;
-        changed |= self.apply_focus_target(pass.focus_target, &mut commands);
-        if changed {
-            self.mark_render_dirty();
+        input_state_changed |= self.apply_focus_target(pass.focus_target, &mut commands);
+        if input_state_changed {
+            self.request_pointer_input_invalidation();
         }
         self.input.interactions = pass.interactions;
         self.input.responses = pass.responses;
-        let callbacks_changed = self.execute_event_commands(commands);
-        changed |= callbacks_changed;
-        changed
+        self.execute_frame_input_command_batch(FrameInputCommandBatch {
+            commands,
+            input_state_changed,
+            timer_render_requested: false,
+        })
     }
 
-    pub fn update_scroll(&mut self, event: ScrollEvent) -> bool {
-        let Some(command) = self.collect_scroll_command(event) else {
+    pub(crate) fn update_scroll(&mut self, event: ScrollEvent) -> bool {
+        if !event.active() {
             return false;
         };
-        self.execute_event_commands(vec![command])
+        let commands = self.collect_scroll_command(event).into_iter().collect();
+        let report = self.execute_frame_input_command_batch(FrameInputCommandBatch {
+            commands,
+            input_state_changed: false,
+            timer_render_requested: false,
+        });
+        self.record_frame_input_pass(report).changed()
     }
 
-    pub fn update_keyboard(&mut self, event: KeyboardEvent) -> bool {
-        let Some(command) = self.collect_keyboard_command(event) else {
+    pub(crate) fn update_keyboard(&mut self, event: KeyboardEvent) -> bool {
+        if !event.has_input() {
             return false;
         };
-        self.execute_event_commands(vec![command])
+        let commands = self.collect_keyboard_command(event).into_iter().collect();
+        let report = self.execute_frame_input_command_batch(FrameInputCommandBatch {
+            commands,
+            input_state_changed: false,
+            timer_render_requested: false,
+        });
+        self.record_frame_input_pass(report).changed()
     }
 
     pub(super) fn update_events_and_timers(
@@ -259,20 +278,10 @@ impl Runtime {
         scroll: ScrollEvent,
         keyboard: KeyboardEvent,
         delta_seconds: f32,
-    ) -> bool {
-        self.timing.clock_seconds += f64::from(delta_seconds.max(0.0));
-        let mut changed = false;
-        let mut commands = Vec::new();
-        changed |= self.collect_frame_pointer_commands([pointer], &mut commands);
-        if let Some(command) = self.collect_scroll_command(scroll) {
-            commands.push(command);
-        }
-        if let Some(command) = self.collect_keyboard_command(keyboard) {
-            commands.push(command);
-        }
-        changed |= self.execute_event_commands(commands);
-        changed |= self.tick_timers(delta_seconds);
-        changed
+    ) -> FrameInputPassReport {
+        let batch = self.collect_frame_input_commands([pointer], scroll, keyboard, delta_seconds);
+        let report = self.execute_frame_input_command_batch(batch);
+        self.record_frame_input_pass(report)
     }
 
     pub(super) fn update_events_and_timers_from_pointer_events(
@@ -281,21 +290,57 @@ impl Runtime {
         scroll: ScrollEvent,
         keyboard: KeyboardEvent,
         delta_seconds: f32,
-    ) -> bool {
+    ) -> FrameInputPassReport {
+        let batch = self.collect_frame_input_commands(
+            pointer_events.iter().copied(),
+            scroll,
+            keyboard,
+            delta_seconds,
+        );
+        let report = self.execute_frame_input_command_batch(batch);
+        self.record_frame_input_pass(report)
+    }
+
+    fn collect_frame_input_commands(
+        &mut self,
+        pointer_events: impl IntoIterator<Item = PointerEvent>,
+        scroll: ScrollEvent,
+        keyboard: KeyboardEvent,
+        delta_seconds: f32,
+    ) -> FrameInputCommandBatch {
         self.timing.clock_seconds += f64::from(delta_seconds.max(0.0));
-        let mut changed = false;
+        let mut batch = FrameInputCommandBatch::default();
         let mut commands = Vec::new();
-        changed |=
-            self.collect_frame_pointer_commands(pointer_events.iter().copied(), &mut commands);
+        batch.input_state_changed |=
+            self.collect_frame_pointer_commands(pointer_events, &mut commands);
         if let Some(command) = self.collect_scroll_command(scroll) {
             commands.push(command);
         }
         if let Some(command) = self.collect_keyboard_command(keyboard) {
             commands.push(command);
         }
-        changed |= self.execute_event_commands(commands);
-        changed |= self.tick_timers(delta_seconds);
-        changed
+        let timer_collection = self.collect_timer_commands(delta_seconds);
+        batch.timer_render_requested = timer_collection.render_requested;
+        commands.extend(timer_collection.commands);
+        batch.commands = commands;
+        batch
+    }
+
+    pub(super) fn execute_frame_input_command_batch(
+        &mut self,
+        batch: FrameInputCommandBatch,
+    ) -> FrameInputPassReport {
+        let command_report = self.execute_event_commands(batch.commands);
+        FrameInputPassReport {
+            input_state_changed: batch.input_state_changed,
+            timer_render_requested: batch.timer_render_requested,
+            command_report,
+        }
+    }
+
+    fn record_frame_input_pass(&mut self, report: FrameInputPassReport) -> FrameInputPassReport {
+        self.record_input_pass_debug(&report);
+        report
     }
 
     fn collect_frame_pointer_commands(
@@ -313,23 +358,23 @@ impl Runtime {
             commands.extend(pointer_pass.commands);
         }
         if changed {
-            self.mark_render_dirty();
+            self.request_pointer_input_invalidation();
         }
         changed
     }
 
     fn apply_focus_target(
         &mut self,
-        focused: Option<Option<String>>,
+        focused: Option<Option<NodeId>>,
         commands: &mut Vec<UiEventCommand>,
     ) -> bool {
         let Some(focused) = focused else {
             return false;
         };
-        if self.input.owners.keyboard_focus_id() == focused.as_deref() {
+        if self.input.owners.keyboard_focus_id() == focused.as_ref().map(NodeId::as_str) {
             return false;
         }
-        let old = self.input.owners.keyboard_focus_string();
+        let old = self.input.owners.keyboard_focus_node_id();
         let text_enabled = focused
             .as_ref()
             .filter(|id| self.input.callbacks.has_text_input(id))
@@ -340,13 +385,13 @@ impl Runtime {
 
         if let Some(old) = old {
             commands.push(UiEventCommand::FocusChanged {
-                target: EventTargetId::focus(old),
+                target: old,
                 focused: false,
             });
         }
         if let Some(new) = focused {
             commands.push(UiEventCommand::FocusChanged {
-                target: EventTargetId::focus(new),
+                target: new,
                 focused: true,
             });
         }
@@ -370,42 +415,76 @@ impl Runtime {
             return None;
         }
         let target = hit_test(&self.tree.roots, self.input.pointer_position, |element| {
-            self.input.callbacks.has_scroll(&element.id) && !element.disabled
+            let id = NodeId::new(element.id.as_str());
+            self.input.callbacks.has_scroll(&id) && !element.disabled
         })?;
         self.input.owners.set_scroll_owner(target.clone());
-        Some(UiEventCommand::Scroll {
-            target: EventTargetId::scroll(target),
-            event,
-        })
+        Some(UiEventCommand::Scroll { target, event })
     }
 
     fn collect_keyboard_command(&self, event: KeyboardEvent) -> Option<UiEventCommand> {
         if !event.has_input() {
             return None;
         }
-        let focused_id = self.input.owners.text_focus_string()?;
+        let focused_id = self.input.owners.text_focus_node_id()?;
         if layer_blocks_element_target(&self.layers.intents, &self.tree.roots, &focused_id) {
             return None;
         }
         Some(UiEventCommand::TextInput {
-            target: EventTargetId::text(focused_id),
+            target: focused_id,
             event,
         })
+    }
+
+    fn request_pointer_input_invalidation(&mut self) {
+        self.request_invalidation(Invalidation::runtime(
+            self.runtime_invalidation_target(),
+            "pointer_input",
+            crate::DirtyFlags::DRAW,
+        ));
+    }
+}
+
+pub(super) fn replay_frame_responses(runtime: &Runtime, ui: &mut Ui) {
+    #[cfg(feature = "profile")]
+    ::profiling::scope!("eui_neo.runtime.replay_responses");
+    for (id, response) in &runtime.input.responses {
+        ui.set_response_node(id.clone(), *response);
     }
 }
 
 pub(super) struct PointerEventPass {
-    interactions: FxHashMap<String, InteractionState>,
-    responses: FxHashMap<String, Response>,
+    interactions: FxHashMap<NodeId, InteractionState>,
+    responses: FxHashMap<NodeId, Response>,
     commands: Vec<UiEventCommand>,
     changed: bool,
-    focus_target: Option<Option<String>>,
+    focus_target: Option<Option<NodeId>>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct FrameInputCommandBatch {
+    pub(super) commands: Vec<UiEventCommand>,
+    pub(super) input_state_changed: bool,
+    pub(super) timer_render_requested: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct FrameInputPassReport {
+    pub(super) input_state_changed: bool,
+    pub(super) timer_render_requested: bool,
+    pub(super) command_report: UiEventCommandReport,
+}
+
+impl FrameInputPassReport {
+    pub(super) fn changed(&self) -> bool {
+        self.input_state_changed || self.command_report.changed()
+    }
 }
 
 pub(super) fn hit_test_interactive(
     elements: &[Element],
     position: Option<[f32; 2]>,
-) -> Option<String> {
+) -> Option<NodeId> {
     hit_test(elements, position, |element| {
         element.interactive && !element.disabled
     })
@@ -414,7 +493,7 @@ pub(super) fn hit_test_interactive(
 pub(super) fn hit_test_focusable(
     elements: &[Element],
     position: Option<[f32; 2]>,
-) -> Option<String> {
+) -> Option<NodeId> {
     hit_test(elements, position, |element| {
         element.focusable && !element.disabled
     })
@@ -424,9 +503,9 @@ pub(super) fn hit_test(
     elements: &[Element],
     position: Option<[f32; 2]>,
     predicate: impl Fn(&Element) -> bool,
-) -> Option<String> {
+) -> Option<NodeId> {
     let position = position?;
-    hit_test_elements(elements, position, None, &predicate).map(|element| element.id.clone())
+    hit_test_elements(elements, position, None, &predicate).map(|element| NodeId::new(&element.id))
 }
 
 pub(super) fn hit_test_elements<'a>(
@@ -555,7 +634,365 @@ pub(super) fn same_rect(left: LayoutRect, right: LayoutRect) -> bool {
         && (left.height - right.height).abs() <= 0.001
 }
 
+pub(super) fn cleanup_stale_input_state(
+    runtime: &mut Runtime,
+    existing_ids: &ElementIdSet,
+) -> bool {
+    let mut changed = runtime
+        .input
+        .owners
+        .retain_existing(|id| existing_ids.contains(id));
+    let previous_interactions = runtime.input.interactions.len();
+    runtime
+        .input
+        .interactions
+        .retain(|id, _| existing_ids.contains(id));
+    changed |= runtime.input.interactions.len() != previous_interactions;
+    let previous_responses = runtime.input.responses.len();
+    runtime
+        .input
+        .responses
+        .retain(|id, _| existing_ids.contains(id));
+    changed |= runtime.input.responses.len() != previous_responses;
+    changed
+}
+
 pub(super) fn state_without_changed(mut state: InteractionState) -> InteractionState {
     state.changed = false;
     state
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use crate::callbacks::{
+        ClickCallbackId, ScrollCallbackId, TextInputCallbackId, TimerCallbackId,
+    };
+
+    use super::*;
+
+    #[test]
+    fn cleanup_stale_input_state_keeps_only_existing_ids() {
+        let mut runtime = Runtime::new("page");
+        runtime
+            .input
+            .owners
+            .set_keyboard_focus(Some(NodeId::new("page.removed")), true);
+        runtime.input.interactions.insert(
+            NodeId::new("page.kept"),
+            InteractionState {
+                hovered: true,
+                ..InteractionState::default()
+            },
+        );
+        runtime.input.interactions.insert(
+            NodeId::new("page.removed"),
+            InteractionState {
+                pressed: true,
+                ..InteractionState::default()
+            },
+        );
+        runtime.input.responses.insert(
+            NodeId::new("page.kept"),
+            Response {
+                hovered: true,
+                ..Response::default()
+            },
+        );
+        runtime.input.responses.insert(
+            NodeId::new("page.removed"),
+            Response {
+                pressed: true,
+                ..Response::default()
+            },
+        );
+        let existing_ids = element_ids(&["page.kept"]);
+
+        assert!(cleanup_stale_input_state(&mut runtime, &existing_ids));
+
+        assert_eq!(runtime.input.owners.keyboard_focus_id(), None);
+        assert_eq!(runtime.input.owners.text_focus_id(), None);
+        assert!(runtime
+            .input
+            .interactions
+            .contains_key(&NodeId::new("page.kept")));
+        assert!(!runtime
+            .input
+            .interactions
+            .contains_key(&NodeId::new("page.removed")));
+        assert!(runtime
+            .input
+            .responses
+            .contains_key(&NodeId::new("page.kept")));
+        assert!(!runtime
+            .input
+            .responses
+            .contains_key(&NodeId::new("page.removed")));
+    }
+
+    #[test]
+    fn replay_frame_responses_seeds_builder_responses() {
+        let mut runtime = Runtime::new("page");
+        runtime.input.responses.insert(
+            NodeId::new("page.hit"),
+            Response {
+                hovered: true,
+                clicked: true,
+                ..Response::default()
+            },
+        );
+        let mut ui = Ui::new("page");
+
+        replay_frame_responses(&runtime, &mut ui);
+
+        let response = ui.response("hit");
+        assert!(response.hovered);
+        assert!(response.clicked);
+        assert!(!response.pressed);
+    }
+
+    #[test]
+    fn collect_frame_input_commands_defers_callback_execution() {
+        let mut runtime = Runtime::new("page");
+        runtime.mark_rendered();
+        let clicked = Rc::new(Cell::new(false));
+        let timer_fired = Rc::new(Cell::new(false));
+        let clicked_callback = clicked.clone();
+        let timer_callback = timer_fired.clone();
+        runtime.input.callbacks.on_click.insert(
+            ClickCallbackId::new(NodeId::new("page.button")),
+            Box::new(move || clicked_callback.set(true)),
+        );
+        runtime.input.callbacks.on_timer.insert(
+            TimerCallbackId::new(NodeId::new("page.timer")),
+            Box::new(move || timer_callback.set(true)),
+        );
+        let mut button = Element::new(ElementKind::Rect, "page.button");
+        button.interactive = true;
+        button.frame = LayoutRect::new(0.0, 0.0, 40.0, 30.0);
+        let mut timer = Element::new(ElementKind::Rect, "page.timer");
+        timer.timer_seconds = 0.1;
+        runtime.tree.roots = vec![button, timer];
+
+        let batch = runtime.collect_frame_input_commands(
+            [
+                PointerEvent::pressed_at(10.0, 10.0),
+                PointerEvent::released_at(10.0, 10.0),
+            ],
+            ScrollEvent::default(),
+            KeyboardEvent::default(),
+            0.1,
+        );
+
+        assert!(batch.input_state_changed);
+        assert!(!batch.timer_render_requested);
+        assert_eq!(batch.commands.len(), 3);
+        assert!(!clicked.get());
+        assert!(!timer_fired.get());
+        assert!(runtime.diagnostics().current_snapshot().events.is_empty());
+
+        let report = runtime.execute_frame_input_command_batch(batch);
+
+        assert!(clicked.get());
+        assert!(timer_fired.get());
+        assert!(report.input_state_changed);
+        assert_eq!(report.command_report.command_count, 3);
+        assert_eq!(report.command_report.callback_count, 2);
+        assert_eq!(report.command_report.invalidation_count, 2);
+        assert!(report.command_report.pass_flags.request_compose_ui);
+    }
+
+    #[test]
+    fn frame_input_helpers_record_input_pass_debug() {
+        let mut runtime = Runtime::new("page");
+        runtime.mark_rendered();
+        let clicked = Rc::new(Cell::new(false));
+        let clicked_callback = clicked.clone();
+        runtime.input.callbacks.on_click.insert(
+            ClickCallbackId::new(NodeId::new("page.button")),
+            Box::new(move || clicked_callback.set(true)),
+        );
+        let mut button = Element::new(ElementKind::Rect, "page.button");
+        button.interactive = true;
+        button.frame = LayoutRect::new(0.0, 0.0, 40.0, 30.0);
+        runtime.tree.roots = vec![button];
+
+        let report = runtime.update_events_and_timers_from_pointer_events(
+            &[
+                PointerEvent::pressed_at(10.0, 10.0),
+                PointerEvent::released_at(10.0, 10.0),
+            ],
+            ScrollEvent::default(),
+            KeyboardEvent::default(),
+            0.0,
+        );
+
+        assert!(clicked.get());
+        assert_eq!(report.command_report.command_count, 2);
+        assert_eq!(report.command_report.callback_count, 1);
+        let snapshot = runtime.diagnostics().current_snapshot();
+        let input_pass = snapshot
+            .input_pass
+            .as_ref()
+            .expect("frame input helper should publish input pass debug");
+        assert!(input_pass.input_state_changed);
+        assert_eq!(input_pass.command_count, 2);
+        assert_eq!(input_pass.callback_count, 1);
+        assert_eq!(input_pass.invalidation_count, 1);
+        assert!(input_pass.pass_flags.request_compose_ui);
+    }
+
+    #[test]
+    fn direct_pointer_update_records_input_pass_debug() {
+        let mut runtime = Runtime::new("page");
+        runtime.mark_rendered();
+        let clicked = Rc::new(Cell::new(false));
+        let clicked_callback = clicked.clone();
+        runtime.input.callbacks.on_click.insert(
+            ClickCallbackId::new(NodeId::new("page.button")),
+            Box::new(move || clicked_callback.set(true)),
+        );
+        let mut button = Element::new(ElementKind::Rect, "page.button");
+        button.interactive = true;
+        button.frame = LayoutRect::new(0.0, 0.0, 40.0, 30.0);
+        runtime.tree.roots = vec![button];
+
+        runtime.update_pointer(PointerEvent::pressed_at(10.0, 10.0));
+        assert_eq!(
+            runtime
+                .diagnostics()
+                .current_snapshot()
+                .input_pass
+                .as_ref()
+                .map(|record| (record.command_count, record.callback_count)),
+            Some((1, 0))
+        );
+        assert!(!clicked.get());
+
+        runtime.update_pointer(PointerEvent::released_at(10.0, 10.0));
+
+        assert!(clicked.get());
+        let snapshot = runtime.diagnostics().current_snapshot();
+        let input_pass = snapshot
+            .input_pass
+            .as_ref()
+            .expect("direct pointer update should record input pass debug");
+        assert!(input_pass.input_state_changed);
+        assert_eq!(input_pass.command_count, 1);
+        assert_eq!(input_pass.callback_count, 1);
+        assert_eq!(input_pass.invalidation_count, 1);
+        assert!(input_pass.pass_flags.request_compose_ui);
+    }
+
+    #[test]
+    fn direct_scroll_and_keyboard_updates_record_input_pass_debug() {
+        let mut runtime = Runtime::new("page");
+        runtime.mark_rendered();
+        let scrolled = Rc::new(Cell::new(false));
+        let typed = Rc::new(Cell::new(false));
+        let scrolled_callback = scrolled.clone();
+        let typed_callback = typed.clone();
+        runtime.input.callbacks.on_scroll.insert(
+            ScrollCallbackId::new(NodeId::new("page.scroll")),
+            Box::new(move |_| scrolled_callback.set(true)),
+        );
+        runtime.input.callbacks.on_text_input.insert(
+            TextInputCallbackId::new(NodeId::new("page.input")),
+            Box::new(move |_| typed_callback.set(true)),
+        );
+        let mut scroll = Element::new(ElementKind::Rect, "page.scroll");
+        scroll.frame = LayoutRect::new(0.0, 0.0, 40.0, 30.0);
+        let input = Element::new(ElementKind::Rect, "page.input");
+        runtime.tree.roots = vec![scroll, input];
+        runtime.input.pointer_position = Some([10.0, 10.0]);
+        runtime
+            .input
+            .owners
+            .set_keyboard_focus(Some(NodeId::new("page.input")), true);
+
+        assert!(runtime.update_scroll(ScrollEvent { x: 0.0, y: 8.0 }));
+        assert!(scrolled.get());
+        let snapshot = runtime.diagnostics().current_snapshot();
+        let input_pass = snapshot
+            .input_pass
+            .as_ref()
+            .expect("direct scroll update should record input pass debug");
+        assert_eq!(input_pass.command_count, 1);
+        assert_eq!(input_pass.callback_count, 1);
+        assert!(input_pass.pass_flags.request_compose_ui);
+
+        assert!(runtime.update_keyboard(KeyboardEvent {
+            text: "a".to_string(),
+            ..KeyboardEvent::default()
+        }));
+        assert!(typed.get());
+        let snapshot = runtime.diagnostics().current_snapshot();
+        let input_pass = snapshot
+            .input_pass
+            .as_ref()
+            .expect("direct keyboard update should record input pass debug");
+        assert_eq!(input_pass.command_count, 1);
+        assert_eq!(input_pass.callback_count, 1);
+        assert!(input_pass.pass_flags.request_compose_ui);
+    }
+
+    #[test]
+    fn direct_scroll_and_keyboard_no_command_paths_record_empty_input_pass_debug() {
+        let mut runtime = Runtime::new("page");
+        runtime.mark_rendered();
+        let clicked = Rc::new(Cell::new(false));
+        let clicked_callback = clicked.clone();
+        runtime.input.callbacks.on_click.insert(
+            ClickCallbackId::new(NodeId::new("page.button")),
+            Box::new(move || clicked_callback.set(true)),
+        );
+        let mut button = Element::new(ElementKind::Rect, "page.button");
+        button.interactive = true;
+        button.frame = LayoutRect::new(0.0, 0.0, 40.0, 30.0);
+        runtime.tree.roots = vec![button];
+
+        runtime.update_pointer(PointerEvent::pressed_at(10.0, 10.0));
+        runtime.update_pointer(PointerEvent::released_at(10.0, 10.0));
+        assert!(clicked.get());
+        assert_eq!(
+            runtime
+                .diagnostics()
+                .current_snapshot()
+                .input_pass
+                .as_ref()
+                .map(|record| record.callback_count),
+            Some(1)
+        );
+
+        assert!(!runtime.update_scroll(ScrollEvent { x: 0.0, y: 4.0 }));
+        let snapshot = runtime.diagnostics().current_snapshot();
+        let input_pass = snapshot
+            .input_pass
+            .as_ref()
+            .expect("active scroll without a target should still publish an input pass");
+        assert!(!input_pass.input_state_changed);
+        assert_eq!(input_pass.command_count, 0);
+        assert_eq!(input_pass.callback_count, 0);
+        assert_eq!(input_pass.invalidation_count, 0);
+
+        assert!(!runtime.update_keyboard(KeyboardEvent {
+            text: "a".to_string(),
+            ..KeyboardEvent::default()
+        }));
+        let snapshot = runtime.diagnostics().current_snapshot();
+        let input_pass = snapshot
+            .input_pass
+            .as_ref()
+            .expect("keyboard input without a text focus should still publish an input pass");
+        assert!(!input_pass.input_state_changed);
+        assert_eq!(input_pass.command_count, 0);
+        assert_eq!(input_pass.callback_count, 0);
+        assert_eq!(input_pass.invalidation_count, 0);
+    }
+
+    fn element_ids(ids: &[&str]) -> ElementIdSet {
+        ids.iter().map(|id| NodeId::new(*id)).collect()
+    }
 }

@@ -3,6 +3,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::runtime::LayerCollision;
 use crate::Color;
 
 use super::super::{
@@ -279,13 +280,15 @@ impl<'ui> DropdownBuilder<'ui> {
                     .build();
             });
 
-        popover(self.ui, format!("{id}.popup"))
+        let popup_boundary = self.ui.nearest_clip_ancestor_id();
+        let mut popup = popover(self.ui, format!("{id}.popup"))
             .open(self.open)
             .anchor(format!("{id}.field"))
             .placement(PopoverPlacement::BottomStart)
             .gap(popup_gap)
             .size(self.width, popup_height)
             .z_index(self.z_index + 1)
+            .collision(LayerCollision::FlipShift)
             .outside_click(super::super::OutsideClickPolicy::Close)
             .on_dismiss({
                 let open_change = on_open_change.clone();
@@ -294,97 +297,100 @@ impl<'ui> DropdownBuilder<'ui> {
                         (callback.borrow_mut())(false);
                     }
                 }
-            })
-            .content(|ui| {
-                ui.stack(format!("{id}.popup.surface"))
-                    .size(self.width, popup_height)
-                    .opacity(visible)
-                    .translate_y(popup_offset_y)
-                    .scale(popup_scale)
-                    .transform_origin(0.5, 0.0)
-                    .transition(self.transition)
-                    .animate(AnimProperty::OPACITY | AnimProperty::TRANSFORM)
-                    .content(|ui| {
-                        ui.rect(format!("{id}.popup.bg"))
-                            .size(self.width, popup_height)
-                            .color(self.style.popup)
-                            .radius(self.style.radius)
-                            .border(1.0, self.style.border)
-                            .shadow_style(self.style.shadow)
-                            .build();
+            });
+        if let Some(boundary) = popup_boundary {
+            popup = popup.boundary(boundary.as_str());
+        }
+        popup.content(|ui| {
+            ui.stack(format!("{id}.popup.surface"))
+                .size(self.width, popup_height)
+                .opacity(visible)
+                .translate_y(popup_offset_y)
+                .scale(popup_scale)
+                .transform_origin(0.5, 0.0)
+                .transition(self.transition)
+                .animate(AnimProperty::OPACITY | AnimProperty::TRANSFORM)
+                .content(|ui| {
+                    ui.rect(format!("{id}.popup.bg"))
+                        .size(self.width, popup_height)
+                        .color(self.style.popup)
+                        .radius(self.style.radius)
+                        .border(1.0, self.style.border)
+                        .shadow_style(self.style.shadow)
+                        .build();
 
-                        ui.rect(format!("{id}.popup.hit"))
-                            .size(self.width, popup_height)
-                            .states(
-                                theme::color(0.0, 0.0, 0.0, 0.0),
-                                theme::color(0.0, 0.0, 0.0, 0.0),
-                                theme::color(0.0, 0.0, 0.0, 0.0),
-                            )
-                            .on_click(|| {})
-                            .build();
+                    ui.rect(format!("{id}.popup.hit"))
+                        .size(self.width, popup_height)
+                        .states(
+                            theme::color(0.0, 0.0, 0.0, 0.0),
+                            theme::color(0.0, 0.0, 0.0, 0.0),
+                            theme::color(0.0, 0.0, 0.0, 0.0),
+                        )
+                        .on_click(|| {})
+                        .build();
 
-                        for (index, item) in self.items.iter().enumerate() {
-                            let index_i32 = index as i32;
-                            let active = index_i32 == selected;
-                            let item_y = popup_padding + index as f32 * self.item_height;
-                            let change = on_change.clone();
-                            let open_change = on_open_change.clone();
-                            if active {
-                                ui.rect(format!("{id}.item.selected.{index}"))
-                                    .x(popup_padding)
-                                    .y(item_y)
-                                    .size(
-                                        (self.width - popup_padding * 2.0).max(0.0),
-                                        self.item_height,
-                                    )
-                                    .color(self.style.selected)
-                                    .radius(4.0_f32.max(self.style.radius - 4.0))
-                                    .transition(self.transition)
-                                    .animate(AnimProperty::COLOR)
-                                    .build();
-                            }
-                            ui.rect(format!("{id}.item.{index}"))
+                    for (index, item) in self.items.iter().enumerate() {
+                        let index_i32 = index as i32;
+                        let active = index_i32 == selected;
+                        let item_y = popup_padding + index as f32 * self.item_height;
+                        let change = on_change.clone();
+                        let open_change = on_open_change.clone();
+                        if active {
+                            ui.rect(format!("{id}.item.selected.{index}"))
                                 .x(popup_padding)
                                 .y(item_y)
                                 .size(
                                     (self.width - popup_padding * 2.0).max(0.0),
                                     self.item_height,
                                 )
-                                .states(
-                                    theme::color(0.0, 0.0, 0.0, 0.0),
-                                    self.style.option_hover,
-                                    self.style.option_pressed,
-                                )
+                                .color(self.style.selected)
                                 .radius(4.0_f32.max(self.style.radius - 4.0))
-                                .instant_states()
-                                .on_click(move || {
-                                    if let Some(callback) = &change {
-                                        (callback.borrow_mut())(index_i32);
-                                    }
-                                    if let Some(callback) = &open_change {
-                                        (callback.borrow_mut())(false);
-                                    }
-                                })
-                                .build();
-
-                            ui.text(format!("{id}.item.label.{index}"))
-                                .x(popup_padding + 12.0)
-                                .y(item_y + ((self.item_height - 18.0) * 0.5).max(0.0))
-                                .size((self.width - popup_padding * 2.0 - 24.0).max(0.0), 20.0)
-                                .text(item.clone())
-                                .font_size(15.0)
-                                .line_height(18.0)
-                                .color(if active {
-                                    self.style.accent
-                                } else {
-                                    self.style.text
-                                })
                                 .transition(self.transition)
-                                .animate(AnimProperty::TEXT_COLOR)
+                                .animate(AnimProperty::COLOR)
                                 .build();
                         }
-                    });
-            });
+                        ui.rect(format!("{id}.item.{index}"))
+                            .x(popup_padding)
+                            .y(item_y)
+                            .size(
+                                (self.width - popup_padding * 2.0).max(0.0),
+                                self.item_height,
+                            )
+                            .states(
+                                theme::color(0.0, 0.0, 0.0, 0.0),
+                                self.style.option_hover,
+                                self.style.option_pressed,
+                            )
+                            .radius(4.0_f32.max(self.style.radius - 4.0))
+                            .instant_states()
+                            .on_click(move || {
+                                if let Some(callback) = &change {
+                                    (callback.borrow_mut())(index_i32);
+                                }
+                                if let Some(callback) = &open_change {
+                                    (callback.borrow_mut())(false);
+                                }
+                            })
+                            .build();
+
+                        ui.text(format!("{id}.item.label.{index}"))
+                            .x(popup_padding + 12.0)
+                            .y(item_y + ((self.item_height - 18.0) * 0.5).max(0.0))
+                            .size((self.width - popup_padding * 2.0 - 24.0).max(0.0), 20.0)
+                            .text(item.clone())
+                            .font_size(15.0)
+                            .line_height(18.0)
+                            .color(if active {
+                                self.style.accent
+                            } else {
+                                self.style.text
+                            })
+                            .transition(self.transition)
+                            .animate(AnimProperty::TEXT_COLOR)
+                            .build();
+                    }
+                });
+        });
 
         self.ui.response(&id)
     }

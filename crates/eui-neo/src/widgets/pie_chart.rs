@@ -5,6 +5,7 @@ use std::f32::consts::{FRAC_PI_2, TAU};
 
 use rustc_hash::FxHashMap;
 
+use crate::runtime::NodeId;
 use crate::Color;
 
 use super::super::{Response, Shadow, Transition, Ui};
@@ -12,7 +13,7 @@ use super::line_chart::{chart_tooltip, data_label, percent};
 use super::theme::{self, ThemeColorTokens};
 
 thread_local! {
-    static PIE_ANIM_STATES: RefCell<FxHashMap<String, AnimState>> = RefCell::new(FxHashMap::default());
+    static PIE_ANIM_STATES: RefCell<FxHashMap<NodeId, AnimState>> = RefCell::new(FxHashMap::default());
 }
 
 #[derive(Debug, Clone)]
@@ -161,14 +162,23 @@ impl<'ui> PieChartBuilder<'ui> {
         }
 
         let id = self.id.clone();
+        let state_id = NodeId::new(self.ui.resolve_id(&id));
         let title_x = 20.0;
-        let pie_size = 96.0_f32.max((self.width - 48.0).min(self.height - 82.0));
+        let title_y = 18.0;
+        let title_height = 28.0;
+        let title_bottom = title_y + title_height;
+        let pie_gap = if self.height < 160.0 { 8.0 } else { 24.0 };
+        let pie_bottom_padding = 12.0;
+        let max_pie_width = (self.width - 36.0).max(1.0);
+        let max_pie_height = (self.height - title_bottom - pie_gap - pie_bottom_padding).max(1.0);
+        let preferred_pie_size = (self.width - 48.0).min(self.height - 82.0).max(96.0);
+        let pie_size = preferred_pie_size.min(max_pie_width).min(max_pie_height);
         let pie_x = (self.width - pie_size) * 0.5;
-        let pie_y = 70.0;
+        let pie_y = title_bottom + pie_gap;
         let labels = self.labels.clone();
         let values = self.values.clone();
         let palette = self.style.palette.clone();
-        let (display_values, animating) = sync_animation(&id, &values);
+        let (display_values, animating) = sync_animation(&state_id, &values);
         let total = value_total(&display_values);
 
         self.ui
@@ -185,7 +195,7 @@ impl<'ui> PieChartBuilder<'ui> {
 
                 ui.text(format!("{id}.title"))
                     .x(title_x)
-                    .y(18.0)
+                    .y(title_y)
                     .size((self.width - title_x * 2.0).max(0.0), 28.0)
                     .text(self.title.clone())
                     .font_size(22.0)
@@ -263,10 +273,10 @@ pub fn pie_chart(ui: &mut Ui, id: impl Into<String>) -> PieChartBuilder<'_> {
     PieChartBuilder::new(ui, id)
 }
 
-fn sync_animation(id: &str, values: &[f32]) -> (Vec<f32>, bool) {
+fn sync_animation(id: &NodeId, values: &[f32]) -> (Vec<f32>, bool) {
     PIE_ANIM_STATES.with(|states| {
         let mut states = states.borrow_mut();
-        let anim = states.entry(id.to_string()).or_default();
+        let anim = states.entry(id.clone()).or_default();
         if anim.display.len() != values.len() {
             anim.display = values.to_vec();
             anim.target = values.to_vec();
@@ -294,6 +304,20 @@ fn sync_animation(id: &str, values: &[f32]) -> (Vec<f32>, bool) {
         }
 
         (anim.display.clone(), anim.animating)
+    })
+}
+
+#[cfg(test)]
+pub(super) fn clear_pie_animation_state_for_tests() {
+    PIE_ANIM_STATES.with(|states| states.borrow_mut().clear());
+}
+
+#[cfg(test)]
+pub(super) fn pie_animation_keys_for_tests() -> Vec<NodeId> {
+    PIE_ANIM_STATES.with(|states| {
+        let mut keys: Vec<_> = states.borrow().keys().cloned().collect();
+        keys.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        keys
     })
 }
 

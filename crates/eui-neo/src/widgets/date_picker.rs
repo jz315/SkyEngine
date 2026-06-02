@@ -5,6 +5,7 @@ use std::rc::Rc;
 
 use rustc_hash::FxHashMap;
 
+use crate::runtime::{LayerKind, NodeId};
 use crate::Color;
 
 use super::super::{
@@ -18,8 +19,8 @@ type DateChangeCallback = Rc<RefCell<Box<dyn FnMut(i32, i32, i32)>>>;
 type OpenChangeCallback = Rc<RefCell<Box<dyn FnMut(bool)>>>;
 
 thread_local! {
-    static DATE_DRAFTS: RefCell<FxHashMap<String, DateDraft>> = RefCell::new(FxHashMap::default());
-    static DATE_DRAG_STATES: RefCell<FxHashMap<String, DragState>> = RefCell::new(FxHashMap::default());
+    static DATE_DRAFTS: RefCell<FxHashMap<NodeId, DateDraft>> = RefCell::new(FxHashMap::default());
+    static DATE_DRAG_STATES: RefCell<FxHashMap<NodeId, DragState>> = RefCell::new(FxHashMap::default());
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -242,6 +243,7 @@ impl<'ui> DatePickerBuilder<'ui> {
 
     pub fn build(self) -> Response {
         let id = self.id.clone();
+        let state_id = NodeId::new(self.ui.resolve_id(&id));
         let panel_width = self.width.min((self.screen_width - 48.0).max(0.0));
         let panel_height = self.height.min((self.screen_height - 48.0).max(0.0));
         let panel_x = 24.0_f32.max((self.screen_width - panel_width) * 0.5);
@@ -249,7 +251,7 @@ impl<'ui> DatePickerBuilder<'ui> {
         let visible = if self.open { 1.0 } else { 0.0 };
         let panel_scale = if self.open { 1.0 } else { 0.965 };
         let panel_offset_y = if self.open { 0.0 } else { 14.0 };
-        let draft = sync_date_draft(&id, self.open, self.year, self.month, self.day);
+        let draft = sync_date_draft(&state_id, self.open, self.year, self.month, self.day);
         let open_change = self.on_open_change.clone();
 
         if self.open {
@@ -268,6 +270,7 @@ impl<'ui> DatePickerBuilder<'ui> {
 
         popover(self.ui, id.clone())
             .open(self.open)
+            .layer_kind(LayerKind::Modal)
             .fallback_anchor(LayoutRect::new(panel_x, panel_y, 0.0, 0.0))
             .placement(PopoverPlacement::BottomStart)
             .gap(0.0)
@@ -288,6 +291,7 @@ impl<'ui> DatePickerBuilder<'ui> {
                         date_panel(
                             ui,
                             &id,
+                            state_id.clone(),
                             panel_width,
                             panel_height,
                             self.open,
@@ -314,6 +318,7 @@ pub fn date_picker(ui: &mut Ui, id: impl Into<String>) -> DatePickerBuilder<'_> 
 fn date_panel(
     ui: &mut Ui,
     id: &str,
+    state_id: NodeId,
     width: f32,
     height: f32,
     open: bool,
@@ -367,7 +372,7 @@ fn date_panel(
         .color(style.text)
         .build();
 
-    let done_id = id.to_string();
+    let done_state_id = state_id.clone();
     let done_on_change = on_change.clone();
     let done_on_open_change = on_open_change.clone();
     ui.rect(format!("{id}.done.bg"))
@@ -382,7 +387,7 @@ fn date_panel(
         .radius(15.0)
         .disabled(!open)
         .on_click(move || {
-            let draft = date_draft(&done_id);
+            let draft = date_draft(&done_state_id);
             if draft.year != committed_year
                 || draft.month != committed_month
                 || draft.day != committed_day
@@ -408,6 +413,7 @@ fn date_panel(
     date_wheel_column(
         ui,
         id,
+        state_id.clone(),
         0,
         pad,
         column_y,
@@ -422,6 +428,7 @@ fn date_panel(
     date_wheel_column(
         ui,
         id,
+        state_id.clone(),
         1,
         pad + month_width + gap,
         column_y,
@@ -436,6 +443,7 @@ fn date_panel(
     date_wheel_column(
         ui,
         id,
+        state_id,
         2,
         pad + month_width + gap + day_width + gap,
         column_y,
@@ -453,6 +461,7 @@ fn date_panel(
 fn date_wheel_column(
     ui: &mut Ui,
     id: &str,
+    state_id: NodeId,
     column: i32,
     x: f32,
     y: f32,
@@ -465,6 +474,7 @@ fn date_wheel_column(
     draft: DateDraft,
 ) {
     let column_id = format!("{id}.column.{column}");
+    let column_state_id = NodeId::new(ui.resolve_id(&column_id));
     let value = column_value(column, draft.year, draft.month, draft.day);
 
     ui.rect(format!("{column_id}.bg"))
@@ -483,11 +493,11 @@ fn date_wheel_column(
         .radius(11.0)
         .build();
 
-    let press_column_id = column_id.clone();
-    let press_draft_id = id.to_string();
-    let drag_column_id = column_id.clone();
-    let drag_draft_id = id.to_string();
-    let scroll_draft_id = id.to_string();
+    let press_column_id = column_state_id.clone();
+    let press_draft_id = state_id.clone();
+    let drag_column_id = column_state_id;
+    let drag_draft_id = state_id.clone();
+    let scroll_draft_id = state_id;
     ui.rect(format!("{column_id}.hit"))
         .x(x)
         .y(y)
@@ -563,10 +573,10 @@ fn date_wheel_column(
     }
 }
 
-fn sync_date_draft(id: &str, open: bool, year: i32, month: i32, day: i32) -> DateDraft {
+fn sync_date_draft(id: &NodeId, open: bool, year: i32, month: i32, day: i32) -> DateDraft {
     DATE_DRAFTS.with(|drafts| {
         let mut drafts = drafts.borrow_mut();
-        let draft = drafts.entry(id.to_string()).or_default();
+        let draft = drafts.entry(id.clone()).or_default();
         if !open || !draft.active {
             draft.year = year.clamp(1900, 2200);
             draft.month = month.clamp(1, 12);
@@ -577,18 +587,42 @@ fn sync_date_draft(id: &str, open: bool, year: i32, month: i32, day: i32) -> Dat
     })
 }
 
-fn date_draft(id: &str) -> DateDraft {
+fn date_draft(id: &NodeId) -> DateDraft {
     DATE_DRAFTS.with(|drafts| drafts.borrow().get(id).copied().unwrap_or_default())
 }
 
-fn set_date_drag_state(id: &str, state: DragState) {
+fn set_date_drag_state(id: &NodeId, state: DragState) {
     DATE_DRAG_STATES.with(|states| {
-        states.borrow_mut().insert(id.to_string(), state);
+        states.borrow_mut().insert(id.clone(), state);
     });
 }
 
-fn date_drag_state(id: &str) -> DragState {
+fn date_drag_state(id: &NodeId) -> DragState {
     DATE_DRAG_STATES.with(|states| states.borrow().get(id).copied().unwrap_or_default())
+}
+
+#[cfg(test)]
+pub(super) fn clear_date_picker_state_for_tests() {
+    DATE_DRAFTS.with(|drafts| drafts.borrow_mut().clear());
+    DATE_DRAG_STATES.with(|states| states.borrow_mut().clear());
+}
+
+#[cfg(test)]
+pub(super) fn date_draft_keys_for_tests() -> Vec<NodeId> {
+    DATE_DRAFTS.with(|drafts| {
+        let mut keys: Vec<_> = drafts.borrow().keys().cloned().collect();
+        keys.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        keys
+    })
+}
+
+#[cfg(test)]
+pub(super) fn date_drag_keys_for_tests() -> Vec<NodeId> {
+    DATE_DRAG_STATES.with(|states| {
+        let mut keys: Vec<_> = states.borrow().keys().cloned().collect();
+        keys.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        keys
+    })
 }
 
 fn leap_year(year: i32) -> bool {
@@ -658,10 +692,10 @@ fn item_text(column: i32, value: i32, offset: i32, year: i32, month: i32) -> Str
     }
 }
 
-fn apply_date_column_value(id: &str, column: i32, value: i32) {
+fn apply_date_column_value(id: &NodeId, column: i32, value: i32) {
     DATE_DRAFTS.with(|drafts| {
         let mut drafts = drafts.borrow_mut();
-        let draft = drafts.entry(id.to_string()).or_default();
+        let draft = drafts.entry(id.clone()).or_default();
         let mut next_year = draft.year.clamp(1900, 2200);
         let mut next_month = draft.month.clamp(1, 12);
         let mut next_day = draft.day.clamp(1, days_in_month(next_year, next_month));

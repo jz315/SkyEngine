@@ -8,10 +8,12 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
 use super::Color;
 
+use super::runtime::NodeId;
 use super::{
     Border, CenterMode, EdgeMode, Element, ElementKind, FontRef, Gradient, HorizontalAlign,
     ImageFit, ImageRef, LayoutRect, Runtime, Shadow, Slice, Transform, UiClip, VerticalAlign,
@@ -94,6 +96,13 @@ pub struct UiRectDraw {
     pub transform: Transform,
 }
 
+impl UiRectDraw {
+    /// Typed identity of the element that produced this draw command.
+    pub fn node_id(&self) -> NodeId {
+        NodeId::new(self.id.as_str())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct UiTextDraw {
     pub id: String,
@@ -112,6 +121,13 @@ pub struct UiTextDraw {
     pub transform: Transform,
 }
 
+impl UiTextDraw {
+    /// Typed identity of the element that produced this draw command.
+    pub fn node_id(&self) -> NodeId {
+        NodeId::new(self.id.as_str())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct UiImageDraw {
     pub id: String,
@@ -122,6 +138,13 @@ pub struct UiImageDraw {
     pub radius: f32,
     pub opacity: f32,
     pub transform: Transform,
+}
+
+impl UiImageDraw {
+    /// Typed identity of the element that produced this draw command.
+    pub fn node_id(&self) -> NodeId {
+        NodeId::new(self.id.as_str())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -137,6 +160,13 @@ pub struct UiNineSliceDraw {
     pub transform: Transform,
 }
 
+impl UiNineSliceDraw {
+    /// Typed identity of the element that produced this draw command.
+    pub fn node_id(&self) -> NodeId {
+        NodeId::new(self.id.as_str())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct UiPolygonDraw {
     pub id: String,
@@ -145,6 +175,37 @@ pub struct UiPolygonDraw {
     pub color: Color,
     pub opacity: f32,
     pub transform: Transform,
+}
+
+impl UiPolygonDraw {
+    /// Typed identity of the element that produced this draw command.
+    pub fn node_id(&self) -> NodeId {
+        NodeId::new(self.id.as_str())
+    }
+}
+
+impl UiDrawCommand {
+    /// Typed identity of the element that produced this draw command, when the
+    /// command is an element draw rather than a clip stack operation.
+    pub fn node_id(&self) -> Option<NodeId> {
+        match self {
+            Self::Rect(draw) => Some(draw.node_id()),
+            Self::Text(draw) => Some(draw.node_id()),
+            Self::Image(draw) => Some(draw.node_id()),
+            Self::NineSlice(draw) => Some(draw.node_id()),
+            Self::Polygon(draw) => Some(draw.node_id()),
+            Self::PushClip(_) | Self::PopClip => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ElementRenderDebug {
+    pub(crate) draw_frame: LayoutRect,
+    pub(crate) transformed_draw_frame: LayoutRect,
+    pub(crate) draw_transform: Transform,
+    pub(crate) active_clip: Option<UiClip>,
+    pub(crate) visible: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -182,7 +243,7 @@ impl<'a> RuntimeDrawView<'a> {
     }
 
     fn roots(&self) -> &'a [Element] {
-        self.runtime.roots()
+        self.runtime.diagnostics().roots()
     }
 
     fn animated_frame(&self, element: &Element) -> LayoutRect {
@@ -221,11 +282,15 @@ impl<'a> RuntimeDrawView<'a> {
         self.runtime.animated_transform(element)
     }
 
-    fn hover_blend_for_source(&self, id: &str) -> Option<f32> {
+    fn resolve_node_id(&self, id: &str) -> NodeId {
+        self.runtime.resolve_node_id(id)
+    }
+
+    fn hover_blend_for_source(&self, id: &NodeId) -> Option<f32> {
         self.runtime.hover_blend_for_source(id)
     }
 
-    fn press_blend_for_source(&self, id: &str) -> Option<(f32, LayoutRect)> {
+    fn press_blend_for_source(&self, id: &NodeId) -> Option<(f32, LayoutRect)> {
         self.runtime.press_blend_for_source(id)
     }
 
@@ -244,6 +309,73 @@ pub(crate) fn build_draw_list(runtime: &Runtime) -> UiDrawList {
     let transform = RenderTransform::default();
     draw_elements(view.roots(), &view, transform, None, &mut commands);
     UiDrawList::new(commands)
+}
+
+pub(crate) fn collect_element_render_debug(
+    runtime: &Runtime,
+) -> FxHashMap<NodeId, ElementRenderDebug> {
+    let view = RuntimeDrawView::new(runtime);
+    let mut records = FxHashMap::default();
+    collect_element_render_debug_records(
+        view.roots(),
+        &view,
+        RenderTransform::default(),
+        None,
+        &mut records,
+    );
+    records
+}
+
+fn collect_element_render_debug_records(
+    elements: &[Element],
+    runtime: &RuntimeDrawView<'_>,
+    inherited: RenderTransform,
+    inherited_clip: Option<UiClip>,
+    records: &mut FxHashMap<NodeId, ElementRenderDebug>,
+) {
+    for element in elements {
+        collect_element_render_debug_record(element, runtime, inherited, inherited_clip, records);
+    }
+}
+
+fn collect_element_render_debug_record(
+    element: &Element,
+    runtime: &RuntimeDrawView<'_>,
+    inherited: RenderTransform,
+    inherited_clip: Option<UiClip>,
+    records: &mut FxHashMap<NodeId, ElementRenderDebug>,
+) {
+    let render_transform = resolve_render_transform(element, runtime, inherited);
+    let frame = runtime.animated_frame(element);
+    let transform = runtime.animated_transform(element);
+    let mut active_clip = inherited_clip;
+    if element.clip {
+        let clip_frame = apply_render_transform(frame, render_transform);
+        let next = UiClip::new(clip_frame, element.clip_radius.max(0.0));
+        active_clip = inherited_clip
+            .and_then(|clip| intersect_clip(clip, next))
+            .or_else(|| inherited_clip.is_none().then_some(next));
+    }
+    let transformed_frame = apply_render_transform(frame, render_transform);
+    let visible = render_transform.opacity > 0.001
+        && active_clip.is_none_or(|clip| rects_intersect(transformed_frame, clip.rect));
+    records.insert(
+        NodeId::new(element.id.as_str()),
+        ElementRenderDebug {
+            draw_frame: frame,
+            transformed_draw_frame: transformed_frame,
+            draw_transform: compose_visual_transform(transform, frame, render_transform),
+            active_clip,
+            visible,
+        },
+    );
+    collect_element_render_debug_records(
+        &element.children,
+        runtime,
+        render_transform,
+        active_clip,
+        records,
+    );
 }
 
 fn draw_element(
@@ -434,9 +566,8 @@ fn resolve_render_transform(
     }
 
     if !element.hover_opacity_source_id.is_empty() {
-        let hover = runtime
-            .hover_blend_for_source(&element.hover_opacity_source_id)
-            .unwrap_or(0.0);
+        let source_id = runtime.resolve_node_id(&element.hover_opacity_source_id);
+        let hover = runtime.hover_blend_for_source(&source_id).unwrap_or(0.0);
         result.opacity *= lerp(
             element.hover_hidden_opacity,
             element.hover_visible_opacity,
@@ -445,9 +576,8 @@ fn resolve_render_transform(
     }
 
     if !element.visual_state_source_id.is_empty() {
-        if let Some((press, source_frame)) =
-            runtime.press_blend_for_source(&element.visual_state_source_id)
-        {
+        let source_id = runtime.resolve_node_id(&element.visual_state_source_id);
+        if let Some((press, source_frame)) = runtime.press_blend_for_source(&source_id) {
             let scale = 1.0 - (1.0 - element.pressed_scale) * press;
             if !close_enough(scale, 1.0) {
                 let frame = apply_render_transform(source_frame, result);
@@ -587,6 +717,25 @@ mod tests {
             .collect();
 
         assert_eq!(ids, ["page.low", "page.high"]);
+    }
+
+    #[test]
+    fn element_draw_commands_expose_typed_node_identity() {
+        let mut runtime = Runtime::new("page");
+        compose(&mut runtime, 100.0, 100.0, |ui, _| {
+            ui.rect("button").size(10.0, 10.0).build();
+        });
+
+        let draw = runtime.draw_list();
+        let command = draw
+            .commands()
+            .iter()
+            .find(|command| matches!(command, UiDrawCommand::Rect(_)))
+            .unwrap();
+        let node_id = command.node_id().unwrap();
+
+        assert_eq!(node_id.as_str(), "page.button");
+        assert_eq!(rect(command).unwrap().node_id(), node_id);
     }
 
     #[test]

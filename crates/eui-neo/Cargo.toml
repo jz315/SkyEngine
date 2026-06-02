@@ -13,8 +13,11 @@ bitflags = "2"
 cosmic-text = "0.18"
 profiling = { version = "1.0.17", default-features = false, optional = true }
 rustc-hash = "2.1.2"
+serde_json = "1"
 smallvec = "1.13.2"
+taffy = { version = "0.8.3", default-features = false, features = ["std", "taffy_tree", "flexbox"], optional = true }
 
 [features]
 default = []
 profile = ["dep:profiling"]
+taffy-layout = ["dep:taffy"]

@@ -107,7 +107,7 @@ mod tests {
         );
 
         assert!(preserved);
-        assert!(clock_ids.contains(id.as_str()));
+        assert!(clock_ids.contains(&id));
         assert_eq!(
             clock_periods.as_ref().and_then(|periods| periods.get(&id)),
             Some(&Duration::from_millis(250))

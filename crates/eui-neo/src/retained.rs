@@ -12,6 +12,7 @@ use std::time::Instant;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::runtime::NodeId;
 use crate::{Element, ElementKind, LayoutRect};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -22,12 +23,12 @@ impl ScopeId {
         Self(id.into())
     }
 
-    pub fn as_str(&self) -> &str {
-        &self.0
+    pub(crate) fn from_node(id: &NodeId) -> Self {
+        Self(id.as_str().to_string())
     }
 
-    pub(crate) fn into_string(self) -> String {
-        self.0
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
@@ -74,12 +75,12 @@ pub(crate) type ScopeSet = FxHashSet<ScopeId>;
 
 /// Stable identity and layout-relevant shape for a retained root.
 ///
-/// Full `Element` trees stay in `Runtime::roots`; retained roots keep only the
-/// metadata needed to normalize dirty scopes, validate partial layout, and
+/// Full `Element` trees stay in runtime diagnostics; retained roots keep only
+/// the metadata needed to normalize dirty scopes, validate partial layout, and
 /// anchor debug/layout refresh after layout has resolved frames.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct RetainedRoot {
-    pub id: String,
+    pub id: NodeId,
     pub kind: ElementKind,
     pub z_index: i32,
     pub clip: bool,
@@ -99,7 +100,7 @@ pub(crate) struct RetainedRoot {
 impl RetainedRoot {
     pub(crate) fn from_element(element: &Element) -> Self {
         Self {
-            id: element.id.clone(),
+            id: NodeId::new(&element.id),
             kind: element.kind,
             z_index: element.z_index,
             clip: element.clip,
@@ -120,14 +121,10 @@ impl RetainedRoot {
     pub(crate) fn from_elements(elements: &[Element]) -> Vec<Self> {
         elements.iter().map(Self::from_element).collect()
     }
-}
 
-pub(crate) struct ScopeFrame {
-    pub can_reuse_scopes: bool,
-    pub input_dirty_scopes: ScopeSet,
-    pub live_dirty_scopes: ScopeSet,
-    pub dirty_scopes: ScopeSet,
-    pub previous_scope_roots: ScopeRoots,
+    pub(crate) fn id(&self) -> &str {
+        self.id.as_str()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -200,6 +197,16 @@ pub struct ScopeComposeRecord {
     pub current_roots: usize,
     pub element_count: usize,
     pub callback_transfers: CallbackTransferStats,
+}
+
+impl ScopeComposeRecord {
+    pub(crate) fn event(&self) -> RetainedComposeEvent {
+        RetainedComposeEvent {
+            id: self.id.clone(),
+            action: self.action,
+            reason: self.reason,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -294,41 +301,6 @@ pub enum FullLayoutReason {
     DirtyRetainedLayoutFailed,
 }
 
-pub(crate) fn begin_scope_frame(
-    can_reuse_scopes: bool,
-    dirty_scopes: Option<ScopeSet>,
-    scope_roots: &mut ScopeRoots,
-    live_scopes: &mut ScopeSet,
-) -> ScopeFrame {
-    let mut dirty_scopes = dirty_scopes.unwrap_or_default();
-    let input_dirty_scopes = dirty_scopes.clone();
-    let (live_dirty_scopes, previous_scope_roots) = if can_reuse_scopes {
-        (
-            merge_live_scopes(&mut dirty_scopes, live_scopes),
-            std::mem::take(scope_roots),
-        )
-    } else {
-        live_scopes.clear();
-        (ScopeSet::default(), ScopeRoots::default())
-    };
-
-    ScopeFrame {
-        can_reuse_scopes,
-        input_dirty_scopes,
-        live_dirty_scopes,
-        dirty_scopes,
-        previous_scope_roots,
-    }
-}
-
-/// Live scopes are intentionally dirty on every scoped compose. They cover
-/// frame-time/procedural animation without pretending that time is app state.
-fn merge_live_scopes(dirty_scopes: &mut ScopeSet, live_scopes: &mut ScopeSet) -> ScopeSet {
-    let live_dirty_scopes = std::mem::take(live_scopes);
-    dirty_scopes.extend(live_dirty_scopes.iter().cloned());
-    live_dirty_scopes
-}
-
 pub(crate) fn structurally_incompatible_dirty_scopes(
     dirty_scopes: &ScopeSet,
     previous_scope_roots: &ScopeRoots,
@@ -389,7 +361,7 @@ pub(crate) fn normalize_dirty_scopes_with_roots(
 pub(crate) fn dirty_root_ids_for_scopes(
     dirty_scopes: &ScopeSet,
     previous_scope_roots: &ScopeRoots,
-) -> FxHashSet<String> {
+) -> FxHashSet<NodeId> {
     dirty_scopes
         .iter()
         .filter_map(|dirty| previous_scope_roots.get(dirty))
@@ -398,9 +370,9 @@ pub(crate) fn dirty_root_ids_for_scopes(
 }
 
 pub(crate) fn retained_scope_contains_dirty_root(
-    dirty_root_ids: &FxHashSet<String>,
+    dirty_root_ids: &FxHashSet<NodeId>,
     previous_scope_roots: &ScopeRoots,
-    id: &str,
+    id: &ScopeId,
 ) -> bool {
     previous_scope_roots
         .get(id)
@@ -410,17 +382,21 @@ pub(crate) fn retained_scope_contains_dirty_root(
 pub(crate) fn previous_elements_for_scope(
     previous_roots: &[Element],
     previous_scope_roots: &ScopeRoots,
-    id: &str,
+    id: &ScopeId,
 ) -> Option<Vec<Element>> {
     let roots = previous_scope_roots.get(id)?;
     let mut elements = Vec::with_capacity(roots.len());
     for root in roots {
-        elements.push(find_element(previous_roots, &root.id)?.clone());
+        elements.push(find_element(previous_roots, root.id.as_str())?.clone());
     }
     Some(elements)
 }
 
-fn dirty_scope_contains(candidate: &str, scope: &str, previous_scope_roots: &ScopeRoots) -> bool {
+fn dirty_scope_contains(
+    candidate: &ScopeId,
+    scope: &ScopeId,
+    previous_scope_roots: &ScopeRoots,
+) -> bool {
     let Some(scope_roots) = previous_scope_roots.get(scope) else {
         return false;
     };
@@ -430,19 +406,19 @@ fn dirty_scope_contains(candidate: &str, scope: &str, previous_scope_roots: &Sco
     scope_roots.iter().any(|scope_root| {
         candidate_roots
             .iter()
-            .any(|candidate_root| element_contains_id(candidate_root, &scope_root.id))
+            .any(|candidate_root| element_contains_id(candidate_root, scope_root.id.as_str()))
     })
 }
 
 fn element_contains_id(element: &RetainedRoot, id: &str) -> bool {
-    element.id == id
+    element.id.as_str() == id
         || element
             .children
             .iter()
             .any(|child| element_contains_id(child, id))
 }
 
-fn element_tree_contains_any(elements: &[RetainedRoot], ids: &FxHashSet<String>) -> bool {
+fn element_tree_contains_any(elements: &[RetainedRoot], ids: &FxHashSet<NodeId>) -> bool {
     elements.iter().any(|element| {
         ids.contains(&element.id) || element_tree_contains_any(&element.children, ids)
     })
@@ -645,15 +621,46 @@ fn same_f32(previous: f32, next: f32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::runtime::NodeId;
     use crate::{Element, ElementKind};
 
     use super::{
-        normalize_dirty_scopes_with_roots, previous_elements_for_scope, RetainedRoot, ScopeId,
+        normalize_dirty_scopes_with_roots, previous_elements_for_scope, CallbackTransferStats,
+        RetainedComposeAction, RetainedComposeReason, RetainedRoot, ScopeComposeRecord, ScopeId,
         ScopeRoots, ScopeSet,
     };
 
     fn scopes(ids: &[&str]) -> ScopeSet {
         ids.iter().map(|id| ScopeId::new(*id)).collect()
+    }
+
+    #[test]
+    fn scope_id_from_node_preserves_typed_payload() {
+        let node_id = NodeId::new("page.current");
+        let scope_id = ScopeId::from_node(&node_id);
+
+        assert_eq!(scope_id.as_str(), "page.current");
+    }
+
+    #[test]
+    fn scope_compose_record_derives_matching_event() {
+        let record = ScopeComposeRecord {
+            id: ScopeId::new("page.scope"),
+            action: RetainedComposeAction::Reused,
+            reason: RetainedComposeReason::CleanReuse,
+            build_ms: 0.0,
+            self_build_ms: 0.0,
+            previous_roots: 1,
+            current_roots: 1,
+            element_count: 2,
+            callback_transfers: CallbackTransferStats::default(),
+        };
+
+        let event = record.event();
+
+        assert_eq!(event.id.as_str(), "page.scope");
+        assert_eq!(event.action, RetainedComposeAction::Reused);
+        assert_eq!(event.reason, RetainedComposeReason::CleanReuse);
     }
 
     #[test]
@@ -746,8 +753,9 @@ mod tests {
             RetainedRoot::from_elements(&[retained_a, retained_b]),
         );
 
-        let elements = previous_elements_for_scope(&previous_roots, &scope_roots, "page.scope")
-            .expect("scope roots should resolve to committed elements");
+        let elements =
+            previous_elements_for_scope(&previous_roots, &scope_roots, &ScopeId::new("page.scope"))
+                .expect("scope roots should resolve to committed elements");
 
         assert_eq!(elements.len(), 2);
         assert_eq!(elements[0].id, "page.scope.a");
@@ -767,7 +775,12 @@ mod tests {
             ]),
         );
 
-        assert!(previous_elements_for_scope(&previous_roots, &scope_roots, "page.scope").is_none());
+        assert!(previous_elements_for_scope(
+            &previous_roots,
+            &scope_roots,
+            &ScopeId::new("page.scope")
+        )
+        .is_none());
     }
 
     fn sorted(scopes: &ScopeSet) -> Vec<String> {

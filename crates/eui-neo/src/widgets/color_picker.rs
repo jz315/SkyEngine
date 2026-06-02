@@ -5,6 +5,7 @@ use std::rc::Rc;
 
 use rustc_hash::FxHashMap;
 
+use crate::runtime::{LayerKind, NodeId};
 use crate::Color;
 
 use super::super::{
@@ -19,7 +20,7 @@ type ColorChangeCallback = Rc<RefCell<Box<dyn FnMut(Color)>>>;
 type OpenChangeCallback = Rc<RefCell<Box<dyn FnMut(bool)>>>;
 
 thread_local! {
-    static COLOR_DRAFTS: RefCell<FxHashMap<String, ColorDraft>> = RefCell::new(FxHashMap::default());
+    static COLOR_DRAFTS: RefCell<FxHashMap<NodeId, ColorDraft>> = RefCell::new(FxHashMap::default());
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -220,6 +221,7 @@ impl<'ui> ColorPickerBuilder<'ui> {
 
     pub fn build(self) -> Response {
         let id = self.id.clone();
+        let state_id = NodeId::new(self.ui.resolve_id(&id));
         let panel_width = self.width.min((self.screen_width - 48.0).max(0.0));
         let panel_height = self.height.min((self.screen_height - 48.0).max(0.0));
         let panel_x = 24.0_f32.max((self.screen_width - panel_width) * 0.5);
@@ -227,7 +229,7 @@ impl<'ui> ColorPickerBuilder<'ui> {
         let visible = if self.open { 1.0 } else { 0.0 };
         let panel_scale = if self.open { 1.0 } else { 0.965 };
         let panel_offset_y = if self.open { 0.0 } else { 14.0 };
-        let draft = sync_color_draft(&id, self.open, self.value);
+        let draft = sync_color_draft(&state_id, self.open, self.value);
         let open_change = self.on_open_change.clone();
 
         if self.open {
@@ -246,6 +248,7 @@ impl<'ui> ColorPickerBuilder<'ui> {
 
         popover(self.ui, id.clone())
             .open(self.open)
+            .layer_kind(LayerKind::Modal)
             .fallback_anchor(LayoutRect::new(panel_x, panel_y, 0.0, 0.0))
             .placement(PopoverPlacement::BottomStart)
             .gap(0.0)
@@ -266,6 +269,7 @@ impl<'ui> ColorPickerBuilder<'ui> {
                         color_panel(
                             ui,
                             &id,
+                            state_id.clone(),
                             panel_width,
                             panel_height,
                             self.open,
@@ -292,6 +296,7 @@ pub fn color_picker(ui: &mut Ui, id: impl Into<String>) -> ColorPickerBuilder<'_
 fn color_panel(
     ui: &mut Ui,
     id: &str,
+    state_id: NodeId,
     width: f32,
     height: f32,
     open: bool,
@@ -342,7 +347,7 @@ fn color_panel(
         .color(style.text)
         .build();
 
-    let done_id = id.to_string();
+    let done_state_id = state_id.clone();
     let done_on_change = on_change.clone();
     let done_on_open_change = on_open_change.clone();
     ui.rect(format!("{id}.done.bg"))
@@ -357,7 +362,7 @@ fn color_panel(
         .radius(15.0)
         .disabled(!open)
         .on_click(move || {
-            let draft = color_draft(&done_id);
+            let draft = color_draft(&done_state_id);
             emit_color(committed, draft.value, &done_on_change);
             call_open_change(&done_on_open_change, false);
         })
@@ -412,6 +417,7 @@ fn color_panel(
             current,
             style,
             transition,
+            state_id.clone(),
         );
         channel_slider(
             ui,
@@ -426,6 +432,7 @@ fn color_panel(
             current,
             style,
             transition,
+            state_id.clone(),
         );
         channel_slider(
             ui,
@@ -440,6 +447,7 @@ fn color_panel(
             current,
             style,
             transition,
+            state_id.clone(),
         );
 
         let swatches = palette(&colors, style);
@@ -464,7 +472,7 @@ fn color_panel(
                 .animate(AnimProperty::COLOR)
                 .build();
 
-            let draft_id = id.to_string();
+            let swatch_state_id = state_id.clone();
             ui.rect(format!("{id}.swatch.{index}"))
                 .x(swatch_x)
                 .y(swatches_y)
@@ -475,7 +483,7 @@ fn color_panel(
                     theme::mix_color(swatch, theme::color(0.0, 0.0, 0.0, 1.0), 0.14),
                 )
                 .radius(8.0)
-                .on_click(move || set_color_draft_value(&draft_id, swatch))
+                .on_click(move || set_color_draft_value(&swatch_state_id, swatch))
                 .build();
         }
     }
@@ -495,6 +503,7 @@ fn channel_slider(
     current: Color,
     style: ColorPickerStyle,
     transition: Transition,
+    state_id: NodeId,
 ) {
     ui.text(format!("{id}.slider.label.{channel}"))
         .x(x)
@@ -511,7 +520,7 @@ fn channel_slider(
     slider_style.track = style.track;
     slider_style.fill = fill;
     slider_style.knob = style.knob;
-    let draft_id = id.to_string();
+    let draft_id = state_id;
     ui.stack(format!("{id}.slider.wrap.{channel}"))
         .x(x + 32.0)
         .y(y + 5.0)
@@ -542,10 +551,10 @@ fn channel_slider(
         .build();
 }
 
-fn sync_color_draft(id: &str, open: bool, value: Color) -> ColorDraft {
+fn sync_color_draft(id: &NodeId, open: bool, value: Color) -> ColorDraft {
     COLOR_DRAFTS.with(|drafts| {
         let mut drafts = drafts.borrow_mut();
-        let draft = drafts.entry(id.to_string()).or_default();
+        let draft = drafts.entry(id.clone()).or_default();
         if !open || !draft.active {
             draft.value = clamp_color(value);
             draft.active = open;
@@ -554,19 +563,33 @@ fn sync_color_draft(id: &str, open: bool, value: Color) -> ColorDraft {
     })
 }
 
-fn color_draft(id: &str) -> ColorDraft {
+fn color_draft(id: &NodeId) -> ColorDraft {
     COLOR_DRAFTS.with(|drafts| drafts.borrow().get(id).copied().unwrap_or_default())
 }
 
-fn mutate_color_draft(id: &str, f: impl FnOnce(&mut ColorDraft)) {
+#[cfg(test)]
+pub(super) fn clear_color_picker_state_for_tests() {
+    COLOR_DRAFTS.with(|drafts| drafts.borrow_mut().clear());
+}
+
+#[cfg(test)]
+pub(super) fn color_draft_keys_for_tests() -> Vec<NodeId> {
+    COLOR_DRAFTS.with(|drafts| {
+        let mut keys: Vec<_> = drafts.borrow().keys().cloned().collect();
+        keys.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        keys
+    })
+}
+
+fn mutate_color_draft(id: &NodeId, f: impl FnOnce(&mut ColorDraft)) {
     COLOR_DRAFTS.with(|drafts| {
         let mut drafts = drafts.borrow_mut();
-        let draft = drafts.entry(id.to_string()).or_default();
+        let draft = drafts.entry(id.clone()).or_default();
         f(draft);
     });
 }
 
-fn set_color_draft_value(id: &str, value: Color) {
+fn set_color_draft_value(id: &NodeId, value: Color) {
     mutate_color_draft(id, |draft| {
         draft.value = clamp_color(value);
     });

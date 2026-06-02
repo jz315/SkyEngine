@@ -1,8 +1,9 @@
 use std::fmt;
 
+use crate::expert::{DirtyInput, UiDebugSnapshot};
 use crate::{
-    DirtyInput, Element, FrameInput, KeyboardEvent, LayoutRect, PointerEvent, Response, Runtime,
-    Screen, ScrollEvent, Ui, UiDebugSnapshot,
+    Element, FrameInput, KeyboardEvent, LayoutRect, PointerEvent, Response, Runtime, Screen,
+    ScrollEvent, State, Ui,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -126,6 +127,21 @@ impl UiTestDriver {
         self.runtime.frame(FrameInput::new(self.screen, 0.0), build);
     }
 
+    pub fn frame_state<T>(&mut self, state: &State<T>, build: impl FnOnce(&mut Ui, Screen)) {
+        self.runtime
+            .frame_state(FrameInput::new(self.screen, 0.0), state, build);
+    }
+
+    pub fn frame_state_with_delta<T>(
+        &mut self,
+        delta_seconds: f32,
+        state: &State<T>,
+        build: impl FnOnce(&mut Ui, Screen),
+    ) {
+        self.runtime
+            .frame_state(FrameInput::new(self.screen, delta_seconds), state, build);
+    }
+
     pub fn frame_incremental(
         &mut self,
         dirty: impl IntoIterator<Item = DirtyInput>,
@@ -164,7 +180,7 @@ impl UiTestDriver {
         target: TargetPoint,
     ) -> Result<UiActionTrace, UiTestError> {
         let (frame, point) = self.resolve_target(id, target)?;
-        let before = self.runtime.debug_snapshot_current();
+        let before = self.runtime.diagnostics().current_snapshot();
         let pressed_changed = self
             .runtime
             .update_pointer(PointerEvent::pressed_at(point[0], point[1]));
@@ -177,7 +193,7 @@ impl UiTestDriver {
             target_frame: Some(frame),
             point: Some(point),
             before,
-            after_input: self.runtime.debug_snapshot_current(),
+            after_input: self.runtime.diagnostics().current_snapshot(),
             input_changed: pressed_changed || released_changed,
             needs_compose_after_input: self.runtime.needs_compose(),
         }))
@@ -185,7 +201,7 @@ impl UiTestDriver {
 
     pub fn right_click(&mut self, id: &str) -> Result<UiActionTrace, UiTestError> {
         let (frame, point) = self.resolve_target(id, TargetPoint::Center)?;
-        let before = self.runtime.debug_snapshot_current();
+        let before = self.runtime.diagnostics().current_snapshot();
         let changed = self
             .runtime
             .update_pointer(PointerEvent::right_pressed_at(point[0], point[1]));
@@ -195,7 +211,7 @@ impl UiTestDriver {
             target_frame: Some(frame),
             point: Some(point),
             before,
-            after_input: self.runtime.debug_snapshot_current(),
+            after_input: self.runtime.diagnostics().current_snapshot(),
             input_changed: changed,
             needs_compose_after_input: self.runtime.needs_compose(),
         }))
@@ -203,7 +219,7 @@ impl UiTestDriver {
 
     pub fn hover(&mut self, id: &str) -> Result<UiActionTrace, UiTestError> {
         let (frame, point) = self.resolve_target(id, TargetPoint::Center)?;
-        let before = self.runtime.debug_snapshot_current();
+        let before = self.runtime.diagnostics().current_snapshot();
         let changed = self
             .runtime
             .update_pointer(PointerEvent::at(point[0], point[1]));
@@ -213,7 +229,7 @@ impl UiTestDriver {
             target_frame: Some(frame),
             point: Some(point),
             before,
-            after_input: self.runtime.debug_snapshot_current(),
+            after_input: self.runtime.diagnostics().current_snapshot(),
             input_changed: changed,
             needs_compose_after_input: self.runtime.needs_compose(),
         }))
@@ -221,7 +237,7 @@ impl UiTestDriver {
 
     pub fn drag_by(&mut self, id: &str, dx: f32, dy: f32) -> Result<UiActionTrace, UiTestError> {
         let (frame, point) = self.resolve_target(id, TargetPoint::Center)?;
-        let before = self.runtime.debug_snapshot_current();
+        let before = self.runtime.diagnostics().current_snapshot();
         let pressed_changed = self
             .runtime
             .update_pointer(PointerEvent::pressed_at(point[0], point[1]));
@@ -240,7 +256,7 @@ impl UiTestDriver {
             target_frame: Some(frame),
             point: Some(point),
             before,
-            after_input: self.runtime.debug_snapshot_current(),
+            after_input: self.runtime.diagnostics().current_snapshot(),
             input_changed: pressed_changed || dragged_changed || released_changed,
             needs_compose_after_input: self.runtime.needs_compose(),
         }))
@@ -248,7 +264,7 @@ impl UiTestDriver {
 
     pub fn scroll(&mut self, id: &str, x: f32, y: f32) -> Result<UiActionTrace, UiTestError> {
         let (frame, point) = self.resolve_target(id, TargetPoint::Center)?;
-        let before = self.runtime.debug_snapshot_current();
+        let before = self.runtime.diagnostics().current_snapshot();
         let hover_changed = self
             .runtime
             .update_pointer(PointerEvent::at(point[0], point[1]));
@@ -259,7 +275,7 @@ impl UiTestDriver {
             target_frame: Some(frame),
             point: Some(point),
             before,
-            after_input: self.runtime.debug_snapshot_current(),
+            after_input: self.runtime.diagnostics().current_snapshot(),
             input_changed: hover_changed || scroll_changed,
             needs_compose_after_input: self.runtime.needs_compose(),
         }))
@@ -296,22 +312,23 @@ impl UiTestDriver {
     }
 
     pub fn find(&self, id: &str) -> Option<&Element> {
-        self.runtime.find(id)
+        self.runtime.diagnostics().find(id)
     }
 
     pub fn element_frame(&self, id: &str) -> Result<LayoutRect, UiTestError> {
         self.runtime
+            .diagnostics()
             .find(id)
             .map(|element| element.frame)
             .ok_or_else(|| UiTestError::MissingElement { id: id.to_string() })
     }
 
     pub fn response(&self, id: &str) -> Response {
-        self.runtime.response(id)
+        self.runtime.diagnostics().response(id)
     }
 
     pub fn debug_snapshot(&self) -> &UiDebugSnapshot {
-        self.runtime.debug_snapshot()
+        self.runtime.diagnostics().committed_snapshot()
     }
 
     pub fn traces(&self) -> &[UiActionTrace] {
@@ -323,9 +340,10 @@ impl UiTestDriver {
         action: &'static str,
         event: KeyboardEvent,
     ) -> Result<UiActionTrace, UiTestError> {
-        let before = self.runtime.debug_snapshot_current();
+        let before = self.runtime.diagnostics().current_snapshot();
         let focused_id = self
             .runtime
+            .diagnostics()
             .focused_id()
             .ok_or_else(|| UiTestError::MissingElement {
                 id: "<focused>".to_string(),
@@ -338,7 +356,7 @@ impl UiTestDriver {
             target_frame: None,
             point: None,
             before,
-            after_input: self.runtime.debug_snapshot_current(),
+            after_input: self.runtime.diagnostics().current_snapshot(),
             input_changed: changed,
             needs_compose_after_input: self.runtime.needs_compose(),
         }))

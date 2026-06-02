@@ -1,10 +1,10 @@
 //! Root-layer popup composition helper.
 
-use super::super::{
-    LayerId, LayerIntent, LayerKind, LayerPlacement, LayerSize, LayoutRect, OutsideClickPolicy,
-    Response, Size, Ui,
-};
 use super::layout::WidgetLayout;
+use crate::runtime::{
+    LayerCollision, LayerId, LayerIntent, LayerKind, LayerPlacement, LayerSize, NodeId,
+};
+use crate::{LayoutRect, OutsideClickPolicy, Response, Size, Ui};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum PopoverPlacement {
@@ -26,10 +26,13 @@ pub struct PopoverBuilder<'ui> {
     open: bool,
     anchor: Option<String>,
     fallback_anchor: Option<LayoutRect>,
+    boundary: Option<String>,
+    kind: LayerKind,
     placement: PopoverPlacement,
     layout: WidgetLayout,
     offset: [f32; 2],
     gap: f32,
+    collision: LayerCollision,
     z_index: i32,
     outside_click: OutsideClickPolicy,
     on_dismiss: Option<Box<dyn FnMut()>>,
@@ -43,10 +46,13 @@ impl<'ui> PopoverBuilder<'ui> {
             open: true,
             anchor: None,
             fallback_anchor: None,
+            boundary: None,
+            kind: LayerKind::Popover,
             placement: PopoverPlacement::BottomStart,
             layout: WidgetLayout::new(240.0, 160.0),
             offset: [0.0, 0.0],
             gap: 8.0,
+            collision: LayerCollision::None,
             z_index: 100,
             outside_click: OutsideClickPolicy::Ignore,
             on_dismiss: None,
@@ -68,8 +74,18 @@ impl<'ui> PopoverBuilder<'ui> {
         self
     }
 
+    pub fn boundary(mut self, id: impl Into<String>) -> Self {
+        self.boundary = Some(id.into());
+        self
+    }
+
     pub fn placement(mut self, value: PopoverPlacement) -> Self {
         self.placement = value;
+        self
+    }
+
+    pub(crate) fn layer_kind(mut self, value: LayerKind) -> Self {
+        self.kind = value;
         self
     }
 
@@ -118,6 +134,11 @@ impl<'ui> PopoverBuilder<'ui> {
         self
     }
 
+    pub fn collision(mut self, value: LayerCollision) -> Self {
+        self.collision = value;
+        self
+    }
+
     pub fn z_index(mut self, value: i32) -> Self {
         self.z_index = value;
         self
@@ -144,21 +165,31 @@ impl<'ui> PopoverBuilder<'ui> {
             .anchor
             .as_deref()
             .map(|anchor| self.ui.resolve_id(anchor));
+        let resolved_boundary = self
+            .boundary
+            .as_deref()
+            .map(|boundary| self.ui.resolve_id(boundary));
+        let layer_id = LayerId::new(resolved_id.clone());
         self.ui.register_layer_intent(LayerIntent {
-            id: LayerId::new(resolved_id.clone()),
-            owner: resolved_id.clone(),
-            anchor: resolved_anchor.clone(),
+            id: layer_id.clone(),
+            owner: NodeId::new(resolved_id.clone()),
+            root: NodeId::new(resolved_id.clone()),
+            anchor: resolved_anchor.clone().map(NodeId::new),
             fallback_anchor: self.fallback_anchor,
+            boundary: resolved_boundary.map(NodeId::new),
             open: self.open,
-            kind: LayerKind::Popover,
+            kind: self.kind,
             placement: self.placement.into(),
             size: LayerSize::new(self.layout.width, self.layout.height),
+            gap: self.gap,
+            offset: self.offset,
+            collision: self.collision,
             z_index: self.z_index,
             outside_click: self.outside_click,
         });
         if let Some(callback) = self.on_dismiss {
             self.ui
-                .register_on_layer_dismiss(resolved_id.clone(), callback);
+                .register_on_layer_dismiss(layer_id.clone(), callback);
         }
         if !self.open {
             return self.ui.response(&id);

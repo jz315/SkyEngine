@@ -3,11 +3,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::runtime::{LayerId, LayerIntent, LayerKind, LayerPlacement, LayerSize, NodeId};
 use crate::Color;
 
 use super::super::{
-    AnimProperty, LayerId, LayerIntent, LayerKind, LayerPlacement, LayerSize, LayoutRect,
-    OutsideClickPolicy, Response, Shadow, Signal, Transition, Ui,
+    AnimProperty, LayoutRect, OutsideClickPolicy, Response, Shadow, Signal, Transition, Ui,
 };
 use super::button::button;
 use super::theme::{self, ThemeColorTokens};
@@ -216,10 +216,12 @@ impl<'ui> DialogBuilder<'ui> {
         } else {
             OutsideClickPolicy::Block
         };
+        let layer_id = LayerId::new(resolved_panel_id.clone());
 
         self.ui.register_layer_intent(LayerIntent {
-            id: LayerId::new(resolved_panel_id.clone()),
-            owner: self.ui.resolve_id(&id),
+            id: layer_id.clone(),
+            owner: NodeId::new(self.ui.resolve_id(&id)),
+            root: NodeId::new(resolved_panel_id.clone()),
             anchor: None,
             fallback_anchor: Some(LayoutRect::new(
                 0.0,
@@ -227,16 +229,20 @@ impl<'ui> DialogBuilder<'ui> {
                 self.screen_width,
                 self.screen_height,
             )),
+            boundary: None,
             open: self.open,
             kind: LayerKind::Modal,
             placement: LayerPlacement::Center,
             size: LayerSize::new(width.into(), height.into()),
+            gap: 0.0,
+            offset: [0.0, 0.0],
+            collision: Default::default(),
             z_index: self.z_index + 1,
             outside_click,
         });
         if let Some(layer_close) = on_close.clone() {
             self.ui.register_on_layer_dismiss(
-                resolved_panel_id,
+                layer_id,
                 Box::new(move || {
                     (layer_close.borrow_mut())();
                 }),

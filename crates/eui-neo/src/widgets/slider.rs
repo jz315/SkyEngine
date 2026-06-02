@@ -5,6 +5,7 @@ use std::rc::Rc;
 
 use rustc_hash::FxHashMap;
 
+use crate::runtime::NodeId;
 use crate::Color;
 
 use super::super::{
@@ -15,7 +16,7 @@ use super::theme::{self, ThemeColorTokens};
 type ChangeCallback = Rc<RefCell<Box<dyn FnMut(f32)>>>;
 
 thread_local! {
-    static SLIDER_BOUNDS: RefCell<FxHashMap<String, LayoutRect>> = RefCell::new(FxHashMap::default());
+    static SLIDER_BOUNDS: RefCell<FxHashMap<NodeId, LayoutRect>> = RefCell::new(FxHashMap::default());
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -120,6 +121,7 @@ impl<'ui> SliderBuilder<'ui> {
 
     pub fn build(self) -> Response {
         let id = self.id.clone();
+        let state_id = NodeId::new(self.ui.resolve_id(&id));
         let hit_id = format!("{id}.hit");
         let track_height = 3.0_f32.max(self.height * 0.18);
         let track_y = (self.height - track_height) * 0.5;
@@ -128,8 +130,8 @@ impl<'ui> SliderBuilder<'ui> {
             .clamp(0.0, (self.width - knob_size).max(0.0));
         let on_change_press = self.on_change.clone();
         let on_change_drag = self.on_change.clone();
-        let press_id = id.clone();
-        let drag_id = id.clone();
+        let press_state_id = state_id.clone();
+        let drag_state_id = state_id;
         let width = self.width;
 
         self.ui
@@ -174,7 +176,7 @@ impl<'ui> SliderBuilder<'ui> {
                     .interactive(true)
                     .on_press(move |event, bounds| {
                         SLIDER_BOUNDS.with(|states| {
-                            states.borrow_mut().insert(press_id.clone(), bounds);
+                            states.borrow_mut().insert(press_state_id.clone(), bounds);
                         });
                         let next = value_from_pointer(pointer_x(event), bounds, width);
                         if let Some(callback) = &on_change_press {
@@ -185,7 +187,7 @@ impl<'ui> SliderBuilder<'ui> {
                         let bounds = SLIDER_BOUNDS.with(|states| {
                             states
                                 .borrow()
-                                .get(&drag_id)
+                                .get(&drag_state_id)
                                 .copied()
                                 .unwrap_or(LayoutRect::new(0.0, 0.0, width, 1.0))
                         });
@@ -203,6 +205,20 @@ impl<'ui> SliderBuilder<'ui> {
 
 pub fn slider(ui: &mut Ui, id: impl Into<String>) -> SliderBuilder<'_> {
     SliderBuilder::new(ui, id)
+}
+
+#[cfg(test)]
+pub(super) fn clear_slider_bounds_for_tests() {
+    SLIDER_BOUNDS.with(|states| states.borrow_mut().clear());
+}
+
+#[cfg(test)]
+pub(super) fn slider_bound_keys_for_tests() -> Vec<NodeId> {
+    SLIDER_BOUNDS.with(|states| {
+        let mut keys: Vec<_> = states.borrow().keys().cloned().collect();
+        keys.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        keys
+    })
 }
 
 fn pointer_x(event: PointerEvent) -> f32 {

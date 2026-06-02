@@ -6,6 +6,7 @@ use super::{
     KeyboardEvent, LayoutRect, MotionPreset, PointerEvent, ScrollEvent, Shadow, Size, Slice,
     Transform, Transition, Ui, VerticalAlign,
 };
+use crate::runtime::NodeId;
 
 /// Immediate response returned by neo component/element builders.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -67,6 +68,11 @@ impl<'ui> ElementBuilder<'ui> {
         self.element.has_y = true;
         self.element.x = x;
         self.element.y = y;
+        self
+    }
+
+    pub(crate) fn visual_position_only(mut self) -> Self {
+        self.element.layout_position_affects_structure = false;
         self
     }
 
@@ -676,8 +682,8 @@ impl<'ui> ElementBuilder<'ui> {
     {
         self.element.interactive = true;
         self.element.cursor = CursorShape::Hand;
-        self.ui
-            .register_on_click(self.element.id.clone(), Box::new(callback));
+        let id = self.element_node_id();
+        self.ui.register_on_click(id, Box::new(callback));
         self
     }
 
@@ -687,8 +693,8 @@ impl<'ui> ElementBuilder<'ui> {
     {
         self.element.interactive = true;
         self.element.cursor = CursorShape::Hand;
-        self.ui
-            .register_on_press(self.element.id.clone(), Box::new(callback));
+        let id = self.element_node_id();
+        self.ui.register_on_press(id, Box::new(callback));
         self
     }
 
@@ -698,8 +704,8 @@ impl<'ui> ElementBuilder<'ui> {
     {
         self.element.interactive = true;
         self.element.cursor = CursorShape::Hand;
-        self.ui
-            .register_on_context_menu(self.element.id.clone(), Box::new(callback));
+        let id = self.element_node_id();
+        self.ui.register_on_context_menu(id, Box::new(callback));
         self
     }
 
@@ -709,8 +715,8 @@ impl<'ui> ElementBuilder<'ui> {
     {
         self.element.focusable = true;
         self.element.interactive = true;
-        self.ui
-            .register_on_focus_changed(self.element.id.clone(), Box::new(callback));
+        let id = self.element_node_id();
+        self.ui.register_on_focus_changed(id, Box::new(callback));
         self
     }
 
@@ -720,8 +726,8 @@ impl<'ui> ElementBuilder<'ui> {
     {
         self.element.focusable = true;
         self.element.interactive = true;
-        self.ui
-            .register_on_text_input(self.element.id.clone(), Box::new(callback));
+        let id = self.element_node_id();
+        self.ui.register_on_text_input(id, Box::new(callback));
         self
     }
 
@@ -730,8 +736,8 @@ impl<'ui> ElementBuilder<'ui> {
         F: FnMut(ScrollEvent) + 'static,
     {
         self.element.interactive = true;
-        self.ui
-            .register_on_scroll(self.element.id.clone(), Box::new(callback));
+        let id = self.element_node_id();
+        self.ui.register_on_scroll(id, Box::new(callback));
         self
     }
 
@@ -740,8 +746,8 @@ impl<'ui> ElementBuilder<'ui> {
         F: FnMut(DragEvent) + 'static,
     {
         self.element.interactive = true;
-        self.ui
-            .register_on_drag(self.element.id.clone(), Box::new(callback));
+        let id = self.element_node_id();
+        self.ui.register_on_drag(id, Box::new(callback));
         self
     }
 
@@ -750,8 +756,8 @@ impl<'ui> ElementBuilder<'ui> {
         F: FnMut() + 'static,
     {
         self.element.timer_seconds = seconds.max(0.0);
-        self.ui
-            .register_on_timer(self.element.id.clone(), Box::new(callback));
+        let id = self.element_node_id();
+        self.ui.register_on_timer(id, Box::new(callback));
         self
     }
 
@@ -766,25 +772,11 @@ impl<'ui> ElementBuilder<'ui> {
     }
 
     pub fn content(self, content: impl FnOnce(&mut Ui)) -> Response {
-        let response = self.ui.response(&self.element.id);
-        if self.ui.reuse_retained_element(&self.element.id) {
-            return response;
-        }
-        let build_start = self.ui.begin_scope_timing();
-        let id = self.element.id.clone();
-        let index = self.ui.push_element(self.element);
-        self.ui.push_path(index);
-        let pushed_dirty_owner = self.ui.push_dirty_owner_if_exact_dirty(&id);
-        self.ui.schedule_rebuilt_scope_dependency_reset(&id);
-        content(self.ui);
-        if pushed_dirty_owner {
-            self.ui.pop_dirty_owner();
-        }
-        self.ui.pop_path();
-        let (build_ms, self_build_ms) = self.ui.finish_scope_timing(build_start);
-        self.ui
-            .record_retained_element(id, index, build_ms, self_build_ms);
-        response
+        self.ui.compose_retained_element(self.element, content)
+    }
+
+    fn element_node_id(&self) -> NodeId {
+        NodeId::new(self.element.id.clone())
     }
 }
 

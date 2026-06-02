@@ -1,3 +1,4 @@
+use super::reconcile::ElementIdSet;
 use super::tree::{sorted_z_indices, z_order_is_stable};
 use super::*;
 
@@ -61,7 +62,7 @@ impl Runtime {
     pub(crate) fn animated_frame(&self, element: &Element) -> LayoutRect {
         self.animation
             .animations
-            .get(&element.id)
+            .get(element.id.as_str())
             .and_then(|animation| animation.frame.as_ref())
             .map(AnimatedValue::current)
             .unwrap_or(element.frame)
@@ -70,7 +71,7 @@ impl Runtime {
     pub(crate) fn animated_color(&self, element: &Element) -> Color {
         self.animation
             .animations
-            .get(&element.id)
+            .get(element.id.as_str())
             .and_then(|animation| animation.color.as_ref())
             .map(AnimatedValue::current)
             .unwrap_or_else(|| self.state_color_target(element))
@@ -79,7 +80,7 @@ impl Runtime {
     pub(crate) fn animated_text_color(&self, element: &Element) -> Color {
         self.animation
             .animations
-            .get(&element.id)
+            .get(element.id.as_str())
             .and_then(|animation| animation.text_color.as_ref())
             .map(AnimatedValue::current)
             .unwrap_or(element.text_color)
@@ -88,7 +89,7 @@ impl Runtime {
     pub(crate) fn animated_radius(&self, element: &Element) -> f32 {
         self.animation
             .animations
-            .get(&element.id)
+            .get(element.id.as_str())
             .and_then(|animation| animation.radius.as_ref())
             .map(AnimatedValue::current)
             .unwrap_or(element.radius)
@@ -97,7 +98,7 @@ impl Runtime {
     pub(crate) fn animated_blur(&self, element: &Element) -> f32 {
         self.animation
             .animations
-            .get(&element.id)
+            .get(element.id.as_str())
             .and_then(|animation| animation.blur.as_ref())
             .map(AnimatedValue::current)
             .unwrap_or(element.blur)
@@ -106,7 +107,7 @@ impl Runtime {
     pub(crate) fn animated_opacity(&self, element: &Element) -> f32 {
         self.animation
             .animations
-            .get(&element.id)
+            .get(element.id.as_str())
             .and_then(|animation| animation.opacity.as_ref())
             .map(AnimatedValue::current)
             .unwrap_or(element.opacity)
@@ -115,7 +116,7 @@ impl Runtime {
     pub(crate) fn animated_border(&self, element: &Element) -> Border {
         self.animation
             .animations
-            .get(&element.id)
+            .get(element.id.as_str())
             .and_then(|animation| animation.border.as_ref())
             .map(AnimatedValue::current)
             .unwrap_or(element.border)
@@ -124,7 +125,7 @@ impl Runtime {
     pub(crate) fn animated_shadow(&self, element: &Element) -> Shadow {
         self.animation
             .animations
-            .get(&element.id)
+            .get(element.id.as_str())
             .and_then(|animation| animation.shadow.as_ref())
             .map(AnimatedValue::current)
             .unwrap_or(element.shadow)
@@ -133,15 +134,14 @@ impl Runtime {
     pub(crate) fn animated_transform(&self, element: &Element) -> Transform {
         self.animation
             .animations
-            .get(&element.id)
+            .get(element.id.as_str())
             .and_then(|animation| animation.transform.as_ref())
             .map(AnimatedValue::current)
             .unwrap_or(element.transform)
     }
 
-    pub(crate) fn hover_blend_for_source(&self, id: &str) -> Option<f32> {
-        let id = self.resolve_id_ref(id);
-        let element = self.find_resolved(id.as_ref())?;
+    pub(crate) fn hover_blend_for_source(&self, id: &NodeId) -> Option<f32> {
+        let element = self.find_resolved(id.as_str())?;
         if !matches!(
             element.kind,
             ElementKind::Rect | ElementKind::Polygon | ElementKind::Image | ElementKind::NineSlice
@@ -150,20 +150,19 @@ impl Runtime {
         }
         self.animation
             .animations
-            .get(id.as_ref())
+            .get(id)
             .map(|animation| animation.hover_blend.current())
     }
 
-    pub(crate) fn press_blend_for_source(&self, id: &str) -> Option<(f32, LayoutRect)> {
-        let id = self.resolve_id_ref(id);
-        let element = self.find_resolved(id.as_ref())?;
+    pub(crate) fn press_blend_for_source(&self, id: &NodeId) -> Option<(f32, LayoutRect)> {
+        let element = self.find_resolved(id.as_str())?;
         if !matches!(
             element.kind,
             ElementKind::Rect | ElementKind::Polygon | ElementKind::Image | ElementKind::NineSlice
         ) {
             return None;
         }
-        let animation = self.animation.animations.get(id.as_ref())?;
+        let animation = self.animation.animations.get(id)?;
         let frame = animation
             .frame
             .as_ref()
@@ -203,11 +202,19 @@ impl Runtime {
             .values()
             .any(ElementAnimation::is_active);
         if changed {
-            self.mark_render_dirty();
+            self.request_animation_invalidation();
         } else if active {
             self.request_render();
         }
         changed
+    }
+
+    fn request_animation_invalidation(&mut self) {
+        self.request_invalidation(Invalidation::runtime(
+            self.runtime_invalidation_target(),
+            "animation_tick",
+            crate::DirtyFlags::DRAW,
+        ));
     }
 
     fn tick_element_animation_tree(
@@ -241,10 +248,11 @@ impl Runtime {
     }
 
     fn update_frame_target(&mut self, element: &Element) -> bool {
+        let id = NodeId::new(element.id.as_str());
         let entry = self
             .animation
             .frame_targets
-            .entry(element.id.clone())
+            .entry(id)
             .or_insert(FrameTargetState {
                 frame: element.frame,
                 seen: true,
@@ -262,12 +270,9 @@ impl Runtime {
         delta_seconds: f32,
         snap_frame: bool,
     ) -> bool {
-        let interaction = self.interaction(&element.id);
-        let animation = self
-            .animation
-            .animations
-            .entry(element.id.clone())
-            .or_default();
+        let id = NodeId::new(element.id.as_str());
+        let interaction = self.interaction_for_node(&id);
+        let animation = self.animation.animations.entry(id).or_default();
         animation.seen = true;
 
         let mut changed = false;
@@ -487,15 +492,34 @@ impl Runtime {
     }
 
     fn state_color_target(&self, element: &Element) -> Color {
-        let animation = self.animation.animations.get(&element.id);
+        let id = NodeId::new(element.id.as_str());
+        let animation = self.animation.animations.get(&id);
         let blends = animation.map(|animation| {
             (
                 animation.hover_blend.current(),
                 animation.press_blend.current(),
             )
         });
-        state_color_target(element, self.interaction(&element.id), blends)
+        state_color_target(element, self.interaction_for_node(&id), blends)
     }
+}
+
+pub(super) fn cleanup_stale_animation_state(
+    runtime: &mut Runtime,
+    existing_ids: &ElementIdSet,
+) -> bool {
+    let previous_animations = runtime.animation.animations.len();
+    runtime
+        .animation
+        .animations
+        .retain(|id, _| existing_ids.contains(id));
+    let previous_frame_targets = runtime.animation.frame_targets.len();
+    runtime
+        .animation
+        .frame_targets
+        .retain(|id, _| existing_ids.contains(id));
+    runtime.animation.animations.len() != previous_animations
+        || runtime.animation.frame_targets.len() != previous_frame_targets
 }
 
 pub(super) fn sync_animated<T>(
@@ -593,4 +617,48 @@ pub(super) fn color_close_enough(left: Color, right: Color) -> bool {
         && (left.g - right.g).abs() <= 0.001
         && (left.b - right.b).abs() <= 0.001
         && (left.a - right.a).abs() <= 0.001
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cleanup_stale_animation_state_keeps_only_existing_ids() {
+        let mut runtime = Runtime::new("page");
+        runtime
+            .animation
+            .animations
+            .insert(NodeId::new("page.kept"), ElementAnimation::default());
+        runtime
+            .animation
+            .animations
+            .insert(NodeId::new("page.removed"), ElementAnimation::default());
+        runtime.animation.frame_targets.insert(
+            NodeId::new("page.kept"),
+            FrameTargetState {
+                frame: LayoutRect::ZERO,
+                seen: true,
+            },
+        );
+        runtime.animation.frame_targets.insert(
+            NodeId::new("page.removed"),
+            FrameTargetState {
+                frame: LayoutRect::ZERO,
+                seen: true,
+            },
+        );
+        let existing_ids = element_ids(&["page.kept"]);
+
+        assert!(cleanup_stale_animation_state(&mut runtime, &existing_ids));
+
+        assert!(runtime.animation.animations.contains_key("page.kept"));
+        assert!(!runtime.animation.animations.contains_key("page.removed"));
+        assert!(runtime.animation.frame_targets.contains_key("page.kept"));
+        assert!(!runtime.animation.frame_targets.contains_key("page.removed"));
+    }
+
+    fn element_ids(ids: &[&str]) -> ElementIdSet {
+        ids.iter().map(|id| NodeId::new(*id)).collect()
+    }
 }

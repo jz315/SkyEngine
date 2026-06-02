@@ -17,5 +17,9 @@ let result = runtime.frame(FrameInput::new(Screen::new(1280.0, 720.0), 1.0 / 60.
 let frame = result.frame;
 ```
 
+The prelude is for authoring and host-frame basics. Test automation lives under
+`eui_neo::testing`, and lower-level renderer/diagnostic helpers live under
+`eui_neo::expert`.
+
 Platform input, clipboard, image loading, native windows, and GPU rendering
 belong in adapter crates or engine integration layers.

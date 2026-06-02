@@ -1,19 +1,26 @@
 use super::Color;
+use super::DirtyReason;
 use super::EventTargetId;
+use super::FullLayoutReason;
+use super::InvalidationSource;
 use super::InvalidationTarget;
+use super::LayoutMode;
+use super::NodeId;
+use super::RetainedComposeAction;
+use super::RetainedComposeReason;
 use super::RetainedRoot;
 use super::Runtime;
 use super::ScopeId;
+use crate::expert::DirtyInput;
 use crate::expert::{UiDrawCommand, UiRectDraw};
 use crate::test_support::{compose, compose_incremental_dirty};
 use crate::widgets::{button, panel, text};
 use crate::{
-    Align, AnimProperty, Ease, Element, ElementKind, FontRef, FrameInput, FullLayoutReason,
-    HorizontalAlign, KeyboardEvent, LayoutMode, LayoutRect, PointerEvent, RetainedComposeAction,
-    RetainedComposeReason, Screen, ScrollEvent, Size, State, TextMeasure, TextMeasureRequest,
-    TextSystem, Transition,
+    Align, AnimProperty, Ease, Element, ElementKind, FontRef, FrameInput, HorizontalAlign,
+    KeyboardEvent, LayoutRect, PointerEvent, Screen, ScrollEvent, Size, State, TextMeasure,
+    TextMeasureRequest, TextSystem, Transform, Transition,
 };
-use crate::{DirtyFlags, DirtyInput, DirtyReason};
+use crate::{DirtyFlags, ResourceDirty, SignalKey};
 use rustc_hash::FxHashMap;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -34,10 +41,10 @@ fn runtime_composes_and_lays_out_tree() {
             });
     });
 
-    let root = runtime.find("root").unwrap();
+    let root = runtime.diagnostics().find("root").unwrap();
     assert_eq!(root.frame.width, 800.0);
     assert_eq!(root.frame.height, 600.0);
-    assert!(runtime.find("title").is_some());
+    assert!(runtime.diagnostics().find("title").is_some());
     assert!(runtime.needs_render());
     assert!(runtime.full_redraw());
 }
@@ -121,7 +128,10 @@ fn injected_text_system_controls_layout_measurement() {
             .build();
     });
 
-    let title = runtime.find("title").expect("title should exist");
+    let title = runtime
+        .diagnostics()
+        .find("title")
+        .expect("title should exist");
     assert_eq!(title.frame.width, 77.0);
     assert_eq!(title.frame.height, 19.0);
 }
@@ -204,13 +214,16 @@ fn scoped_compose_rebuilds_dirty_scope_and_reuses_clean_sibling_with_callbacks()
 
     assert_eq!(left_builds.get(), 2);
     assert_eq!(right_builds.get(), 1);
-    assert_eq!(runtime.find("left.label").unwrap().text, "left 1");
-    assert!(runtime.find("right.button.bg").is_some());
+    assert_eq!(
+        runtime.diagnostics().find("left.label").unwrap().text,
+        "left 1"
+    );
+    assert!(runtime.diagnostics().find("right.button.bg").is_some());
     assert!(runtime.retained_compose_stats().built >= 1);
     assert!(runtime.retained_compose_stats().reused >= 1);
     assert!(runtime.retained_compose_stats().partial_layout);
     assert!(!runtime.retained_compose_stats().full_layout);
-    let debug_snapshot = runtime.debug_snapshot();
+    let debug_snapshot = runtime.diagnostics().committed_snapshot();
     let right_reuse = debug_snapshot
         .scope_compose
         .iter()
@@ -221,7 +234,7 @@ fn scoped_compose_rebuilds_dirty_scope_and_reuses_clean_sibling_with_callbacks()
     assert_eq!(right_reuse.callback_transfers.click, 1);
     assert_eq!(right_reuse.callback_transfers.total(), 1);
 
-    let frame = runtime.find("right.button.bg").unwrap().frame;
+    let frame = runtime.diagnostics().find("right.button.bg").unwrap().frame;
     runtime.update_pointer(PointerEvent::pressed_at(frame.x + 1.0, frame.y + 1.0));
     runtime.update_pointer(PointerEvent::released_at(frame.x + 1.0, frame.y + 1.0));
     assert_eq!(right_clicks.get(), 1);
@@ -284,7 +297,10 @@ fn rebuilt_scope_drops_stale_signal_dependencies() {
         .set(false);
     compose(&mut runtime, state.take_dirty());
     assert_eq!(builds.get(), 2);
-    assert_eq!(runtime.find("panel.label").unwrap().text, "value 0");
+    assert_eq!(
+        runtime.diagnostics().find("panel.label").unwrap().text,
+        "value 0"
+    );
 
     state
         .signal("a", |state| state.a, |state, value| state.a = value)
@@ -299,8 +315,8 @@ fn rebuilt_scope_drops_stale_signal_dependencies() {
         .set(2);
     let dirty = state.take_dirty();
     assert_eq!(dirty.len(), 1);
-    assert_eq!(dirty[0].id, "page.panel");
-    assert_eq!(dirty[0].source.as_deref(), Some("b"));
+    assert_eq!(dirty[0].id(), "page.panel");
+    assert_eq!(dirty[0].source(), Some("b"));
 }
 
 #[test]
@@ -361,7 +377,7 @@ fn removed_scope_drops_signal_dependencies() {
         )
         .set(false);
     compose(&mut runtime, state.take_dirty());
-    assert!(runtime.find("child.label").is_none());
+    assert!(runtime.diagnostics().find("child.label").is_none());
 
     state
         .signal(
@@ -410,7 +426,10 @@ fn live_scope_rebuilds_on_next_scoped_compose_without_state_dirty() {
 
     assert_eq!(live_builds.get(), 2);
     assert_eq!(static_builds.get(), 1);
-    assert_eq!(runtime.find("live.label").unwrap().text, "live 2");
+    assert_eq!(
+        runtime.diagnostics().find("live.label").unwrap().text,
+        "live 2"
+    );
     assert!(runtime.retained_compose_stats().built >= 1);
     assert!(runtime.retained_compose_stats().reused >= 1);
     assert!(runtime.retained_compose_stats().partial_layout);
@@ -450,7 +469,7 @@ fn clock_read_marks_active_scope_live_and_rebuilds_next_scoped_compose() {
     assert_eq!(builds.get(), 1);
     assert_eq!(sampled_seconds, 0.0);
     assert_eq!(
-        runtime.debug_snapshot().clock_ids,
+        runtime.diagnostics().committed_snapshot().clock_ids,
         vec!["page.clocked".to_string()]
     );
 
@@ -464,17 +483,21 @@ fn clock_read_marks_active_scope_live_and_rebuilds_next_scoped_compose() {
 
     assert_eq!(builds.get(), 2);
     assert_eq!(sampled_seconds, 0.5);
-    assert_eq!(runtime.find("label").unwrap().text, "clock 0.5");
     assert_eq!(
-        runtime.debug_snapshot().dirty_ids,
+        runtime.diagnostics().find("label").unwrap().text,
+        "clock 0.5"
+    );
+    assert_eq!(
+        runtime.diagnostics().committed_snapshot().dirty_ids,
         vec!["page.clocked".to_string()]
     );
     assert_eq!(
-        runtime.debug_snapshot().clock_ids,
+        runtime.diagnostics().committed_snapshot().clock_ids,
         vec!["page.clocked".to_string()]
     );
     let clocked_record = runtime
-        .debug_snapshot()
+        .diagnostics()
+        .committed_snapshot()
         .retained
         .iter()
         .find(|scope| scope.id == "page.clocked")
@@ -505,7 +528,7 @@ fn clock_every_rebuilds_only_when_period_bucket_changes() {
     compose(&mut runtime, Vec::new());
     assert_eq!(builds.get(), 1);
     assert_eq!(
-        runtime.debug_snapshot().clock_ids,
+        runtime.diagnostics().committed_snapshot().clock_ids,
         vec!["page.clocked".to_string()]
     );
 
@@ -528,7 +551,7 @@ fn clock_every_rebuilds_only_when_period_bucket_changes() {
     compose(&mut runtime, Vec::new());
     assert_eq!(builds.get(), 2);
     assert_eq!(
-        runtime.debug_snapshot().dirty_ids,
+        runtime.diagnostics().committed_snapshot().dirty_ids,
         vec!["page.clocked".to_string()]
     );
 }
@@ -554,7 +577,7 @@ fn clock_read_without_scope_uses_current_element_owner() {
     );
 
     assert_eq!(
-        runtime.debug_snapshot().clock_ids,
+        runtime.diagnostics().committed_snapshot().clock_ids,
         vec!["page.panel".to_string()]
     );
 
@@ -581,12 +604,16 @@ fn clock_read_without_scope_uses_current_element_owner() {
     );
 
     assert_eq!(
-        runtime.debug_snapshot().dirty_ids,
+        runtime.diagnostics().committed_snapshot().dirty_ids,
         vec!["page.panel".to_string()]
     );
-    assert_eq!(runtime.find("panel.label").unwrap().text, "0.25");
+    assert_eq!(
+        runtime.diagnostics().find("panel.label").unwrap().text,
+        "0.25"
+    );
     let panel_record = runtime
-        .debug_snapshot()
+        .diagnostics()
+        .committed_snapshot()
         .retained
         .iter()
         .find(|scope| scope.id == "page.panel")
@@ -612,13 +639,26 @@ fn debug_snapshot_records_scope_and_element_ancestry() {
         });
     });
 
-    let snapshot = runtime.debug_snapshot();
+    let snapshot = runtime.diagnostics().committed_snapshot();
     let child_record = snapshot
         .retained
         .iter()
         .find(|scope| scope.id == "page.panel.child")
         .expect("child scope should be reported");
+    assert_eq!(child_record.scope_id().as_str(), "page.panel.child");
     assert_eq!(child_record.parent_id.as_deref(), Some("page.panel.scroll"));
+    assert_eq!(
+        child_record.parent_scope_id().map(ScopeId::as_str),
+        Some("page.panel.scroll")
+    );
+    assert_eq!(
+        child_record.scroll_ancestor_id().map(NodeId::as_str),
+        Some("page.panel.scroll")
+    );
+    assert_eq!(
+        child_record.clip_ancestor_id().map(NodeId::as_str),
+        Some("page.panel.scroll")
+    );
     assert_eq!(child_record.current_roots, 1);
     assert_eq!(child_record.action, Some(RetainedComposeAction::Built));
     assert_eq!(
@@ -631,11 +671,68 @@ fn debug_snapshot_records_scope_and_element_ancestry() {
         .iter()
         .find(|element| element.id == "page.panel.child.leaf")
         .expect("leaf element should be reported");
+    assert_eq!(leaf.node_id().as_str(), "page.panel.child.leaf");
     assert_eq!(leaf.parent.as_deref(), Some("page.panel.scroll"));
     assert_eq!(leaf.retained_boundary.as_deref(), Some("page.panel.child"));
     assert_eq!(leaf.scroll_ancestor.as_deref(), Some("page.panel.scroll"));
     assert_eq!(leaf.clip_ancestor.as_deref(), Some("page.panel.scroll"));
+    assert_eq!(
+        leaf.parent_id().map(NodeId::as_str),
+        Some("page.panel.scroll")
+    );
+    assert_eq!(
+        leaf.retained_boundary_id().map(ScopeId::as_str),
+        Some("page.panel.child")
+    );
+    assert_eq!(
+        leaf.scroll_ancestor_id().map(NodeId::as_str),
+        Some("page.panel.scroll")
+    );
+    assert_eq!(
+        leaf.clip_ancestor_id().map(NodeId::as_str),
+        Some("page.panel.scroll")
+    );
     assert_eq!(leaf.draw_frame, Some(leaf.target_frame));
+    assert_eq!(leaf.transformed_draw_frame, Some(leaf.target_frame));
+    assert_eq!(leaf.draw_transform, Transform::default());
+    assert_eq!(
+        leaf.active_clip.map(|clip| clip.rect),
+        Some(LayoutRect::new(0.0, 0.0, 200.0, 100.0))
+    );
+    assert!(leaf.draw_visible);
+}
+
+#[test]
+fn debug_snapshot_records_draw_transform_and_transformed_frame() {
+    let mut runtime = Runtime::new("page");
+
+    compose(&mut runtime, 240.0, 120.0, |ui, _| {
+        ui.stack("panel")
+            .size(100.0, 100.0)
+            .scale(0.5)
+            .translate(10.0, 20.0)
+            .content(|ui| {
+                ui.rect("leaf").size(20.0, 10.0).build();
+            });
+    });
+
+    let leaf = runtime
+        .diagnostics()
+        .committed_snapshot()
+        .elements
+        .iter()
+        .find(|element| element.id == "page.leaf")
+        .expect("leaf element should be reported");
+    assert_eq!(leaf.target_frame, LayoutRect::new(0.0, 0.0, 20.0, 10.0));
+    assert_eq!(leaf.draw_frame, Some(leaf.target_frame));
+    assert_eq!(
+        leaf.transformed_draw_frame,
+        Some(LayoutRect::new(35.0, 45.0, 10.0, 5.0))
+    );
+    assert_eq!(leaf.draw_transform.scale, [0.5, 0.5]);
+    assert_eq!(leaf.draw_transform.translate, [10.0, 20.0]);
+    assert_eq!(leaf.active_clip, None);
+    assert!(leaf.draw_visible);
 }
 
 #[test]
@@ -652,13 +749,17 @@ fn debug_snapshot_uses_tree_ancestry_for_non_prefixed_scope_ids() {
         });
     });
 
-    let snapshot = runtime.debug_snapshot();
+    let snapshot = runtime.diagnostics().committed_snapshot();
     let live_record = snapshot
         .retained
         .iter()
         .find(|scope| scope.id == "page.live")
         .expect("non-prefixed child scope should be reported");
     assert_eq!(live_record.parent_id.as_deref(), Some("page.host"));
+    assert_eq!(
+        live_record.parent_scope_id().map(ScopeId::as_str),
+        Some("page.host")
+    );
 
     let leaf = snapshot
         .elements
@@ -667,6 +768,11 @@ fn debug_snapshot_uses_tree_ancestry_for_non_prefixed_scope_ids() {
         .expect("non-prefixed child leaf should be reported");
     assert_eq!(leaf.parent.as_deref(), Some("page.host"));
     assert_eq!(leaf.retained_boundary.as_deref(), Some("page.live"));
+    assert_eq!(leaf.parent_id().map(NodeId::as_str), Some("page.host"));
+    assert_eq!(
+        leaf.retained_boundary_id().map(ScopeId::as_str),
+        Some("page.live")
+    );
 }
 
 #[test]
@@ -687,7 +793,7 @@ fn retained_scope_ids_are_typed_internally_but_report_readable_labels() {
         });
     });
 
-    let snapshot = runtime.debug_snapshot();
+    let snapshot = runtime.diagnostics().committed_snapshot();
     assert_eq!(
         snapshot.clock_ids,
         vec!["page.panel_extra.live".to_string()]
@@ -701,7 +807,12 @@ fn retained_scope_ids_are_typed_internally_but_report_readable_labels() {
         .iter()
         .find(|scope| scope.id == "page.panel_extra.live")
         .expect("typed scope id should still report a readable label");
+    assert_eq!(live_record.scope_id().as_str(), "page.panel_extra.live");
     assert_eq!(live_record.parent_id.as_deref(), Some("page.host"));
+    assert_eq!(
+        live_record.parent_scope_id().map(ScopeId::as_str),
+        Some("page.host")
+    );
 }
 
 #[test]
@@ -734,9 +845,15 @@ fn dirty_non_prefixed_child_scope_prevents_parent_reuse_by_tree() {
 
     assert_eq!(parent_builds.get(), 2);
     assert_eq!(child_builds.get(), 2);
-    assert_eq!(runtime.find("live.label").unwrap().text, "child 2");
     assert_eq!(
-        runtime.debug_snapshot().normalized_dirty_ids,
+        runtime.diagnostics().find("live.label").unwrap().text,
+        "child 2"
+    );
+    assert_eq!(
+        runtime
+            .diagnostics()
+            .committed_snapshot()
+            .normalized_dirty_ids,
         vec!["page.live".to_string()]
     );
 }
@@ -771,17 +888,21 @@ fn dirty_parent_normalizes_live_child_for_layout_but_still_rebuilds_child() {
 
     assert_eq!(parent_builds.get(), 2);
     assert_eq!(child_builds.get(), 2);
-    assert_eq!(runtime.find("label").unwrap().text, "child 2");
+    assert_eq!(runtime.diagnostics().find("label").unwrap().text, "child 2");
     assert_eq!(
-        runtime.debug_snapshot().dirty_ids,
+        runtime.diagnostics().committed_snapshot().dirty_ids,
         vec!["page.parent".to_string(), "page.parent.child".to_string()]
     );
     assert_eq!(
-        runtime.debug_snapshot().normalized_dirty_ids,
+        runtime
+            .diagnostics()
+            .committed_snapshot()
+            .normalized_dirty_ids,
         vec!["page.parent".to_string()]
     );
     let child_record = runtime
-        .debug_snapshot()
+        .diagnostics()
+        .committed_snapshot()
         .retained
         .iter()
         .find(|scope| scope.id == "page.parent.child")
@@ -792,6 +913,10 @@ fn dirty_parent_normalizes_live_child_for_layout_but_still_rebuilds_child() {
         Some(RetainedComposeReason::DirtyScope)
     );
     assert!(runtime.retained_compose_stats().partial_layout);
+    assert_eq!(
+        runtime.diagnostics().committed_snapshot().layout_mode,
+        LayoutMode::Partial
+    );
 }
 
 #[test]
@@ -819,10 +944,11 @@ fn live_child_inside_dirty_scroll_parent_tracks_scroll_offset() {
     };
 
     compose(&mut runtime, Vec::new(), 0.0);
-    let first = runtime.find("secret").unwrap().frame;
+    let first = runtime.diagnostics().find("secret").unwrap().frame;
+    runtime.mark_rendered();
 
     compose(&mut runtime, vec![dirty_scope("page.panel")], 30.0);
-    let second = runtime.find("secret").unwrap().frame;
+    let second = runtime.diagnostics().find("secret").unwrap().frame;
 
     assert_eq!(live_builds.get(), 2);
     assert!(
@@ -830,17 +956,25 @@ fn live_child_inside_dirty_scroll_parent_tracks_scroll_offset() {
         "live child should remain attached to scroll content: first={first:?} second={second:?}"
     );
     assert_eq!(
-        runtime.debug_snapshot().dirty_ids,
+        runtime.diagnostics().committed_snapshot().dirty_ids,
         vec![
             "page.panel".to_string(),
             "page.panel.secret.live".to_string()
         ]
     );
     assert_eq!(
-        runtime.debug_snapshot().normalized_dirty_ids,
+        runtime
+            .diagnostics()
+            .committed_snapshot()
+            .normalized_dirty_ids,
         vec!["page.panel".to_string()]
     );
     assert!(runtime.retained_compose_stats().partial_layout);
+    assert_eq!(
+        runtime.diagnostics().committed_snapshot().layout_mode,
+        LayoutMode::Partial
+    );
+    assert!(!runtime.full_redraw());
 }
 
 #[test]
@@ -874,14 +1008,14 @@ fn partial_layout_preserves_parent_assigned_grow_frame_for_live_scope_root() {
     };
 
     compose(&mut runtime, Vec::new());
-    let first_center = runtime.find("center").unwrap().frame;
-    let first_viewport = runtime.find("viewport").unwrap().frame;
+    let first_center = runtime.diagnostics().find("center").unwrap().frame;
+    let first_viewport = runtime.diagnostics().find("viewport").unwrap().frame;
     assert_frame(first_center, 120.0, 0.0, 260.0, 80.0);
     assert_frame(first_viewport, 120.0, 0.0, 260.0, 80.0);
 
     compose(&mut runtime, Vec::new());
-    let second_center = runtime.find("center").unwrap().frame;
-    let second_viewport = runtime.find("viewport").unwrap().frame;
+    let second_center = runtime.diagnostics().find("center").unwrap().frame;
+    let second_viewport = runtime.diagnostics().find("viewport").unwrap().frame;
     assert_frame(second_center, 120.0, 0.0, 260.0, 80.0);
     assert_frame(second_viewport, 120.0, 0.0, 260.0, 80.0);
     assert_eq!(live_builds.get(), 2);
@@ -924,16 +1058,20 @@ fn dirty_scope_with_same_structure_uses_partial_layout() {
         },
     );
 
-    assert_eq!(runtime.find("label").unwrap().text, "value 1");
+    assert_eq!(runtime.diagnostics().find("label").unwrap().text, "value 1");
     assert!(runtime.retained_compose_stats().partial_layout);
     assert!(!runtime.retained_compose_stats().full_layout);
-    assert_eq!(runtime.debug_snapshot().layout_mode, LayoutMode::Partial);
     assert_eq!(
-        runtime.debug_snapshot().dirty_ids,
+        runtime.diagnostics().committed_snapshot().layout_mode,
+        LayoutMode::Partial
+    );
+    assert_eq!(
+        runtime.diagnostics().committed_snapshot().dirty_ids,
         vec!["page.body".to_string()]
     );
     let body_record = runtime
-        .debug_snapshot()
+        .diagnostics()
+        .committed_snapshot()
         .retained
         .iter()
         .find(|scope| scope.id == "page.body")
@@ -975,9 +1113,9 @@ fn visual_dirty_records_invalidation_without_rebuilding_scope() {
         value,
     );
 
-    let snapshot = runtime.debug_snapshot();
+    let snapshot = runtime.diagnostics().committed_snapshot();
     assert_eq!(builds.get(), 1);
-    assert_eq!(runtime.find("label").unwrap().text, "value 0");
+    assert_eq!(runtime.diagnostics().find("label").unwrap().text, "value 0");
     assert!(runtime.retained_compose_stats().partial_layout);
     assert_eq!(snapshot.dirty_ids, Vec::<String>::new());
     assert!(snapshot.pass_flags.request_draw);
@@ -1017,7 +1155,10 @@ fn pending_compose_with_visual_dirty_uses_full_compose_fallback() {
     };
 
     compose_tree(&mut runtime, None, value);
-    runtime.mark_compose_dirty();
+    runtime.request_resource_dirty(ResourceDirty::new(
+        "test:pending_compose",
+        DirtyFlags::COMPOSE | DirtyFlags::DRAW,
+    ));
     value = 1;
     compose_tree(
         &mut runtime,
@@ -1028,15 +1169,19 @@ fn pending_compose_with_visual_dirty_uses_full_compose_fallback() {
         value,
     );
 
-    let snapshot = runtime.debug_snapshot();
+    let snapshot = runtime.diagnostics().committed_snapshot();
     assert_eq!(builds.get(), 2);
-    assert_eq!(runtime.find("label").unwrap().text, "value 1");
+    assert_eq!(runtime.diagnostics().find("label").unwrap().text, "value 1");
     assert_eq!(
         snapshot.layout_mode,
         LayoutMode::Full(FullLayoutReason::RetainedReuseUnavailable)
     );
     assert!(snapshot.pass_flags.request_draw);
-    assert!(!snapshot.pass_flags.request_compose_ui);
+    assert!(snapshot.pass_flags.request_compose_ui);
+    assert!(snapshot.invalidations.iter().any(|invalidation| {
+        invalidation.source == InvalidationSource::Resource("test:pending_compose".into())
+            && invalidation.pass_flags.request_compose_ui
+    }));
 }
 
 #[test]
@@ -1066,7 +1211,7 @@ fn debug_trace_explains_clean_reuse_and_dirty_descendant_rebuild() {
     value = 1;
     compose_tree(&mut runtime, vec![dirty_scope("page.outer.inner")], value);
 
-    let snapshot = runtime.debug_snapshot();
+    let snapshot = runtime.diagnostics().committed_snapshot();
     let outer = snapshot
         .retained
         .iter()
@@ -1122,7 +1267,7 @@ fn debug_trace_explains_build_inside_dirty_ancestor() {
     value = 1;
     compose_tree(&mut runtime, vec![dirty_scope("page.root")], value);
 
-    let snapshot = runtime.debug_snapshot();
+    let snapshot = runtime.diagnostics().committed_snapshot();
     let panel = snapshot
         .retained
         .iter()
@@ -1167,11 +1312,11 @@ fn dirty_scope_with_changed_structure_uses_full_layout_fallback() {
         },
     );
 
-    assert!(runtime.find("chart").is_some());
+    assert!(runtime.diagnostics().find("chart").is_some());
     assert!(!runtime.retained_compose_stats().partial_layout);
     assert!(runtime.retained_compose_stats().full_layout);
     assert_eq!(
-        runtime.debug_snapshot().layout_mode,
+        runtime.diagnostics().committed_snapshot().layout_mode,
         LayoutMode::Full(FullLayoutReason::StructureChanged {
             ids: vec![ScopeId::new("page.body")]
         })
@@ -1190,7 +1335,7 @@ fn dirty_scope_with_changed_fixed_size_uses_full_layout_fallback() {
             ui.rect("right").size(40.0, 40.0).build();
         });
     });
-    let right_before = runtime.find("right").unwrap().frame;
+    let right_before = runtime.diagnostics().find("right").unwrap().frame;
 
     compose_incremental_dirty(
         &mut runtime,
@@ -1207,11 +1352,11 @@ fn dirty_scope_with_changed_fixed_size_uses_full_layout_fallback() {
         },
     );
 
-    let right_after = runtime.find("right").unwrap().frame;
+    let right_after = runtime.diagnostics().find("right").unwrap().frame;
     assert_eq!(right_before.x, 40.0);
     assert_eq!(right_after.x, 80.0);
     assert_eq!(
-        runtime.debug_snapshot().layout_mode,
+        runtime.diagnostics().committed_snapshot().layout_mode,
         LayoutMode::Full(FullLayoutReason::StructureChanged {
             ids: vec![ScopeId::new("page.left")]
         })
@@ -1299,58 +1444,64 @@ fn eui_demo_layout_matches_original_frames() {
             });
     });
 
-    assert_frame(runtime.find("root").unwrap().frame, 0.0, 0.0, 800.0, 600.0);
     assert_frame(
-        runtime.find("card").unwrap().frame,
+        runtime.diagnostics().find("root").unwrap().frame,
+        0.0,
+        0.0,
+        800.0,
+        600.0,
+    );
+    assert_frame(
+        runtime.diagnostics().find("card").unwrap().frame,
         220.0,
         170.0,
         360.0,
         260.0,
     );
     assert_frame(
-        runtime.find("content").unwrap().frame,
+        runtime.diagnostics().find("content").unwrap().frame,
         220.0,
         170.0,
         360.0,
         260.0,
     );
     assert_frame(
-        runtime.find("title").unwrap().frame,
+        runtime.diagnostics().find("title").unwrap().frame,
         250.0,
         215.0,
         300.0,
         38.0,
     );
     assert_frame(
-        runtime.find("subtitle").unwrap().frame,
+        runtime.diagnostics().find("subtitle").unwrap().frame,
         250.0,
         261.0,
         300.0,
         30.0,
     );
     assert_frame(
-        runtime.find("primary").unwrap().frame,
+        runtime.diagnostics().find("primary").unwrap().frame,
         280.0,
         315.0,
         240.0,
         70.0,
     );
     assert_frame(
-        runtime.find("primary.bg").unwrap().frame,
+        runtime.diagnostics().find("primary.bg").unwrap().frame,
         280.0,
         315.0,
         240.0,
         70.0,
     );
     assert_frame(
-        runtime.find("primary.content").unwrap().frame,
+        runtime.diagnostics().find("primary.content").unwrap().frame,
         280.0,
         315.0,
         240.0,
         70.0,
     );
     assert_frame(
-        runtime.find("primary.text").unwrap().frame,
+        runtime.diagnostics().find("primary.text").unwrap().frame,
         280.0,
         315.0,
         240.0,
@@ -1389,6 +1540,19 @@ fn runtime_detects_structure_changes() {
 
     assert!(runtime.needs_render());
     assert!(runtime.full_redraw());
+    let snapshot = runtime.diagnostics().committed_snapshot();
+    assert!(snapshot.pass_flags.request_layout);
+    assert!(snapshot.pass_flags.request_hit);
+    assert!(snapshot.pass_flags.request_draw);
+    assert!(!snapshot.pass_flags.request_compose_ui);
+    assert!(snapshot.invalidations.iter().any(|invalidation| {
+        invalidation.target.id() == "demo"
+            && invalidation.source.kind() == "runtime"
+            && invalidation.source.label() == "layout_structure"
+            && invalidation.flags == DirtyFlags::LAYOUT
+            && invalidation.pass_flags.request_layout
+            && invalidation.pass_flags.request_draw
+    }));
 }
 
 #[test]
@@ -1405,6 +1569,18 @@ fn runtime_detects_visual_changes_without_full_layout_redraw() {
 
     assert!(runtime.needs_render());
     assert!(!runtime.full_redraw());
+    let snapshot = runtime.diagnostics().committed_snapshot();
+    assert!(snapshot.pass_flags.request_draw);
+    assert!(!snapshot.pass_flags.request_layout);
+    assert!(!snapshot.pass_flags.request_compose_ui);
+    assert!(snapshot.invalidations.iter().any(|invalidation| {
+        invalidation.target.id() == "demo"
+            && invalidation.source.kind() == "runtime"
+            && invalidation.source.label() == "visual_structure"
+            && invalidation.flags == DirtyFlags::VISUAL
+            && invalidation.pass_flags.request_draw
+            && !invalidation.pass_flags.request_layout
+    }));
 }
 
 #[test]
@@ -1518,6 +1694,19 @@ fn frame_transition_interpolates_draw_list_frame() {
             .build();
     });
     assert!(runtime.tick_animations(0.5));
+    assert!(runtime
+        .diagnostics()
+        .current_snapshot()
+        .invalidations
+        .iter()
+        .any(|invalidation| {
+            invalidation.target.id() == "demo"
+                && invalidation.source.kind() == "runtime"
+                && invalidation.source.label() == "animation_tick"
+                && invalidation.flags == DirtyFlags::DRAW
+                && invalidation.pass_flags.request_draw
+                && !invalidation.pass_flags.request_compose_ui
+        }));
 
     let draw = runtime.draw_list();
     let bar = draw
@@ -1582,13 +1771,25 @@ fn removed_animated_element_clears_active_animation_state_on_commit() {
             .build();
     });
     assert!(runtime.tick_animations(0.5));
-    assert_eq!(runtime.debug_snapshot_current().active_animation_count, 1);
+    assert_eq!(
+        runtime
+            .diagnostics()
+            .current_snapshot()
+            .active_animation_count,
+        1
+    );
 
     compose(&mut runtime, 200.0, 100.0, |ui, _| {
         ui.stack("root").size(200.0, 100.0).build();
     });
 
-    assert_eq!(runtime.debug_snapshot_current().active_animation_count, 0);
+    assert_eq!(
+        runtime
+            .diagnostics()
+            .current_snapshot()
+            .active_animation_count,
+        0
+    );
 }
 
 #[test]
@@ -1677,7 +1878,7 @@ fn pointer_press_and_release_produces_click_response() {
             .owners
             .pointer_active
             .as_ref()
-            .map(|id| id.as_str()),
+            .map(|id| id.node_id().as_str()),
         Some("demo.button")
     );
     assert_eq!(
@@ -1686,12 +1887,12 @@ fn pointer_press_and_release_produces_click_response() {
             .owners
             .pointer_capture
             .as_ref()
-            .map(|id| id.as_str()),
+            .map(|id| id.node_id().as_str()),
         Some("demo.button")
     );
     runtime.update_pointer(PointerEvent::released_at(10.0, 10.0));
 
-    assert!(runtime.response("button").clicked());
+    assert!(runtime.diagnostics().response("button").clicked());
     assert!(runtime.input.owners.pointer_active.is_none());
     assert!(runtime.input.owners.pointer_capture.is_none());
     assert!(runtime.needs_render());
@@ -1703,21 +1904,36 @@ fn pointer_hover_leave_reports_changed_response() {
     compose(&mut runtime, 100.0, 100.0, |ui, _| {
         ui.rect("button").size(40.0, 30.0).interactive(true).build();
     });
+    runtime.mark_rendered();
 
     runtime.update_pointer(PointerEvent::at(10.0, 10.0));
-    assert!(runtime.response("button").hovered());
+    assert!(runtime.diagnostics().response("button").hovered());
     assert_eq!(
         runtime
             .input
             .owners
             .pointer_hover
             .as_ref()
-            .map(|id| id.as_str()),
+            .map(|id| id.node_id().as_str()),
         Some("demo.button")
     );
+    assert!(runtime.needs_render());
+    assert!(runtime
+        .diagnostics()
+        .current_snapshot()
+        .invalidations
+        .iter()
+        .any(|invalidation| {
+            invalidation.target.id() == "demo"
+                && invalidation.source.kind() == "runtime"
+                && invalidation.source.label() == "pointer_input"
+                && invalidation.flags == DirtyFlags::DRAW
+                && invalidation.pass_flags.request_draw
+                && !invalidation.pass_flags.request_compose_ui
+        }));
 
     runtime.update_pointer(PointerEvent::at(90.0, 90.0));
-    let response = runtime.response("button");
+    let response = runtime.diagnostics().response("button");
     assert!(!response.hovered());
     assert!(response.changed());
 }
@@ -1751,8 +1967,8 @@ fn removed_hovered_element_clears_response_and_interaction_state() {
 
     compose_tree(&mut runtime, Vec::new());
     runtime.update_pointer(PointerEvent::at(10.0, 10.0));
-    assert!(runtime.response("button").hovered());
-    assert!(runtime.interaction("button").hovered);
+    assert!(runtime.diagnostics().response("button").hovered());
+    assert!(runtime.diagnostics().interaction("button").hovered);
 
     state
         .signal(
@@ -1763,11 +1979,11 @@ fn removed_hovered_element_clears_response_and_interaction_state() {
         .set(false);
     compose_tree(&mut runtime, state.take_dirty());
 
-    assert!(runtime.find("button").is_none());
-    assert!(!runtime.response("button").hovered());
-    assert!(!runtime.response("button").pressed());
-    assert!(!runtime.response("button").changed());
-    let interaction = runtime.interaction("button");
+    assert!(runtime.diagnostics().find("button").is_none());
+    assert!(!runtime.diagnostics().response("button").hovered());
+    assert!(!runtime.diagnostics().response("button").pressed());
+    assert!(!runtime.diagnostics().response("button").changed());
+    let interaction = runtime.diagnostics().interaction("button");
     assert!(!interaction.hovered);
     assert!(!interaction.pressed);
     assert!(!interaction.active);
@@ -1800,15 +2016,15 @@ fn press_capture_prevents_other_element_click() {
             .owners
             .drag_owner
             .as_ref()
-            .map(|id| id.as_str()),
+            .map(|id| id.node_id().as_str()),
         Some("demo.a")
     );
     runtime.update_pointer(PointerEvent::released_at(60.0, 10.0));
 
-    assert!(!runtime.response("a").clicked());
-    assert!(!runtime.response("b").clicked());
+    assert!(!runtime.diagnostics().response("a").clicked());
+    assert!(!runtime.diagnostics().response("b").clicked());
     assert!(runtime.input.owners.drag_owner.is_none());
-    assert!(runtime.interaction("a").released);
+    assert!(runtime.diagnostics().interaction("a").released);
 }
 
 #[test]
@@ -1831,8 +2047,8 @@ fn z_index_controls_topmost_hit_test() {
 
     runtime.update_pointer(PointerEvent::at(10.0, 10.0));
 
-    assert!(!runtime.response("low").hovered());
-    assert!(runtime.response("high").hovered());
+    assert!(!runtime.diagnostics().response("low").hovered());
+    assert!(runtime.diagnostics().response("high").hovered());
 }
 
 #[test]
@@ -1875,7 +2091,7 @@ fn event_callback_records_typed_invalidation() {
     runtime.update_pointer(PointerEvent::pressed_at(10.0, 10.0));
     runtime.update_pointer(PointerEvent::released_at(10.0, 10.0));
 
-    let snapshot = runtime.debug_snapshot_current();
+    let snapshot = runtime.diagnostics().current_snapshot();
     assert_eq!(clicks.get(), 1);
     assert!(snapshot.pass_flags.request_compose_ui);
     assert!(snapshot.pass_flags.request_reconcile);
@@ -1912,17 +2128,27 @@ fn event_callback_records_typed_invalidation() {
         ui.rect("button").size(40.0, 30.0).on_click(|| {}).build();
     });
     assert!(runtime
-        .debug_snapshot()
+        .diagnostics()
+        .committed_snapshot()
         .invalidations
         .iter()
         .any(|invalidation| {
             invalidation.target.id() == "demo.button" && invalidation.source.label() == "click"
         }));
-    assert!(runtime.debug_snapshot().events.iter().any(|event| {
-        event.target.id() == "demo.button" && event.command == "click" && event.callback
-    }));
-    assert!(runtime.debug_snapshot_current().invalidations.is_empty());
-    assert!(runtime.debug_snapshot_current().events.is_empty());
+    assert!(runtime
+        .diagnostics()
+        .committed_snapshot()
+        .events
+        .iter()
+        .any(|event| {
+            event.target.id() == "demo.button" && event.command == "click" && event.callback
+        }));
+    assert!(runtime
+        .diagnostics()
+        .current_snapshot()
+        .invalidations
+        .is_empty());
+    assert!(runtime.diagnostics().current_snapshot().events.is_empty());
 }
 
 #[test]
@@ -1940,7 +2166,7 @@ fn focus_callback_records_focus_invalidation_target() {
 
     runtime.update_pointer(PointerEvent::pressed_at(5.0, 5.0));
 
-    let snapshot = runtime.debug_snapshot_current();
+    let snapshot = runtime.diagnostics().current_snapshot();
     assert_eq!(focused.get(), Some(true));
     assert!(snapshot.events.iter().any(|event| {
         event.raw_event == "focus"
@@ -1979,7 +2205,7 @@ fn event_trace_records_commands_without_callbacks() {
     runtime.update_pointer(PointerEvent::pressed_at(10.0, 10.0));
     runtime.update_pointer(PointerEvent::released_at(10.0, 10.0));
 
-    let snapshot = runtime.debug_snapshot_current();
+    let snapshot = runtime.diagnostics().current_snapshot();
     assert!(snapshot.events.iter().any(|event| {
         event.raw_event == "pointer"
             && event.target.role() == "node"
@@ -1988,7 +2214,15 @@ fn event_trace_records_commands_without_callbacks() {
             && !event.callback
             && event.invalidation.is_none()
     }));
-    assert!(snapshot.invalidations.is_empty());
+    assert!(!snapshot.invalidations.iter().any(|invalidation| {
+        invalidation.target.id() == "demo.button" && invalidation.source.kind() == "event"
+    }));
+    assert!(snapshot.invalidations.iter().any(|invalidation| {
+        invalidation.target.id() == "demo"
+            && invalidation.source.kind() == "runtime"
+            && invalidation.source.label() == "pointer_input"
+            && invalidation.flags == DirtyFlags::DRAW
+    }));
 }
 
 #[test]
@@ -2019,7 +2253,7 @@ fn frame_pointer_event_queue_executes_commands_after_collection() {
         },
     );
 
-    let snapshot = runtime.debug_snapshot();
+    let snapshot = runtime.diagnostics().committed_snapshot();
     assert_eq!(clicks.get(), 1);
     assert!(snapshot.events.iter().any(|event| {
         event.raw_event == "pointer"
@@ -2077,11 +2311,15 @@ fn signal_dirty_records_enter_typed_invalidations() {
 
     let dirty = state.take_dirty();
     assert_eq!(dirty.len(), 1);
-    assert_eq!(dirty[0].id, "page.nav");
-    assert_eq!(dirty[0].source.as_deref(), Some("selected"));
+    assert_eq!(dirty[0].id(), "page.nav");
+    assert_eq!(dirty[0].source(), Some("selected"));
+    assert_eq!(
+        dirty[0].source_key().map(SignalKey::as_str),
+        Some("selected")
+    );
 
     compose(&mut runtime, dirty);
-    let snapshot = runtime.debug_snapshot();
+    let snapshot = runtime.diagnostics().committed_snapshot();
     let signal_invalidation = snapshot
         .invalidations
         .iter()
@@ -2094,6 +2332,10 @@ fn signal_dirty_records_enter_typed_invalidations() {
                 && invalidation.source.label() == "selected"
         })
         .expect("signal dirty should produce typed invalidation");
+    assert_eq!(
+        signal_invalidation.source,
+        InvalidationSource::Signal(SignalKey::static_str("selected"))
+    );
     assert!(signal_invalidation.pass_flags.request_compose_ui);
     assert!(signal_invalidation.pass_flags.request_reconcile);
     assert!(signal_invalidation.pass_flags.request_draw);
@@ -2144,14 +2386,14 @@ fn focused_element_receives_keyboard_input() {
     });
 
     assert_eq!(text.borrow().as_str(), "A");
-    assert_eq!(runtime.focused_id(), Some("demo.input"));
+    assert_eq!(runtime.diagnostics().focused_id(), Some("demo.input"));
     assert_eq!(
         runtime
             .input
             .owners
             .keyboard_focus
             .as_ref()
-            .map(|id| id.as_str()),
+            .map(|id| id.node_id().as_str()),
         Some("demo.input")
     );
     assert_eq!(
@@ -2160,7 +2402,7 @@ fn focused_element_receives_keyboard_input() {
             .owners
             .text_focus
             .as_ref()
-            .map(|id| id.as_str()),
+            .map(|id| id.node_id().as_str()),
         Some("demo.input")
     );
     assert_eq!(
@@ -2169,10 +2411,10 @@ fn focused_element_receives_keyboard_input() {
             .owners
             .ime_owner
             .as_ref()
-            .map(|id| id.as_str()),
+            .map(|id| id.node_id().as_str()),
         Some("demo.input")
     );
-    let snapshot = runtime.debug_snapshot_current();
+    let snapshot = runtime.diagnostics().current_snapshot();
     assert!(snapshot.events.iter().any(|event| {
         event.raw_event == "focus"
             && event.target.role() == "focus"
@@ -2207,6 +2449,130 @@ fn focused_element_receives_keyboard_input() {
 }
 
 #[test]
+fn debug_snapshot_reports_separate_input_owners() {
+    let mut runtime = Runtime::new("demo");
+
+    compose(&mut runtime, 240.0, 120.0, |ui, _| {
+        ui.rect("input")
+            .position(0.0, 0.0)
+            .size(80.0, 30.0)
+            .on_text_input(|_| {})
+            .build();
+        ui.rect("scroll")
+            .position(0.0, 50.0)
+            .size(120.0, 50.0)
+            .on_scroll(|_| {})
+            .build();
+        ui.rect("drag")
+            .position(140.0, 0.0)
+            .size(80.0, 40.0)
+            .on_drag(|_| {})
+            .build();
+    });
+
+    runtime.update_pointer(PointerEvent::pressed_at(10.0, 10.0));
+    runtime.update_pointer(PointerEvent::released_at(10.0, 10.0));
+    runtime.update_pointer(PointerEvent::at(10.0, 60.0));
+    runtime.update_scroll(ScrollEvent { x: 0.0, y: 4.0 });
+
+    let snapshot = runtime.diagnostics().current_snapshot();
+    assert_eq!(snapshot.focused_id.as_deref(), Some("demo.input"));
+    assert_eq!(snapshot.keyboard_focus_id.as_deref(), Some("demo.input"));
+    assert_eq!(snapshot.text_focus_id.as_deref(), Some("demo.input"));
+    assert_eq!(snapshot.ime_owner_id.as_deref(), Some("demo.input"));
+    assert_eq!(snapshot.pointer_hover_id.as_deref(), Some("demo.scroll"));
+    assert_eq!(snapshot.hovered_id.as_deref(), Some("demo.scroll"));
+    assert_eq!(snapshot.scroll_owner_id.as_deref(), Some("demo.scroll"));
+    assert_eq!(
+        snapshot.hovered_node_id.as_ref().map(NodeId::as_str),
+        Some("demo.scroll")
+    );
+    assert_eq!(
+        snapshot
+            .input_owners
+            .keyboard_focus
+            .as_ref()
+            .map(NodeId::as_str),
+        Some("demo.input")
+    );
+    assert_eq!(
+        snapshot
+            .input_owners
+            .text_focus
+            .as_ref()
+            .map(NodeId::as_str),
+        Some("demo.input")
+    );
+    assert_eq!(
+        snapshot.input_owners.ime_owner.as_ref().map(NodeId::as_str),
+        Some("demo.input")
+    );
+    assert_eq!(
+        snapshot
+            .input_owners
+            .pointer_hover
+            .as_ref()
+            .map(NodeId::as_str),
+        Some("demo.scroll")
+    );
+    assert_eq!(
+        snapshot
+            .input_owners
+            .scroll_owner
+            .as_ref()
+            .map(NodeId::as_str),
+        Some("demo.scroll")
+    );
+    assert_eq!(snapshot.active_id, None);
+    assert_eq!(snapshot.pointer_active_id, None);
+    assert_eq!(snapshot.pointer_capture_id, None);
+    assert_eq!(snapshot.drag_owner_id, None);
+    assert_eq!(snapshot.input_owners.pointer_active, None);
+    assert_eq!(snapshot.input_owners.pointer_capture, None);
+    assert_eq!(snapshot.input_owners.drag_owner, None);
+
+    runtime.update_pointer(PointerEvent::pressed_at(150.0, 10.0));
+    runtime.update_pointer(PointerEvent::dragged_to(160.0, 20.0, 10.0, 10.0));
+
+    let snapshot = runtime.diagnostics().current_snapshot();
+    assert_eq!(snapshot.focused_id, None);
+    assert_eq!(snapshot.keyboard_focus_id, None);
+    assert_eq!(snapshot.text_focus_id, None);
+    assert_eq!(snapshot.ime_owner_id, None);
+    assert_eq!(snapshot.active_id.as_deref(), Some("demo.drag"));
+    assert_eq!(snapshot.pointer_active_id.as_deref(), Some("demo.drag"));
+    assert_eq!(snapshot.pointer_capture_id.as_deref(), Some("demo.drag"));
+    assert_eq!(snapshot.drag_owner_id.as_deref(), Some("demo.drag"));
+    assert_eq!(snapshot.input_owners.keyboard_focus, None);
+    assert_eq!(snapshot.input_owners.text_focus, None);
+    assert_eq!(snapshot.input_owners.ime_owner, None);
+    assert_eq!(
+        snapshot
+            .input_owners
+            .pointer_active
+            .as_ref()
+            .map(NodeId::as_str),
+        Some("demo.drag")
+    );
+    assert_eq!(
+        snapshot
+            .input_owners
+            .pointer_capture
+            .as_ref()
+            .map(NodeId::as_str),
+        Some("demo.drag")
+    );
+    assert_eq!(
+        snapshot
+            .input_owners
+            .drag_owner
+            .as_ref()
+            .map(NodeId::as_str),
+        Some("demo.drag")
+    );
+}
+
+#[test]
 fn focused_non_text_element_does_not_receive_text_input() {
     let text = Rc::new(RefCell::new(String::new()));
     let callback_text = text.clone();
@@ -2229,8 +2595,8 @@ fn focused_non_text_element_does_not_receive_text_input() {
     });
 
     runtime.update_pointer(PointerEvent::pressed_at(5.0, 5.0));
-    assert_eq!(runtime.focused_id(), Some("demo.button"));
-    assert_eq!(runtime.text_focused_id(), None);
+    assert_eq!(runtime.diagnostics().focused_id(), Some("demo.button"));
+    assert_eq!(runtime.diagnostics().text_focused_id(), None);
     assert!(runtime.has_keyboard_capture());
 
     let changed = runtime.update_keyboard(KeyboardEvent {
@@ -2259,7 +2625,7 @@ fn frame_input_pass_clears_text_focus_before_keyboard_dispatch() {
     });
 
     runtime.update_pointer(PointerEvent::pressed_at(5.0, 5.0));
-    assert_eq!(runtime.text_focused_id(), Some("demo.input"));
+    assert_eq!(runtime.diagnostics().text_focused_id(), Some("demo.input"));
 
     runtime.frame(
         FrameInput::new(Screen::new(140.0, 60.0), 0.0)
@@ -2277,8 +2643,8 @@ fn frame_input_pass_clears_text_focus_before_keyboard_dispatch() {
         },
     );
 
-    assert_eq!(runtime.focused_id(), None);
-    assert_eq!(runtime.text_focused_id(), None);
+    assert_eq!(runtime.diagnostics().focused_id(), None);
+    assert_eq!(runtime.diagnostics().text_focused_id(), None);
     assert_eq!(text.borrow().as_str(), "");
 }
 
@@ -2316,8 +2682,8 @@ fn removed_focused_text_element_clears_keyboard_and_ime_owners() {
 
     compose_tree(&mut runtime, Vec::new());
     runtime.update_pointer(PointerEvent::pressed_at(5.0, 5.0));
-    assert_eq!(runtime.focused_id(), Some("demo.input"));
-    assert_eq!(runtime.text_focused_id(), Some("demo.input"));
+    assert_eq!(runtime.diagnostics().focused_id(), Some("demo.input"));
+    assert_eq!(runtime.diagnostics().text_focused_id(), Some("demo.input"));
     assert!(runtime.focused_ime_rect().is_some());
     assert!(runtime.has_keyboard_capture());
 
@@ -2330,11 +2696,41 @@ fn removed_focused_text_element_clears_keyboard_and_ime_owners() {
         .set(false);
     compose_tree(&mut runtime, state.take_dirty());
 
-    assert!(runtime.find("input").is_none());
-    assert_eq!(runtime.focused_id(), None);
-    assert_eq!(runtime.text_focused_id(), None);
+    assert!(runtime.diagnostics().find("input").is_none());
+    assert_eq!(runtime.diagnostics().focused_id(), None);
+    assert_eq!(runtime.diagnostics().text_focused_id(), None);
     assert_eq!(runtime.focused_ime_rect(), None);
     assert!(!runtime.has_keyboard_capture());
+}
+
+#[test]
+fn focused_ime_rect_tracks_committed_layout_after_recompose() {
+    let mut runtime = Runtime::new("demo");
+    let compose_input = |runtime: &mut Runtime, x: f32| {
+        compose(runtime, 160.0, 80.0, move |ui, _| {
+            ui.rect("input")
+                .position(x, 10.0)
+                .size(80.0, 24.0)
+                .ime_rect(3.0, 4.0, 8.0, 16.0)
+                .on_text_input(|_| {})
+                .build();
+        });
+    };
+
+    compose_input(&mut runtime, 4.0);
+    runtime.update_pointer(PointerEvent::pressed_at(8.0, 14.0));
+    assert_eq!(
+        runtime.focused_ime_rect(),
+        Some(LayoutRect::new(7.0, 14.0, 8.0, 16.0))
+    );
+
+    compose_input(&mut runtime, 30.0);
+
+    assert_eq!(runtime.diagnostics().text_focused_id(), Some("demo.input"));
+    assert_eq!(
+        runtime.focused_ime_rect(),
+        Some(LayoutRect::new(33.0, 14.0, 8.0, 16.0))
+    );
 }
 
 #[test]
@@ -2362,10 +2758,10 @@ fn scroll_dispatches_to_topmost_scrollable_element() {
             .owners
             .scroll_owner
             .as_ref()
-            .map(|id| id.as_str()),
+            .map(|id| id.node_id().as_str()),
         Some("demo.scroll")
     );
-    let snapshot = runtime.debug_snapshot_current();
+    let snapshot = runtime.diagnostics().current_snapshot();
     assert!(snapshot.events.iter().any(|event| {
         event.raw_event == "scroll"
             && event.target.role() == "scroll"
@@ -2451,8 +2847,8 @@ fn fullscreen_modal_layer_blocks_underlying_hits() {
 
     assert_eq!(under_clicks.get(), 0);
     assert_eq!(modal_clicks.get(), 1);
-    assert!(!runtime.response("under").hovered());
-    assert!(runtime.response("modal.backdrop").clicked());
+    assert!(!runtime.diagnostics().response("under").hovered());
+    assert!(runtime.diagnostics().response("modal.backdrop").clicked());
 }
 
 #[test]
@@ -2473,6 +2869,30 @@ fn timer_callback_runs_after_elapsed_duration() {
     assert!(!runtime.tick_timers(0.05));
     assert!(runtime.tick_timers(0.05));
     assert!(fired.get());
+
+    let snapshot = runtime.diagnostics().current_snapshot();
+    assert!(snapshot.pass_flags.request_compose_ui);
+    assert!(snapshot.invalidations.iter().any(|invalidation| {
+        matches!(
+            &invalidation.target,
+            InvalidationTarget::Node(node) if node.as_str() == "demo.timer"
+        ) && invalidation.target.kind() == "node"
+            && invalidation.source.kind() == "timer"
+            && invalidation.source.label() == "timer"
+    }));
+    assert!(snapshot.events.iter().any(|event| {
+        event.raw_event == "timer"
+            && event.target.role() == "node"
+            && event.target.id() == "demo.timer"
+            && event.command == "timer"
+            && event.callback
+            && event.invalidation.as_ref().is_some_and(|invalidation| {
+                matches!(
+                    &invalidation.target,
+                    InvalidationTarget::Node(node) if node.as_str() == "demo.timer"
+                ) && invalidation.source.kind() == "timer"
+            })
+    }));
 }
 
 #[test]
@@ -2485,13 +2905,19 @@ fn removed_timer_element_clears_timer_state_on_commit() {
             .build();
     });
     assert!(!runtime.tick_timers(0.1));
-    assert!(runtime.timing.timers.contains_key("demo.timer"));
+    assert!(runtime
+        .timing
+        .timers
+        .contains_key(&NodeId::new("demo.timer")));
 
     compose(&mut runtime, 100.0, 100.0, |ui, _| {
         ui.stack("root").size(100.0, 100.0).build();
     });
 
-    assert!(!runtime.timing.timers.contains_key("demo.timer"));
+    assert!(!runtime
+        .timing
+        .timers
+        .contains_key(&NodeId::new("demo.timer")));
 }
 
 fn assert_frame(frame: LayoutRect, x: f32, y: f32, width: f32, height: f32) {

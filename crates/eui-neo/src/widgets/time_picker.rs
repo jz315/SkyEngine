@@ -5,6 +5,7 @@ use std::rc::Rc;
 
 use rustc_hash::FxHashMap;
 
+use crate::runtime::{LayerKind, NodeId};
 use crate::Color;
 
 use super::super::{
@@ -18,8 +19,8 @@ type TimeChangeCallback = Rc<RefCell<Box<dyn FnMut(i32, i32)>>>;
 type OpenChangeCallback = Rc<RefCell<Box<dyn FnMut(bool)>>>;
 
 thread_local! {
-    static TIME_DRAFTS: RefCell<FxHashMap<String, TimeDraft>> = RefCell::new(FxHashMap::default());
-    static TIME_DRAG_STATES: RefCell<FxHashMap<String, DragState>> = RefCell::new(FxHashMap::default());
+    static TIME_DRAFTS: RefCell<FxHashMap<NodeId, TimeDraft>> = RefCell::new(FxHashMap::default());
+    static TIME_DRAG_STATES: RefCell<FxHashMap<NodeId, DragState>> = RefCell::new(FxHashMap::default());
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -234,6 +235,7 @@ impl<'ui> TimePickerBuilder<'ui> {
 
     pub fn build(self) -> Response {
         let id = self.id.clone();
+        let state_id = NodeId::new(self.ui.resolve_id(&id));
         let panel_width = self.width.min((self.screen_width - 48.0).max(0.0));
         let panel_height = self.height.min((self.screen_height - 48.0).max(0.0));
         let panel_x = 24.0_f32.max((self.screen_width - panel_width) * 0.5);
@@ -241,7 +243,7 @@ impl<'ui> TimePickerBuilder<'ui> {
         let visible = if self.open { 1.0 } else { 0.0 };
         let panel_scale = if self.open { 1.0 } else { 0.965 };
         let panel_offset_y = if self.open { 0.0 } else { 14.0 };
-        let draft = sync_time_draft(&id, self.open, self.hour, self.minute);
+        let draft = sync_time_draft(&state_id, self.open, self.hour, self.minute);
         let open_change = self.on_open_change.clone();
 
         if self.open {
@@ -260,6 +262,7 @@ impl<'ui> TimePickerBuilder<'ui> {
 
         popover(self.ui, id.clone())
             .open(self.open)
+            .layer_kind(LayerKind::Modal)
             .fallback_anchor(LayoutRect::new(panel_x, panel_y, 0.0, 0.0))
             .placement(PopoverPlacement::BottomStart)
             .gap(0.0)
@@ -280,6 +283,7 @@ impl<'ui> TimePickerBuilder<'ui> {
                         time_panel(
                             ui,
                             &id,
+                            state_id.clone(),
                             panel_width,
                             panel_height,
                             self.open,
@@ -307,6 +311,7 @@ pub fn time_picker(ui: &mut Ui, id: impl Into<String>) -> TimePickerBuilder<'_> 
 fn time_panel(
     ui: &mut Ui,
     id: &str,
+    state_id: NodeId,
     width: f32,
     height: f32,
     open: bool,
@@ -358,7 +363,7 @@ fn time_panel(
         .color(style.text)
         .build();
 
-    let done_id = id.to_string();
+    let done_state_id = state_id.clone();
     let done_on_change = on_change.clone();
     let done_on_open_change = on_open_change.clone();
     ui.rect(format!("{id}.done.bg"))
@@ -373,7 +378,7 @@ fn time_panel(
         .radius(15.0)
         .disabled(!open)
         .on_click(move || {
-            let draft = time_draft(&done_id);
+            let draft = time_draft(&done_state_id);
             if draft.hour != committed_hour || draft.minute != committed_minute {
                 call_time_change(&done_on_change, draft.hour, draft.minute);
             }
@@ -398,6 +403,7 @@ fn time_panel(
         time_wheel_column(
             ui,
             id,
+            state_id.clone(),
             column,
             x,
             column_y,
@@ -417,6 +423,7 @@ fn time_panel(
 fn time_wheel_column(
     ui: &mut Ui,
     id: &str,
+    state_id: NodeId,
     column: i32,
     x: f32,
     y: f32,
@@ -430,6 +437,7 @@ fn time_wheel_column(
     minute_step: i32,
 ) {
     let column_id = format!("{id}.column.{column}");
+    let column_state_id = NodeId::new(ui.resolve_id(&column_id));
     let value = time_column_value(column, draft.hour, draft.minute, minute_step);
 
     ui.rect(format!("{column_id}.bg"))
@@ -448,11 +456,11 @@ fn time_wheel_column(
         .radius(11.0)
         .build();
 
-    let press_column_id = column_id.clone();
-    let press_draft_id = id.to_string();
-    let drag_column_id = column_id.clone();
-    let drag_draft_id = id.to_string();
-    let scroll_draft_id = id.to_string();
+    let press_column_id = column_state_id.clone();
+    let press_draft_id = state_id.clone();
+    let drag_column_id = column_state_id;
+    let drag_draft_id = state_id.clone();
+    let scroll_draft_id = state_id;
     ui.rect(format!("{column_id}.hit"))
         .x(x)
         .y(y)
@@ -535,10 +543,10 @@ fn time_wheel_column(
     }
 }
 
-fn sync_time_draft(id: &str, open: bool, hour: i32, minute: i32) -> TimeDraft {
+fn sync_time_draft(id: &NodeId, open: bool, hour: i32, minute: i32) -> TimeDraft {
     TIME_DRAFTS.with(|drafts| {
         let mut drafts = drafts.borrow_mut();
-        let draft = drafts.entry(id.to_string()).or_default();
+        let draft = drafts.entry(id.clone()).or_default();
         if !open || !draft.active {
             draft.hour = hour.clamp(0, 23);
             draft.minute = minute.clamp(0, 59);
@@ -548,18 +556,42 @@ fn sync_time_draft(id: &str, open: bool, hour: i32, minute: i32) -> TimeDraft {
     })
 }
 
-fn time_draft(id: &str) -> TimeDraft {
+fn time_draft(id: &NodeId) -> TimeDraft {
     TIME_DRAFTS.with(|drafts| drafts.borrow().get(id).copied().unwrap_or_default())
 }
 
-fn set_time_drag_state(id: &str, state: DragState) {
+fn set_time_drag_state(id: &NodeId, state: DragState) {
     TIME_DRAG_STATES.with(|states| {
-        states.borrow_mut().insert(id.to_string(), state);
+        states.borrow_mut().insert(id.clone(), state);
     });
 }
 
-fn time_drag_state(id: &str) -> DragState {
+fn time_drag_state(id: &NodeId) -> DragState {
     TIME_DRAG_STATES.with(|states| states.borrow().get(id).copied().unwrap_or_default())
+}
+
+#[cfg(test)]
+pub(super) fn clear_time_picker_state_for_tests() {
+    TIME_DRAFTS.with(|drafts| drafts.borrow_mut().clear());
+    TIME_DRAG_STATES.with(|states| states.borrow_mut().clear());
+}
+
+#[cfg(test)]
+pub(super) fn time_draft_keys_for_tests() -> Vec<NodeId> {
+    TIME_DRAFTS.with(|drafts| {
+        let mut keys: Vec<_> = drafts.borrow().keys().cloned().collect();
+        keys.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        keys
+    })
+}
+
+#[cfg(test)]
+pub(super) fn time_drag_keys_for_tests() -> Vec<NodeId> {
+    TIME_DRAG_STATES.with(|states| {
+        let mut keys: Vec<_> = states.borrow().keys().cloned().collect();
+        keys.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        keys
+    })
 }
 
 fn wrap_value(value: i32, min_value: i32, max_value: i32) -> i32 {
@@ -631,10 +663,10 @@ fn time_item_text(column: i32, value: i32, offset: i32, step: i32) -> String {
     }
 }
 
-fn apply_time_column_value(id: &str, column: i32, value: i32, step: i32) {
+fn apply_time_column_value(id: &NodeId, column: i32, value: i32, step: i32) {
     TIME_DRAFTS.with(|drafts| {
         let mut drafts = drafts.borrow_mut();
-        let draft = drafts.entry(id.to_string()).or_default();
+        let draft = drafts.entry(id.clone()).or_default();
         let mut next_hour = draft.hour.clamp(0, 23);
         let mut next_minute = draft.minute.clamp(0, 59);
         if column == 0 {

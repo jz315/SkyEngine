@@ -77,17 +77,19 @@ mod tests {
     use super::scroll::scrollbar;
     use super::{
         badge, button, checkbox, color_picker, context_menu, date_picker, dialog, dropdown,
-        image_with_style, input, nav_group, popover, progress, radio, segmented, skin_button,
-        slider, switch, tabs, time_picker, toast, PopoverPlacement,
+        image_with_style, input, nav_group, pie_chart, popover, progress, radio, segmented,
+        skin_button, slider, switch, tabs, time_picker, toast, PopoverPlacement,
     };
-    use crate::expert::UiDrawCommand;
-    use crate::test_support::compose;
+    use crate::expert::{
+        DirtyInput, InvalidationTarget, LayerAnchorSource, LayerCollision, LayerKind,
+        LayerLifecycleAction, LayerPlacement, LayerPointerAction, UiDrawCommand,
+    };
+    use crate::test_support::{compose, compose_incremental_dirty};
     use crate::Color;
     use crate::{
-        ButtonSkin, DirtyInput, EdgeInsets, FontRef, FrameInput, ImageFit, ImageRef,
-        InvalidationTarget, KeyboardEvent, LayerAnchorSource, LayerKind, LayerLifecycleAction,
-        LayerPlacement, LayerPointerAction, LayoutRect, NeoSkin, OutsideClickPolicy, PointerEvent,
-        Runtime, Screen, ScrollEvent, Size, Slice, State,
+        ButtonSkin, DirtyFlags, EdgeInsets, FontRef, FrameInput, ImageFit, ImageRef, KeyboardEvent,
+        LayoutRect, NeoSkin, OutsideClickPolicy, PointerEvent, Runtime, Screen, ScrollEvent, Size,
+        Slice, State,
     };
     use std::cell::Cell;
     use std::rc::Rc;
@@ -99,10 +101,10 @@ mod tests {
             button(ui, "start").size(120.0, 40.0).text("Start").build();
         });
 
-        assert!(runtime.find("start").is_some());
-        assert!(runtime.find("start.bg").is_some());
-        assert!(runtime.find("start.content").is_some());
-        assert!(runtime.find("start.text").is_some());
+        assert!(runtime.diagnostics().find("start").is_some());
+        assert!(runtime.diagnostics().find("start.bg").is_some());
+        assert!(runtime.diagnostics().find("start.content").is_some());
+        assert!(runtime.diagnostics().find("start.text").is_some());
     }
 
     #[test]
@@ -124,9 +126,23 @@ mod tests {
             });
         });
 
-        assert_eq!(runtime.find("filter").unwrap().frame.width, 96.0);
-        assert_eq!(runtime.find("primary").unwrap().frame.width, 312.0);
-        assert_eq!(runtime.find("primary.bg").unwrap().frame.width, 312.0);
+        assert_eq!(
+            runtime.diagnostics().find("filter").unwrap().frame.width,
+            96.0
+        );
+        assert_eq!(
+            runtime.diagnostics().find("primary").unwrap().frame.width,
+            312.0
+        );
+        assert_eq!(
+            runtime
+                .diagnostics()
+                .find("primary.bg")
+                .unwrap()
+                .frame
+                .width,
+            312.0
+        );
     }
 
     #[test]
@@ -142,7 +158,10 @@ mod tests {
                 .build();
         });
 
-        assert_eq!(runtime.find("page.bg").unwrap().color, tokens.primary);
+        assert_eq!(
+            runtime.diagnostics().find("page.bg").unwrap().color,
+            tokens.primary
+        );
     }
 
     #[test]
@@ -159,8 +178,19 @@ mod tests {
             });
         });
 
-        assert_eq!(runtime.find("search").unwrap().frame.width, 352.0);
-        assert_eq!(runtime.find("search.hit").unwrap().frame.width, 352.0);
+        assert_eq!(
+            runtime.diagnostics().find("search").unwrap().frame.width,
+            352.0
+        );
+        assert_eq!(
+            runtime
+                .diagnostics()
+                .find("search.hit")
+                .unwrap()
+                .frame
+                .width,
+            352.0
+        );
     }
 
     #[test]
@@ -177,16 +207,16 @@ mod tests {
             });
         });
 
-        let ready = runtime.find("ready").unwrap().frame;
+        let ready = runtime.diagnostics().find("ready").unwrap().frame;
         assert!(ready.width > 48.0);
         assert!(ready.width < 120.0);
         assert_eq!(
-            runtime.find("state").unwrap().frame.width,
+            runtime.diagnostics().find("state").unwrap().frame.width,
             420.0 - ready.width - 10.0
         );
         assert_eq!(
-            runtime.find("state.bg").unwrap().frame.width,
-            runtime.find("state").unwrap().frame.width
+            runtime.diagnostics().find("state.bg").unwrap().frame.width,
+            runtime.diagnostics().find("state").unwrap().frame.width
         );
     }
 
@@ -197,8 +227,58 @@ mod tests {
             progress(ui, "loading").size(200.0, 10.0).value(2.0).build();
         });
 
-        let fill = runtime.find("loading.fill").unwrap();
+        let fill = runtime.diagnostics().find("loading.fill").unwrap();
         assert_eq!(fill.frame.width, 200.0);
+    }
+
+    #[test]
+    fn pie_chart_animation_cache_uses_resolved_node_identity() {
+        super::pie_chart::clear_pie_animation_state_for_tests();
+
+        let mut left = Runtime::new("left");
+        compose(&mut left, 240.0, 260.0, |ui, _| {
+            pie_chart(ui, "mix").values([0.5, 0.3, 0.2]).build();
+        });
+
+        let mut right = Runtime::new("right");
+        compose(&mut right, 240.0, 260.0, |ui, _| {
+            pie_chart(ui, "mix").values([0.1, 0.6, 0.3]).build();
+        });
+
+        let keys = super::pie_chart::pie_animation_keys_for_tests();
+        assert!(keys.iter().any(|key| key.as_str() == "left.mix"));
+        assert!(keys.iter().any(|key| key.as_str() == "right.mix"));
+        assert!(!keys.iter().any(|key| key.as_str() == "mix"));
+    }
+
+    #[test]
+    fn compact_pie_chart_keeps_slices_inside_widget_frame() {
+        let mut runtime = Runtime::new("page");
+        compose(&mut runtime, 180.0, 180.0, |ui, _| {
+            pie_chart(ui, "mix")
+                .size(132.0, 132.0)
+                .title("Mix")
+                .values([0.3, 0.5, 0.2])
+                .build();
+        });
+
+        let chart = runtime.diagnostics().find("mix").unwrap().frame;
+        for index in 0..3 {
+            let slice = runtime
+                .diagnostics()
+                .find(&format!("mix.slice.{index}"))
+                .unwrap()
+                .frame;
+            assert!(slice.x >= chart.x, "slice {index} escaped left: {slice:?}");
+            assert!(
+                slice.right() <= chart.right(),
+                "slice {index} escaped right: chart={chart:?} slice={slice:?}"
+            );
+            assert!(
+                slice.bottom() <= chart.bottom(),
+                "slice {index} escaped bottom: chart={chart:?} slice={slice:?}"
+            );
+        }
     }
 
     #[test]
@@ -329,6 +409,28 @@ mod tests {
     }
 
     #[test]
+    fn slider_bounds_cache_uses_resolved_node_identity() {
+        super::slider::clear_slider_bounds_for_tests();
+
+        let mut left = Runtime::new("left");
+        compose(&mut left, 320.0, 80.0, |ui, _| {
+            slider(ui, "volume").size(200.0, 20.0).build();
+        });
+        left.update_pointer(PointerEvent::pressed_at(100.0, 10.0));
+
+        let mut right = Runtime::new("right");
+        compose(&mut right, 320.0, 80.0, |ui, _| {
+            slider(ui, "volume").size(200.0, 20.0).build();
+        });
+        right.update_pointer(PointerEvent::pressed_at(100.0, 10.0));
+
+        let keys = super::slider::slider_bound_keys_for_tests();
+        assert!(keys.iter().any(|key| key.as_str() == "left.volume"));
+        assert!(keys.iter().any(|key| key.as_str() == "right.volume"));
+        assert!(!keys.iter().any(|key| key.as_str() == "volume"));
+    }
+
+    #[test]
     fn input_signal_writes_text_events_to_state() {
         let state = State::new(BoundWidgetState::default());
         let compose_state = state.clone();
@@ -349,6 +451,25 @@ mod tests {
         });
 
         assert_eq!(state.read(|state| state.text.clone()), "Sky");
+    }
+
+    #[test]
+    fn input_state_cache_uses_resolved_node_identity() {
+        super::input::clear_input_states_for_tests();
+        let mut left = Runtime::new("left");
+        compose(&mut left, 320.0, 120.0, |ui, _| {
+            input(ui, "name").value("left").build();
+        });
+
+        let mut right = Runtime::new("right");
+        compose(&mut right, 320.0, 120.0, |ui, _| {
+            input(ui, "name").value("right").build();
+        });
+
+        let keys = super::input::input_state_keys_for_tests();
+        assert!(keys.iter().any(|key| key.as_str() == "left.name"));
+        assert!(keys.iter().any(|key| key.as_str() == "right.name"));
+        assert!(!keys.iter().any(|key| key.as_str() == "name"));
     }
 
     #[test]
@@ -384,7 +505,10 @@ mod tests {
                 PointerEvent::released_at(8.0, 8.0),
             ]),
         );
-        assert_eq!(runtime.text_focused_id(), Some("page.name.hit"));
+        assert_eq!(
+            runtime.diagnostics().text_focused_id(),
+            Some("page.name.hit")
+        );
 
         frame(
             &mut runtime,
@@ -397,14 +521,19 @@ mod tests {
         assert_eq!(state.read(|state| state.text.clone()), "abc");
         assert_eq!(
             runtime
+                .diagnostics()
                 .find("name.text")
                 .expect("input text element should be present")
                 .text,
             "abc"
         );
-        assert_eq!(runtime.debug_snapshot().dirty_ids, vec!["page.name"]);
+        assert_eq!(
+            runtime.diagnostics().committed_snapshot().dirty_ids,
+            vec!["page.name"]
+        );
         assert!(runtime
-            .debug_snapshot()
+            .diagnostics()
+            .committed_snapshot()
             .invalidations
             .iter()
             .any(|invalidation| {
@@ -458,10 +587,24 @@ mod tests {
                 });
         });
 
-        assert_eq!(runtime.find("list").unwrap().frame.width, 120.0);
-        assert_eq!(runtime.find("list.viewport").unwrap().frame.height, 80.0);
-        assert_eq!(runtime.find("list.content").unwrap().frame.y, -24.0);
-        assert!(runtime.find("list.scrollbar").is_some());
+        assert_eq!(
+            runtime.diagnostics().find("list").unwrap().frame.width,
+            120.0
+        );
+        assert_eq!(
+            runtime
+                .diagnostics()
+                .find("list.viewport")
+                .unwrap()
+                .frame
+                .height,
+            80.0
+        );
+        assert_eq!(
+            runtime.diagnostics().find("list.content").unwrap().frame.y,
+            -24.0
+        );
+        assert!(runtime.diagnostics().find("list.scrollbar").is_some());
 
         runtime.update_pointer(PointerEvent::at(10.0, 10.0));
         runtime.update_scroll(ScrollEvent { x: 0.0, y: -2.0 });
@@ -522,10 +665,29 @@ mod tests {
             });
         }
 
-        assert_eq!(runtime.find("list.viewport").unwrap().frame.height, 80.0);
-        assert_eq!(runtime.find("list.content").unwrap().frame.height, 150.0);
-        assert_eq!(runtime.find("list.content").unwrap().frame.y, -24.0);
-        assert!(runtime.find("list.scrollbar").is_some());
+        assert_eq!(
+            runtime
+                .diagnostics()
+                .find("list.viewport")
+                .unwrap()
+                .frame
+                .height,
+            80.0
+        );
+        assert_eq!(
+            runtime
+                .diagnostics()
+                .find("list.content")
+                .unwrap()
+                .frame
+                .height,
+            150.0
+        );
+        assert_eq!(
+            runtime.diagnostics().find("list.content").unwrap().frame.y,
+            -24.0
+        );
+        assert!(runtime.diagnostics().find("list.scrollbar").is_some());
 
         runtime.update_pointer(PointerEvent::at(10.0, 10.0));
         runtime.update_scroll(ScrollEvent { x: 0.0, y: -2.0 });
@@ -547,8 +709,16 @@ mod tests {
             });
         });
 
-        assert_eq!(runtime.find("list.viewport").unwrap().frame.height, 80.0);
-        assert!(runtime.find("list.scrollbar").is_none());
+        assert_eq!(
+            runtime
+                .diagnostics()
+                .find("list.viewport")
+                .unwrap()
+                .frame
+                .height,
+            80.0
+        );
+        assert!(runtime.diagnostics().find("list.scrollbar").is_none());
     }
 
     #[test]
@@ -564,8 +734,8 @@ mod tests {
                 });
         });
 
-        let viewport = runtime.find("panel.viewport").unwrap().frame;
-        let scrollbar = runtime.find("panel.scrollbar").unwrap().frame;
+        let viewport = runtime.diagnostics().find("panel.viewport").unwrap().frame;
+        let scrollbar = runtime.diagnostics().find("panel.scrollbar").unwrap().frame;
 
         assert_eq!(viewport.x, 10.0);
         assert_eq!(viewport.y, 10.0);
@@ -597,11 +767,33 @@ mod tests {
                 });
         });
 
-        assert_eq!(runtime.find("strip").unwrap().frame.width, 140.0);
-        assert_eq!(runtime.find("strip.viewport").unwrap().frame.width, 140.0);
-        assert_eq!(runtime.find("strip.content").unwrap().frame.x, -30.0);
-        assert_eq!(runtime.find("strip.content").unwrap().frame.width, 260.0);
-        assert!(runtime.find("strip.scrollbar").is_some());
+        assert_eq!(
+            runtime.diagnostics().find("strip").unwrap().frame.width,
+            140.0
+        );
+        assert_eq!(
+            runtime
+                .diagnostics()
+                .find("strip.viewport")
+                .unwrap()
+                .frame
+                .width,
+            140.0
+        );
+        assert_eq!(
+            runtime.diagnostics().find("strip.content").unwrap().frame.x,
+            -30.0
+        );
+        assert_eq!(
+            runtime
+                .diagnostics()
+                .find("strip.content")
+                .unwrap()
+                .frame
+                .width,
+            260.0
+        );
+        assert!(runtime.diagnostics().find("strip.scrollbar").is_some());
 
         runtime.update_pointer(PointerEvent::at(10.0, 70.0));
         runtime.update_scroll(ScrollEvent { x: -2.0, y: 0.0 });
@@ -622,8 +814,8 @@ mod tests {
                 });
         });
 
-        let viewport = runtime.find("panel.viewport").unwrap().frame;
-        let scrollbar = runtime.find("panel.scrollbar").unwrap().frame;
+        let viewport = runtime.diagnostics().find("panel.viewport").unwrap().frame;
+        let scrollbar = runtime.diagnostics().find("panel.scrollbar").unwrap().frame;
 
         assert_eq!(viewport.x, 10.0);
         assert_eq!(viewport.y, 10.0);
@@ -657,16 +849,60 @@ mod tests {
                 });
         });
 
-        assert_eq!(runtime.find("grid").unwrap().frame.width, 160.0);
-        assert_eq!(runtime.find("grid.viewport").unwrap().frame.width, 160.0);
-        assert_eq!(runtime.find("grid.viewport").unwrap().frame.height, 100.0);
-        assert_eq!(runtime.find("grid.content").unwrap().frame.x, -24.0);
-        assert_eq!(runtime.find("grid.content").unwrap().frame.y, -40.0);
-        assert_eq!(runtime.find("grid.content").unwrap().frame.width, 320.0);
-        assert_eq!(runtime.find("grid.content").unwrap().frame.height, 260.0);
-        assert!(runtime.find("grid.scrollbar.x").is_some());
-        assert!(runtime.find("grid.scrollbar.y").is_some());
-        assert!(runtime.find("grid.scrollbar.corner").is_some());
+        assert_eq!(
+            runtime.diagnostics().find("grid").unwrap().frame.width,
+            160.0
+        );
+        assert_eq!(
+            runtime
+                .diagnostics()
+                .find("grid.viewport")
+                .unwrap()
+                .frame
+                .width,
+            160.0
+        );
+        assert_eq!(
+            runtime
+                .diagnostics()
+                .find("grid.viewport")
+                .unwrap()
+                .frame
+                .height,
+            100.0
+        );
+        assert_eq!(
+            runtime.diagnostics().find("grid.content").unwrap().frame.x,
+            -24.0
+        );
+        assert_eq!(
+            runtime.diagnostics().find("grid.content").unwrap().frame.y,
+            -40.0
+        );
+        assert_eq!(
+            runtime
+                .diagnostics()
+                .find("grid.content")
+                .unwrap()
+                .frame
+                .width,
+            320.0
+        );
+        assert_eq!(
+            runtime
+                .diagnostics()
+                .find("grid.content")
+                .unwrap()
+                .frame
+                .height,
+            260.0
+        );
+        assert!(runtime.diagnostics().find("grid.scrollbar.x").is_some());
+        assert!(runtime.diagnostics().find("grid.scrollbar.y").is_some());
+        assert!(runtime
+            .diagnostics()
+            .find("grid.scrollbar.corner")
+            .is_some());
 
         runtime.update_pointer(PointerEvent::at(10.0, 10.0));
         runtime.update_scroll(ScrollEvent { x: -2.0, y: -1.0 });
@@ -687,10 +923,22 @@ mod tests {
                 });
         });
 
-        let viewport = runtime.find("panel.viewport").unwrap().frame;
-        let scrollbar_x = runtime.find("panel.scrollbar.x").unwrap().frame;
-        let scrollbar_y = runtime.find("panel.scrollbar.y").unwrap().frame;
-        let corner = runtime.find("panel.scrollbar.corner").unwrap().frame;
+        let viewport = runtime.diagnostics().find("panel.viewport").unwrap().frame;
+        let scrollbar_x = runtime
+            .diagnostics()
+            .find("panel.scrollbar.x")
+            .unwrap()
+            .frame;
+        let scrollbar_y = runtime
+            .diagnostics()
+            .find("panel.scrollbar.y")
+            .unwrap()
+            .frame;
+        let corner = runtime
+            .diagnostics()
+            .find("panel.scrollbar.corner")
+            .unwrap()
+            .frame;
 
         assert_eq!(viewport.x, 10.0);
         assert_eq!(viewport.y, 10.0);
@@ -725,13 +973,16 @@ mod tests {
                         });
                 });
         });
-        assert_eq!(runtime.debug_snapshot().layers[0].id, "page.menu");
         assert_eq!(
-            runtime.debug_snapshot().layers[0].anchor_source,
+            runtime.diagnostics().committed_snapshot().layers[0].id,
+            "page.menu"
+        );
+        assert_eq!(
+            runtime.diagnostics().committed_snapshot().layers[0].anchor_source,
             LayerAnchorSource::Missing
         );
         assert_eq!(
-            runtime.debug_snapshot().layers[0].action,
+            runtime.diagnostics().committed_snapshot().layers[0].action,
             LayerLifecycleAction::Created
         );
 
@@ -752,13 +1003,13 @@ mod tests {
                 });
         });
 
-        assert_eq!(runtime.roots().len(), 2);
-        assert_eq!(runtime.roots()[0].id, "page.panel");
-        assert_eq!(runtime.roots()[1].id, "page.menu");
-        assert_eq!(runtime.find("menu").unwrap().frame.x, 20.0);
-        assert_eq!(runtime.find("menu").unwrap().frame.y, 54.0);
-        assert_eq!(runtime.debug_snapshot().layers.len(), 1);
-        let layer = &runtime.debug_snapshot().layers[0];
+        assert_eq!(runtime.diagnostics().roots().len(), 2);
+        assert_eq!(runtime.diagnostics().roots()[0].id, "page.panel");
+        assert_eq!(runtime.diagnostics().roots()[1].id, "page.menu");
+        assert_eq!(runtime.diagnostics().find("menu").unwrap().frame.x, 20.0);
+        assert_eq!(runtime.diagnostics().find("menu").unwrap().frame.y, 54.0);
+        assert_eq!(runtime.diagnostics().committed_snapshot().layers.len(), 1);
+        let layer = &runtime.diagnostics().committed_snapshot().layers[0];
         assert_eq!(layer.id, "page.menu");
         assert_eq!(layer.owner, "page.menu");
         assert_eq!(layer.anchor.as_deref(), Some("page.anchor"));
@@ -775,9 +1026,117 @@ mod tests {
                     ui.rect("anchor").size(50.0, 20.0).build();
                 });
         });
-        assert!(runtime.debug_snapshot().layers.iter().any(|layer| {
-            layer.id == "page.menu" && layer.action == LayerLifecycleAction::Removed
-        }));
+        assert!(runtime
+            .diagnostics()
+            .committed_snapshot()
+            .layers
+            .iter()
+            .any(|layer| {
+                layer.id == "page.menu" && layer.action == LayerLifecycleAction::Removed
+            }));
+    }
+
+    #[test]
+    fn popover_tracks_anchor_inside_scrolled_viewport() {
+        let mut runtime = Runtime::new("page");
+        let frame = |runtime: &mut Runtime, dirty: Vec<DirtyInput>, offset: f32| {
+            compose_incremental_dirty(runtime, 240.0, 160.0, dirty, move |ui, _| {
+                ui.scroll_y("list")
+                    .size(140.0, 80.0)
+                    .content_height(180.0)
+                    .offset(offset)
+                    .content(|ui| {
+                        ui.rect("spacer").size(Size::fill(), 30.0).build();
+                        ui.rect("anchor").size(80.0, 20.0).build();
+                        popover(ui, "menu")
+                            .anchor("anchor")
+                            .fallback_anchor(LayoutRect::new(0.0, 50.0, 80.0, 20.0))
+                            .placement(PopoverPlacement::BottomStart)
+                            .gap(4.0)
+                            .size(90.0, 40.0)
+                            .content(|ui| {
+                                ui.rect("menu.bg").size(Size::fill(), Size::fill()).build();
+                            });
+                    });
+            });
+        };
+
+        frame(&mut runtime, Vec::new(), 0.0);
+        frame(&mut runtime, Vec::new(), 0.0);
+        let anchor_before = runtime.diagnostics().find("anchor").unwrap().frame;
+        let menu_before = runtime.diagnostics().find("menu").unwrap().frame;
+        let menu_bg_before = runtime.diagnostics().find("menu.bg").unwrap().frame;
+
+        frame(
+            &mut runtime,
+            vec![DirtyInput::new(
+                "page.list",
+                DirtyFlags::COMPOSE | DirtyFlags::LAYOUT | DirtyFlags::DRAW,
+            )],
+            30.0,
+        );
+        let anchor_after = runtime.diagnostics().find("anchor").unwrap().frame;
+        let menu_after = runtime.diagnostics().find("menu").unwrap().frame;
+        let menu_bg_after = runtime.diagnostics().find("menu.bg").unwrap().frame;
+
+        assert!((anchor_after.y - (anchor_before.y - 30.0)).abs() < 0.001);
+        assert!(
+            (menu_after.y - (menu_before.y - 30.0)).abs() < 0.001,
+            "popover root should track scrolled anchor: before={menu_before:?} after={menu_after:?}"
+        );
+        assert!(
+            (menu_bg_after.y - (menu_bg_before.y - 30.0)).abs() < 0.001,
+            "popover children should move with the translated root: before={menu_bg_before:?} after={menu_bg_after:?}"
+        );
+    }
+
+    #[test]
+    fn dropdown_popup_uses_nearest_scroll_viewport_as_boundary() {
+        let mut runtime = Runtime::new("page");
+        for _ in 0..2 {
+            compose(&mut runtime, 240.0, 180.0, |ui, _| {
+                ui.scroll_y("list")
+                    .size(160.0, 140.0)
+                    .content_height(220.0)
+                    .content(|ui| {
+                        ui.rect("spacer").size(Size::fill(), 70.0).build();
+                        dropdown(ui, "quality")
+                            .size(120.0, 42.0)
+                            .items(["Low"])
+                            .open(true)
+                            .build();
+                    });
+            });
+        }
+
+        let viewport = runtime.diagnostics().find("list.viewport").unwrap().frame;
+        let field = runtime.diagnostics().find("quality.field").unwrap().frame;
+        let popup = runtime.diagnostics().find("quality.popup").unwrap().frame;
+
+        assert!(
+            popup.y < field.y,
+            "popup should flip above the field: field={field:?} popup={popup:?}"
+        );
+        assert!(
+            popup.y >= viewport.y,
+            "popup should stay inside viewport boundary: viewport={viewport:?} popup={popup:?}"
+        );
+        assert!(
+            popup.bottom() <= viewport.bottom(),
+            "popup should stay inside viewport boundary: viewport={viewport:?} popup={popup:?}"
+        );
+        assert!((popup.x - field.x).abs() < 0.001);
+        assert!((popup.width - field.width).abs() < 0.001);
+
+        let layer = runtime
+            .diagnostics()
+            .committed_snapshot()
+            .layers
+            .iter()
+            .find(|layer| layer.id == "page.quality.popup")
+            .expect("dropdown popup layer should be recorded");
+        assert_eq!(layer.boundary.as_deref(), Some("page.list.viewport"));
+        assert_eq!(layer.collision, LayerCollision::FlipShift);
     }
 
     #[test]
@@ -801,13 +1160,129 @@ mod tests {
                 });
         });
 
-        assert!(runtime.find("menu").is_none());
-        assert_eq!(runtime.debug_snapshot().layers.len(), 1);
-        let layer = &runtime.debug_snapshot().layers[0];
+        assert!(runtime.diagnostics().find("menu").is_none());
+        assert_eq!(runtime.diagnostics().committed_snapshot().layers.len(), 1);
+        let layer = &runtime.diagnostics().committed_snapshot().layers[0];
         assert_eq!(layer.id, "page.menu");
         assert!(!layer.open);
         assert_eq!(layer.anchor_source, LayerAnchorSource::Closed);
         assert_eq!(layer.action, LayerLifecycleAction::Closed);
+    }
+
+    #[test]
+    fn retained_scope_reuse_preserves_root_layer_popover_and_callbacks() {
+        let mut runtime = Runtime::new("page");
+        let menu_clicks = Rc::new(Cell::new(0));
+        let frame = |runtime: &mut Runtime| {
+            let menu_clicks = menu_clicks.clone();
+            runtime.frame_incremental(
+                FrameInput::new(Screen::new(320.0, 180.0), 0.0),
+                Vec::<DirtyInput>::new,
+                move |ui, _| {
+                    ui.column("panel")
+                        .position(20.0, 20.0)
+                        .size(120.0, 80.0)
+                        .content(|ui| {
+                            ui.rect("anchor").size(40.0, 20.0).build();
+                            popover(ui, "menu")
+                                .anchor("anchor")
+                                .fallback_anchor(LayoutRect::new(20.0, 20.0, 40.0, 20.0))
+                                .placement(PopoverPlacement::BottomStart)
+                                .gap(0.0)
+                                .size(80.0, 60.0)
+                                .content(|ui| {
+                                    ui.rect("menu.hit")
+                                        .size(Size::fill(), Size::fill())
+                                        .on_click({
+                                            let menu_clicks = menu_clicks.clone();
+                                            move || menu_clicks.set(menu_clicks.get() + 1)
+                                        })
+                                        .build();
+                                });
+                        });
+                },
+            );
+        };
+
+        frame(&mut runtime);
+        frame(&mut runtime);
+
+        assert!(runtime.retained_compose_stats().reused > 0);
+        assert!(runtime.diagnostics().find("menu.hit").is_some());
+        let layer = runtime
+            .diagnostics()
+            .committed_snapshot()
+            .layers
+            .iter()
+            .find(|layer| layer.id == "page.menu")
+            .expect("popover layer should survive retained reuse");
+        assert_eq!(layer.root, "page.menu");
+        assert_eq!(layer.action, LayerLifecycleAction::Reused);
+
+        runtime.update_pointer(PointerEvent::pressed_at(30.0, 50.0));
+        runtime.update_pointer(PointerEvent::released_at(30.0, 50.0));
+
+        assert_eq!(menu_clicks.get(), 1);
+    }
+
+    #[test]
+    fn retained_scope_reuse_preserves_dialog_roots_and_dismissal_callback() {
+        let mut runtime = Runtime::new("page");
+        let closed = Rc::new(Cell::new(0));
+        let frame = |runtime: &mut Runtime| {
+            let closed = closed.clone();
+            runtime.frame_incremental(
+                FrameInput::new(Screen::new(400.0, 300.0), 0.0),
+                Vec::<DirtyInput>::new,
+                move |ui, _| {
+                    ui.column("host").size(400.0, 300.0).content(|ui| {
+                        dialog(ui, "confirm")
+                            .open(true)
+                            .screen(400.0, 300.0)
+                            .on_close({
+                                let closed = closed.clone();
+                                move || closed.set(closed.get() + 1)
+                            })
+                            .build();
+                    });
+                },
+            );
+        };
+
+        frame(&mut runtime);
+        frame(&mut runtime);
+
+        assert!(runtime.retained_compose_stats().reused > 0);
+        assert!(runtime.diagnostics().find("confirm.backdrop").is_some());
+        assert!(runtime.diagnostics().find("confirm.panel").is_some());
+        let layer = runtime
+            .diagnostics()
+            .committed_snapshot()
+            .layers
+            .iter()
+            .find(|layer| layer.id == "page.confirm.panel")
+            .expect("dialog layer should survive retained reuse");
+        assert_eq!(layer.owner, "page.confirm");
+        assert_eq!(layer.root, "page.confirm.panel");
+        assert_eq!(layer.kind, LayerKind::Modal);
+        assert_eq!(layer.action, LayerLifecycleAction::Reused);
+
+        runtime.update_pointer(PointerEvent::pressed_at(8.0, 8.0));
+        runtime.update_pointer(PointerEvent::released_at(8.0, 8.0));
+
+        assert_eq!(closed.get(), 1);
+        assert_eq!(
+            runtime
+                .diagnostics()
+                .current_snapshot()
+                .layer_dismissals
+                .len(),
+            1
+        );
+        assert_eq!(
+            runtime.diagnostics().current_snapshot().layer_dismissals[0].id,
+            "page.confirm.panel"
+        );
     }
 
     #[test]
@@ -852,10 +1327,10 @@ mod tests {
         assert_eq!(under_clicks.get(), 0);
         assert_eq!(menu_clicks.get(), 0);
         assert_eq!(
-            runtime.debug_snapshot().layers[0].outside_click,
+            runtime.diagnostics().committed_snapshot().layers[0].outside_click,
             OutsideClickPolicy::Block
         );
-        let layer_pointer = &runtime.debug_snapshot_current().layer_pointer[0];
+        let layer_pointer = &runtime.diagnostics().current_snapshot().layer_pointer[0];
         assert_eq!(layer_pointer.action, LayerPointerAction::Blocked);
         assert_eq!(layer_pointer.layer.as_deref(), Some("page.menu"));
         assert_eq!(layer_pointer.policy, OutsideClickPolicy::Block);
@@ -864,7 +1339,7 @@ mod tests {
         runtime.update_pointer(PointerEvent::released_at(30.0, 45.0));
         assert_eq!(under_clicks.get(), 0);
         assert_eq!(menu_clicks.get(), 1);
-        let layer_pointer = &runtime.debug_snapshot_current().layer_pointer[0];
+        let layer_pointer = &runtime.diagnostics().current_snapshot().layer_pointer[0];
         assert_eq!(layer_pointer.action, LayerPointerAction::HitLayer);
         assert_eq!(layer_pointer.hit_layer.as_deref(), Some("page.menu"));
     }
@@ -910,7 +1385,7 @@ mod tests {
         runtime.update_scroll(ScrollEvent { x: 0.0, y: 4.0 });
         assert_eq!(under_scroll.get(), 0.0);
         assert_eq!(menu_scroll.get(), 0.0);
-        let layer_pointer = &runtime.debug_snapshot_current().layer_pointer[0];
+        let layer_pointer = &runtime.diagnostics().current_snapshot().layer_pointer[0];
         assert_eq!(layer_pointer.action, LayerPointerAction::Blocked);
         assert_eq!(layer_pointer.layer.as_deref(), Some("page.menu"));
 
@@ -918,16 +1393,21 @@ mod tests {
         runtime.update_scroll(ScrollEvent { x: 0.0, y: 5.0 });
         assert_eq!(under_scroll.get(), 0.0);
         assert_eq!(menu_scroll.get(), 5.0);
-        let layer_pointer = &runtime.debug_snapshot_current().layer_pointer[0];
+        let layer_pointer = &runtime.diagnostics().current_snapshot().layer_pointer[0];
         assert_eq!(layer_pointer.action, LayerPointerAction::HitLayer);
         assert_eq!(layer_pointer.hit_layer.as_deref(), Some("page.menu"));
-        assert!(runtime.debug_snapshot_current().events.iter().any(|event| {
-            event.raw_event == "scroll"
-                && event.target.role() == "scroll"
-                && event.target.id() == "page.menu.scroll"
-                && event.command == "scroll"
-                && event.callback
-        }));
+        assert!(runtime
+            .diagnostics()
+            .current_snapshot()
+            .events
+            .iter()
+            .any(|event| {
+                event.raw_event == "scroll"
+                    && event.target.role() == "scroll"
+                    && event.target.id() == "page.menu.scroll"
+                    && event.command == "scroll"
+                    && event.callback
+            }));
     }
 
     #[test]
@@ -952,7 +1432,10 @@ mod tests {
             ..KeyboardEvent::default()
         });
         assert_eq!(under_text.borrow().as_str(), "A");
-        assert_eq!(runtime.text_focused_id(), Some("page.under.input"));
+        assert_eq!(
+            runtime.diagnostics().text_focused_id(),
+            Some("page.under.input")
+        );
 
         compose(&mut runtime, 320.0, 180.0, |ui, _| {
             ui.rect("under.input")
@@ -986,8 +1469,8 @@ mod tests {
         });
 
         assert!(runtime.has_keyboard_capture());
-        assert_eq!(runtime.focused_id(), None);
-        assert_eq!(runtime.text_focused_id(), None);
+        assert_eq!(runtime.diagnostics().focused_id(), None);
+        assert_eq!(runtime.diagnostics().text_focused_id(), None);
         assert!(!runtime.update_keyboard(KeyboardEvent {
             text: "B".to_string(),
             ..KeyboardEvent::default()
@@ -996,7 +1479,10 @@ mod tests {
         assert_eq!(menu_text.borrow().as_str(), "");
 
         runtime.update_pointer(PointerEvent::pressed_at(110.0, 50.0));
-        assert_eq!(runtime.text_focused_id(), Some("page.menu.input"));
+        assert_eq!(
+            runtime.diagnostics().text_focused_id(),
+            Some("page.menu.input")
+        );
         assert!(runtime.update_keyboard(KeyboardEvent {
             text: "C".to_string(),
             ..KeyboardEvent::default()
@@ -1015,7 +1501,10 @@ mod tests {
                 .build();
         });
 
-        assert_eq!(runtime.text_focused_id(), Some("page.under.input"));
+        assert_eq!(
+            runtime.diagnostics().text_focused_id(),
+            Some("page.under.input")
+        );
         assert!(runtime.update_keyboard(KeyboardEvent {
             text: "D".to_string(),
             ..KeyboardEvent::default()
@@ -1058,12 +1547,19 @@ mod tests {
         runtime.update_pointer(PointerEvent::released_at(10.0, 10.0));
 
         assert_eq!(under_clicks.get(), 0);
-        assert_eq!(runtime.debug_snapshot_current().layer_dismissals.len(), 1);
-        let dismissal = &runtime.debug_snapshot_current().layer_dismissals[0];
+        assert_eq!(
+            runtime
+                .diagnostics()
+                .current_snapshot()
+                .layer_dismissals
+                .len(),
+            1
+        );
+        let dismissal = &runtime.diagnostics().current_snapshot().layer_dismissals[0];
         assert_eq!(dismissal.id, "page.menu");
         assert_eq!(dismissal.owner, "page.menu");
         assert_eq!(dismissal.policy, OutsideClickPolicy::Close);
-        let layer_pointer = &runtime.debug_snapshot_current().layer_pointer[0];
+        let layer_pointer = &runtime.diagnostics().current_snapshot().layer_pointer[0];
         assert_eq!(layer_pointer.action, LayerPointerAction::Dismissed);
         assert_eq!(layer_pointer.layer.as_deref(), Some("page.menu"));
     }
@@ -1112,18 +1608,27 @@ mod tests {
 
         assert!(!lower_dismissed.get());
         assert_eq!(upper_clicks.get(), 1);
-        assert!(runtime.debug_snapshot_current().layer_dismissals.is_empty());
-        let layer_pointer = &runtime.debug_snapshot_current().layer_pointer[0];
+        assert!(runtime
+            .diagnostics()
+            .current_snapshot()
+            .layer_dismissals
+            .is_empty());
+        let layer_pointer = &runtime.diagnostics().current_snapshot().layer_pointer[0];
         assert_eq!(layer_pointer.action, LayerPointerAction::HitLayer);
         assert_eq!(layer_pointer.layer.as_deref(), Some("page.upper"));
         assert_eq!(layer_pointer.hit_layer.as_deref(), Some("page.upper"));
         assert_eq!(layer_pointer.policy, OutsideClickPolicy::Ignore);
-        assert!(runtime.debug_snapshot_current().events.iter().any(|event| {
-            event.target.role() == "node"
-                && event.target.id() == "page.upper.hit"
-                && event.command == "click"
-                && event.callback
-        }));
+        assert!(runtime
+            .diagnostics()
+            .current_snapshot()
+            .events
+            .iter()
+            .any(|event| {
+                event.target.role() == "node"
+                    && event.target.id() == "page.upper.hit"
+                    && event.command == "click"
+                    && event.callback
+            }));
     }
 
     #[test]
@@ -1146,8 +1651,8 @@ mod tests {
                 });
         });
 
-        assert!(runtime.find("anchor").is_some());
-        assert!(runtime.find("menu").is_none());
+        assert!(runtime.diagnostics().find("anchor").is_some());
+        assert!(runtime.diagnostics().find("menu").is_none());
     }
 
     #[test]
@@ -1288,7 +1793,7 @@ mod tests {
         runtime.update_pointer(PointerEvent::released_at(8.0, 74.0));
 
         assert_eq!(state.read(|state| state.selected), 1);
-        assert_eq!(state.dirty()[0].id, "page.nav");
+        assert_eq!(state.dirty()[0].id(), "page.nav");
     }
 
     #[test]
@@ -1417,9 +1922,12 @@ mod tests {
         );
 
         assert!(state.read(|state| state.open));
-        assert!(runtime.find("quality.popup.surface").is_some());
+        assert!(runtime
+            .diagnostics()
+            .find("quality.popup.surface")
+            .is_some());
         assert_eq!(
-            runtime.debug_snapshot().dirty_ids,
+            runtime.diagnostics().committed_snapshot().dirty_ids,
             vec!["page.quality", "page.quality.popup"]
         );
 
@@ -1453,11 +1961,90 @@ mod tests {
 
         assert_eq!(state.read(|state| state.selected), 1);
         assert!(!state.read(|state| state.open));
-        assert!(runtime.find("quality.popup.surface").is_none());
+        assert!(runtime
+            .diagnostics()
+            .find("quality.popup.surface")
+            .is_none());
         assert_eq!(
-            runtime.debug_snapshot().dirty_ids,
+            runtime.diagnostics().committed_snapshot().dirty_ids,
             vec!["page.quality", "page.quality.popup"]
         );
+
+        runtime.frame_incremental(
+            FrameInput::new(Screen::new(320.0, 220.0), 0.0).pointer_events([
+                PointerEvent::pressed_at(8.0, 8.0),
+                PointerEvent::released_at(8.0, 8.0),
+            ]),
+            || state.take_dirty(),
+            {
+                let state = state.clone();
+                move |ui, _| {
+                    let selected = state.signal(
+                        "selected",
+                        |state| state.selected,
+                        |state, value| state.selected = value,
+                    );
+                    let open = state.signal(
+                        "open",
+                        |state| state.open,
+                        |state, value| state.open = value,
+                    );
+                    dropdown(ui, "quality")
+                        .items(["Low", "Medium", "High"])
+                        .value_signal(selected)
+                        .open_signal(open)
+                        .build();
+                }
+            },
+        );
+
+        assert!(state.read(|state| state.open));
+        assert!(runtime
+            .diagnostics()
+            .find("quality.popup.surface")
+            .is_some());
+        assert!(
+            runtime
+                .diagnostics()
+                .find("quality.item.0")
+                .is_some_and(|element| element.frame.width > 0.0 && element.frame.height > 0.0),
+            "reopened root popover item should be laid out: {:?}",
+            runtime
+                .diagnostics()
+                .find("quality.item.0")
+                .map(|element| element.frame)
+        );
+
+        runtime.frame_incremental(
+            FrameInput::new(Screen::new(320.0, 220.0), 0.0).pointer_events([
+                PointerEvent::pressed_at(16.0, 66.0),
+                PointerEvent::released_at(16.0, 66.0),
+            ]),
+            || state.take_dirty(),
+            {
+                let state = state.clone();
+                move |ui, _| {
+                    let selected = state.signal(
+                        "selected",
+                        |state| state.selected,
+                        |state, value| state.selected = value,
+                    );
+                    let open = state.signal(
+                        "open",
+                        |state| state.open,
+                        |state, value| state.open = value,
+                    );
+                    dropdown(ui, "quality")
+                        .items(["Low", "Medium", "High"])
+                        .value_signal(selected)
+                        .open_signal(open)
+                        .build();
+                }
+            },
+        );
+
+        assert_eq!(state.read(|state| state.selected), 0);
+        assert!(!state.read(|state| state.open));
     }
 
     #[test]
@@ -1496,7 +2083,10 @@ mod tests {
 
         frame(&mut runtime, Vec::new());
         frame(&mut runtime, Vec::new());
-        assert!(runtime.find("quality.popup.surface").is_some());
+        assert!(runtime
+            .diagnostics()
+            .find("quality.popup.surface")
+            .is_some());
 
         frame(
             &mut runtime,
@@ -1507,31 +2097,47 @@ mod tests {
         );
 
         assert!(!state.read(|state| state.open));
-        assert!(runtime.find("quality.popup.surface").is_none());
-        assert_eq!(runtime.debug_snapshot_current().layer_dismissals.len(), 1);
+        assert!(runtime
+            .diagnostics()
+            .find("quality.popup.surface")
+            .is_none());
         assert_eq!(
-            runtime.debug_snapshot_current().layer_dismissals[0].id,
+            runtime
+                .diagnostics()
+                .current_snapshot()
+                .layer_dismissals
+                .len(),
+            1
+        );
+        assert_eq!(
+            runtime.diagnostics().current_snapshot().layer_dismissals[0].id,
             "page.quality.popup"
         );
-        assert!(runtime.debug_snapshot().events.iter().any(|event| {
-            event.target.role() == "layer"
-                && event.target.id() == "page.quality.popup"
-                && matches!(
-                    &event.target,
-                    crate::runtime::EventTargetId::Layer(layer)
-                        if layer.as_str() == "page.quality.popup"
-                )
-                && event.command == "dismiss"
-                && event.callback
-                && event.invalidation.as_ref().is_some_and(|invalidation| {
-                    invalidation.target.kind() == "layer"
-                        && invalidation.target.id() == "page.quality.popup"
-                        && invalidation.source.kind() == "event"
-                        && invalidation.source.label() == "dismiss"
-                })
-        }));
         assert!(runtime
-            .debug_snapshot()
+            .diagnostics()
+            .committed_snapshot()
+            .events
+            .iter()
+            .any(|event| {
+                event.target.role() == "layer"
+                    && event.target.id() == "page.quality.popup"
+                    && matches!(
+                        &event.target,
+                        crate::runtime::EventTargetId::Layer(layer)
+                            if layer.as_str() == "page.quality.popup"
+                    )
+                    && event.command == "dismiss"
+                    && event.callback
+                    && event.invalidation.as_ref().is_some_and(|invalidation| {
+                        invalidation.target.kind() == "layer"
+                            && invalidation.target.id() == "page.quality.popup"
+                            && invalidation.source.kind() == "event"
+                            && invalidation.source.label() == "dismiss"
+                    })
+            }));
+        assert!(runtime
+            .diagnostics()
+            .committed_snapshot()
             .invalidations
             .iter()
             .any(|invalidation| {
@@ -1571,23 +2177,40 @@ mod tests {
 
         assert!(closed.get());
         assert_eq!(under_clicks.get(), 0);
-        assert_eq!(runtime.debug_snapshot_current().layer_dismissals.len(), 1);
-        let dismissal = &runtime.debug_snapshot_current().layer_dismissals[0];
+        assert_eq!(
+            runtime
+                .diagnostics()
+                .current_snapshot()
+                .layer_dismissals
+                .len(),
+            1
+        );
+        let dismissal = &runtime.diagnostics().current_snapshot().layer_dismissals[0];
         assert_eq!(dismissal.id, "page.confirm.panel");
         assert_eq!(dismissal.owner, "page.confirm");
         assert_eq!(dismissal.policy, OutsideClickPolicy::Close);
-        assert!(runtime.debug_snapshot().layers.iter().any(|layer| {
-            layer.id == "page.confirm.panel"
-                && layer.owner == "page.confirm"
-                && layer.kind == LayerKind::Modal
-                && layer.outside_click == OutsideClickPolicy::Close
-        }));
-        assert!(runtime.debug_snapshot_current().events.iter().any(|event| {
-            event.target.role() == "layer"
-                && event.target.id() == "page.confirm.panel"
-                && event.command == "dismiss"
-                && event.callback
-        }));
+        assert!(runtime
+            .diagnostics()
+            .committed_snapshot()
+            .layers
+            .iter()
+            .any(|layer| {
+                layer.id == "page.confirm.panel"
+                    && layer.owner == "page.confirm"
+                    && layer.kind == LayerKind::Modal
+                    && layer.outside_click == OutsideClickPolicy::Close
+            }));
+        assert!(runtime
+            .diagnostics()
+            .current_snapshot()
+            .events
+            .iter()
+            .any(|event| {
+                event.target.role() == "layer"
+                    && event.target.id() == "page.confirm.panel"
+                    && event.command == "dismiss"
+                    && event.callback
+            }));
     }
 
     #[test]
@@ -1653,14 +2276,19 @@ mod tests {
         }
 
         let selected = runtime
+            .diagnostics()
             .find("quality.item.selected.0")
             .expect("selected option background should exist");
         let item = runtime
+            .diagnostics()
             .find("quality.item.0")
             .expect("selected option hit rect should exist");
 
         assert_eq!(selected.frame, item.frame);
-        assert!(runtime.find("quality.item.selected.1").is_none());
+        assert!(runtime
+            .diagnostics()
+            .find("quality.item.selected.1")
+            .is_none());
     }
 
     #[test]
@@ -1721,17 +2349,29 @@ mod tests {
 
         assert!(dismissed.get());
         assert_eq!(under_clicks.get(), 0);
-        assert_eq!(runtime.debug_snapshot_current().layer_dismissals.len(), 1);
-        let dismissal = &runtime.debug_snapshot_current().layer_dismissals[0];
+        assert_eq!(
+            runtime
+                .diagnostics()
+                .current_snapshot()
+                .layer_dismissals
+                .len(),
+            1
+        );
+        let dismissal = &runtime.diagnostics().current_snapshot().layer_dismissals[0];
         assert_eq!(dismissal.id, "page.menu");
         assert_eq!(dismissal.owner, "page.menu");
         assert_eq!(dismissal.policy, OutsideClickPolicy::Close);
-        assert!(runtime.debug_snapshot_current().events.iter().any(|event| {
-            event.target.role() == "layer"
-                && event.target.id() == "page.menu"
-                && event.command == "dismiss"
-                && event.callback
-        }));
+        assert!(runtime
+            .diagnostics()
+            .current_snapshot()
+            .events
+            .iter()
+            .any(|event| {
+                event.target.role() == "layer"
+                    && event.target.id() == "page.menu"
+                    && event.command == "dismiss"
+                    && event.callback
+            }));
     }
 
     #[test]
@@ -1768,6 +2408,98 @@ mod tests {
 
         assert_eq!(state.read(|state| state.date), [2026, 5, 28]);
         assert!(!state.read(|state| state.open));
+    }
+
+    #[test]
+    fn picker_state_caches_use_resolved_node_identity() {
+        super::date_picker::clear_date_picker_state_for_tests();
+        super::time_picker::clear_time_picker_state_for_tests();
+        super::color_picker::clear_color_picker_state_for_tests();
+
+        let mut left_date = Runtime::new("left");
+        compose(&mut left_date, 420.0, 340.0, |ui, _| {
+            date_picker(ui, "date")
+                .open(true)
+                .screen(420.0, 340.0)
+                .build();
+        });
+        left_date.update_pointer(PointerEvent::pressed_at(80.0, 239.0));
+
+        let mut right_date = Runtime::new("right");
+        compose(&mut right_date, 420.0, 340.0, |ui, _| {
+            date_picker(ui, "date")
+                .open(true)
+                .screen(420.0, 340.0)
+                .build();
+        });
+        right_date.update_pointer(PointerEvent::pressed_at(80.0, 239.0));
+
+        let mut left_time = Runtime::new("left");
+        compose(&mut left_time, 420.0, 340.0, |ui, _| {
+            time_picker(ui, "time")
+                .open(true)
+                .screen(420.0, 340.0)
+                .build();
+        });
+        left_time.update_pointer(PointerEvent::pressed_at(90.0, 229.0));
+
+        let mut right_time = Runtime::new("right");
+        compose(&mut right_time, 420.0, 340.0, |ui, _| {
+            time_picker(ui, "time")
+                .open(true)
+                .screen(420.0, 340.0)
+                .build();
+        });
+        right_time.update_pointer(PointerEvent::pressed_at(90.0, 229.0));
+
+        let mut left_color = Runtime::new("left");
+        compose(&mut left_color, 420.0, 340.0, |ui, _| {
+            color_picker(ui, "color")
+                .open(true)
+                .screen(420.0, 340.0)
+                .build();
+        });
+
+        let mut right_color = Runtime::new("right");
+        compose(&mut right_color, 420.0, 340.0, |ui, _| {
+            color_picker(ui, "color")
+                .open(true)
+                .screen(420.0, 340.0)
+                .build();
+        });
+
+        let date_drafts = super::date_picker::date_draft_keys_for_tests();
+        assert!(date_drafts.iter().any(|key| key.as_str() == "left.date"));
+        assert!(date_drafts.iter().any(|key| key.as_str() == "right.date"));
+        assert!(!date_drafts.iter().any(|key| key.as_str() == "date"));
+
+        let date_drags = super::date_picker::date_drag_keys_for_tests();
+        assert!(date_drags
+            .iter()
+            .any(|key| key.as_str() == "left.date.column.0"));
+        assert!(date_drags
+            .iter()
+            .any(|key| key.as_str() == "right.date.column.0"));
+        assert!(!date_drags.iter().any(|key| key.as_str() == "date.column.0"));
+
+        let time_drafts = super::time_picker::time_draft_keys_for_tests();
+        assert!(time_drafts.iter().any(|key| key.as_str() == "left.time"));
+        assert!(time_drafts.iter().any(|key| key.as_str() == "right.time"));
+        assert!(!time_drafts.iter().any(|key| key.as_str() == "time"));
+
+        let time_drags = super::time_picker::time_drag_keys_for_tests();
+        assert!(time_drags
+            .iter()
+            .any(|key| key.as_str() == "left.time.column.0"));
+        assert!(time_drags
+            .iter()
+            .any(|key| key.as_str() == "right.time.column.0"));
+        assert!(!time_drags.iter().any(|key| key.as_str() == "time.column.0"));
+
+        let color_drafts = super::color_picker::color_draft_keys_for_tests();
+        assert!(color_drafts.iter().any(|key| key.as_str() == "left.color"));
+        assert!(color_drafts.iter().any(|key| key.as_str() == "right.color"));
+        assert!(!color_drafts.iter().any(|key| key.as_str() == "color"));
     }
 
     #[test]
@@ -1814,7 +2546,13 @@ mod tests {
         };
 
         frame(&mut runtime, Vec::new());
-        assert!(runtime.find("date.panel").is_some());
+        assert!(runtime.diagnostics().find("date.panel").is_some());
+        assert!(runtime
+            .diagnostics()
+            .committed_snapshot()
+            .layers
+            .iter()
+            .any(|layer| { layer.id == "page.date" && layer.kind == LayerKind::Modal }));
 
         frame(
             &mut runtime,
@@ -1826,20 +2564,32 @@ mod tests {
 
         assert!(!state.read(|state| state.open));
         assert_eq!(under_clicks.get(), 0);
-        assert_eq!(runtime.debug_snapshot_current().layer_dismissals.len(), 1);
-        let dismissal = &runtime.debug_snapshot_current().layer_dismissals[0];
+        assert_eq!(
+            runtime
+                .diagnostics()
+                .current_snapshot()
+                .layer_dismissals
+                .len(),
+            1
+        );
+        let dismissal = &runtime.diagnostics().current_snapshot().layer_dismissals[0];
         assert_eq!(dismissal.id, "page.date");
         assert_eq!(dismissal.owner, "page.date");
         assert_eq!(dismissal.policy, OutsideClickPolicy::Close);
-        assert!(runtime.debug_snapshot().events.iter().any(|event| {
-            event.target.role() == "layer"
-                && event.target.id() == "page.date"
-                && event.command == "dismiss"
-                && event.callback
-        }));
+        assert!(runtime
+            .diagnostics()
+            .committed_snapshot()
+            .events
+            .iter()
+            .any(|event| {
+                event.target.role() == "layer"
+                    && event.target.id() == "page.date"
+                    && event.command == "dismiss"
+                    && event.callback
+            }));
 
         frame(&mut runtime, Vec::new());
-        assert!(runtime.find("date.panel").is_none());
+        assert!(runtime.diagnostics().find("date.panel").is_none());
     }
 
     #[test]
@@ -1922,7 +2672,13 @@ mod tests {
         };
 
         frame(&mut runtime, Vec::new());
-        assert!(runtime.find("time.panel").is_some());
+        assert!(runtime.diagnostics().find("time.panel").is_some());
+        assert!(runtime
+            .diagnostics()
+            .committed_snapshot()
+            .layers
+            .iter()
+            .any(|layer| { layer.id == "page.time" && layer.kind == LayerKind::Modal }));
 
         frame(
             &mut runtime,
@@ -1934,20 +2690,32 @@ mod tests {
 
         assert!(!state.read(|state| state.open));
         assert_eq!(under_clicks.get(), 0);
-        assert_eq!(runtime.debug_snapshot_current().layer_dismissals.len(), 1);
-        let dismissal = &runtime.debug_snapshot_current().layer_dismissals[0];
+        assert_eq!(
+            runtime
+                .diagnostics()
+                .current_snapshot()
+                .layer_dismissals
+                .len(),
+            1
+        );
+        let dismissal = &runtime.diagnostics().current_snapshot().layer_dismissals[0];
         assert_eq!(dismissal.id, "page.time");
         assert_eq!(dismissal.owner, "page.time");
         assert_eq!(dismissal.policy, OutsideClickPolicy::Close);
-        assert!(runtime.debug_snapshot().events.iter().any(|event| {
-            event.target.role() == "layer"
-                && event.target.id() == "page.time"
-                && event.command == "dismiss"
-                && event.callback
-        }));
+        assert!(runtime
+            .diagnostics()
+            .committed_snapshot()
+            .events
+            .iter()
+            .any(|event| {
+                event.target.role() == "layer"
+                    && event.target.id() == "page.time"
+                    && event.command == "dismiss"
+                    && event.callback
+            }));
 
         frame(&mut runtime, Vec::new());
-        assert!(runtime.find("time.panel").is_none());
+        assert!(runtime.diagnostics().find("time.panel").is_none());
     }
 
     #[test]
@@ -1994,7 +2762,13 @@ mod tests {
         };
 
         frame(&mut runtime, Vec::new());
-        assert!(runtime.find("color.panel").is_some());
+        assert!(runtime.diagnostics().find("color.panel").is_some());
+        assert!(runtime
+            .diagnostics()
+            .committed_snapshot()
+            .layers
+            .iter()
+            .any(|layer| { layer.id == "page.color" && layer.kind == LayerKind::Modal }));
 
         frame(
             &mut runtime,
@@ -2006,20 +2780,32 @@ mod tests {
 
         assert!(!state.read(|state| state.open));
         assert_eq!(under_clicks.get(), 0);
-        assert_eq!(runtime.debug_snapshot_current().layer_dismissals.len(), 1);
-        let dismissal = &runtime.debug_snapshot_current().layer_dismissals[0];
+        assert_eq!(
+            runtime
+                .diagnostics()
+                .current_snapshot()
+                .layer_dismissals
+                .len(),
+            1
+        );
+        let dismissal = &runtime.diagnostics().current_snapshot().layer_dismissals[0];
         assert_eq!(dismissal.id, "page.color");
         assert_eq!(dismissal.owner, "page.color");
         assert_eq!(dismissal.policy, OutsideClickPolicy::Close);
-        assert!(runtime.debug_snapshot().events.iter().any(|event| {
-            event.target.role() == "layer"
-                && event.target.id() == "page.color"
-                && event.command == "dismiss"
-                && event.callback
-        }));
+        assert!(runtime
+            .diagnostics()
+            .committed_snapshot()
+            .events
+            .iter()
+            .any(|event| {
+                event.target.role() == "layer"
+                    && event.target.id() == "page.color"
+                    && event.command == "dismiss"
+                    && event.callback
+            }));
 
         frame(&mut runtime, Vec::new());
-        assert!(runtime.find("color.panel").is_none());
+        assert!(runtime.diagnostics().find("color.panel").is_none());
     }
 
     #[test]
@@ -2038,7 +2824,8 @@ mod tests {
         });
 
         let layer = runtime
-            .debug_snapshot()
+            .diagnostics()
+            .committed_snapshot()
             .layers
             .iter()
             .find(|layer| layer.id == "page.saved")

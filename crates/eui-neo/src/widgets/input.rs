@@ -5,6 +5,7 @@ use std::rc::Rc;
 
 use rustc_hash::FxHashMap;
 
+use crate::runtime::NodeId;
 use crate::Color;
 
 use super::super::{
@@ -23,7 +24,7 @@ type EnterCallback = Rc<RefCell<Box<dyn FnMut()>>>;
 type FocusCallback = Rc<RefCell<Box<dyn FnMut(bool)>>>;
 
 thread_local! {
-    static INPUT_STATES: RefCell<FxHashMap<String, InputState>> = RefCell::new(FxHashMap::default());
+    static INPUT_STATES: RefCell<FxHashMap<NodeId, InputState>> = RefCell::new(FxHashMap::default());
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -240,6 +241,7 @@ impl<'ui> InputBuilder<'ui> {
 
     pub fn build(self) -> Response {
         let id = self.id.clone();
+        let state_id = NodeId::new(self.ui.resolve_id(&id));
         let hit_id = format!("{id}.hit");
         let focused = self.ui.is_focused(&hit_id);
         let width = self.layout.fixed_width_or(DEFAULT_WIDTH);
@@ -266,7 +268,7 @@ impl<'ui> InputBuilder<'ui> {
 
         let snapshot = INPUT_STATES.with(|states| {
             let mut states = states.borrow_mut();
-            let state = states.entry(id.clone()).or_default();
+            let state = states.entry(state_id.clone()).or_default();
             if state.text != self.text {
                 state.text = self.text.clone();
                 state.cursor = clamp_utf8_boundary(&state.text, state.text.len());
@@ -314,9 +316,9 @@ impl<'ui> InputBuilder<'ui> {
                 self.layout.margin.bottom,
             )
             .content(|ui| {
-                let press_id = id.clone();
-                let drag_id = id.clone();
-                let input_id = id.clone();
+                let press_state_id = state_id.clone();
+                let drag_state_id = state_id.clone();
+                let input_state_id = state_id.clone();
                 let focus_callback = on_focus.clone();
                 let change_callback = on_change.clone();
                 let enter_callback = on_enter.clone();
@@ -353,7 +355,7 @@ impl<'ui> InputBuilder<'ui> {
                     .on_press(move |event, bounds| {
                         INPUT_STATES.with(|states| {
                             let mut states = states.borrow_mut();
-                            let state = states.entry(press_id.clone()).or_default();
+                            let state = states.entry(press_state_id.clone()).or_default();
                             state.last_bounds = bounds;
                             state.cursor = cursor_from_pointer(
                                 state,
@@ -375,7 +377,7 @@ impl<'ui> InputBuilder<'ui> {
                     .on_drag(move |event| {
                         INPUT_STATES.with(|states| {
                             let mut states = states.borrow_mut();
-                            let state = states.entry(drag_id.clone()).or_default();
+                            let state = states.entry(drag_state_id.clone()).or_default();
                             state.cursor = cursor_from_pointer(
                                 state,
                                 event.x,
@@ -392,7 +394,7 @@ impl<'ui> InputBuilder<'ui> {
                     .on_text_input(move |event| {
                         INPUT_STATES.with(|states| {
                             let mut states = states.borrow_mut();
-                            let state = states.entry(input_id.clone()).or_default();
+                            let state = states.entry(input_state_id.clone()).or_default();
                             let changed = apply_keyboard_event(
                                 state,
                                 &event,
@@ -453,6 +455,20 @@ impl<'ui> InputBuilder<'ui> {
 
 pub fn input(ui: &mut Ui, id: impl Into<String>) -> InputBuilder<'_> {
     InputBuilder::new(ui, id)
+}
+
+#[cfg(test)]
+pub(super) fn clear_input_states_for_tests() {
+    INPUT_STATES.with(|states| states.borrow_mut().clear());
+}
+
+#[cfg(test)]
+pub(super) fn input_state_keys_for_tests() -> Vec<NodeId> {
+    INPUT_STATES.with(|states| {
+        let mut keys: Vec<_> = states.borrow().keys().cloned().collect();
+        keys.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        keys
+    })
 }
 
 #[derive(Debug, Clone, Default)]

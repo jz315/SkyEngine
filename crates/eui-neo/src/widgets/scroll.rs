@@ -205,6 +205,7 @@ impl<'ui> ScrollbarBuilder<'ui> {
                 ScrollAxis::Y => thumb.y(thumb_offset).size(self.width, thumb_len),
             };
             thumb
+                .visual_position_only()
                 .states(
                     self.style.thumb,
                     self.style.thumb_hover,
@@ -502,6 +503,7 @@ impl<'ui> ScrollAreaBuilder<'ui> {
                 ScrollAxis::X => {
                     ui.row(content_id)
                         .x(-offset)
+                        .visual_position_only()
                         .size(content_size, Size::fill())
                         .padding_each(
                             padding.left,
@@ -515,6 +517,7 @@ impl<'ui> ScrollAreaBuilder<'ui> {
                 ScrollAxis::Y => {
                     ui.column(content_id)
                         .y(-offset)
+                        .visual_position_only()
                         .size(Size::fill(), content_size)
                         .padding_each(
                             padding.left,
@@ -1254,6 +1257,7 @@ impl<'ui> ScrollXYBuilder<'ui> {
                 viewport.content(|ui| {
                     ui.stack(content_id)
                         .position(-metrics.offset_x, -metrics.offset_y)
+                        .visual_position_only()
                         .size(content_width, content_height)
                         .padding_each(
                             padding.left,

@@ -3,11 +3,12 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::runtime::{LayerId, LayerIntent, LayerKind, LayerPlacement, LayerSize, NodeId};
 use crate::Color;
 
 use super::super::{
-    AnimProperty, HorizontalAlign, LayerId, LayerIntent, LayerKind, LayerPlacement, LayerSize,
-    LayoutRect, OutsideClickPolicy, Response, Shadow, Signal, Transition, Ui, VerticalAlign,
+    AnimProperty, HorizontalAlign, LayoutRect, OutsideClickPolicy, Response, Shadow, Signal,
+    Transition, Ui, VerticalAlign,
 };
 use super::theme::{self, ThemeColorTokens};
 
@@ -222,7 +223,8 @@ impl<'ui> ToastBuilder<'ui> {
 
         self.ui.register_layer_intent(LayerIntent {
             id: LayerId::new(resolved_id.clone()),
-            owner: resolved_id,
+            owner: NodeId::new(resolved_id.clone()),
+            root: NodeId::new(resolved_id),
             anchor: None,
             fallback_anchor: Some(LayoutRect::new(
                 0.0,
@@ -230,10 +232,14 @@ impl<'ui> ToastBuilder<'ui> {
                 self.screen_width,
                 self.screen_height,
             )),
+            boundary: None,
             open: self.visible,
             kind: LayerKind::Toast,
             placement: LayerPlacement::BottomEnd,
             size: LayerSize::new(width.into(), height.into()),
+            gap: 0.0,
+            offset: [0.0, 0.0],
+            collision: Default::default(),
             z_index: self.z_index,
             outside_click: OutsideClickPolicy::Ignore,
         });

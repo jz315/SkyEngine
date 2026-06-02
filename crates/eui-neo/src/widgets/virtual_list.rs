@@ -472,13 +472,24 @@ mod tests {
                 });
         });
 
-        assert!(runtime.find("list.item.10").is_some());
-        assert!(runtime.find("list.item.14").is_some());
-        assert!(runtime.find("list.item.0").is_none());
-        assert!(runtime.find("list.item.999").is_none());
-        assert_eq!(runtime.find("list.item.10").unwrap().frame.y, 0.0);
-        assert_eq!(runtime.find("list.content").unwrap().frame.height, 23_996.0);
-        assert!(runtime.find("list.scrollbar").is_some());
+        assert!(runtime.diagnostics().find("list.item.10").is_some());
+        assert!(runtime.diagnostics().find("list.item.14").is_some());
+        assert!(runtime.diagnostics().find("list.item.0").is_none());
+        assert!(runtime.diagnostics().find("list.item.999").is_none());
+        assert_eq!(
+            runtime.diagnostics().find("list.item.10").unwrap().frame.y,
+            0.0
+        );
+        assert_eq!(
+            runtime
+                .diagnostics()
+                .find("list.content")
+                .unwrap()
+                .frame
+                .height,
+            23_996.0
+        );
+        assert!(runtime.diagnostics().find("list.scrollbar").is_some());
     }
 
     #[test]
@@ -529,8 +540,16 @@ mod tests {
             });
         });
 
-        assert_eq!(runtime.find("list.viewport").unwrap().frame.height, 80.0);
-        assert!(runtime.find("list.scrollbar").is_none());
-        assert!(runtime.find("row.0").is_none());
+        assert_eq!(
+            runtime
+                .diagnostics()
+                .find("list.viewport")
+                .unwrap()
+                .frame
+                .height,
+            80.0
+        );
+        assert!(runtime.diagnostics().find("list.scrollbar").is_none());
+        assert!(runtime.diagnostics().find("row.0").is_none());
     }
 }
