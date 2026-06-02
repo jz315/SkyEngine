@@ -1090,6 +1090,15 @@ platform effects
 - Focused text node 移除后，text focus 和 IME owner 被清理或迁移。
 - IME rect 在 layout commit 后更新。
 
+状态：已完成。Runtime input ownership 已拆成 typed `InputOwners`：
+pointer hover/active/capture、keyboard focus、text focus、IME owner、scroll owner、
+drag owner 分别存储和清理；`focused_id` 等 string 字段只保留为 readable
+debug/compat alias。Keyboard dispatch 只路由到 `text_focus` owner，普通 focusable
+widget 不会接收 text editing event。Focused text node 在 committed tree cleanup 后会清理
+keyboard/text/IME ownership；layout commit 后的 `focused_ime_rect()` 由 runtime 读取最新
+frame。Platform effects 已由 runtime after-commit pass 统一发出 `ImeStart`、`ImeMove`、
+`ImeEnd`、cursor shape 和 capture transition，SkyEngine adapter 只消费这些 effects。
+
 ### Phase 7: Layout Boundary Cleanup
 
 目的：让 layout 可以被测试、替换、优化，而不牵扯 dirty/event/focus/layer。
@@ -1125,6 +1134,12 @@ platform effects
 - 差异有 snapshot 或 trace 记录。
 - Taffy 不参与 dirty、event、focus、callback、layer 决策。
 
+状态：已完成。`taffy-layout` 是 opt-in feature，默认 runtime layout 仍使用内置
+solver；`EUI_NEO_TAFFY_LAYOUT=1` 仅在启用 feature 时选择实验 backend。
+Taffy backend 只承接 clean row/column flex-style subtree，stack、absolute child
+position、popover/root-layer shape、natural text measurement 均回退到内置 solver，
+并可通过 `EUI_NEO_TAFFY_TRACE=1` 记录回退原因。
+
 ### Phase 9: Renderer and Resource Feedback
 
 目的：让 renderer/resource readiness 以 typed invalidation 回到 runtime。
@@ -1140,6 +1155,15 @@ platform effects
 - Image ready 不再只能 broad full redraw。
 - Font/text metrics 变化会触发必要 layout。
 - Renderer trace 能解释 redraw 来源。
+
+状态：已完成。Renderer/resource readiness 已经通过 typed dirty records 回流到
+runtime：`RendererResourceDirty` 表达 pending/ready image/font 来源，
+`ResourceDirtySource::renderer_kind(...)` 保留从 debug trace 恢复 typed source 的能力，
+同时 string label 仅作为可读诊断输出保留。SkyEngine neo renderer adapter 继续保持
+`eui_neo_wgpu::RenderStatus` facade 稳定，并把 pending image/font 映射为 draw-only
+`ResourceDirty`，把 ready font 映射为 layout-affecting `ResourceDirty`；ready image
+只请求 draw。当前 text atlas/cache 变化仍在 renderer prepare 内部消化，外部可观察的
+font metric readiness 已走 layout dirty path。
 
 ### Phase 10: Compatibility Removal and API Polish
 
@@ -1227,6 +1251,31 @@ platform effects
   继续输出兼容的 readable active id。
 - Pointer hover、press/capture、drag callback owner 和 release cleanup 已有回归断言；drag owner
   语义保持为“有 drag callback 的 event owner”，普通 pointer movement 仍只依赖 capture。
+- Pointer/scroll/drag owner setter boundaries now take typed node identity instead of raw
+  strings: `set_pointer_press_target(...)`, `set_pointer_hover(...)`, `set_scroll_owner(...)`,
+  and `set_drag_owner(...)` accept `NodeId` payloads, while compatibility getters/debug snapshots
+  still expose readable ids. Pointer focus targeting in the frame input pass also carries
+  `Option<Option<NodeId>>`, keeping focus assignment typed until event commands are emitted。
+- Event command payloads now encode their target role in the command variant:
+  pointer/timer commands carry `NodeId`, text commands carry text-target `NodeId`, scroll commands
+  carry scroll-target `NodeId`, focus commands carry focus-target `NodeId`, and layer dismiss
+  commands carry `LayerId`. `EventTargetId` is now rebuilt only at the debug/invalidation boundary,
+  so malformed cross-role command payloads are no longer representable inside the runtime。
+- Hit-test routing now enters the input path as typed node identity:
+  `hit_test(...)`, `hit_test_interactive(...)`, and `hit_test_focusable(...)` return `NodeId`
+  instead of raw `String`, and pointer capture/text focus expose typed getters for command
+  collection. Interaction/response caches remain readable string-keyed compatibility storage, but
+  owner assignment and event command construction no longer round-trip through string helper APIs。
+- Runtime/resource invalidation targets now use typed node identity at the constructor boundary:
+  `Invalidation::runtime(...)` and `Invalidation::resource(...)` take `NodeId`, and resource
+  mutations use `runtime_invalidation_target()` instead of passing `tree.page_id` as a raw string.
+  新增 `runtime::resources::tests::resource_mutations_emit_typed_resource_invalidations` 覆盖
+  font、skin 和 mutable skin registry changes produce typed resource invalidation records。
+- Timer runtime storage now uses typed node identity:
+  `TimingRuntimeState::timers` is keyed by `NodeId`, and `collect_timer_ids(...)` collects
+  `NodeId` payloads directly from the committed tree. Stale timer cleanup still bridges through
+  readable committed element ids, but timer cache ownership and due timer command emission no
+  longer store or pass node targets as raw strings。
 - Callback storage 也开始按 role 拆分 identity：`on_click`、`on_press`、
   `on_context_menu`、`on_focus_changed`、`on_text_input`、`on_scroll`、`on_drag` 和
   `on_timer` 分别使用 runtime-private typed callback keys，不再把同一个裸 string 直接作为所有
@@ -1345,6 +1394,11 @@ platform effects
   if the target still exists and no active layer still blocks it.
 - 新增回归断言覆盖 blocking popover 打开时清空底层 text focus、layer 内 text target 可重新
   获得焦点、popover 关闭后底层 text focus 自动恢复并继续接收 keyboard text。
+- Phase 6 的 IME rect 提交语义增加了直接回归断言：focused text element 在 recompose 后
+  保持同一 text/IME owner，但 `focused_ime_rect()` 会基于最新 committed layout frame 重新计算，
+  避免 host 继续使用 focus 发生时的旧矩形。
+- 本轮聚焦验证已通过
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml focused_ime_rect_tracks_committed_layout_after_recompose`。
 - 本轮验证已通过 `cargo test --manifest-path crates/eui-neo/Cargo.toml`、
   `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`、
   `cargo test --features ui-neo ui::neo`、`cargo check --examples --features ui-neo`
@@ -1493,10 +1547,12 @@ platform effects
   `cargo test --features ui-neo ui::neo`、`cargo check --examples --features ui-neo`
   和 `git diff --check`；后两项仍只有既存
   `src/gpu/context.rs:1825 unused_mut` warning / CRLF 提示。
-- Reuse trace record assembly now lives on the reconciler result:
-  `RetainedReuseApplied::compose_record(...)` produces the reused `ScopeComposeRecord`, so
-  `dsl.rs` no longer expands reused root counts, element counts, callback transfer stats, or
-  clean-reuse reason into compose debug records by hand.
+- Reuse trace record assembly now lives fully inside the reconciler application:
+  `apply_retained_reuse_plan(...)` returns `RetainedReuseApplied { elements, scope }`, where
+  `scope` is the common applied retained-scope payload carrying retained roots and a reused
+  `ScopeComposeRecord` with root counts, element count, callback transfer stats, and clean-reuse
+  reason. `dsl.rs` records the reconciler-provided scope application directly instead of asking
+  the result to synthesize trace metadata afterward.
 - Reused periodic clock dependencies now go through the clock subsystem helper
   `preserve_reused_scope_clock_dependency(...)` instead of a DSL-local method, keeping one more
   piece of retained runtime bookkeeping out of declaration code. New `clock::tests` cover both
@@ -1513,10 +1569,10 @@ platform effects
   和 `git diff --check`；后两项仍只有既存
   `src/gpu/context.rs:1825 unused_mut` warning / CRLF 提示。
 - Built-scope trace/root application now uses the same reconciler boundary:
-  `apply_retained_build(...)` returns `RetainedBuildApplied { retained_roots, record }`,
-  including previous/current root counts, element count, build timing, reason, and default callback
-  transfer stats. `dsl.rs` no longer owns `ScopeComposeMetrics`, local element counting, or direct
-  built compose-record assembly.
+  `apply_retained_build(...)` returns the common applied retained-scope payload, including
+  previous/current root counts, element count, build timing, reason, and default callback transfer
+  stats. `dsl.rs` no longer owns `ScopeComposeMetrics`, local element counting, or direct built
+  compose-record assembly.
 - 新增 `runtime::reconcile::tests::apply_retained_build_reports_built_tree_metrics`，覆盖 built
   scope 的 retained-root metadata、previous/current root counts、nested element count、build
   timing 和 zero callback transfer trace，继续把 rebuild trace 从 declaration code 推到
@@ -1572,23 +1628,1567 @@ platform effects
   longer has a separate dirty-owner early-return before asking for a reuse plan. The reconciler
   priority is pinned so exact dirty scopes and dirty descendants still report `DirtyScope` /
   `DirtyDescendant` instead of being overwritten by `DirtyAncestor`.
+- Reused-scope periodic clock preservation is now part of retained reuse application:
+  `apply_retained_reuse_plan(...)` receives the previous clock-period map plus current clock
+  dependency outputs and preserves reused periodic clock dependencies inside the reconciler
+  boundary. `dsl.rs` no longer calls the clock preservation helper as a separate post-reuse side
+  effect; it only consumes the applied reuse result. 新增
+  `runtime::reconcile::tests::apply_retained_reuse_plan_preserves_periodic_clock_dependency` 覆盖
+  reused scope 会把上一帧 periodic clock dependency 写回当前 `clock_ids` / `clock_periods`。
+- Rebuilt-scope signal dependency reset is now an applied reconciler operation:
+  `apply_rebuilt_scope_dependency_reset(...)` consumes `RetainedReuseContext`, schedules the
+  pending dependency reset only when the rebuilt scope previously contained a dirty root, and
+  returns `RetainedDependencyResetApplied { scheduled }`. `dsl.rs` no longer calls
+  `signal::schedule_scope_dependency_reset(...)` directly; it delegates the side effect through
+  the reconciler boundary. 新增
+  `runtime::reconcile::tests::apply_rebuilt_scope_dependency_reset_schedules_signal_dependency_reset`
+  覆盖 rebuilt parent scope 会清除旧 signal watch，并在新 compose 中只保留新的 dependency。
+- Built element fallback reason selection is also reconciler-owned now:
+  `RetainedReuseContext::build_reason_or_missing_element(...)` returns a concrete
+  `RetainedComposeReason`, including the `MissingPreviousElement` fallback for otherwise-clean new
+  retained element content. `dsl.rs` no longer chooses that fallback locally when recording built
+  element roots, and the reconciler tests pin both clean-missing and dirty-descendant reason
+  priority.
+- Committed element-id indexing for stale retained-state cleanup has moved into the reconciler
+  module too: `committed_element_ids(...)` walks the committed element tree and returns the stable
+  id set consumed by composition's stale input/focus/animation/timer cleanup. This keeps another
+  retained-tree traversal out of `composition.rs` while leaving subsystem-specific cleanup side
+  effects in their current owners. 新增
+  `runtime::reconcile::tests::committed_element_ids_collects_nested_tree_ids` 覆盖 nested tree
+  ids are indexed before stale-state pruning.
+- Retained compose-event derivation now belongs to retained bookkeeping instead of the DSL:
+  `ScopeComposeRecord::event()` derives the public diagnostic event from the reconciler-provided
+  compose record, and `dsl.rs` only stores that event/record pair. 新增
+  `retained::tests::scope_compose_record_derives_matching_event` 覆盖 action/reason/id stay in
+  sync between detailed records and lightweight retained compose events.
+- Built/reused retained scopes now share a common applied-scope result:
+  `RetainedScopeApplied` carries the scope retained roots and compose record, while
+  `RetainedReuseApplied` adds only the reusable element payload. `dsl.rs` consumes the applied
+  scope through one path for retained-root attachment, debug record/event storage, and built/reused
+  stats, instead of repeating those three steps separately for retained scopes and retained
+  elements.
+- Timer callbacks now also execute through the runtime event-command path:
+  `tick_timers(...)` collects `UiEventCommand::Timer` commands instead of invoking timer callbacks,
+  recording timer invalidations, and marking compose dirty directly. The shared command executor now
+  records timer callback traces with `InvalidationSource::Timer`, keeping timer-driven callbacks on
+  the same command/debug/invalidation spine as pointer, focus, scroll, text, and layer commands.
+  `runtime::tests::timer_callback_runs_after_elapsed_duration` now asserts the timer event trace and
+  typed timer invalidation.
+- Retained dirty-root indexing has moved out of the DSL and into the reconciler boundary:
+  `RetainedReuseState::enabled(...)` owns the dirty scope set and precomputed dirty root ids, then
+  produces `RetainedReuseContext` for reuse/rebuild decisions. `Ui::set_scope_reuse(...)` now stores
+  that state instead of calling `dirty_root_ids_for_scopes(...)` and tracking reuse booleans/raw
+  dirty sets itself. 新增
+  `runtime::reconcile::tests::retained_reuse_state_builds_context_with_dirty_root_index` 覆盖 dirty
+  child scope 仍会让 parent scope 以 `DirtyDescendant` rebuild，同时 clean sibling 继续 reuse。
+- Layout dirty-scope preparation now also flows through the reconciler:
+  `retained_layout_dirty_scopes(...)` unions compose/layout dirty scope sets and applies retained
+  root normalization before partial-layout planning. `composition.rs` no longer calls retained dirty
+  normalization directly or owns the union/normalize policy for layout reuse. 新增
+  `runtime::reconcile::tests::retained_layout_dirty_scopes_unions_and_normalizes_dirty_sets` 覆盖
+  compose dirty child + layout dirty parent 会收敛到 parent，同时保留 clean sibling 的 explicit
+  layout dirty scope。
+- Retained frame setup has moved into the reconciler boundary:
+  `begin_scope_frame(...)` and `ScopeFrame` now live in `runtime/reconcile.rs`, so the live-scope
+  dirty merge and previous retained-root handoff sit beside reuse/layout planning instead of in
+  retained bookkeeping. `composition.rs` imports this as reconciler output, while `retained.rs`
+  keeps the lower-level retained root / dirty normalization primitives. 新增
+  `runtime::reconcile::tests::begin_scope_frame_moves_retained_frame_policy_into_reconciler` 和
+  `begin_scope_frame_clears_live_scopes_without_reuse` 覆盖 reusable / non-reusable frame setup。
+- The layout execution boundary has started moving out of the frame coordinator:
+  `runtime/layout.rs` now owns `RuntimeLayoutInput`, `RuntimeLayoutPlan`,
+  `RuntimeLayoutResult`, partial-layout frame copying, dirty retained-root layout, and full-layout
+  fallback selection. `composition.rs` still schedules the pass, but no longer owns the low-level
+  layout execution helpers. 新增
+  `runtime::layout::tests::runtime_layout_uses_partial_layout_for_clean_retained_shape` 和
+  `runtime_layout_degrades_when_dirty_scope_root_is_missing` 覆盖 partial/degraded layout result。
+- Layer-blocked focus restoration has moved into a focused runtime subsystem:
+  `runtime/focus.rs` now owns the policy that moves underlay keyboard/text/IME focus into
+  `layers.focus_restore` while a blocking/closing layer is active, then restores focus after the
+  layer no longer blocks the target. `composition.rs` only calls the focus subsystem during
+  post-commit stale-state cleanup. 新增
+  `runtime::focus::tests::layer_blocked_focus_moves_focus_into_restore_slot` 和
+  `layer_unblocked_focus_restores_text_focus_when_callback_exists` 覆盖 clear/restore behavior。
+- Post-commit stale-state pruning is now owned by the relevant runtime subsystems:
+  `runtime/interaction.rs` owns stale input owners/interactions/responses cleanup,
+  `runtime/animation.rs` owns stale animation/frame-target cleanup, and `runtime/timing.rs` owns
+  stale timer cleanup. `composition.rs` now aggregates these subsystem cleanup results instead of
+  directly editing each subsystem's maps. 新增
+  `runtime::{interaction,animation,timing}::tests::cleanup_stale_*_keeps_only_existing_ids` 覆盖
+  removed element ids are pruned while live ids survive。
+- Tree-structure dirty classification now lives with the tree signatures:
+  `runtime/tree.rs::collect_next_structure(...)` owns next-structure collection and the
+  layout-affecting vs visual-only dirty decision, while `composition.rs` only consumes the returned
+  committed structure. 新增
+  `runtime::tree::tests::collect_next_structure_marks_full_redraw_for_layout_change` 和
+  `collect_next_structure_marks_render_only_for_visual_change` 覆盖 full-redraw / render-only
+  branching。
+- Composition debug snapshot assembly now lives in the debug subsystem:
+  `runtime/debug.rs::finish_composition_debug(...)` collects element/scope debug records, builds
+  the committed `UiDebugSnapshot`, emits optional trace output, and clears committed
+  invalidation/event debug records. `composition.rs` now passes frame facts into the debug
+  subsystem instead of knowing how diagnostic records are assembled. 新增
+  `runtime::debug::tests::finish_composition_debug_builds_snapshot_and_clears_committed_records`
+  覆盖 snapshot capture and post-commit trace cleanup。
+- Retained layout planning now belongs to the layout boundary too:
+  `runtime/layout.rs::prepare_runtime_layout_input(...)` owns compose/layout dirty-scope union,
+  retained-root dirty normalization, partial-layout blocker selection, and optional structural
+  trace emission. `composition.rs` now schedules layout using a prepared layout input instead of
+  importing retained-layout policy directly. 新增
+  `runtime::layout::tests::prepare_runtime_layout_input_normalizes_dirty_scopes_and_reports_blocker`
+  覆盖 dirty scope normalization 与 structure-change full-layout blocker。
+- Committed-tree stale-state cleanup now sits with the tree lifecycle boundary:
+  `runtime/tree.rs::cleanup_stale_committed_state(...)` computes the existing committed element ids
+  and coordinates stale input/focus/animation/timer cleanup through the owning subsystems, marking
+  render dirty only when pruning/restoring actually changes runtime state. `composition.rs` now
+  calls this tree lifecycle hook after commit instead of assembling stale-state cleanup directly.
+  新增 `runtime::tree::tests::cleanup_stale_committed_state_prunes_removed_ids_and_marks_render_dirty`
+  和 `cleanup_stale_committed_state_keeps_render_clean_when_nothing_changes` 覆盖 changed/clean
+  post-commit cleanup paths。
+- Compose-pass frame preparation has moved into the frame coordinator:
+  `runtime/frame.rs::ComposeFrameState::begin(...)` now owns the start-of-compose pass facts:
+  clearing pending compose, recording normalized dirty invalidations, deciding scope reuse from
+  screen/dirty input, collecting layout dirty scopes, carrying diagnostic clock ids, and preparing
+  retained previous-frame reuse state. `composition.rs` receives that prepared state and no longer
+  owns begin-frame policy. 新增
+  `runtime::frame::tests::compose_frame_state_records_dirty_and_prepares_reuse_context` 和
+  `compose_frame_state_disables_reuse_without_dirty_input` 覆盖 reusable / non-reusable pass setup。
+- Layer lifecycle commit bookkeeping now lives in the layer subsystem:
+  `runtime/layers.rs::prepare_layer_frame_commit(...)` takes the previous committed layer intents,
+  computes lifecycle/anchor debug records against the next intents, and returns a layer commit that
+  `apply_layer_frame_commit(...)` writes back to runtime. `composition.rs` no longer manually takes
+  previous layer state or assigns layer debug records. 新增
+  `runtime::layers::tests::prepare_layer_frame_commit_takes_previous_and_records_lifecycle` 和
+  `apply_layer_frame_commit_updates_runtime_layer_state` 覆盖 lifecycle debug generation and
+  runtime commit application。
+- Composed tree commit has moved into the tree lifecycle boundary:
+  `runtime/tree.rs::ComposedTreeCommit` and `commit_composed_tree(...)` now own applying committed
+  roots, structure signatures, retained scope roots, live/clock scope state, retained compose stats,
+  clock period ticks, and frame-index advancement. `composition.rs` now builds the commit payload
+  but no longer directly mutates tree internals during commit. 新增
+  `runtime::tree::tests::commit_composed_tree_updates_tree_state_and_clock_ticks` 覆盖 tree state,
+  retained stats, clock tick sync, and frame index advancement。
+- Frame callback registry commit now goes through the event-command subsystem:
+  `runtime/event_command.rs::Runtime::commit_frame_callbacks(...)` replaces the runtime callback
+  registry for the newly composed frame, keeping callback storage handoff beside the command
+  executor that consumes it. `composition.rs` no longer assigns `input.callbacks` directly. 新增
+  `runtime::event_command::tests::commit_frame_callbacks_replaces_runtime_callback_registry` 覆盖
+  new frame callbacks replace stale callback entries。
+- Compose UI setup and response replay have moved out of composition:
+  `runtime/frame.rs::prepare_compose_ui(...)` seeds the `Ui` builder with skins, focus, clock,
+  profile timing, and diagnostics flags, while
+  `runtime/interaction.rs::replay_frame_responses(...)` replays committed input responses into the
+  builder. `composition.rs` now calls these subsystem helpers instead of knowing the details of
+  frame/UI setup or input response replay. 新增
+  `runtime::frame::tests::prepare_compose_ui_carries_runtime_focus_and_clock` 和
+  `runtime::interaction::tests::replay_frame_responses_seeds_builder_responses` 覆盖 setup/replay
+  behavior。
+- Frame-input dirty records and post-input dirty records now merge before pass scheduling:
+  `runtime/invalidation.rs::NormalizedDirtyInput::merge(...)` unions typed invalidations, dirty
+  scope sets, layout scope sets, and pass flags, while `runtime/frame.rs::FramePass::collect_dirty`
+  preserves both `FrameInput::dirty(...)` records and `frame_incremental(...)` dirty records.
+  This closes one dual-source gap in Phase 1 so the composed frame sees one normalized dirty spine
+  instead of whichever source was collected last. 新增
+  `runtime::frame::tests::frame_pass_merges_input_and_post_input_dirty_records` 覆盖 merged
+  invalidation count、compose/layout scope sets 和 pass flags。
+- Normalized dirty scope extraction now follows typed invalidation targets:
+  `NormalizedDirtyInput` records pass flags from every invalidation, but only inserts retained
+  compose/layout scope ids when `InvalidationTarget::Scope(...)` is present. This keeps future
+  node/focus/layer/resource invalidations from accidentally being treated as retained scopes just
+  because they carry compose/layout flags. 新增
+  `runtime::invalidation::tests::normalized_dirty_scope_sets_come_from_typed_invalidation_targets`
+  覆盖 node-target invalidations do not enter scope sets while signal/scope invalidations do。
+- External compose requests now go through typed invalidation pass flags:
+  `runtime/dirty.rs::Runtime::request_invalidation(...)` records the invalidation and applies its
+  `PassFlags` to render/compose/full-redraw scheduling, while plain `record_invalidation(...)`
+  remains a passive committed-frame/debug log. Resource changes and event/timer callback commands
+  now call `request_invalidation(...)` instead of pairing `record_invalidation(...)` with direct
+  `mark_compose_dirty()`, so runtime dirtiness is requested from the invalidation record itself.
+  新增 `runtime::dirty::tests::request_invalidation_applies_pass_flags_but_record_only_does_not`
+  覆盖 requested invalidations drive scheduling while record-only invalidations do not。
+- Host-forced full compose now leaves a typed runtime invalidation trace:
+  `runtime/invalidation.rs::Invalidation::runtime(...)` represents runtime-originated pass
+  requests without pretending they are retained dirty scopes, and
+  `runtime/frame.rs::FramePass::record_full_compose_invalidations(...)` records
+  `force_full_compose` through `request_invalidation(...)` before the full compose fallback runs.
+  新增 `runtime::frame::tests::force_full_compose_records_runtime_invalidation` 覆盖 debug
+  snapshot exposes the runtime source and compose/reconcile/draw pass flags。
+- Pointer/focus input-state render dirtiness now also uses typed invalidation pass flags:
+  `runtime/interaction.rs` routes pointer hover/press/focus visual state changes through a
+  draw-only `pointer_input` runtime invalidation instead of calling `mark_render_dirty()` directly,
+  and `runtime/dirty.rs::Runtime::runtime_invalidation_target(...)` centralizes the page/runtime
+  target used by these runtime-originated records. `pointer_hover_leave_reports_changed_response`
+  now verifies the debug snapshot contains a draw-only `Runtime("pointer_input")` invalidation。
+- Animation draw-state changes now use typed invalidation pass flags:
+  `runtime/animation.rs` routes changed animation ticks through a draw-only
+  `Runtime("animation_tick")` invalidation, while active animations with no value change still use
+  the lightweight render-loop request so draw-list cache reuse is preserved.
+  `frame_transition_interpolates_draw_list_frame` now verifies the debug snapshot records the
+  animation invalidation, and `active_animation_without_value_change_keeps_draw_list_cache` remains
+  the guard for the no-change active path。
+- Tree structure redraw decisions now use typed invalidation pass flags:
+  `runtime/tree.rs::collect_next_structure(...)` records layout-affecting changes as
+  `Runtime("layout_structure")` with layout/draw pass intent and visual-only changes as
+  `Runtime("visual_structure")` with draw-only pass intent. `runtime_detects_structure_changes` and
+  `runtime_detects_visual_changes_without_full_layout_redraw` now assert the corresponding debug
+  invalidation sources and pass flags in addition to render/full-redraw behavior。
+- Invalidation coalescing now preserves exact source identity:
+  `runtime/invalidation.rs::InvalidationStore` merges repeated records only when target and source
+  both match, instead of collapsing all sources in the same broad category. This keeps
+  `Runtime("force_full_compose")`, `Runtime("layout_structure")`, and other runtime-originated
+  causes separately visible in debug traces even when they target the same page. 新增
+  `runtime::invalidation::tests::invalidation_store_preserves_distinct_sources_for_one_target`
+  覆盖 same-target different-source records remain distinct while repeated exact sources merge。
+- Committed-tree stale-state cleanup now reports typed draw invalidation:
+  `runtime/tree.rs::cleanup_stale_committed_state(...)` records
+  `Runtime("stale_state_cleanup")` when removed elements prune response, focus, animation, or timer
+  state, instead of directly dirtying render state. The tree cleanup test now asserts the draw-only
+  invalidation while keeping the clean no-op cleanup path render-clean。
+- Internal full-redraw requests now leave a typed runtime invalidation:
+  `Runtime::mark_full_redraw(...)` routes through `request_invalidation(...)` with
+  `Runtime("mark_full_redraw")` and layout/hit/draw pass flags, but is no longer part of the
+  public application surface. Renderer/resource readiness now uses typed `ResourceDirty`, so broad
+  full redraw remains only as test/debug regression plumbing instead of shipping as a normal
+  runtime escape hatch. 新增
+  `runtime::dirty::tests::internal_full_redraw_request_records_runtime_invalidation` 覆盖
+  full-redraw state, no compose request, and debug invalidation flags。
+- Event command execution now returns a structured report:
+  `runtime/event_command.rs::execute_event_commands(...)` reports command count, callback count,
+  invalidation count, and merged pass flags instead of collapsing callback execution to a bare
+  boolean. Pointer, scroll, keyboard, frame-input, and timer paths still consume `.changed()` for
+  compatibility, but the Phase 2 command boundary now exposes explicit command output that tests
+  can verify. 新增 `runtime::event_command::tests::execute_event_commands_reports_*` 覆盖
+  no-callback commands stay render-clean while callback hits produce typed invalidation/pass flags。
+- Event command callback lookup now preserves target role:
+  `EventTargetId` exposes role-specific accessors (`node_id`, `focus_id`, `scroll_id`,
+  `text_id`, `layer_id`), and `execute_event_commands(...)` uses the expected accessor for each
+  command type before touching callback maps. A malformed command with the same raw id but wrong
+  role is traced as a command without accidentally firing another role's callback. 新增
+  `runtime::event_command::tests::execute_event_commands_requires_matching_target_role_for_callbacks`
+  覆盖 Phase 3 的 role-specific callback lookup boundary。
+- Timer invalidation now stays on the typed node path too:
+  `Invalidation::timer(...)` accepts `NodeId` instead of rebuilding one from a raw string, and
+  `record_timer_command_debug(...)` derives that id through `EventTargetId::node_id()`. The
+  role-mismatch command test now also covers timer commands, ensuring a text-targeted timer command
+  with the same raw id does not fire the node timer callback or emit a timer invalidation。
+- Layer focus-restore ownership is now typed internally:
+  `LayerRuntimeState::focus_restore` stores `Option<NodeId>` instead of `Option<String>`, so the
+  layer/focus bridge no longer treats the keyboard/text/IME restore target as a generic debug
+  label. Existing public/debug-facing strings stay readable, while `runtime/focus.rs` converts to
+  raw ids only when calling still-transitional callback and focus-owner APIs. Existing
+  `runtime::focus::tests::*` cover blocked focus capture and text-focus restoration through the
+  typed restore slot。
+- Keyboard/text/IME focus assignment now accepts typed node identity:
+  `InputOwners::set_keyboard_focus(...)` takes `Option<NodeId>` instead of `Option<String>`,
+  keeping the role-specific owner state from being assigned through a generic label API. Runtime
+  focus, frame setup tests, and stale-input cleanup tests now call that boundary with typed node
+  values while public getters still expose readable string slices。
+- Pointer/scroll/drag owner assignment now accepts typed node identity too:
+  `InputOwners::{set_pointer_press_target,set_pointer_hover,set_scroll_owner,set_drag_owner}` take
+  `NodeId` values instead of raw strings, and `PointerEventPass::focus_target` stores
+  `Option<Option<NodeId>>`. Hit testing still produces readable element ids at the tree boundary,
+  but the runtime owner handoff is now role-specific before callbacks and debug traces are built。
+- Event commands now store typed target payloads by variant:
+  `UiEventCommand::{Press,Click,ContextMenu,Drag,Timer}` carry `NodeId`,
+  `TextInput`/`Scroll`/`FocusChanged` carry the corresponding role target as `NodeId`, and
+  `LayerDismiss` carries `LayerId`. The executor converts these typed payloads into
+  `EventTargetId` only for debug records and typed invalidations, closing the previous internal
+  path where a private command could pair one command kind with another target role。
+- Hit-test results now cross the input boundary as typed node ids:
+  `runtime/interaction.rs::{hit_test,hit_test_interactive,hit_test_focusable}` return `NodeId`,
+  and frame input uses typed pointer capture/text focus getters when building hover, scroll, and
+  keyboard command targets. String-keyed interaction/response maps are still the compatibility
+  cache layer, but routing from hit-test to owner/command state is typed。
+- Runtime and resource invalidations now require typed target ids:
+  `Invalidation::{runtime,resource}` take `NodeId` targets, `runtime_invalidation_target()` returns
+  `NodeId`, and `runtime/resources.rs` uses that typed target for font, skin, and `skins_mut`
+  invalidations. This keeps Phase 1 resource dirty records on the typed invalidation spine before
+  they reach pass scheduling or debug snapshots。
+- Timer runtime state now stores typed node ids:
+  `TimingRuntimeState::timers` is an `FxHashMap<NodeId, TimerState>`, and timer collection yields
+  `NodeId` targets before command emission. Existing removed-element cleanup continues to compare
+  against readable committed element ids, but the timer owner cache itself no longer overloads raw
+  strings as node identity。
+- Timer events now join the same frame-input command batch:
+  `runtime/timing.rs::collect_timer_commands(...)` advances timer state and returns due
+  `UiEventCommand::Timer` values without executing callbacks or recording invalidations. The
+  frame input path appends those timer commands to pointer/scroll/keyboard commands and performs
+  one shared `execute_event_commands(...)` call, reducing the old two-step callback execution gap
+  in Phase 2 while keeping standalone timer coverage inside crate tests. 新增
+  `runtime::timing::tests::collect_timer_commands_defers_callback_execution` 覆盖 timer
+  collection is side-effect limited until the shared executor runs。
+- The frame coordinator now stores structured input-pass output:
+  `runtime/interaction.rs::FrameInputPassReport` carries input-state changes, timer render
+  requests, and the merged `UiEventCommandReport`, while `runtime/frame.rs::FramePass` keeps that
+  report after `run_input_pass(...)`. This makes the input pass a visible coordinator artifact
+  instead of hiding pointer/focus/timer/callback effects behind a discarded boolean. 新增
+  `runtime::frame::tests::frame_input_pass_*` 覆盖 pointer command reports and active-timer
+  render requests are visible to the frame pass。
+- Frame input command collection is now separated from command execution:
+  `runtime/interaction.rs::FrameInputCommandBatch` gathers pointer, scroll, keyboard, focus, layer,
+  and timer commands plus input-state/timer-render facts before the shared executor runs. The
+  frame input path first builds the batch, then calls `execute_event_commands(...)` exactly once to
+  produce `FrameInputPassReport`, making the Phase 2 `event command collection -> callback
+  execution` boundary concrete. 新增
+  `runtime::interaction::tests::collect_frame_input_commands_defers_callback_execution` 覆盖
+  callbacks and event traces are deferred until batch execution。
+- Frame input pass output is now visible in debug snapshots:
+  `UiDebugSnapshot::input_pass` records input-state changes, timer render requests, command count,
+  callback count, invalidation count, and merged command pass flags for the latest frame input
+  pass. `runtime/debug.rs` stores this record with the committed snapshot and clears the live
+  record alongside event/invalidation traces, so Phase 2 frame ordering can be inspected after a
+  frame instead of being observable only in unit-local `FramePass` state。
+- Direct event APIs now also feed the same input-pass debug spine:
+  `Runtime::update_pointer(...)`, `update_scroll(...)`, and `update_keyboard(...)` keep their
+  public `bool` return behavior, but internally build `FrameInputPassReport` values and record
+  `UiDebugSnapshot::input_pass`. Direct testing helpers and ad-hoc runtime event calls now expose
+  the same command/callback/invalidation counts as the frame coordinator path. 新增
+  `runtime::interaction::tests::direct_*_updates_record_input_pass_debug` 覆盖 pointer, scroll,
+  and keyboard direct paths。
+- Standalone timer ticking now uses the same frame input command-batch executor in tests:
+  the crate-private `tick_timers(...)` helper routes due timer callbacks through
+  `execute_frame_input_command_batch(...)`, and active timer render requests are reported in
+  `UiDebugSnapshot::input_pass`. `update_pointer(...)`, `update_scroll(...)`, and
+  `update_keyboard(...)` also delegate to that batch executor before recording debug, leaving the
+  lower-level event command executor as the shared callback execution primitive instead of a direct
+  per-API event path. 新增 `runtime::timing::tests::tick_timers_records_input_pass_debug` 覆盖
+  active timer render request and due timer callback report。
+- The standalone timer compatibility API is no longer part of the public runtime surface:
+  `tick_timers(...)` is test-only crate-private now, so external hosts and apps use
+  `Runtime::frame(...)` / `frame_incremental(...)` as the only supported timer-driving path while
+  internal tests keep covering the shared input-command executor behavior.
+- Frame input helper APIs now publish their own input-pass debug record:
+  `update_events_and_timers(...)` and `update_events_and_timers_from_pointer_events(...)` record
+  `UiDebugSnapshot::input_pass` at the frame-input boundary, while `run_input_pass(...)` keeps the
+  returned `FrameInputPassReport` without separately owning debug publication. This makes direct
+  helper use and the outer frame coordinator observable through the same Phase 2 report path. 新增
+  `runtime::interaction::tests::frame_input_helpers_record_input_pass_debug` 覆盖 queued pointer
+  command collection, callback execution, and debug report publication。
 - 本轮验证已通过 `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`、
   `cargo test --manifest-path crates/eui-neo/Cargo.toml`、
   `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`、
   `cargo test --features ui-neo ui::neo`、`cargo check --examples --features ui-neo`
   和 `git diff --check`；后两项仍只有既存
   `src/gpu/context.rs:1825 unused_mut` warning / CRLF 提示。
+- Layer/input bridge identity continues moving off raw string handoff:
+  `LayerPointerPolicy` now carries a runtime-private typed layer dismissal payload, so
+  outside-click close commands receive `LayerId` directly instead of rebuilding it from the
+  public debug dismissal record. `layer_blocks_element_target(...)` now accepts `NodeId`, and
+  focus/keyboard blocking uses typed focus owners until the final element-tree membership check.
+  Public layer debug and dismissal records intentionally keep readable string ids.
+- 本轮验证已通过 `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`、
+  `cargo test --features ui-neo ui::neo`、`cargo check --examples --features ui-neo`
+  和 `git diff --check`；后两项仍只有既存
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF 提示。
+- Interaction and response caches now use typed node identity internally:
+  `InputRuntimeState::{interactions,responses}` are keyed by `NodeId`, pointer event collection
+  preserves typed ids while computing active/hovered/clicked/drag state, stale cleanup prunes
+  typed node keys, and debug/builder/public response replay converts back to readable strings only
+  at compatibility edges.
+- 本轮验证已通过 `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`、
+  `cargo test --features ui-neo ui::neo`、`cargo check --examples --features ui-neo`
+  和 `git diff --check`；后两项仍只有既存
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF 提示。
+- Animation and frame-target runtime caches now use typed node identity:
+  `AnimationRuntimeState::{animations,frame_targets}` are keyed by `NodeId`, animation ticking
+  creates typed entries from element ids, stale cleanup prunes typed keys, and debug draw-frame
+  collection reads typed animation state while continuing to emit readable element ids. `NodeId`
+  also implements borrowed `str` lookup so existing public/debug string edges do not force cache
+  ownership back to raw strings.
+- 本轮验证已通过 `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`、
+  `cargo test --features ui-neo ui::neo`、`cargo check --examples --features ui-neo`
+  和 `git diff --check`；后两项仍只有既存
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF 提示。
+- Callback storage keys now carry typed runtime identity:
+  node-target callbacks (`click`/`press`/`context_menu`/`focus`/`text`/`scroll`/`drag`/`timer`)
+  wrap `NodeId`, and layer-dismiss callbacks wrap `LayerId`. Callback transfer collects typed node
+  ids from reused elements, event command execution looks up callbacks through typed command
+  targets, and only declaration/debug compatibility edges still construct keys from readable
+  strings.
+- 本轮验证已通过 `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`、
+  `cargo test --features ui-neo ui::neo`、`cargo check --examples --features ui-neo`
+  和 `git diff --check`；后两项仍只有既存
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF 提示。
+- Structure diff snapshots now carry typed node identity:
+  `ElementSnapshot::id` is `NodeId`, tree structure collection builds snapshots from typed ids,
+  partial layout matches previous scope roots through `NodeId::as_str()`, and the expert surface
+  re-exports `NodeId` beside `ElementSnapshot` while keeping an `id()` readability helper for
+  debug and compatibility consumers.
+- 本轮验证已通过 `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`、
+  `cargo test --features ui-neo ui::neo`、`cargo check --examples --features ui-neo`
+  和 `git diff --check`；后两项仍只有既存
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF 提示。
+- Committed-tree cleanup identity is now typed end-to-end:
+  `ElementIdSet` stores `NodeId`, committed element collection inserts typed ids, stale input /
+  animation / timer / layer-focus cleanup compares typed keys directly, and `InputOwners`'
+  role-specific owner wrappers store `NodeId` internally instead of private string wrappers.
+- 本轮验证已通过 `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`、
+  `cargo test --features ui-neo ui::neo`、`cargo check --examples --features ui-neo`
+  和 `git diff --check`；后两项仍只有既存
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF 提示。
+- Retained reuse dirty-root indexing now uses typed node identity:
+  `dirty_root_ids_for_scopes(...)` returns `FxHashSet<NodeId>`, retained descendant checks compare
+  through `NodeId`'s borrowed string lookup, and `RetainedReuseState` / `RetainedReuseContext`
+  carry the same `ElementIdSet` type used by committed-tree cleanup instead of keeping a separate
+  raw-string dirty-root set.
+- 本轮验证已通过 `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`、
+  `cargo test --features ui-neo ui::neo`、`cargo check --examples --features ui-neo`
+  和 `git diff --check`；后两项仍只有既存
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF 提示。
+- Retained root snapshots now store typed node identity:
+  `RetainedRoot::id` is `NodeId`, `RetainedRoot::from_element(...)` captures typed ids, dirty
+  normalization and structural compatibility compare retained roots through typed ids internally,
+  and debug/reconcile/layout refresh paths convert back to readable strings only when matching
+  live `Element` ids or emitting human-readable diagnostics.
+- 本轮验证已通过 `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`、
+  `cargo test --features ui-neo ui::neo`、`cargo check --examples --features ui-neo`
+  和 `git diff --check`；后两项仍只有既存
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF 提示。
+- Debug retained-boundary ancestry now uses typed identity internally:
+  `scope_by_root_id(...)` builds an `FxHashMap<NodeId, ScopeId>`, descendant dirty-dependency
+  checks compare retained `NodeId`s directly, and `ElementDebugRecord::retained_boundary` remains
+  the only readable-string conversion point for this debug view.
+- 本轮验证已通过 `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`、
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`、
+  `cargo test --features ui-neo ui::neo`、`cargo check --examples --features ui-neo`
+  和 `git diff --check`；后两项仍只有既存
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF 提示。
+- Layer declarations now resolve into typed runtime layer intents:
+  public/widget-facing `LayerIntent` keeps readable owner/anchor strings, but composition converts
+  those declarations into runtime-private `LayerRuntimeIntent` values with typed `NodeId` owner and
+  anchor fields. Layer routing, focus blocking, pointer dismissal, and layer debug collection now
+  read the typed runtime intents, with readable owner/anchor strings emitted only into debug and
+  dismissal records.
+- Validation for this slice passed `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  and `git diff --check`; the SkyEngine adapter/example commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- The DSL/runtime frame bridge now keeps replayed frame identity typed:
+  `Ui`'s previous-frame cache, replayed response map, and focused-id bridge store `NodeId`
+  internally, and the current element-owner stack used by dependency fallback also stores `NodeId`
+  instead of raw strings. Public widget-facing `Ui::response(...)`, `Ui::previous_frame(...)`,
+  `Ui::is_focused(...)`, and `Ui::set_response(...)` still accept readable ids, but runtime replay
+  passes cloned typed ids instead of round-tripping through owned strings.
+- Validation for this slice passed focused response/focus/previous-frame and builder-owner checks,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  and `git diff --check`; the SkyEngine adapter/example commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Input-owner debug stringification is now isolated to the debug boundary:
+  `InputOwners` exposes typed `NodeId` getters for active pointer and keyboard focus, focus-change
+  event collection reuses the typed old focus id directly, and `runtime/debug.rs` is the only place
+  in that path that converts those owners into readable snapshot labels.
+- Validation for this slice passed focused debug/focus/event checks,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  and `git diff --check`; the SkyEngine adapter/example commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Scroll callback capability checks now use typed callback keys:
+  `UiCallbacks::has_scroll(...)` accepts `NodeId`, and both scroll event targeting and debug
+  scroll-ancestor collection explicitly convert from element-tree labels into typed node identity
+  before touching callback storage. This removes the last `has_scroll_str(...)` callback lookup
+  compatibility helper from the runtime path.
+- Validation for this slice passed focused scroll/debug checks,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  and `git diff --check`; the SkyEngine adapter/example commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Callback key construction now requires typed identity:
+  node-target callback keys take `NodeId`, layer-dismiss callback keys take `LayerId`, and DSL
+  registration is the compatibility boundary that converts resolved readable element/layer ids
+  into those typed keys. Runtime tests and callback transfer assertions now construct callback
+  keys through typed ids, and there are no remaining `*CallbackId::new("...")` call sites in
+  `crates/eui-neo/src`.
+- Validation for this slice passed focused callback-transfer and event-command registry checks,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  and `git diff --check`; the SkyEngine adapter/example commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Dirty input no longer has an implicit raw-string tuple compatibility conversion:
+  the public boundary still offers explicit `DirtyInput::new(...)` / `DirtyInput::signal(...)`,
+  but `impl From<(String, DirtyFlags)> for DirtyInput` has been removed so new dirty records do
+  not silently enter the runtime through tuple `.into()` string routing.
+- Validation for this slice passed focused dirty/invalidation/frame tests,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  and `git diff --check`; the SkyEngine adapter/example commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 9 has a concrete runtime feedback path now: host/renderer resource readiness can call
+  `Runtime::request_resource_dirty(source, flags)` so pending image/font resources enter the typed
+  `Resource(...)` invalidation spine with precise pass flags. The SkyEngine neo adapter now records
+  pending image/font resources as draw-only resource dirty instead of calling broad
+  `mark_full_redraw()`, while font/skin registry changes declare compose/layout/draw intent so
+  text metric and theme changes remain visible to layout diagnostics.
+- 新增回归断言覆盖 renderer pending image/font resources 只请求 draw、不触发 compose/full redraw，
+  以及 font/skin resource mutations 会产生 layout-aware typed resource invalidations.
+- Validation for this Phase 9 slice passed focused resource/backend checks,
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  and `git diff --check`; the SkyEngine adapter/example commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Image ready transitions are now observable in the same Phase 9 path: `SkyNeoImageStore` tracks
+  per-image texture revisions, reports `ready_changed` only when a requested image reaches a new
+  GPU texture revision, and `NeoRenderer` records that as draw-only
+  `Resource("renderer:ready_images")` dirty before rendering. This keeps image readiness out of
+  broad full redraw while still leaving a renderer/resource trace for the frame that consumes the
+  ready image.
+- 新增回归断言覆盖 image ready revision 只在新 texture revision 时触发，以及
+  `renderer:ready_images` resource dirty 不触发 compose/layout/full redraw。
+- Validation for this image-ready slice passed focused image-provider/renderer/backend checks,
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --features ui-neo ready_image_revision_reports_only_new_texture_versions`,
+  `cargo test --features ui-neo ready_image_status_records_draw_only_resource_dirty`, and
+  `cargo test --features ui-neo pending_renderer_resources_request_draw_only_dirty`; the
+  SkyEngine test command still reports only the existing `src/gpu/context.rs:1825 unused_mut`
+  warning.
+- Full validation for this image-ready slice also passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`, and
+  `git diff --check`; the last two commands still report only the existing unused-mut / CRLF
+  notices.
+- Font ready transitions now mirror image revision tracking but not image dirty flags:
+  `SkyNeoFontStore` reports `ready_changed` only for a new font asset revision, and
+  `renderer:ready_fonts` is now layout-affecting because newly available font metrics can change
+  measured text. Pending font frames remain draw-only, so loading fonts does not promote every
+  pending frame to full redraw.
+- 新增回归断言覆盖 font ready revision 只在新 asset revision 时触发；后续 Phase 9 切片已将
+  `renderer:ready_fonts` 从 draw-only 收紧为 compose/layout/draw resource dirty。
+- Validation for this font-ready slice passed focused font-provider/renderer checks,
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, and `cargo check --examples --features ui-neo`; the
+  SkyEngine adapter/example commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning.
+- The SkyEngine neo renderer now returns an internal `NeoRenderResourceStatus` that keeps
+  `eui_neo_wgpu::RenderStatus` stable while carrying ready image/font transitions back to the
+  backend. `NeoUiBackend` records pending and ready renderer resources through one resource-dirty
+  bridge instead of splitting the feedback across renderer-side and backend-side runtime mutations.
+  Pending image/font states and ready images are draw-only; ready fonts are layout-affecting.
+- 新增回归断言覆盖 unified renderer resource status：pending image/font 与 ready image resource
+  feedback 进入 draw-only invalidation；ready font feedback 进入 compose/layout/draw invalidation。
+- Validation for this unified resource-status bridge passed focused backend/renderer checks,
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`, and
+  `git diff --check`; the SkyEngine commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 10 API cleanup has started at the prelude boundary: `eui_neo::prelude` is now documented
+  and narrowed to authoring/runtime-frame basics instead of importing retained debug records,
+  invalidation internals, draw diagnostics, and test-driver helpers into every application module.
+  Testing helpers remain available from `eui_neo::testing` / crate-root exports, lower-level
+  renderer/diagnostic helpers remain under `eui_neo::expert`, and the SkyEngine `ui::neo` adapter
+  explicitly re-exports the stable test-driver helpers used by its examples.
+- Validation for this API-boundary slice passed `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`, and
+  `git diff --check`; the SkyEngine commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- The testing surface is no longer root-re-exported from `eui_neo`: `TargetPoint`,
+  `UiActionTrace`, `UiTestDriver`, and `UiTestError` now live at the explicit
+  `eui_neo::testing` boundary. The SkyEngine adapter keeps its example-facing convenience re-export
+  by importing those helpers from `eui_neo::testing`, so app prelude/root imports no longer pick up
+  test automation by accident.
+- Validation for this testing-boundary cleanup passed `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, and `cargo check --examples --features ui-neo`; the
+  SkyEngine commands still report only the existing `src/gpu/context.rs:1825 unused_mut` warning.
+- Cache helpers are now expert-only at the public boundary: `CacheAccess`, `CacheCell`, and
+  `CacheStats` are no longer root exports from `eui_neo`, while `eui_neo_wgpu` consumes
+  `CacheCell` through `eui_neo::expert`. This keeps renderer/cache plumbing available to tooling
+  and backend crates without advertising it as normal application API.
+- Validation for this cache-boundary cleanup passed
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo fmt --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`, and
+  `git diff --check`; the SkyEngine commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Draw-list diagnostic trace types are now expert-only at the public boundary:
+  `UiDrawDebugCommand` and `UiDrawDebugTrace` are no longer root exports from `eui_neo`, while
+  `Runtime::draw_debug_trace()` continues to return the same diagnostic type and tooling can name
+  it through `eui_neo::expert`. This keeps draw diagnostics available without presenting them as
+  everyday authoring API.
+- Validation for this draw-diagnostics boundary cleanup passed
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, and `cargo check --examples --features ui-neo`; the
+  SkyEngine commands still report only the existing `src/gpu/context.rs:1825 unused_mut` warning.
+- Runtime inspection records are now expert-only at the public boundary: `UiDebugSnapshot`,
+  `RetainedDebugRecord`, `ElementDebugRecord`, `DirtyReason`, `Invalidation*`, `PassFlags`, and
+  layer debug records are no longer root exports from `eui_neo`. Runtime/testing APIs still expose
+  and consume the same concrete diagnostics, but callers that want to name those types now do so
+  through `eui_neo::expert`, keeping the root focused on authoring and host-frame API.
+- Validation for this runtime-inspection boundary cleanup passed
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, and `cargo check --examples --features ui-neo`; the
+  SkyEngine commands still report only the existing `src/gpu/context.rs:1825 unused_mut` warning.
+- Retained compose/layout trace types are now expert-only at the public boundary:
+  `CallbackTransferStats`, `RetainedCompose*`, `LayoutMode`, and `FullLayoutReason` are no longer
+  root exports from `eui_neo`. Runtime debug snapshots still carry those concrete records, and
+  tools/tests can name them through `eui_neo::expert`, but normal application imports no longer get
+  retained-runtime diagnostics as ordinary authoring API.
+- Layer decision enum labels now follow the same rule: `LayerAnchorSource`,
+  `LayerLifecycleAction`, and `LayerPointerAction` moved out of the root/prelude surface and into
+  `eui_neo::expert` beside the layer debug records that use them. The user-facing layer authoring
+  pieces stay at the builder level instead of asking applications to name debug decision enums.
+- Layer declaration internals are now expert-only too: `LayerId`, `LayerIntent`, `LayerKind`,
+  `LayerPlacement`, and `LayerSize` are no longer root/prelude exports. Normal applications keep
+  the builder-level API (`ui.popover(...)`, widgets, `PopoverPlacement`, and
+  `OutsideClickPolicy`), while renderer/tooling code can still name the lower-level layer records
+  through `eui_neo::expert`. `EventDebugRecord` and `EventTargetId` are also re-exported from
+  `expert` so `UiDebugSnapshot` remains nameable without promoting event debug internals to root.
+- Validation for this retained-diagnostics boundary cleanup passed
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  and `git diff --check`; the SkyEngine commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- The SkyEngine adapter boundary now mirrors the narrowed core boundary:
+  `sky_engine::ui::neo::eui` no longer wildcard-re-exports all of `eui_neo`; it re-exports the
+  authoring prelude plus stable animation helpers, while diagnostics stay under
+  `sky_engine::ui::neo::expert` and test-driver helpers remain explicit root conveniences for
+  examples/tests.
+- Validation for this adapter-boundary cleanup passed
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`, `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`, and
+  `git diff --check`; the SkyEngine commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- The public runtime no longer exposes `clear_needs_compose()`: compose scheduling is cleared by
+  the frame coordinator at the start of a compose pass, while external dirtiness enters through
+  `FrameInput` / typed invalidation or explicit resource/full-redraw requests. This removes one
+  direct state-mutation escape hatch that could hide compose lifecycle changes from debug traces.
+- Validation for this direct-mutation cleanup passed
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`, `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`, and
+  `git diff --check`; the SkyEngine commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- `DirtyInput` now keeps its raw routing fields private: callers still create dirty records through
+  `DirtyInput::new(...)` or `DirtyInput::signal(...)` and can inspect `id()`, `flags()`, and
+  `source()`, but new code cannot mutate `id/source/flags` directly or construct ad hoc dirty
+  records that bypass the constructor boundary before runtime normalization.
+- Validation for this `DirtyInput` boundary cleanup passed focused dirty-path tests,
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`, `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`, and
+  `git diff --check`; the SkyEngine commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 9 resource feedback now crosses the runtime boundary as an explicit `ResourceDirty`
+  request instead of a loose `source, flags` pair. The SkyEngine renderer bridge uses named
+  renderer resource labels and `ResourceDirty::draw(...)`, keeping pending/ready image/font
+  readiness on the typed resource invalidation spine while preserving stable debug trace labels.
+- Validation for this `ResourceDirty` boundary cleanup passed focused resource/backend checks,
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`, `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`, and
+  `git diff --check`; the SkyEngine commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- The public `FrameInput` boundary no longer exposes raw mutable fields. Hosts still construct
+  frames through `FrameInput::new(...)` and the fluent input/dirty/full-compose builders, while
+  read-only accessors (`screen()`, `delta_seconds()`, `pointer_snapshot()`,
+  `queued_pointer_events()`, `scroll_event()`, `keyboard_event()`, `dirty_records()`, and
+  `force_full_compose_enabled()`) keep diagnostics and external inspection explicit.
+- Validation for this `FrameInput` boundary cleanup passed focused frame-input tests,
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`, `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`, and
+  `git diff --check`; the SkyEngine commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 2 direct input compatibility has been narrowed: application, benchmark, VN, and example
+  code now injects standalone input through `Runtime::dispatch_frame_input(FrameInput::...)`,
+  which uses the same frame event-command collection and callback execution path as
+  `Runtime::frame(...)`. The lower-level `update_pointer(...)`, `update_scroll(...)`, and
+  `update_keyboard(...)` helpers are crate-internal plumbing for runtime tests and
+  `UiTestDriver`, so new external code no longer bypasses the frame-input boundary.
+- Validation for this direct-input API cleanup passed
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`, `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and
+  `cargo test --features "vn vn-ui ui-neo" neo_choice_click_queues_vn_choice_action`, and
+  `git diff --check`; the SkyEngine commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 9/API cleanup continues by narrowing `Runtime::mark_full_redraw(...)` to crate-internal
+  runtime plumbing. Public renderer and host resource changes now enter through typed
+  `ResourceDirty` or frame input, while broad full-redraw degradation remains traceable in debug
+  invalidations only in focused regression coverage instead of being advertised as a normal app API.
+- Validation for this full-redraw API cleanup passed focused dirty-path coverage,
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`, `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 7 observability now carries draw-time drift context in `ElementDebugRecord`: snapshots
+  include the layout target frame, draw frame, transformed draw frame, effective draw transform,
+  active clip, and draw visibility. `SKY_NEO_DEBUG_ELEMENT` prints the same fields, so retained
+  layout/debug investigations can compare layout frame, draw frame, transform, and clip without
+  inferring them from renderer output.
+- 新增回归断言覆盖 clipped ancestry debug still records active clip and that transformed parent
+  visuals record a transformed draw frame plus composed draw transform.
+- Validation for this Phase 7 observability slice passed
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  and `git diff --check`; the SkyEngine commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 6 input ownership observability now reflects the separated runtime owners:
+  `UiDebugSnapshot` reports pointer hover/active/capture, keyboard focus, text focus, IME owner,
+  scroll owner, and drag owner in addition to the legacy focused/active aliases. Debug trace output
+  prints the same owner split, making capture/focus/IME routing inspectable without reading
+  private runtime state.
+- 新增回归断言覆盖真实 input path：text focus and IME owner stay on a focused text node while
+  pointer hover/scroll ownership moves to a separate scroll target, then drag press/drag records
+  pointer active/capture and drag owner independently.
+- Validation for this Phase 6 observability slice passed
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  and `git diff --check`; the SkyEngine commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 6 platform effects now have a runtime-owned pass after frame commit:
+  `run_platform_effects_pass()` diffs the committed focused IME rect against the last emitted
+  platform state and queues typed `PlatformEffect::ImeStart`, `ImeMove`, or `ImeEnd`.
+  `Runtime::take_platform_effects()` only drains the queued effects, and `NeoUiBackend` only
+  applies them to the winit window, so adapter code no longer decides IME start/end/move directly
+  from `focused_ime_rect()`.
+- 新增回归断言覆盖真实 frame path：IME platform effects start、move、end 由 runtime frame
+  platform pass 在状态变化时发出；debug snapshot and trace also carry the last emitted platform
+  effects for diagnostics.
+- SkyEngine 的 normal `compose` / `compose_state` path now flushes queued platform effects
+  immediately after the committed runtime frame, so the app-facing convenience path follows the
+  runtime after-commit contract instead of waiting for the next event/begin-frame drain.
+- Cursor shape now follows the same platform-effects contract: the runtime frame pass compares
+  the hovered interactive element's `CursorShape` with the last emitted host cursor state and
+  queues `PlatformEffect::CursorShape` only when the host cursor should change. The SkyEngine
+  adapter maps `Arrow` to winit default and `Hand` to winit pointer.
+- 新增回归断言覆盖 cursor platform effects: hovering a hand-cursor element emits hand once,
+  a stable hover emits no duplicate effect, and moving outside emits arrow.
+- Capture result is now runtime-owned too: `PlatformCaptureState` records pointer/keyboard capture
+  wants, `run_platform_effects_pass()` queues `PlatformEffect::Capture` when those wants change,
+  and `NeoUiBackend` applies that state instead of recomputing capture from adapter-local tree
+  scans. The backend keeps a direct read of `Runtime::platform_capture_state()` after composition
+  for immediate `capture()` queries, but the authoritative rule lives in the runtime platform
+  pass.
+- The IME and cursor platform regression tests now also pin capture transitions: focused text
+  emits keyboard capture, hovering an interactive element emits pointer capture, stable capture
+  emits no duplicate effect, and leaving/removing the owner emits capture release.
+- API pass alignment: platform effects are now exported from the stable runtime surface
+  (`eui_neo::PlatformEffect` and `eui_neo::PlatformCaptureState`) instead of forcing host adapters
+  through `eui_neo::expert`. Diagnostics and retained internals remain expert-only.
+- Validation for this Phase 6 platform-effects slice passed
+  `cargo fmt`, `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  and `git diff --check`; the SkyEngine commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 6 input-owner diagnostics now carry typed payloads as well as readable aliases:
+  `UiDebugSnapshot::input_owners` exposes `InputOwnerDebugSnapshot` with `NodeId` fields for
+  pointer hover/active/capture, keyboard focus, text focus, IME owner, scroll owner, and drag
+  owner. The existing `*_id: Option<String>` fields stay as compatibility/debug-print aliases,
+  so tooling can migrate away from raw string ownership without losing readable traces.
+- 新增回归断言覆盖 separated owner snapshot 的 typed `NodeId` payload alongside the legacy
+  string aliases.
+- Validation for this Phase 6 typed owner diagnostics slice passed
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`, `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml debug_snapshot_reports_separate_input_owners`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 5/Phase 3 layer diagnostics now carry typed identity payloads as well as readable aliases:
+  `LayerDebugRecord` keeps string `id` / `owner` / `anchor` fields for trace output but also
+  stores `LayerId` and `NodeId` payloads behind accessors; `LayerDismissalRecord` and
+  `LayerPointerDebugRecord` follow the same pattern for dismissal and hit/block/pass-through
+  decisions. This keeps layer-manager behavior inspectable without forcing diagnostics to infer
+  ownership from raw strings.
+- 新增回归断言覆盖 layer lifecycle、dismissal 和 pointer policy debug records 的 typed
+  `LayerId` / `NodeId` payload.
+- Validation for this typed layer diagnostics slice passed
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`, `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml runtime::layers::tests`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 3/Phase 7 retained and element diagnostics now also carry typed identity payloads:
+  `RetainedDebugRecord` stores its own `ScopeId`, optional parent `ScopeId`, and typed
+  scroll/clip ancestor `NodeId`s behind accessors; `ElementDebugRecord` stores its own `NodeId`,
+  optional parent `NodeId`, optional retained-boundary `ScopeId`, and typed scroll/clip ancestor
+  `NodeId`s. The existing readable string fields remain as trace aliases, but tooling no longer
+  has to infer scope/node roles from raw strings.
+- 新增回归断言覆盖 scope/element ancestry debug records 同时报告 typed `ScopeId` / `NodeId`
+  payload 和 legacy readable labels.
+- Validation for this typed retained/element diagnostics slice passed
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`, `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml debug_snapshot`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml retained_scope_ids_are_typed_internally_but_report_readable_labels`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 1/Phase 3 dirty input identity has moved one step deeper into the typed dirty spine:
+  `DirtyInput` now stores its target as a `ScopeId` internally and exposes `scope_id()` for typed
+  inspection, while `DirtyInput::new(...)`, `DirtyInput::signal(...)`, and `id()` preserve the
+  existing caller-facing string-compatible API. `Invalidation::dirty_input(...)` now reuses that
+  typed payload instead of rebuilding a scope id from a raw string.
+- 新增回归断言覆盖 external dirty input 进入 invalidation 时保留同一个 typed `ScopeId` payload;
+  focused validation passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml dirty_input_invalidation_reuses_typed_scope_payload`.
+- Validation for this typed `DirtyInput` identity slice passed
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`, `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml dirty_input_invalidation_reuses_typed_scope_payload`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 1 signal dirty tracking now stays typed until the public diagnostics boundary:
+  `SignalGraph` stores signal dependencies, pending dirty scopes, dirty reasons, dirty flags, and
+  scheduled dependency resets keyed by `ScopeId` instead of raw strings. Public helpers such as
+  `signal_dependencies()`, `dirty_reasons()`, and `dirty_flags()` still return readable strings,
+  while `dirty_inputs_from_graph(...)` emits `DirtyInput` through the typed scope payload path.
+- 新增回归断言覆盖 signal watch/dirty maps use typed `ScopeId` keys internally while preserving
+  the existing readable public output; focused validation passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml signal_watch_registers_scope_and_set_marks_it_dirty`.
+- Validation for this typed signal dirty graph slice passed
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`, `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml signal_watch_registers_scope_and_set_marks_it_dirty`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 1 invalidation recording now names the remaining passive path explicitly:
+  `Runtime::record_invalidation(...)` has been replaced by
+  `record_committed_invalidation_trace(...)`. New dirtiness still enters through
+  `request_invalidation(...)`, which applies pass flags, while normalized dirty records that a
+  frame pass has already consumed are only committed to the debug invalidation trace. This removes
+  the generic record-only escape hatch terminology from runtime siblings.
+- 新增/更新回归断言覆盖 requested invalidations still drive scheduling while committed traces do
+  not; focused validation passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml request_invalidation_applies_pass_flags_but_committed_trace_does_not`
+  and `cargo test --manifest-path crates/eui-neo/Cargo.toml frame`.
+- Full validation for this committed-trace slice also passed `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 3/Phase 4 retained reconciler boundaries now take typed scope identity:
+  `RetainedReuseState::is_dirty(...)`, `RetainedReuseContext::{decision, plan,
+  build_reason, build_reason_or_missing_element, should_reset_rebuilt_scope_dependencies}(...)`,
+  `apply_rebuilt_scope_dependency_reset(...)`, `retained_scope_contains_dirty_root(...)`, and
+  `previous_elements_for_scope(...)` accept `ScopeId` instead of raw `&str`. DSL and element
+  builder code still resolves user-facing ids from strings, but once retained reuse reaches the
+  reconciler boundary it no longer accepts untyped scope labels.
+- Focused validation for this typed retained-reconciler slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml retained_reuse_decision_reports_blocking_reason`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml runtime::reconcile::tests`, and
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml retained::tests`.
+- Full validation for this typed retained-reconciler slice also passed `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- The retained element builder path now preserves that typed scope identity too:
+  `ElementBuilder::content(...)` resolves a `ScopeId` once, then passes it through
+  `Ui::reuse_retained_element(...)`, dirty-owner tracking, dependency-reset scheduling, and
+  `Ui::record_retained_element(...)`. Those Ui internals now accept `ScopeId` directly instead of
+  reconstructing retained scope identity from the element's raw string id after each step.
+- Focused validation for this retained element identity slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml retained_scope_ids_are_typed_internally_but_report_readable_labels`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml scoped_compose_rebuilds_dirty_scope_and_reuses_clean_sibling_with_callbacks`,
+  and `cargo test --manifest-path crates/eui-neo/Cargo.toml dsl::tests`.
+- Full validation for this retained element identity slice also passed `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 1/Phase 3 signal dependency reset helpers now stay on typed scope identity:
+  `clear_scope_signal_dependencies(...)` and `schedule_scope_dependency_reset(...)` accept
+  `ScopeId` instead of raw `&str`, and retained reconciler cleanup/reset calls pass the typed
+  scope payload through directly. The thread-local signal registry and pending reset queue were
+  already `ScopeId` keyed; this removes the last string reconstruction at that helper boundary.
+- Focused validation for this typed signal-reset slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml apply_rebuilt_scope_dependency_reset_schedules_signal_dependency_reset`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml apply_removed_retained_scopes_clears_signal_dependencies_for_unmounted_scopes`,
+  and `cargo test --manifest-path crates/eui-neo/Cargo.toml signal_watch_registers_scope_and_set_marks_it_dirty`.
+- Full validation for this typed signal-reset slice also passed `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 3/Phase 7 draw-time visual source lookup now crosses into animation state with typed
+  node identity: `Runtime::resolve_node_id(...)` normalizes source ids once, and
+  `hover_blend_for_source(...)` / `press_blend_for_source(...)` accept `NodeId` instead of raw
+  string labels before reading animation maps. The element builder still stores user-facing source
+  ids as strings, but draw-list generation converts them before querying runtime animation state.
+- Focused validation for this typed draw-animation lookup slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml visual_state_from_scales_dependents_around_source`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml hover_opacity_from_uses_hidden_opacity_without_source_blend`,
+  and `cargo test --manifest-path crates/eui-neo/Cargo.toml cleanup_stale_animation_state_keeps_only_existing_ids`.
+- Full validation for this typed draw-animation lookup slice also passed `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 3/Phase 6 runtime-internal interaction lookup now stays typed:
+  `Runtime::find_node(...)`, `response_for_node(...)`, and `interaction_for_node(...)` are the
+  internal helpers for subsystems that already have `NodeId`. Public `find(...)`,
+  `response(...)`, and `interaction(...)` remain string-compatible facades, but animation,
+  platform cursor/capture traversal, pointer press/context-menu frame lookup, and IME rect lookup
+  now use typed node ids directly. The obsolete string-only IME owner getter was removed.
+- Focused validation for this typed interaction lookup slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml layer_blocked_focus_moves_focus_into_restore_slot`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml focused_ime_rect_tracks_committed_layout_after_recompose`,
+  and `cargo test --manifest-path crates/eui-neo/Cargo.toml state_color_uses_smoothed_hover_blend`.
+- Full validation for this typed interaction lookup slice also passed `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 2/Phase 3/Phase 5 callback transfer now separates retained node callbacks from layer
+  callbacks at the transfer boundary. `UiCallbacks::transfer_for_elements(...)` collects reused
+  `NodeId`s from retained elements, but transfers `LayerDismissCallbackId` only when that reused
+  element also matches an active typed `LayerId` from current layer intents. Layer-dismiss
+  registration also accepts `LayerId` directly, so popover/dialog dismissal callbacks no longer
+  rebuild layer identity from raw strings at the DSL helper boundary.
+- 新增回归断言覆盖 element id alone does not transfer a layer-dismiss callback, while an
+  explicit active `LayerId` does; focused validation passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml transfer_for_elements`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml apply_retained_reuse_plan_transfers_callbacks_for_reused_elements`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml close_popover_records_dismissal_and_blocks_outside_pointer`,
+  and `cargo test --manifest-path crates/eui-neo/Cargo.toml dialog_backdrop_dismisses_through_layer_policy`.
+- Full validation for this typed callback/layer transfer slice also passed `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`, and
+  `cargo check --benches --features ui-neo`; the SkyEngine commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning.
+- Phase 3 callback registration now keeps node identity typed at the crate-private DSL boundary:
+  `Ui::register_on_click(...)`, press/context-menu/focus/text/scroll/drag/timer registration
+  helpers accept `NodeId` directly, and `ElementBuilder` performs the single conversion from the
+  public element id string before registering callbacks. This leaves authoring ergonomics intact
+  while removing another internal `String -> NodeId` reconstruction point from callback lookup.
+- Focused validation for this typed node-callback registration slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml dsl::tests`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml callbacks::tests`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml execute_event_commands_encode_role_specific_targets`,
+  and `cargo test --manifest-path crates/eui-neo/Cargo.toml click_callback_runs_from_runtime_dispatch`.
+- Full validation for this typed node-callback registration slice also passed `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 3/Phase 5 layer intents now carry typed owner and anchor identity before entering the
+  layer manager: `LayerIntent::{owner, anchor}` use `NodeId` instead of raw strings, and
+  `LayerRuntimeIntent::from_intent(...)` no longer reconstructs those ids during commit. Popover,
+  dialog, and toast builders convert authoring ids at declaration time, while `LayerDebugRecord`
+  and `LayerDismissalRecord` keep readable string aliases for trace output.
+- Focused validation for this typed layer-intent identity slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml runtime::layers::tests`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml runtime::focus::tests`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml close_popover_records_dismissal_and_blocks_outside_pointer`,
+  and `cargo test --manifest-path crates/eui-neo/Cargo.toml dialog_backdrop_dismisses_through_layer_policy`.
+- Full validation for this typed layer-intent identity slice also passed `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 3 dependency-owner fallback now has an explicit typed bridge from committed node identity
+  to retained scope identity: `ScopeId::from_node(...)` converts a `NodeId` at the boundary, and
+  `Ui::dependency_owner_id(...)` uses it instead of manually rebuilding a scope from a raw node
+  string. The test-only `Ui::active_scope_id(...)` helper now returns `ScopeId` too, keeping scope
+  inspection typed until assertions/debug labels read it.
+- Focused validation for this typed scope-owner bridge slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml scope_id_from_node_preserves_typed_payload`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml nested_scopes_extend_the_parent_scope_id`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml signal_watch_without_scope_registers_current_element_owner`,
+  and `cargo test --manifest-path crates/eui-neo/Cargo.toml clock_read_without_scope_uses_current_element_owner`.
+- Full validation for this typed scope-owner bridge slice also passed `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 1/Phase 9 resource invalidation sources now have a typed payload:
+  `ResourceDirtySource` backs `ResourceDirty` and `InvalidationSource::Resource(...)`, so host and
+  renderer readiness requests no longer enter the invalidation spine as anonymous strings. The
+  existing `ResourceDirty::new/draw/layout(...)` constructors still accept string-like inputs, and
+  debug traces continue to expose readable source labels through `label()` / `source()`.
+- Focused validation for this typed resource-source slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml resource_mutations_emit_typed_resource_invalidations`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml renderer_resource_redraw_uses_draw_only_resource_invalidation`,
+  and `cargo test --manifest-path crates/eui-neo/Cargo.toml invalidation_store_preserves_distinct_sources_for_one_target`.
+- Full validation for this typed resource-source slice also passed `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 1 signal invalidation sources now keep their typed payload too:
+  `DirtyInput` stores `SignalKey` for signal-owned records, `dirty_inputs_from_graph(...)` clones
+  the graph's existing `SignalKey` instead of flattening it through a `String`, and
+  `InvalidationSource::Signal(...)` carries `SignalKey` through the runtime invalidation snapshot.
+  Public diagnostics still expose readable labels via `DirtyInput::source()` and
+  `InvalidationSource::label()`, while tests can inspect `DirtyInput::source_key()`.
+- Focused validation for this typed signal-source slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml signal_watch_registers_scope_and_set_marks_it_dirty`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml dirty_input_invalidation_reuses_typed_scope_payload`,
+  and `cargo test --manifest-path crates/eui-neo/Cargo.toml signal_dirty_records_enter_typed_invalidations`.
+- Full validation for this typed signal-source slice also passed `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 1/Phase 2 event and timer invalidation sources now carry typed payloads:
+  `InvalidationSource::Event(...)` stores `EventSource`, `InvalidationSource::Timer(...)` stores
+  `TimerSource`, and `record_event_command_debug(...)` now takes an `EventSource` instead of
+  receiving ad hoc command strings. Debug records continue to expose the same readable
+  `raw_event`/`command` labels through `EventSource::raw_event()` and `EventSource::label()`, but
+  invalidation coalescing and tests now compare typed source identity.
+- Focused validation for this typed event/timer-source slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml event_and_timer_sources_keep_typed_payloads_with_readable_labels`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml execute_event_commands_reports_callback_invalidations`,
+  and `cargo test --manifest-path crates/eui-neo/Cargo.toml execute_event_commands_encode_role_specific_targets`.
+- Full validation for this typed event/timer-source slice also passed `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 2/Phase 3 event debug traces now carry typed source payloads alongside readable labels:
+  `EventDebugRecord` stores `EventDebugSource::{Event,Timer,Runtime}` while preserving the existing
+  `raw_event` and `command` strings for logs and compatibility consumers. Event command execution
+  now derives debug labels from the typed source, timer callbacks report `TimerSource::Timer`, and
+  synthetic runtime debug records are explicitly marked as runtime-originated instead of looking
+  like normal event commands.
+- Focused validation for this typed event-debug-source slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml execute_event_commands_reports_commands_without_callbacks`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml execute_event_commands_reports_callback_invalidations`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml execute_event_commands_encode_role_specific_targets`,
+  and `cargo test --manifest-path crates/eui-neo/Cargo.toml finish_composition_debug_builds_snapshot_and_clears_committed_records`.
+- Full validation for this typed event-debug-source slice also passed `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 3 retained-scope snapshot diagnostics now carry typed scope payloads:
+  `UiDebugSnapshot` keeps the existing readable `dirty_ids`, `normalized_dirty_ids`, `live_ids`,
+  and `clock_ids`, but also exposes `dirty_scope_ids`, `normalized_dirty_scope_ids`,
+  `live_scope_ids`, and `clock_scope_ids` as sorted `ScopeId` vectors. This lets diagnostics and
+  tests inspect retained dirty/live/clock state without re-parsing public string labels.
+- Focused validation for this typed debug-scope snapshot slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml finish_composition_debug_builds_snapshot_and_clears_committed_records`
+  and `cargo test --manifest-path crates/eui-neo/Cargo.toml retained_scope_ids_are_typed_internally_but_report_readable_labels`.
+- Full validation for this typed debug-scope snapshot slice also passed `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 3 runtime page identity is now typed internally:
+  `TreeRuntimeState::page_id` stores a `NodeId` instead of a raw `String`, so runtime invalidation
+  targets can clone the typed page identity directly instead of reconstructing it. `Runtime::new`
+  and `Runtime::page_id()` remain string-compatible at the public boundary, and `prepare_compose_ui`
+  converts the typed page id back to the DSL string edge only when constructing `Ui`.
+- Focused validation for this typed runtime page-id slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml runtime_invalidation_target_reuses_typed_page_identity`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml prepare_compose_ui_carries_runtime_focus_and_clock`,
+  and `cargo test --manifest-path crates/eui-neo/Cargo.toml ids_are_page_prefixed_once`.
+- Full validation for this typed runtime page-id slice also passed `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 6 input edit-state ownership now uses typed, resolved node identity:
+  the text input widget's retained `INPUT_STATES` cache is keyed by `NodeId` rather than a raw
+  widget string, and `InputBuilder::build` resolves the builder id through the current `Ui` page
+  before accessing the cache. This prevents same-id inputs on different runtime pages from sharing
+  widget-local editing state while keeping the public input API unchanged.
+- Focused validation for this Phase 6 typed input-state slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml input_state_cache_uses_resolved_node_identity`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml input_signal_writes_text_events_to_state`,
+  and `cargo test --manifest-path crates/eui-neo/Cargo.toml input_frame_order_focuses_types_and_recomposes_dirty_text`.
+- Full validation for this Phase 6 typed input-state slice also passed `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 5 picker layer metadata now goes through the layer manager with the right role:
+  `PopoverBuilder` keeps its default `LayerKind::Popover`, but has a crate-private
+  `layer_kind(...)` override so centered picker surfaces can register their root-layer intent as
+  `LayerKind::Modal` without changing the public picker API. Date, time, and color pickers now use
+  that modal layer kind, so layer diagnostics and policy can distinguish these blocking picker
+  surfaces from normal anchored dropdown popovers.
+- Focused validation for this Phase 5 picker-layer slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml date_picker_outside_click_dismisses_open_signal_through_layer_policy`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml time_picker_outside_click_dismisses_open_signal_through_layer_policy`,
+  and `cargo test --manifest-path crates/eui-neo/Cargo.toml color_picker_outside_click_dismisses_open_signal_through_layer_policy`.
+- Full validation for this Phase 5 picker-layer slice also passed `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 9 renderer resource feedback now owns its dirty-source mapping at the renderer status
+  boundary: `NeoRenderResourceStatus::resource_dirty()` expands pending/ready image and font
+  transitions into draw-only `ResourceDirty` records, and the SkyEngine backend simply records the
+  returned dirty records into the runtime. This keeps renderer readiness source labels out of the
+  host frame adapter and makes the renderer status the traceable owner of renderer-driven redraws.
+- Focused validation for this Phase 9 renderer-status slice passed
+  `cargo test --features ui-neo render_resource_status_produces_draw_dirty_records`
+  and `cargo test --features ui-neo renderer_resources_request_draw_only_dirty`.
+- Full validation for this Phase 9 renderer-status slice also passed
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`, `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 5/Phase 3 picker-local state now uses resolved typed identity:
+  date, time, and color picker draft caches are keyed by `NodeId` instead of raw widget strings,
+  and date/time wheel drag state is keyed by the resolved column `NodeId`. This keeps retained
+  picker interaction state page-aware now that those surfaces register through the layer manager,
+  while preserving the public picker DSL ids.
+- Focused validation for this picker state identity slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml picker_state_caches_use_resolved_node_identity`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml date_picker_signal_writes_done_value_to_state`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml time_picker_signal_writes_done_value_to_state`,
+  and `cargo test --manifest-path crates/eui-neo/Cargo.toml color_picker_outside_click_dismisses_open_signal_through_layer_policy`.
+- Full validation for this picker state identity slice also passed
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`, `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 6/Phase 3 slider input state now uses resolved typed identity:
+  the slider pointer-bounds cache is keyed by `NodeId` instead of the raw builder id, and
+  `SliderBuilder::build` resolves the slider id through the current `Ui` before press/drag input
+  stores or reads bounds. This keeps drag math page-aware for same-id sliders while preserving the
+  public slider ids and callback behavior.
+- Focused validation for this slider input-state slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml slider_bounds_cache_uses_resolved_node_identity`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml slider_signal_writes_pressed_value_to_state`,
+  and `cargo test --manifest-path crates/eui-neo/Cargo.toml slider_press_dispatches_clamped_value_callback`.
+- Full validation for this slider input-state slice also passed
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`, `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 3/Phase 7 visual widget state now uses resolved typed identity for pie charts:
+  the pie chart animation cache is keyed by `NodeId` instead of the raw builder id, so visual-only
+  chart interpolation state no longer collides across pages that reuse the same widget id. Layout
+  inputs remain stable; only the draw-time display values are retained per resolved chart node.
+- Focused validation for this pie-chart state identity slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml pie_chart_animation_cache_uses_resolved_node_identity`.
+- Full validation for this pie-chart state identity slice also passed
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`, `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 9 renderer text-buffer reuse history now has typed renderer-local identity:
+  `eui-neo-wgpu` still accepts backend-neutral draw command ids from the public draw-list surface,
+  but converts text item ownership into `TextBufferIdentityKey` before it reaches the reuse history.
+  This removes the remaining raw `String` key from the renderer's text identity cache while keeping
+  `WgpuRenderer` and `UiDrawCommand` APIs stable.
+- Focused validation for this renderer text identity slice passed
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml text_buffer_cache_admission_requires_reuse_and_rejects_volatile_ids`.
+- Full validation for this renderer text identity slice also passed
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`, `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 9 font readiness now requests layout-affecting resource invalidation:
+  renderer pending image/font states and image-ready transitions remain draw-only, but
+  `renderer:ready_fonts` now uses `ResourceDirty::layout(...)` because a newly available font can
+  change text metrics and therefore layout. The backend resource-status test now asserts the mixed
+  dirty flags instead of treating every renderer resource source as draw-only.
+- Focused validation for this font readiness slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml renderer_resource_layout_dirty_requests_layout_passes`,
+  `cargo test --features ui-neo render_resource_status_separates_draw_and_layout_dirty_records`,
+  and `cargo test --features ui-neo renderer_resources_request_precise_dirty`.
+- Full validation for this font readiness slice also passed
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`, `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 7 layout signatures no longer mix resolved layout output into retained compatibility:
+  `element_layout_signature(...)` hashes authored layout inputs such as position, size, margin,
+  padding, alignment, grow, and layout-affecting text measurement fields, but no longer hashes
+  `element.frame`. Resolved frames are layout output and remain observable through element debug
+  records instead of driving the structure/layout dirty classifier.
+- Focused validation for this layout boundary slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml layout_structure_ignores_resolved_frame_output`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml collect_next_structure_marks_full_redraw_for_layout_change`,
+  and `cargo test --manifest-path crates/eui-neo/Cargo.toml runtime_detects_structure_changes`.
+- Full validation for this layout boundary slice also passed
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`, `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 7 backend replacement and scroll-offset acceptance are now closed:
+  `runtime/layout.rs` has an internal `RuntimeLayoutBackend` facade with the built-in layout
+  implementation behind `BuiltInLayoutBackend`, and the runtime layout executor calls only that
+  facade for full-root and dirty-retained-root layout. Scroll content and scrollbar thumb offset
+  positions now keep their committed layout frames for hit/debug behavior, but mark those authored
+  positions as visual-only for retained structure classification, so scroll offset changes do not
+  request a meaningless full layout.
+- Focused validation for this Phase 7 completion slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml runtime_layout_routes_through_backend_facade`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml live_child_inside_dirty_scroll_parent_tracks_scroll_offset`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml dirty_parent_normalizes_live_child_for_layout_but_still_rebuilds_child`,
+  and `cargo test --manifest-path crates/eui-neo/Cargo.toml scroll_xy_explicit_content_size_composes_viewport_content_and_scrollbars`.
+- Phase 7 completion audit:
+  layout input/output structs exist (`RuntimeLayoutInput`, `RuntimeLayoutPlan`,
+  `RuntimeLayoutResult`); layout execution is behind an internal backend facade; layout-vs-visual
+  dirty classification is separated through tree signatures and typed dirty flags; scroll
+  viewport/content measurement and offset behavior are covered by runtime/widget tests; visual-only
+  transform/animation/debug state stays outside layout signatures; and drift debugging records
+  layout frame, draw frame, transformed frame, transform, clip, and visibility.
+- Full validation for the completed Phase 7 slice passed
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`, `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo check --examples --features ui-neo`,
+  `cargo check --benches --features ui-neo`, and `git diff --check`; the SkyEngine commands still
+  report only the existing `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 8 optional Taffy experiment is now closed behind feature gates:
+  `crates/eui-neo` exposes a private `taffy-layout` feature and SkyEngine exposes
+  `ui-neo-taffy`; the experimental runtime backend maps row/column/fill/grow/min/max/margin/
+  padding into Taffy style for supported flex subtrees and falls back per root/subtree for
+  stack, absolute-positioned children, popover/root-layer content, and natural text measurement.
+  The public widget API is unchanged, and Taffy remains outside dirty, event, focus, callback,
+  and layer decisions.
+- Focused validation for the Phase 8 Taffy slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml --features taffy-layout`, including
+  row/column/fill/grow/min/max/margin/padding frame parity and scroll/popover fallback parity.
+- Full validation for the completed Phase 8 slice passed
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`, `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml --features taffy-layout`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo test --features ui-neo-taffy ui::neo`,
+  `cargo check --examples --features ui-neo`, `cargo check --benches --features ui-neo`,
+  and `git diff --check`; the SkyEngine commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 1 typed signal dirty source tracking now preserves all signal sources for a dirty
+  retained owner: `SignalGraph` records per `(scope, signal)` dirty flags while keeping the
+  aggregate per-scope flags for compatibility/debug summaries, and `NormalizedDirtyInput`
+  preserves distinct signal invalidations for the same scope instead of collapsing to one source.
+- Focused validation for this Phase 1 invalidation slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml multiple_signal_sources_for_one_scope_emit_distinct_dirty_inputs`
+  and
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml normalized_dirty_input_preserves_distinct_signal_sources_for_same_scope`.
+- Full validation for this Phase 1 invalidation slice passed
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`, `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml --features taffy-layout`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo test --features ui-neo-taffy ui::neo`,
+  `cargo check --examples --features ui-neo`, `cargo check --benches --features ui-neo`,
+  and `git diff --check`; the SkyEngine commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 1 retained teardown cleanup now clears pending rebuilt-scope signal dependency resets
+  when a retained scope is removed. `clear_scope_signal_dependencies(...)` consumes the typed
+  pending reset marker before pruning graph edges, so an unmounted scope cannot leave a stale
+  lifecycle marker for a later compose. The signal graph cleanup also has a defensive typed
+  fallback for missing reverse dependency edges: it scans forward signal edges, removes the
+  unmounted scope, and clears any dirty records for that scope instead of returning early.
+- Focused validation for this retained teardown slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml clearing_scope_dependencies`.
+- Full validation for this retained teardown slice passed
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`, `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml --features taffy-layout`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo test --features ui-neo-taffy ui::neo`,
+  `cargo check --examples --features ui-neo`, `cargo check --benches --features ui-neo`,
+  and `git diff --check`; the SkyEngine commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 3/Phase 5 callback transfer no longer requires layer ids to equal reused node ids:
+  retained callback transfer now receives typed `LayerIntent`s and transfers layer-dismiss
+  callbacks when the intent's typed `owner: NodeId` belongs to the reused element tree, while
+  the callback itself remains keyed by typed `LayerId`. This removes one more raw string role
+  overlap between layer identity and element identity.
+- Focused validation for this typed layer callback-transfer slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml transfer_for_elements_uses_layer_intents_for_layer_callbacks`.
+- Full validation for this typed layer callback-transfer slice passed
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`, `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml --features taffy-layout`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo test --features ui-neo-taffy ui::neo`,
+  `cargo check --examples --features ui-neo`, `cargo check --benches --features ui-neo`,
+  and `git diff --check`; the SkyEngine commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 3 retained debug/reconcile lookups now keep typed identity at another internal boundary:
+  retained debug record construction iterates sorted `ScopeId`s instead of readable strings,
+  dirty reason checks accept `&ScopeId`, retained build metrics read `ScopeRoots` by typed
+  scope id, and retained root frame refresh indexes current elements by typed `NodeId`. Readable
+  string labels remain only in public/debug output fields.
+- Focused validation for this typed retained debug/reconcile slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml dirty_reasons_use_exact_typed_scope_identity`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml debug_snapshot_records_scope_and_element_ancestry`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml refresh_scope_roots_updates_from_current_tree_by_id`,
+  and
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml apply_retained_build_reports_built_tree_metrics`.
+- Full validation for this typed retained debug/reconcile slice passed
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`, `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml --features taffy-layout`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo test --features ui-neo-taffy ui::neo`,
+  `cargo check --examples --features ui-neo`, `cargo check --benches --features ui-neo`,
+  and `git diff --check`; the SkyEngine commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 5 layer-manager ownership is now closed:
+  `LayerIntent` and `LayerRuntimeIntent` carry explicit typed `root: NodeId` alongside typed
+  owner/anchor identity, and layer hit testing, modal target blocking, debug records, and
+  dismissal records no longer infer layer geometry from `LayerId == root element id`.
+  Popover, dialog, toast, dropdown/context menu, and picker surfaces all enter the runtime layer
+  path through typed layer intents.
+- Retained reuse now preserves layer-manager ownership instead of depending on widget closures
+  to re-run every frame: root-layer elements declared inside a retained boundary are tracked in
+  `ScopeLayerRoots`, typed intents are tracked in `ScopeLayerIntents`, and clean retained reuse
+  replays both the root-layer elements and their layer intents before the layer frame commit.
+  Callback transfer includes replayed layer-root elements, and layer dismiss callbacks transfer
+  when either the logical owner or explicit root belongs to the reused element set. This covers
+  dialog-style logical owners such as `page.confirm` with root `page.confirm.panel`.
+- Focused validation for the Phase 5 completion slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml layer_geometry_uses_explicit_root_identity`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml transfer_for_elements_uses_layer_root_for_logical_owner_callbacks`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml retained_scope_reuse_preserves_root_layer_popover_and_callbacks`,
+  and
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml retained_scope_reuse_preserves_dialog_roots_and_dismissal_callback`.
+- Full validation for the completed Phase 5 slice passed
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`, `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml --features taffy-layout`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo test --features ui-neo-taffy ui::neo`,
+  `cargo check --examples --features ui-neo`, `cargo check --benches --features ui-neo`,
+  and `git diff --check`; the SkyEngine commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 3 is now closed as an internal identity-overloading pass. The remaining actionable
+  raw draw/renderer seam has been typed: element draw commands expose `node_id()` and
+  `UiDrawCommand::node_id()`, and the wgpu text renderer stores/cache-admits text buffers with
+  `TextBufferIdentityKey(NodeId)` instead of interpreting `UiTextDraw.id` as a raw cache owner.
+- Debug hover reporting now mirrors the owner snapshot pattern: `UiDebugSnapshot` carries typed
+  `hovered_node_id: Option<NodeId>` while preserving `hovered_id` as the readable compatibility
+  label. This keeps core/debug assertions role-specific without removing public diagnostics text.
+- Phase 3 completion audit: callback lookup, event targets, input owners, dirty/invalidation
+  targets, retained scope/root lookups, layer ids/owners/roots, timers, draw debug records, and
+  renderer text identity now carry typed ids at subsystem boundaries. Remaining `String` ids are
+  public authoring ids, readable debug aliases, test-driver labels, text/content/font/image/resource
+  names, or widget-local builder inputs; those are compatibility/API-polish concerns for Phase 10,
+  not internal role-overloading paths.
+- Focused validation for the Phase 3 completion slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml element_draw_commands_expose_typed_node_identity`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml debug_snapshot_reports_separate_input_owners`,
+  and
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml consecutive_text_draws_stay_batched_for_render_order_efficiency`.
+- Full validation for the completed Phase 3 slice passed
+  `cargo fmt --manifest-path crates/eui-neo/Cargo.toml`, `cargo fmt`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml --features taffy-layout`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo test --features ui-neo-taffy ui::neo`,
+  `cargo check --examples --features ui-neo`, `cargo check --benches --features ui-neo`,
+  and `git diff --check`; the SkyEngine commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 4 reconciler extraction is now closed:
+  retained composition now asks the reconciler for a `RetainedScopeComposePlan` instead of letting
+  DSL/builders choose reuse or rebuild policy. `RetainedScopeBuildPlan` carries the rebuild reason
+  and exact dirty-owner flag, so builder code no longer reaches into retained dirty state.
+- Layer replay and retained-root preservation now also live behind the reconciler boundary:
+  `retained_layer_replay_for_scope` reads previous root-layer elements/intents inside
+  `runtime/reconcile.rs`, and `apply_retained_reuse_plan` returns preserved nested/layer scope
+  roots for reused elements. DSL code consumes these reconciler outputs and only applies them to
+  the current frame.
+- `ElementBuilder::content` no longer owns retained reuse decisions. It delegates retained element
+  composition to `Ui::compose_retained_element`, which routes both reuse and rebuild through the
+  reconciler plan/application path before recording the scope.
+- Focused validation for the Phase 4 completion slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml runtime::reconcile::tests`.
+- Full validation for the completed Phase 4 slice passed
+  `cargo fmt`, `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml --features taffy-layout`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo test --features ui-neo-taffy ui::neo`,
+  `cargo check --examples --features ui-neo`, `cargo check --benches --features ui-neo`, and
+  `git diff --check`; the SkyEngine commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 1 typed invalidation spine is now closed:
+  `DirtyFlags` can express every pass category in the current `PassFlags` model: compose,
+  layout, visual/draw, layer, focus, hit, and platform effects. The mapping lives in
+  `runtime/invalidation.rs::pass_flags_for_dirty_flags(...)`, so pass scheduling has one typed
+  conversion point instead of ad hoc broad redraw or string-id routing.
+- Low-level render dirty state mutation is now private to `runtime/dirty.rs`. Runtime siblings use
+  `request_invalidation(...)`, resource dirty records, or explicit render-loop requests; the
+  remaining pending-compose fallback test now requests compose through typed `ResourceDirty`
+  instead of toggling `needs_compose` directly.
+- Phase 1 completion audit:
+  public `DirtyInput` and `ResourceDirty` remain construction/diagnostic boundaries, but once a
+  frame enters runtime, dirty records normalize to typed `Invalidation` records with explicit
+  target/source/flags/propagation/pass flags. Scope extraction follows `InvalidationTarget::Scope`
+  only, signal dirty state uses typed scope/source payloads, removed retained scopes clear signal
+  dependencies, and broad full redraw remains crate-internal traceable fallback plumbing.
+- Focused validation for the Phase 1 completion slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml dirty_flags_map_to_precise_pass_flags`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml pending_compose_with_visual_dirty_uses_full_compose_fallback`,
+  and `cargo test --manifest-path crates/eui-neo/Cargo.toml runtime::dirty::tests`.
+- Full validation for the completed Phase 1 slice passed
+  `cargo fmt`, `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml --features taffy-layout`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo test --features ui-neo-taffy ui::neo`,
+  `cargo check --examples --features ui-neo`, `cargo check --benches --features ui-neo`, and
+  `git diff --check`; the SkyEngine commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 2 frame coordinator and event-command path is now closed:
+  external host/demo/benchmark input enters through `Runtime::frame(...)`,
+  `Runtime::frame_incremental(...)`, or `Runtime::dispatch_frame_input(...)`; direct
+  pointer/scroll/keyboard helpers remain crate-internal test-driver plumbing. All of those
+  runtime input paths collect `UiEventCommand` batches before callback execution and publish a
+  `FrameInputPassReport` into debug state.
+- Direct scroll/keyboard helper calls now also record zero-command input-pass reports for active
+  no-target or blocked input. That keeps the latest debug snapshot from showing a stale previous
+  command report when an input event was processed but intentionally produced no callback command.
+- Phase 2 completion audit:
+  pointer, focus, scroll, text, layer-dismiss, drag, context-menu, click/press, and timer callbacks
+  all pass through `UiEventCommand` execution; callback execution is separated from hit/owner
+  collection; input-pass report/debug records show command, callback, invalidation, and pass-flag
+  counts; and standalone timer ticking is test-only crate-private plumbing.
+- Focused validation for the Phase 2 completion slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml direct_scroll_and_keyboard_no_command_paths_record_empty_input_pass_debug`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml direct_scroll_and_keyboard_updates_record_input_pass_debug`,
+  and `cargo test --manifest-path crates/eui-neo/Cargo.toml frame_input_helpers_record_input_pass_debug`.
+- Full validation for the completed Phase 2 slice passed
+  `cargo fmt`, `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml --features taffy-layout`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo test --features ui-neo-taffy ui::neo`,
+  `cargo check --examples --features ui-neo`, `cargo check --benches --features ui-neo`, and
+  `git diff --check`; the SkyEngine commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
+- Phase 6 focus/text/IME/capture ownership is now closed:
+  runtime input ownership uses typed owners for pointer hover/active/capture, keyboard focus,
+  text focus, IME owner, scroll owner, and drag owner; text editing dispatch targets only
+  `text_focus`; stale committed-tree cleanup clears removed keyboard/text/IME owners; and the
+  runtime platform-effects pass emits IME, cursor, and capture transitions after frame commit.
+- Focused validation for the completed Phase 6 slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml focus`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml ime`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml capture`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml input_state_cache_uses_resolved_node_identity`,
+  and `cargo test --features ui-neo ui::neo::backend`; the SkyEngine command still reports only
+  the existing `src/gpu/context.rs:1825 unused_mut` warning.
+- Phase 9 renderer/resource feedback is now closed:
+  `RendererResourceDirty` owns the pending/ready image/font source identities,
+  `ResourceDirtySource::renderer_kind(...)` lets debug traces recover the typed renderer source,
+  and the SkyEngine neo adapter maps renderer readiness into precise draw-only or
+  layout-affecting `ResourceDirty` records without changing the public `eui_neo_wgpu::RenderStatus`
+  facade.
+- Focused validation for the completed Phase 9 slice passed
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml renderer_resource_redraw_uses_draw_only_resource_invalidation`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml renderer_resource_layout_dirty_requests_layout_passes`,
+  `cargo test --features ui-neo render_resource_status_separates_draw_and_layout_dirty_records`,
+  and `cargo test --features ui-neo renderer_resources_request_precise_dirty`.
+- Full validation for the completed Phase 9 slice passed
+  `cargo fmt`, `cargo test --manifest-path crates/eui-neo/Cargo.toml`,
+  `cargo test --manifest-path crates/eui-neo/Cargo.toml --features taffy-layout`,
+  `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`,
+  `cargo test --features ui-neo ui::neo`, `cargo test --features ui-neo-taffy ui::neo`,
+  `cargo check --examples --features ui-neo`, `cargo check --benches --features ui-neo`, and
+  `git diff --check`; the SkyEngine commands still report only the existing
+  `src/gpu/context.rs:1825 unused_mut` warning / CRLF notices.
 
 因此下一步不是重新开荒，而是把这些切片从“局部存在”推进到“作为唯一通路”。
 
 优先执行顺序：
 
-1. Phase 1：typed invalidation 成为唯一 dirty spine。
-2. Phase 2：frame coordinator 和 event command 成为唯一 event path。
-3. Phase 3：内部 typed ids 逐步替代 string role overloading。
-4. Phase 4：reconciler 抽取，停止 DSL/builder 决定 reuse。
-5. Phase 5：popover/dropdown/dialog/toast/picker 迁入 layer manager。
-6. API pass：同步标注 stable/expert/transitional surface，避免新代码继续依赖旧形状。
+1. Phase 1：已完成；后续只维护 dirty trace/API 收口。
+2. Phase 2：已完成；后续只维护 frame/input trace/API 收口。
+3. Phase 3：已完成；后续只保留 public/readable compatibility labels 到 API/Phase 10 收口。
+4. Phase 4：已完成；后续只维护 reconciler trace/API 收口。
+5. Phase 5：已完成；后续只维护 layer-manager 回归覆盖和 API 收口。
+6. Phase 6：已完成；后续只维护 focus/text/IME/capture trace/API 收口。
+7. Phase 7：已完成；后续只维护 layout boundary / Taffy 对比回归。
+8. Phase 8：已完成；Taffy 保持 opt-in experiment，不作为默认 runtime ownership。
+9. Phase 9：已完成；后续只维护 renderer/resource dirty trace/API 收口。
+10. API pass：同步标注 stable/expert/transitional surface，避免新代码继续依赖旧形状。
 
 ## 11. 禁止项
 

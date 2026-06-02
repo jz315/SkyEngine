@@ -55,32 +55,24 @@ mod tests {
         state: &sky_engine::ui::neo::State<AppModel>,
     ) {
         let snapshot = state.read(Clone::clone);
-        let force_full_compose = runtime.needs_compose();
-        let dirty = state.take_dirty();
         let runtime_info = RuntimeInfo {
             uptime_seconds: 0.0,
             frame_count: 0,
         };
-        let input = FrameInput::new(Screen::new(1440.0, 920.0), 0.0)
-            .force_full_compose(force_full_compose && dirty.is_empty());
-        if force_full_compose && dirty.is_empty() {
-            runtime.frame(input, |ui, screen| {
+        runtime.frame_state(
+            FrameInput::new(Screen::new(1440.0, 920.0), 0.0),
+            state,
+            |ui, screen| {
                 view::render(ui, screen, state, &snapshot, runtime_info);
-            });
-        } else {
-            runtime.frame_incremental(
-                input,
-                move || dirty,
-                |ui, screen| {
-                    view::render(ui, screen, state, &snapshot, runtime_info);
-                },
-            );
-        }
+            },
+        );
     }
 
     fn click(runtime: &mut Runtime, x: f32, y: f32) {
-        runtime.update_pointer(PointerEvent::pressed_at(x, y));
-        runtime.update_pointer(PointerEvent::released_at(x, y));
+        runtime.dispatch_frame_input(FrameInput::new(runtime.screen(), 0.0).pointer_events([
+            PointerEvent::pressed_at(x, y),
+            PointerEvent::released_at(x, y),
+        ]));
     }
 
     fn frame_control_center(
@@ -124,6 +116,7 @@ mod tests {
     fn nav_target_color(runtime: &Runtime, index: usize) -> Color {
         let id = format!("control-center.nav.{index}.bg");
         runtime
+            .diagnostics()
             .find(&id)
             .unwrap_or_else(|| panic!("missing nav element {index}"))
             .color
@@ -142,7 +135,11 @@ mod tests {
         let mut runtime = Runtime::new("neo");
 
         compose_control_center(&mut runtime, &state);
-        let tasks_frame = runtime.find("control-center.nav.1.bg").unwrap().frame;
+        let tasks_frame = runtime
+            .diagnostics()
+            .find("control-center.nav.1.bg")
+            .unwrap()
+            .frame;
         click(
             &mut runtime,
             tasks_frame.x + tasks_frame.width * 0.5,
@@ -151,7 +148,11 @@ mod tests {
         assert_eq!(state.read(|model| model.page), Page::Tasks);
 
         compose_control_center(&mut runtime, &state);
-        let overview_frame = runtime.find("control-center.nav.0.bg").unwrap().frame;
+        let overview_frame = runtime
+            .diagnostics()
+            .find("control-center.nav.0.bg")
+            .unwrap()
+            .frame;
         click(
             &mut runtime,
             overview_frame.x + overview_frame.width * 0.5,
@@ -166,7 +167,11 @@ mod tests {
         let mut runtime = Runtime::new("neo");
 
         compose_control_center_incremental(&mut runtime, &state);
-        let tasks_frame = runtime.find("control-center.nav.1.bg").unwrap().frame;
+        let tasks_frame = runtime
+            .diagnostics()
+            .find("control-center.nav.1.bg")
+            .unwrap()
+            .frame;
         click(
             &mut runtime,
             tasks_frame.x + tasks_frame.width * 0.5,
@@ -180,15 +185,15 @@ mod tests {
 
         compose_control_center_incremental(&mut runtime, &state);
         assert_eq!(
-            runtime.debug_snapshot().layout_mode,
-            sky_engine::ui::neo::LayoutMode::Full(
-                sky_engine::ui::neo::FullLayoutReason::StructureChanged {
+            runtime.diagnostics().committed_snapshot().layout_mode,
+            sky_engine::ui::neo::expert::LayoutMode::Full(
+                sky_engine::ui::neo::expert::FullLayoutReason::StructureChanged {
                     ids: vec!["neo.control-center.workspace".to_string()]
                 }
             )
         );
         assert_eq!(
-            runtime.debug_snapshot().dirty_ids,
+            runtime.diagnostics().committed_snapshot().dirty_ids,
             vec![
                 "neo.control-center.nav".to_string(),
                 "neo.control-center.workspace".to_string(),
@@ -196,7 +201,8 @@ mod tests {
         );
         let theme = theme::resolve(state.read(|model| model.theme_mode));
         let frame = runtime.current_frame();
-        let overview_to_primary = color_distance(nav_target_color(&runtime, 0), theme.tokens.primary);
+        let overview_to_primary =
+            color_distance(nav_target_color(&runtime, 0), theme.tokens.primary);
         let tasks_to_primary = color_distance(nav_target_color(&runtime, 1), theme.tokens.primary);
         assert!(
             tasks_to_primary < overview_to_primary,
@@ -205,7 +211,11 @@ mod tests {
         );
         assert!(!frame.draw_list().is_empty());
         assert_eq!(
-            runtime.find("control-center.header.title").unwrap().text,
+            runtime
+                .diagnostics()
+                .find("control-center.header.title")
+                .unwrap()
+                .text,
             "Tasks"
         );
     }
@@ -216,14 +226,19 @@ mod tests {
         let mut runtime = Runtime::new("neo");
 
         compose_control_center(&mut runtime, &state);
-        let tasks_frame = runtime.find("control-center.nav.1.bg").unwrap().frame;
+        let tasks_frame = runtime
+            .diagnostics()
+            .find("control-center.nav.1.bg")
+            .unwrap()
+            .frame;
         let click_x = tasks_frame.x + tasks_frame.width * 0.5;
         let click_y = tasks_frame.y + tasks_frame.height * 0.5;
 
-        runtime.update_pointer(PointerEvent::pressed_at(click_x, click_y));
         let result = runtime.frame(
-            FrameInput::new(Screen::new(1440.0, 920.0), 1.0 / 60.0)
-                .pointer(PointerEvent::released_at(click_x, click_y)),
+            FrameInput::new(Screen::new(1440.0, 920.0), 1.0 / 60.0).pointer_events([
+                PointerEvent::pressed_at(click_x, click_y),
+                PointerEvent::released_at(click_x, click_y),
+            ]),
             |ui, screen| {
                 let snapshot = state.read(Clone::clone);
                 view::render(
@@ -249,7 +264,11 @@ mod tests {
         let mut runtime = Runtime::new("neo");
 
         frame_control_center(&mut runtime, &state, PointerEvent::default());
-        let tasks_frame = runtime.find("control-center.nav.1.bg").unwrap().frame;
+        let tasks_frame = runtime
+            .diagnostics()
+            .find("control-center.nav.1.bg")
+            .unwrap()
+            .frame;
         let click_x = tasks_frame.x + tasks_frame.width * 0.5;
         let click_y = tasks_frame.y + tasks_frame.height * 0.5;
 
@@ -291,7 +310,11 @@ mod tests {
         let mut runtime = Runtime::new("neo");
 
         frame_control_center(&mut runtime, &state, PointerEvent::default());
-        let tasks_frame = runtime.find("control-center.nav.1.bg").unwrap().frame;
+        let tasks_frame = runtime
+            .diagnostics()
+            .find("control-center.nav.1.bg")
+            .unwrap()
+            .frame;
         let click_x = tasks_frame.x + tasks_frame.width * 0.5;
         let click_y = tasks_frame.y + tasks_frame.height * 0.5;
 
@@ -325,7 +348,11 @@ mod tests {
         let mut runtime = Runtime::new("neo");
 
         frame_control_center(&mut runtime, &state, PointerEvent::default());
-        let tasks_frame = runtime.find("control-center.nav.1.bg").unwrap().frame;
+        let tasks_frame = runtime
+            .diagnostics()
+            .find("control-center.nav.1.bg")
+            .unwrap()
+            .frame;
         let tasks_x = tasks_frame.x + tasks_frame.width * 0.5;
         let tasks_y = tasks_frame.y + tasks_frame.height * 0.5;
         frame_control_center(
@@ -339,7 +366,11 @@ mod tests {
             PointerEvent::released_at(tasks_x, tasks_y),
         );
 
-        let overview_frame = runtime.find("control-center.nav.0.bg").unwrap().frame;
+        let overview_frame = runtime
+            .diagnostics()
+            .find("control-center.nav.0.bg")
+            .unwrap()
+            .frame;
         let overview_x = overview_frame.x + overview_frame.width * 0.5;
         let overview_y = overview_frame.y + overview_frame.height * 0.5;
         frame_control_center(

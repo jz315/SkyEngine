@@ -495,6 +495,8 @@ ui-neo = [
     "dep:eui-neo-wgpu",
     "dep:eui-neo-winit",
 ]
+# Experimental alternate layout backend for the host-agnostic neo runtime.
+ui-neo-taffy = ["ui-neo", "eui-neo/taffy-layout"]
 # Optional network image/text helpers for EUI-NEO examples and remote images.
 ui-neo-net = [
     "ui-neo",
@@ -562,3 +564,8 @@ gpu-profiler = { path = "crates/vendor/gpu-profiler" }
 name = "sky-cook"
 path = "src/bin/sky-cook.rs"
 required-features = ["asset"]
+
+[[bin]]
+name = "neo-debug"
+path = "src/bin/neo-debug.rs"
+required-features = ["ui-neo"]

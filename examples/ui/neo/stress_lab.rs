@@ -15,9 +15,11 @@ use sky_engine::render::{
     Transform, TransparentPhase,
 };
 use sky_engine::ui::neo::widgets;
+#[cfg(feature = "egui")]
+use sky_engine::ui::neo::LayoutRect;
 use sky_engine::ui::neo::{
-    Align, AnimProperty, Color, Ease, HorizontalAlign, NeoUiBackend, PointerEvent, Signal, Size,
-    State, Transition, Ui,
+    Align, AnimProperty, Color, Ease, FrameInput, HorizontalAlign, NeoUiBackend, PointerEvent,
+    Signal, Size, State, Transition, Ui,
 };
 
 const WINDOW_W: u32 = 1180;
@@ -48,6 +50,9 @@ struct NeoUiStressLab {
     auto_chart_clicked: bool,
     layout_dumped: bool,
     draw_dumped: bool,
+    agent_debug: Option<sky_engine::ui::neo::expert::AgentDebugService>,
+    #[cfg(feature = "egui")]
+    debug: NeoEguiDebug,
 }
 
 #[derive(Debug)]
@@ -89,6 +94,9 @@ impl Default for NeoUiStressLab {
             auto_chart_clicked: false,
             layout_dumped: false,
             draw_dumped: false,
+            agent_debug: sky_engine::ui::neo::expert::AgentDebugService::from_env("stress_lab"),
+            #[cfg(feature = "egui")]
+            debug: NeoEguiDebug::default(),
         }
     }
 }
@@ -216,6 +224,87 @@ impl NeoUiStressLab {
         }
 
         self.maybe_auto_click_chart(ctx);
+        self.update_agent_debug(ctx);
+        #[cfg(feature = "egui")]
+        self.draw_egui_debug(ctx);
+    }
+
+    fn update_agent_debug(&mut self, ctx: &mut FrameContext<'_>) {
+        let Some(service) = self.agent_debug.as_mut() else {
+            return;
+        };
+        let state = self.state.read(|state| {
+            (
+                state.control_dropdown_open,
+                state.control_dropdown_selected,
+                state.dropdown_open,
+                state.dropdown_selected,
+                state.dialog_open,
+                state.toast_visible,
+                state.context_menu_open,
+                state.control_scroll,
+                state.signal_scroll,
+                state.interaction_scroll,
+            )
+        });
+        let context = sky_engine::ui::neo::expert::AgentDebugContext::new()
+            .state("frame_index", self.frame_index)
+            .state("control_dropdown_open", state.0)
+            .state("control_dropdown_selected", state.1)
+            .state("dropdown_open", state.2)
+            .state("dropdown_selected", state.3)
+            .state("dialog_open", state.4)
+            .state("toast_visible", state.5)
+            .state("context_menu_open", state.6)
+            .state("control_scroll", format!("{:.1}", state.7))
+            .state("signal_scroll", format!("{:.1}", state.8))
+            .state("interaction_scroll", format!("{:.1}", state.9))
+            .dropdown("controls.preset.dropdown", Some(state.0), Some(state.1))
+            .dropdown("interactions.dropdown", Some(state.2), Some(state.3));
+
+        let effects = {
+            let mut ui = ctx.ui();
+            ui.with_backend_mut::<NeoUiBackend, _>(|backend| {
+                service.update(backend.runtime_mut(), context)
+            })
+            .unwrap_or_default()
+        };
+        for effect in effects {
+            match effect {
+                sky_engine::ui::neo::expert::AgentDebugEffect::Screenshot { path } => {
+                    ctx.request_screenshot(path);
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "egui")]
+    fn draw_egui_debug(&mut self, ctx: &mut FrameContext<'_>) {
+        let element_filter = self.debug.element_filter.clone();
+        let draw_filter = self.debug.draw_filter.clone();
+        let max_rows = self.debug.max_rows;
+        let lab_state = self.state.read(LabDebugState::from_state);
+        let mut data = None;
+        {
+            let mut ui = ctx.ui();
+            ui.with_backend_mut::<NeoUiBackend, _>(|backend| {
+                data = Some(NeoDebugPanelData::collect(
+                    backend.runtime(),
+                    lab_state,
+                    &element_filter,
+                    &draw_filter,
+                    max_rows,
+                ));
+            });
+        }
+
+        let Some(data) = data else {
+            return;
+        };
+        let debug = &mut self.debug;
+        ctx.egui(move |egui_ctx| {
+            debug.show(egui_ctx, &data);
+        });
     }
 
     fn maybe_auto_click_chart(&mut self, ctx: &mut FrameContext<'_>) {
@@ -230,27 +319,27 @@ impl NeoUiStressLab {
         let mut missing = false;
         let mut ui = ctx.ui();
         ui.with_backend_mut::<NeoUiBackend, _>(|backend| {
-            let target_frame = backend
-                .runtime()
-                .find("signals.tabs.hit.1")
-                .map(|element| element.frame);
+            let target_frame =
+                backend.runtime().diagnostics().find("signals.tabs.hit.1").map(|element| element.frame);
             if let Some(frame) = target_frame {
                 let x = frame.x + frame.width * 0.5;
                 let y = frame.y + frame.height * 0.5;
-                let pressed = backend.runtime_mut().update_pointer(PointerEvent::pressed_at(x, y));
-                let released = backend
-                    .runtime_mut()
-                    .update_pointer(PointerEvent::released_at(x, y));
+                let screen = backend.runtime().screen();
+                let changed = backend.runtime_mut().dispatch_frame_input(
+                    FrameInput::new(screen, 0.0).pointer_events([
+                        PointerEvent::pressed_at(x, y),
+                        PointerEvent::released_at(x, y),
+                    ]),
+                );
                 eprintln!(
-                    "[neo auto click] target=signals.tabs.hit.1 frame=({:.2},{:.2},{:.2},{:.2}) point=({:.2},{:.2}) pressed_changed={} released_changed={} needs_compose={}",
+                    "[neo auto click] target=signals.tabs.hit.1 frame=({:.2},{:.2},{:.2},{:.2}) point=({:.2},{:.2}) input_changed={} needs_compose={}",
                     frame.x,
                     frame.y,
                     frame.width,
                     frame.height,
                     x,
                     y,
-                    pressed,
-                    released,
+                    changed,
                     backend.runtime().needs_compose()
                 );
                 clicked = true;
@@ -575,7 +664,9 @@ fn control_dropdown_open_signal(state: &State<LabState>) -> Signal<LabState, boo
     state.signal(
         "stress-lab.control-dropdown-open",
         |state| state.control_dropdown_open,
-        |state, value| state.control_dropdown_open = value,
+        |state, value| {
+            state.control_dropdown_open = value;
+        },
     )
 }
 
@@ -583,7 +674,9 @@ fn control_dropdown_selected_signal(state: &State<LabState>) -> Signal<LabState,
     state.signal(
         "stress-lab.control-dropdown-selected",
         |state| state.control_dropdown_selected,
-        |state, value| state.control_dropdown_selected = value.max(0),
+        |state, value| {
+            state.control_dropdown_selected = value.max(0);
+        },
     )
 }
 
@@ -2124,6 +2217,600 @@ fn c(r: f32, g: f32, b: f32, a: f32) -> Color {
     Color::new(r, g, b, a)
 }
 
+#[cfg(feature = "egui")]
+#[derive(Debug)]
+struct NeoEguiDebug {
+    visible: bool,
+    element_filter: String,
+    draw_filter: String,
+    max_rows: usize,
+    show_elements: bool,
+    show_draw: bool,
+    show_events: bool,
+}
+
+#[cfg(feature = "egui")]
+impl Default for NeoEguiDebug {
+    fn default() -> Self {
+        Self {
+            visible: !env_flag("SKY_NEO_LAB_EGUI_DEBUG_OFF"),
+            element_filter: env_string("SKY_NEO_LAB_EGUI_FILTER")
+                .unwrap_or_else(|| "controls.preset.dropdown".to_string()),
+            draw_filter: env_string("SKY_NEO_LAB_EGUI_DRAW_FILTER")
+                .unwrap_or_else(|| "controls.preset.dropdown".to_string()),
+            max_rows: 80,
+            show_elements: true,
+            show_draw: true,
+            show_events: true,
+        }
+    }
+}
+
+#[cfg(feature = "egui")]
+impl NeoEguiDebug {
+    fn show(&mut self, ctx: &sky_engine::app::egui::Context, data: &NeoDebugPanelData) {
+        use sky_engine::app::egui;
+
+        let toggle_requested = ctx.input(|input| {
+            input.key_pressed(egui::Key::F12)
+                || (input.modifiers.ctrl && input.key_pressed(egui::Key::D))
+        });
+        if toggle_requested {
+            self.visible = !self.visible;
+        }
+
+        if !self.visible {
+            egui::Area::new(egui::Id::new("neo_debug_toggle"))
+                .order(egui::Order::Foreground)
+                .fixed_pos([12.0, 12.0])
+                .show(ctx, |ui| {
+                    if ui.button("Neo Debug").clicked() {
+                        self.visible = true;
+                    }
+                });
+            return;
+        }
+
+        egui::Window::new("Neo Debug")
+            .default_pos([12.0, 12.0])
+            .default_size([560.0, 680.0])
+            .resizable(true)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.visible, "visible");
+                    if ui.button("dropdown").clicked() {
+                        self.element_filter = "controls.preset.dropdown".to_string();
+                        self.draw_filter = "controls.preset.dropdown".to_string();
+                    }
+                    if ui.button("popup").clicked() {
+                        self.element_filter = "popup".to_string();
+                        self.draw_filter = "popup".to_string();
+                    }
+                    if ui.button("clear").clicked() {
+                        self.element_filter.clear();
+                        self.draw_filter.clear();
+                    }
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("elements");
+                    ui.text_edit_singleline(&mut self.element_filter);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("draw");
+                    ui.text_edit_singleline(&mut self.draw_filter);
+                });
+                ui.add(egui::Slider::new(&mut self.max_rows, 10..=400).text("max rows"));
+
+                ui.separator();
+                show_runtime_summary(ui, data);
+                ui.separator();
+
+                egui::CollapsingHeader::new("State")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        egui::Grid::new("neo_debug_state")
+                            .num_columns(2)
+                            .striped(true)
+                            .show(ui, |ui| {
+                                row(ui, "control open", data.state.control_dropdown_open);
+                                row(ui, "control selected", data.state.control_dropdown_selected);
+                                row(ui, "interaction open", data.state.dropdown_open);
+                                row(ui, "interaction selected", data.state.dropdown_selected);
+                                row(ui, "dialog", data.state.dialog_open);
+                                row(ui, "toast", data.state.toast_visible);
+                                row(ui, "context", data.state.context_menu_open);
+                                row(
+                                    ui,
+                                    "control scroll",
+                                    format!("{:.1}", data.state.control_scroll),
+                                );
+                            });
+                    });
+
+                egui::CollapsingHeader::new(format!("Layers ({})", data.layers.len()))
+                    .default_open(true)
+                    .show(ui, |ui| show_layers(ui, data));
+
+                egui::CollapsingHeader::new(format!(
+                    "Elements ({}/{})",
+                    data.elements.len(),
+                    data.element_total
+                ))
+                .default_open(self.show_elements)
+                .show(ui, |ui| show_elements(ui, data));
+
+                egui::CollapsingHeader::new(format!(
+                    "Draw Order ({}/{})",
+                    data.draw.len(),
+                    data.draw_total
+                ))
+                .default_open(self.show_draw)
+                .show(ui, |ui| show_draw(ui, data));
+
+                egui::CollapsingHeader::new("Input")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        egui::Grid::new("neo_debug_input")
+                            .num_columns(2)
+                            .striped(true)
+                            .show(ui, |ui| {
+                                row(ui, "hover", data.hover.as_deref().unwrap_or("-"));
+                                row(ui, "active", data.active.as_deref().unwrap_or("-"));
+                                row(ui, "capture", data.capture.as_deref().unwrap_or("-"));
+                                row(ui, "keyboard", data.keyboard.as_deref().unwrap_or("-"));
+                                row(ui, "text", data.text.as_deref().unwrap_or("-"));
+                                row(ui, "scroll", data.scroll.as_deref().unwrap_or("-"));
+                            });
+                    });
+
+                egui::CollapsingHeader::new(format!("Events ({})", data.events.len()))
+                    .default_open(self.show_events)
+                    .show(ui, |ui| {
+                        for event in &data.events {
+                            ui.monospace(event);
+                        }
+                    });
+
+                egui::CollapsingHeader::new(format!(
+                    "Invalidations ({})",
+                    data.invalidations.len()
+                ))
+                .default_open(false)
+                .show(ui, |ui| {
+                    for invalidation in &data.invalidations {
+                        ui.monospace(invalidation);
+                    }
+                });
+            });
+    }
+}
+
+#[cfg(feature = "egui")]
+#[derive(Debug, Clone, Copy)]
+struct LabDebugState {
+    control_dropdown_open: bool,
+    control_dropdown_selected: i32,
+    dropdown_open: bool,
+    dropdown_selected: i32,
+    dialog_open: bool,
+    toast_visible: bool,
+    context_menu_open: bool,
+    control_scroll: f32,
+}
+
+#[cfg(feature = "egui")]
+impl LabDebugState {
+    fn from_state(state: &LabState) -> Self {
+        Self {
+            control_dropdown_open: state.control_dropdown_open,
+            control_dropdown_selected: state.control_dropdown_selected,
+            dropdown_open: state.dropdown_open,
+            dropdown_selected: state.dropdown_selected,
+            dialog_open: state.dialog_open,
+            toast_visible: state.toast_visible,
+            context_menu_open: state.context_menu_open,
+            control_scroll: state.control_scroll,
+        }
+    }
+}
+
+#[cfg(feature = "egui")]
+#[derive(Debug)]
+struct NeoDebugPanelData {
+    frame_index: u64,
+    screen: String,
+    layout_mode: String,
+    retained: String,
+    render_flags: String,
+    pass_flags: String,
+    state: LabDebugState,
+    layers: Vec<LayerSummary>,
+    elements: Vec<ElementSummary>,
+    element_total: usize,
+    draw: Vec<DrawSummary>,
+    draw_total: usize,
+    events: Vec<String>,
+    invalidations: Vec<String>,
+    layer_pointer: Vec<String>,
+    hover: Option<String>,
+    active: Option<String>,
+    capture: Option<String>,
+    keyboard: Option<String>,
+    text: Option<String>,
+    scroll: Option<String>,
+}
+
+#[cfg(feature = "egui")]
+impl NeoDebugPanelData {
+    fn collect(
+        runtime: &sky_engine::ui::neo::Runtime,
+        state: LabDebugState,
+        element_filter: &str,
+        draw_filter: &str,
+        max_rows: usize,
+    ) -> Self {
+        let snapshot = runtime.diagnostics().current_snapshot();
+        let mut elements = Vec::new();
+        let mut element_total = 0;
+        for root in runtime.diagnostics().roots() {
+            collect_element_summary(
+                root,
+                None,
+                element_filter,
+                max_rows,
+                &mut element_total,
+                &mut elements,
+            );
+        }
+
+        let draw_list = runtime.draw_list();
+        let draw_total = draw_list.commands().len();
+        let draw = draw_list
+            .commands()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, command)| draw_summary(index, command, draw_filter))
+            .take(max_rows)
+            .collect();
+
+        Self {
+            frame_index: snapshot.frame_index,
+            screen: format!(
+                "{:.0} x {:.0}",
+                snapshot.screen.width, snapshot.screen.height
+            ),
+            layout_mode: format!("{:?}", snapshot.layout_mode),
+            retained: format!(
+                "built={} reused={} animations={}",
+                snapshot.retained_stats.built,
+                snapshot.retained_stats.reused,
+                snapshot.active_animation_count
+            ),
+            render_flags: format!(
+                "render={} compose={} full={}",
+                snapshot.needs_render, snapshot.needs_compose, snapshot.full_redraw
+            ),
+            pass_flags: format!("{:?}", snapshot.pass_flags),
+            state,
+            layers: snapshot
+                .layers
+                .iter()
+                .map(LayerSummary::from_record)
+                .collect(),
+            elements,
+            element_total,
+            draw,
+            draw_total,
+            events: snapshot
+                .events
+                .iter()
+                .map(|event| format!("{:?}", event))
+                .take(max_rows)
+                .collect(),
+            invalidations: snapshot
+                .invalidations
+                .iter()
+                .map(|invalidation| format!("{:?}", invalidation))
+                .take(max_rows)
+                .collect(),
+            layer_pointer: snapshot
+                .layer_pointer
+                .iter()
+                .map(|record| format!("{:?}", record))
+                .take(max_rows)
+                .collect(),
+            hover: snapshot.pointer_hover_id,
+            active: snapshot.pointer_active_id,
+            capture: snapshot.pointer_capture_id,
+            keyboard: snapshot.keyboard_focus_id,
+            text: snapshot.text_focus_id,
+            scroll: snapshot.scroll_owner_id,
+        }
+    }
+}
+
+#[cfg(feature = "egui")]
+#[derive(Debug)]
+struct LayerSummary {
+    id: String,
+    open: bool,
+    z_index: i32,
+    kind: String,
+    action: String,
+    anchor_source: String,
+    anchor: String,
+    outside_click: String,
+}
+
+#[cfg(feature = "egui")]
+impl LayerSummary {
+    fn from_record(record: &sky_engine::ui::neo::expert::LayerDebugRecord) -> Self {
+        Self {
+            id: record.id.clone(),
+            open: record.open,
+            z_index: record.z_index,
+            kind: format!("{:?}", record.kind),
+            action: format!("{:?}", record.action),
+            anchor_source: format!("{:?}", record.anchor_source),
+            anchor: record.anchor.clone().unwrap_or_else(|| "-".to_string()),
+            outside_click: format!("{:?}", record.outside_click),
+        }
+    }
+}
+
+#[cfg(feature = "egui")]
+#[derive(Debug)]
+struct ElementSummary {
+    id: String,
+    parent: String,
+    kind: String,
+    frame: LayoutRect,
+    z_index: i32,
+    clip: bool,
+    interactive: bool,
+    focusable: bool,
+    text: String,
+}
+
+#[cfg(feature = "egui")]
+#[derive(Debug)]
+struct DrawSummary {
+    index: usize,
+    kind: &'static str,
+    id: String,
+    frame: Option<LayoutRect>,
+    extra: String,
+}
+
+#[cfg(feature = "egui")]
+fn collect_element_summary(
+    element: &sky_engine::ui::neo::eui::Element,
+    parent: Option<&str>,
+    filter: &str,
+    max_rows: usize,
+    total: &mut usize,
+    out: &mut Vec<ElementSummary>,
+) {
+    *total += 1;
+    if (filter.is_empty() || element.id.contains(filter)) && out.len() < max_rows {
+        out.push(ElementSummary {
+            id: element.id.clone(),
+            parent: parent.unwrap_or("-").to_string(),
+            kind: format!("{:?}", element.kind),
+            frame: element.frame,
+            z_index: element.z_index,
+            clip: element.clip,
+            interactive: element.interactive,
+            focusable: element.focusable,
+            text: element.text.clone(),
+        });
+    }
+    for child in &element.children {
+        collect_element_summary(child, Some(&element.id), filter, max_rows, total, out);
+    }
+}
+
+#[cfg(feature = "egui")]
+fn draw_summary(
+    index: usize,
+    command: &sky_engine::ui::neo::expert::UiDrawCommand,
+    filter: &str,
+) -> Option<DrawSummary> {
+    use sky_engine::ui::neo::expert::UiDrawCommand;
+    let (kind, id, frame, extra) = match command {
+        UiDrawCommand::Rect(draw) => (
+            "rect",
+            draw.id.clone(),
+            Some(draw.frame),
+            format!("opacity={:.2} radius={:.1}", draw.opacity, draw.radius),
+        ),
+        UiDrawCommand::Text(draw) => (
+            "text",
+            draw.id.clone(),
+            Some(draw.frame),
+            format!("opacity={:.2} text={:?}", draw.opacity, draw.text),
+        ),
+        UiDrawCommand::Image(draw) => (
+            "image",
+            draw.id.clone(),
+            Some(draw.frame),
+            format!("opacity={:.2} radius={:.1}", draw.opacity, draw.radius),
+        ),
+        UiDrawCommand::NineSlice(draw) => (
+            "nine",
+            draw.id.clone(),
+            Some(draw.frame),
+            format!("opacity={:.2}", draw.opacity),
+        ),
+        UiDrawCommand::Polygon(draw) => (
+            "poly",
+            draw.id.clone(),
+            Some(draw.frame),
+            format!("opacity={:.2} points={}", draw.opacity, draw.points.len()),
+        ),
+        UiDrawCommand::PushClip(clip) => (
+            "push_clip",
+            String::new(),
+            Some(clip.rect),
+            format!("radius={:.1}", clip.radius),
+        ),
+        UiDrawCommand::PopClip => ("pop_clip", String::new(), None, String::new()),
+    };
+    if !filter.is_empty() && !id.contains(filter) {
+        return None;
+    }
+    Some(DrawSummary {
+        index,
+        kind,
+        id,
+        frame,
+        extra,
+    })
+}
+
+#[cfg(feature = "egui")]
+fn show_runtime_summary(ui: &mut sky_engine::app::egui::Ui, data: &NeoDebugPanelData) {
+    sky_engine::app::egui::Grid::new("neo_debug_summary")
+        .num_columns(2)
+        .striped(true)
+        .show(ui, |ui| {
+            row(ui, "frame", data.frame_index);
+            row(ui, "screen", &data.screen);
+            row(ui, "layout", &data.layout_mode);
+            row(ui, "retained", &data.retained);
+            row(ui, "render", &data.render_flags);
+            row(ui, "pass", &data.pass_flags);
+        });
+    if !data.layer_pointer.is_empty() {
+        ui.separator();
+        for record in &data.layer_pointer {
+            ui.monospace(record);
+        }
+    }
+}
+
+#[cfg(feature = "egui")]
+fn show_layers(ui: &mut sky_engine::app::egui::Ui, data: &NeoDebugPanelData) {
+    sky_engine::app::egui::Grid::new("neo_debug_layers")
+        .num_columns(8)
+        .striped(true)
+        .show(ui, |ui| {
+            header(ui, "open");
+            header(ui, "z");
+            header(ui, "kind");
+            header(ui, "action");
+            header(ui, "anchor");
+            header(ui, "source");
+            header(ui, "outside");
+            header(ui, "id");
+            ui.end_row();
+            for layer in &data.layers {
+                ui.label(layer.open.to_string());
+                ui.monospace(layer.z_index.to_string());
+                ui.label(&layer.kind);
+                ui.label(&layer.action);
+                ui.monospace(&layer.anchor);
+                ui.label(&layer.anchor_source);
+                ui.label(&layer.outside_click);
+                ui.monospace(&layer.id);
+                ui.end_row();
+            }
+        });
+}
+
+#[cfg(feature = "egui")]
+fn show_elements(ui: &mut sky_engine::app::egui::Ui, data: &NeoDebugPanelData) {
+    sky_engine::app::egui::ScrollArea::vertical()
+        .max_height(260.0)
+        .show(ui, |ui| {
+            sky_engine::app::egui::Grid::new("neo_debug_elements")
+                .num_columns(9)
+                .striped(true)
+                .show(ui, |ui| {
+                    header(ui, "z");
+                    header(ui, "kind");
+                    header(ui, "frame");
+                    header(ui, "clip");
+                    header(ui, "hit");
+                    header(ui, "focus");
+                    header(ui, "text");
+                    header(ui, "parent");
+                    header(ui, "id");
+                    ui.end_row();
+                    for element in &data.elements {
+                        ui.monospace(element.z_index.to_string());
+                        ui.label(&element.kind);
+                        ui.monospace(rect_text(element.frame));
+                        ui.label(element.clip.to_string());
+                        ui.label(element.interactive.to_string());
+                        ui.label(element.focusable.to_string());
+                        ui.label(short_text(&element.text, 28));
+                        ui.monospace(&element.parent);
+                        ui.monospace(&element.id);
+                        ui.end_row();
+                    }
+                });
+        });
+}
+
+#[cfg(feature = "egui")]
+fn show_draw(ui: &mut sky_engine::app::egui::Ui, data: &NeoDebugPanelData) {
+    sky_engine::app::egui::ScrollArea::vertical()
+        .max_height(260.0)
+        .show(ui, |ui| {
+            sky_engine::app::egui::Grid::new("neo_debug_draw")
+                .num_columns(5)
+                .striped(true)
+                .show(ui, |ui| {
+                    header(ui, "#");
+                    header(ui, "kind");
+                    header(ui, "frame");
+                    header(ui, "extra");
+                    header(ui, "id");
+                    ui.end_row();
+                    for draw in &data.draw {
+                        ui.monospace(draw.index.to_string());
+                        ui.label(draw.kind);
+                        ui.monospace(draw.frame.map(rect_text).unwrap_or_else(|| "-".to_string()));
+                        ui.label(&draw.extra);
+                        ui.monospace(&draw.id);
+                        ui.end_row();
+                    }
+                });
+        });
+}
+
+#[cfg(feature = "egui")]
+fn row(ui: &mut sky_engine::app::egui::Ui, label: &str, value: impl ToString) {
+    ui.label(label);
+    ui.monospace(value.to_string());
+    ui.end_row();
+}
+
+#[cfg(feature = "egui")]
+fn header(ui: &mut sky_engine::app::egui::Ui, label: &str) {
+    ui.strong(label);
+}
+
+#[cfg(feature = "egui")]
+fn rect_text(rect: LayoutRect) -> String {
+    format!(
+        "{:.1},{:.1} {:.1}x{:.1}",
+        rect.x, rect.y, rect.width, rect.height
+    )
+}
+
+#[cfg(feature = "egui")]
+fn short_text(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let mut out: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        out.push_str("...");
+    }
+    out
+}
+
 #[derive(Debug)]
 struct ScreenshotProbe {
     path: Option<String>,
@@ -2247,7 +2934,7 @@ fn on_off(value: bool) -> &'static str {
 }
 
 fn dump_runtime_layout(label: &str, runtime: &sky_engine::ui::neo::Runtime) {
-    let snapshot = runtime.debug_snapshot_current();
+    let snapshot = runtime.diagnostics().current_snapshot();
     eprintln!(
         "[neo layout dump] {label}: screen={:?} layout={:?} dirty={:?} live={:?} built={} reused={} active_animations={} needs_render={} needs_compose={} full_redraw={}",
         snapshot.screen,
@@ -2261,14 +2948,14 @@ fn dump_runtime_layout(label: &str, runtime: &sky_engine::ui::neo::Runtime) {
         snapshot.needs_compose,
         snapshot.full_redraw
     );
-    for root in runtime.roots() {
+    for root in runtime.diagnostics().roots() {
         dump_element_layout(root, 0);
     }
     eprintln!("[neo layout dump end] {label}");
 }
 
 fn dump_runtime_draw(label: &str, runtime: &sky_engine::ui::neo::Runtime) {
-    let trace = runtime.draw_debug_trace();
+    let trace = runtime.diagnostics().draw_trace();
     let filter = env_string("SKY_NEO_LAB_DUMP_DRAW_FILTER");
     eprintln!(
         "[neo draw dump] {label}: screen={:?} commands={} primitives={} push_clip={} pop_clip={} max_clip_depth={} unbalanced_pops={} remaining_clip_depth={} filter={:?}",
@@ -2296,7 +2983,7 @@ fn dump_runtime_draw(label: &str, runtime: &sky_engine::ui::neo::Runtime) {
     eprintln!("[neo draw dump end] {label}");
 }
 
-fn dump_element_layout(element: &sky_engine::ui::neo::eui::Element, depth: usize) {
+fn dump_element_layout(element: &sky_engine::ui::neo::expert::Element, depth: usize) {
     let indent = "  ".repeat(depth);
     eprintln!(
         "{indent}{} {:?} frame=({:.1},{:.1},{:.1},{:.1}) size={:?}x{:?} children={} interactive={} focusable={} z={} clip={} text={:?}",
@@ -2321,8 +3008,9 @@ fn dump_element_layout(element: &sky_engine::ui::neo::eui::Element, depth: usize
 }
 
 fn trace_chart_runtime(label: &str, tab: i32, time: f32, runtime: &sky_engine::ui::neo::Runtime) {
-    let snapshot = runtime.debug_snapshot_current();
+    let snapshot = runtime.diagnostics().current_snapshot();
     let target = runtime
+        .diagnostics()
         .find("signals.chart.bar.bar.3")
         .map(|element| element.frame);
     let draw = runtime.draw_list().commands().iter().find_map(|command| {
@@ -2372,7 +3060,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sky_engine::ui::neo::{DirtyInput, FrameInput, Runtime, Screen, UiTestDriver};
+    use sky_engine::ui::neo::{FrameInput, Runtime, Screen, UiTestDriver};
 
     fn perf_snapshot() -> PerfSnapshot {
         PerfSnapshot {
@@ -2405,41 +3093,48 @@ mod tests {
         assert!((perf.frame_ms - 20.0).abs() < 0.001, "{perf:?}");
     }
 
-    fn frame_lab(runtime: &mut Runtime, state: &State<LabState>, dirty: Vec<DirtyInput>) {
+    fn frame_lab(runtime: &mut Runtime, state: &State<LabState>) {
         let perf = perf_snapshot();
-        let state = state.clone();
-        runtime.frame_incremental(
+        let compose_state = state.clone();
+        runtime.frame_state(
             FrameInput::new(Screen::new(WINDOW_W as f32, WINDOW_H as f32), 0.0),
-            move || dirty,
+            state,
             move |ui, screen| {
-                draw_lab(ui, screen.width, screen.height, &state, &perf, false, false);
+                draw_lab(
+                    ui,
+                    screen.width,
+                    screen.height,
+                    &compose_state,
+                    &perf,
+                    false,
+                    false,
+                );
             },
         );
     }
 
-    fn frame_lab_driver(
-        driver: &mut UiTestDriver,
-        state: &State<LabState>,
-        dirty: Vec<DirtyInput>,
-    ) {
-        frame_lab_driver_at(driver, state, dirty, 0.0);
+    fn frame_lab_driver(driver: &mut UiTestDriver, state: &State<LabState>) {
+        frame_lab_driver_at(driver, state, 0.0);
     }
 
-    fn frame_lab_driver_at(
-        driver: &mut UiTestDriver,
-        state: &State<LabState>,
-        dirty: Vec<DirtyInput>,
-        time: f32,
-    ) {
+    fn frame_lab_driver_at(driver: &mut UiTestDriver, state: &State<LabState>, time: f32) {
         let perf = perf_snapshot();
-        let state = state.clone();
-        driver.frame_incremental_dirty_with_delta(time, dirty, move |ui, screen| {
-            draw_lab(ui, screen.width, screen.height, &state, &perf, false, false);
+        let compose_state = state.clone();
+        driver.frame_state_with_delta(time, state, move |ui, screen| {
+            draw_lab(
+                ui,
+                screen.width,
+                screen.height,
+                &compose_state,
+                &perf,
+                false,
+                false,
+            );
         });
     }
 
-    fn dirty_contains(dirty: &[DirtyInput], id: &str) -> bool {
-        dirty.iter().any(|record| record.id == id)
+    fn dirty_contains(dirty: &[(String, sky_engine::ui::neo::DirtyFlags)], id: &str) -> bool {
+        dirty.iter().any(|(record_id, _)| record_id == id)
     }
 
     #[test]
@@ -2447,7 +3142,7 @@ mod tests {
         let state = State::new(LabState::default());
         let mut driver = UiTestDriver::new("stress-lab", WINDOW_W as f32, WINDOW_H as f32);
 
-        frame_lab_driver(&mut driver, &state, Vec::new());
+        frame_lab_driver(&mut driver, &state);
         let label = driver
             .find("signals.tabs.label.1")
             .expect("charts tab label should exist")
@@ -2461,13 +3156,13 @@ mod tests {
 
         assert_eq!(state.read(|state| state.tab), 1, "{trace}");
         assert!(trace.point.is_some_and(|[x, y]| label.contains([x, y])));
-        let dirty_ids = state.take_dirty();
+        let dirty_ids = state.dirty_flags();
         assert!(
             dirty_contains(&dirty_ids, "stress-lab.signals.tabs")
                 && dirty_contains(&dirty_ids, "stress-lab.signals.tab.body"),
             "tab click should dirty only the tab controls and tab body: dirty={dirty_ids:?} trace={trace}"
         );
-        frame_lab_driver(&mut driver, &state, dirty_ids);
+        frame_lab_driver(&mut driver, &state);
 
         assert!(driver.runtime().retained_compose_stats().built >= 1);
         assert!(driver.runtime().retained_compose_stats().reused >= 1);
@@ -2487,7 +3182,7 @@ mod tests {
         assert!(indicator.x > charts_hit.x);
         assert!(indicator.x < charts_hit.x + charts_hit.width);
 
-        frame_lab_driver(&mut driver, &state, state.take_dirty());
+        frame_lab_driver(&mut driver, &state);
         assert!(
             driver.runtime().retained_compose_stats().partial_layout,
             "stable post-tab frame should return to partial layout: {:?}",
@@ -2500,19 +3195,19 @@ mod tests {
         let state = State::new(LabState::default());
         let mut driver = UiTestDriver::new("stress-lab", WINDOW_W as f32, WINDOW_H as f32);
 
-        frame_lab_driver(&mut driver, &state, Vec::new());
+        frame_lab_driver(&mut driver, &state);
         let trace = driver
             .click("signals.tabs.hit.1")
             .expect("charts tab hit rect should exist");
 
         assert_eq!(state.read(|state| state.tab), 1, "{trace}");
-        let dirty_ids = state.take_dirty();
+        let dirty_ids = state.dirty_flags();
         assert!(
             dirty_contains(&dirty_ids, "stress-lab.signals.tabs")
                 && dirty_contains(&dirty_ids, "stress-lab.signals.tab.body"),
             "tab hit rect should dirty only the tab controls and tab body: dirty={dirty_ids:?} trace={trace}"
         );
-        frame_lab_driver(&mut driver, &state, dirty_ids);
+        frame_lab_driver(&mut driver, &state);
 
         assert!(driver.runtime().retained_compose_stats().built >= 1);
         assert!(driver.runtime().retained_compose_stats().reused >= 1);
@@ -2538,7 +3233,7 @@ mod tests {
         let state = State::new(LabState::default());
         let mut driver = UiTestDriver::new("stress-lab", WINDOW_W as f32, WINDOW_H as f32);
 
-        frame_lab_driver_at(&mut driver, &state, Vec::new(), 0.0);
+        frame_lab_driver_at(&mut driver, &state, 0.0);
         let before_orb_scale = driver
             .find("signals.stage.a.orb.fill")
             .expect("pulse orb fill should exist before tab switch")
@@ -2550,8 +3245,7 @@ mod tests {
             .expect("charts tab hit rect should exist");
         assert_eq!(state.read(|state| state.tab), 1, "{trace}");
 
-        let dirty_ids = state.take_dirty();
-        frame_lab_driver_at(&mut driver, &state, dirty_ids, 0.0);
+        frame_lab_driver_at(&mut driver, &state, 0.0);
         assert!(
             driver.find("signals.tab.charts").is_some(),
             "charts body should be present after tab switch: {:?}",
@@ -2565,10 +3259,10 @@ mod tests {
         eprintln!(
             "[signal->charts] after click settled: tab={} pulse_bar_scale={before_bar:?} snapshot={:?}",
             state.read(|state| state.tab),
-            driver.runtime().debug_snapshot_current()
+            driver.runtime().diagnostics().current_snapshot()
         );
 
-        frame_lab_driver_at(&mut driver, &state, state.take_dirty(), 1.570_796_4);
+        frame_lab_driver_at(&mut driver, &state, 1.570_796_4);
         let after_orb = driver
             .find("signals.stage.a.orb.fill")
             .expect("pulse orb fill should still exist on charts tab")
@@ -2605,7 +3299,7 @@ mod tests {
         let snapshot = driver.debug_snapshot();
         eprintln!(
             "[signal->charts] after live frame: orb_frame={after_orb:?} orb_scale={after_orb_scale:?} pulse_bar_target_scale={after_bar_target:?} pulse_bar_draw_scale={after_frame_bar:?} sampled_ticks={sampled_bars:?} snapshot={:?}",
-            driver.runtime().debug_snapshot_current()
+            driver.runtime().diagnostics().current_snapshot()
         );
 
         assert!(
@@ -2646,7 +3340,7 @@ mod tests {
             });
             let mut driver = UiTestDriver::new("stress-lab", WINDOW_W as f32, WINDOW_H as f32);
 
-            frame_lab_driver_at(&mut driver, &state, Vec::new(), 0.0);
+            frame_lab_driver_at(&mut driver, &state, 0.0);
             driver.advance_animations(0.0);
             let start_draw = rect_draw_x(driver.runtime(), "signals.tabs.indicator")
                 .expect("tabs indicator should draw before click");
@@ -2654,9 +3348,9 @@ mod tests {
             let trace = driver
                 .click(hit_id)
                 .expect("target tab hit rect should exist");
-            let dirty_ids = state.take_dirty();
+            let dirty_ids = state.dirty_flags();
             assert!(!dirty_ids.is_empty(), "{trace}");
-            frame_lab_driver_at(&mut driver, &state, dirty_ids, 0.0);
+            frame_lab_driver_at(&mut driver, &state, 0.0);
             driver.advance_animations(0.0);
             let after_frame_draw = rect_draw_x(driver.runtime(), "signals.tabs.indicator")
                 .expect("tabs indicator should draw after click");
@@ -2672,7 +3366,7 @@ mod tests {
 
             eprintln!(
                 "[tabs indicator] start_tab={start_tab} hit={hit_id} start_draw={start_draw:.3} after_frame={after_frame_draw:.3} after_tick={after_tick_draw:.3} target={target:.3} snapshot={:?}",
-                driver.runtime().debug_snapshot_current()
+                driver.runtime().diagnostics().current_snapshot()
             );
 
             (start_draw, after_frame_draw, after_tick_draw)
@@ -2699,7 +3393,7 @@ mod tests {
         });
         let mut driver = UiTestDriver::new("stress-lab", WINDOW_W as f32, WINDOW_H as f32);
 
-        frame_lab_driver(&mut driver, &state, Vec::new());
+        frame_lab_driver(&mut driver, &state);
         driver.advance_animations(0.0);
         let start_target = driver
             .find("interactions.segment.indicator")
@@ -2712,13 +3406,13 @@ mod tests {
             .click("interactions.segment.hit.1")
             .expect("odd segment hit rect should exist");
         assert_eq!(state.read(|state| state.segment), 1, "{trace}");
-        let dirty_ids = state.take_dirty();
+        let dirty_ids = state.dirty_flags();
         assert!(
             dirty_contains(&dirty_ids, "stress-lab.interactions"),
             "interactions panel should be dirty after segment click: dirty={dirty_ids:?} trace={trace}"
         );
 
-        frame_lab_driver(&mut driver, &state, dirty_ids);
+        frame_lab_driver(&mut driver, &state);
         driver.advance_animations(0.0);
         let next_target = driver
             .find("interactions.segment.indicator")
@@ -2726,7 +3420,7 @@ mod tests {
             .frame;
         let after_frame_draw = rect_draw_x(driver.runtime(), "interactions.segment.indicator")
             .expect("segment indicator should draw after click");
-        let snapshot = driver.runtime().debug_snapshot_current();
+        let snapshot = driver.runtime().diagnostics().current_snapshot();
 
         assert!(
             next_target.x > start_target.x,
@@ -2763,7 +3457,7 @@ mod tests {
         });
         let mut driver = UiTestDriver::new("stress-lab", WINDOW_W as f32, WINDOW_H as f32);
 
-        frame_lab_driver(&mut driver, &state, Vec::new());
+        frame_lab_driver(&mut driver, &state);
         driver.advance_animations(0.0);
         log_segment_draw_state("before click", &driver);
 
@@ -2776,9 +3470,9 @@ mod tests {
             state.read(|state| state.segment)
         );
 
-        let dirty_ids = state.take_dirty();
+        let dirty_ids = state.dirty_flags();
         eprintln!("dirty records after click = {dirty_ids:?}");
-        frame_lab_driver(&mut driver, &state, dirty_ids);
+        frame_lab_driver(&mut driver, &state);
         driver.advance_animations(0.0);
         log_segment_draw_state("after compose", &driver);
 
@@ -2812,7 +3506,7 @@ mod tests {
         let state = State::new(LabState::default());
         let mut driver = UiTestDriver::new("stress-lab", WINDOW_W as f32, WINDOW_H as f32);
 
-        frame_lab_driver(&mut driver, &state, Vec::new());
+        frame_lab_driver(&mut driver, &state);
 
         let control_trace = driver
             .click("controls.preset.dropdown.field")
@@ -2821,8 +3515,7 @@ mod tests {
             state.read(|state| state.control_dropdown_open),
             "{control_trace}"
         );
-        let dirty_ids = state.take_dirty();
-        frame_lab_driver(&mut driver, &state, dirty_ids);
+        frame_lab_driver(&mut driver, &state);
         assert!(
             driver.find("controls.preset.dropdown.item.1").is_some(),
             "control dropdown popup items should exist after opening: {:?}",
@@ -2842,7 +3535,7 @@ mod tests {
             "{control_item_trace}"
         );
 
-        frame_lab_driver(&mut driver, &state, state.take_dirty());
+        frame_lab_driver(&mut driver, &state);
         let quiet_label = driver
             .find("controls.preset.dropdown.label")
             .expect("control dropdown label should exist after selecting Quiet");
@@ -2859,7 +3552,7 @@ mod tests {
             state.read(|state| state.control_dropdown_open),
             "{reopen_trace}"
         );
-        frame_lab_driver(&mut driver, &state, state.take_dirty());
+        frame_lab_driver(&mut driver, &state);
         let drift_trace = driver
             .click("controls.preset.dropdown.item.0")
             .expect("Drift dropdown item should be clickable");
@@ -2872,7 +3565,7 @@ mod tests {
             !state.read(|state| state.control_dropdown_open),
             "{drift_trace}"
         );
-        frame_lab_driver(&mut driver, &state, state.take_dirty());
+        frame_lab_driver(&mut driver, &state);
         let drift_label = driver
             .find("controls.preset.dropdown.label")
             .expect("control dropdown label should exist after selecting Drift");
@@ -2882,13 +3575,35 @@ mod tests {
             .expect("first control log badge should exist after selecting Drift");
         assert_eq!(drift_badge.text, "row 01");
 
-        frame_lab_driver(&mut driver, &state, state.take_dirty());
+        frame_lab_driver(&mut driver, &state);
         let interaction_trace = driver
             .click("interactions.dropdown.field")
             .expect("interaction dropdown field should be clickable");
-        assert!(state.read(|state| state.dropdown_open), "{interaction_trace}");
-        let dirty_ids = state.take_dirty();
-        frame_lab_driver(&mut driver, &state, dirty_ids);
+        assert!(
+            state.read(|state| state.dropdown_open),
+            "{interaction_trace}"
+        );
+        frame_lab_driver(&mut driver, &state);
+        let interaction_field = driver
+            .find("interactions.dropdown.field")
+            .expect("interaction dropdown field should stay in its panel")
+            .frame;
+        let interaction_popup = driver
+            .find("interactions.dropdown.popup")
+            .expect("interaction dropdown popup root should exist after opening")
+            .frame;
+        assert!(
+            (interaction_popup.x - interaction_field.x).abs() < 0.001,
+            "interaction dropdown popup should stay in the field column: field={interaction_field:?} popup={interaction_popup:?}"
+        );
+        assert!(
+            (interaction_popup.y - (interaction_field.bottom() + 8.0)).abs() < 0.001,
+            "interaction dropdown popup should sit below its field: field={interaction_field:?} popup={interaction_popup:?}"
+        );
+        assert!(
+            (interaction_popup.width - interaction_field.width).abs() < 0.001,
+            "interaction dropdown popup should keep field width: field={interaction_field:?} popup={interaction_popup:?}"
+        );
         assert!(
             driver.find("interactions.dropdown.item.1").is_some(),
             "interaction dropdown popup items should exist after opening: {:?}",
@@ -2910,16 +3625,91 @@ mod tests {
     }
 
     #[test]
+    fn stress_lab_control_dropdown_stays_open_after_app_style_pointer_frame() {
+        let state = State::new(LabState::default());
+        let mut runtime = Runtime::new("neo");
+
+        frame_lab(&mut runtime, &state);
+        let field = runtime
+            .diagnostics()
+            .find("controls.preset.dropdown.field")
+            .expect("control dropdown field should exist")
+            .frame;
+        let x = field.x + field.width * 0.5;
+        let y = field.y + field.height * 0.5;
+
+        let perf = perf_snapshot();
+        let compose_state = state.clone();
+        runtime.frame_state(
+            FrameInput::new(Screen::new(WINDOW_W as f32, WINDOW_H as f32), 0.0).pointer_events([
+                PointerEvent::pressed_at(x, y),
+                PointerEvent::released_at(x, y),
+            ]),
+            &state,
+            move |ui, screen| {
+                draw_lab(
+                    ui,
+                    screen.width,
+                    screen.height,
+                    &compose_state,
+                    &perf,
+                    false,
+                    false,
+                );
+            },
+        );
+
+        assert!(state.read(|state| state.control_dropdown_open));
+        assert!(
+            runtime
+                .diagnostics()
+                .find("controls.preset.dropdown.popup.surface")
+                .is_some(),
+            "popup should exist immediately after app-style pointer frame: {:?}",
+            runtime.diagnostics().current_snapshot()
+        );
+
+        let perf = perf_snapshot();
+        let compose_state = state.clone();
+        runtime.frame_state(
+            FrameInput::new(Screen::new(WINDOW_W as f32, WINDOW_H as f32), 0.0)
+                .pointer(PointerEvent::at(x, y)),
+            &state,
+            move |ui, screen| {
+                draw_lab(
+                    ui,
+                    screen.width,
+                    screen.height,
+                    &compose_state,
+                    &perf,
+                    false,
+                    false,
+                );
+            },
+        );
+
+        assert!(state.read(|state| state.control_dropdown_open));
+        assert!(
+            runtime
+                .diagnostics()
+                .find("controls.preset.dropdown.popup.surface")
+                .is_some(),
+            "popup should survive an idle app redraw at the field pointer: {:?}",
+            runtime.diagnostics().current_snapshot()
+        );
+    }
+
+    #[test]
     fn stress_lab_input_accepts_text_after_focus_click() {
         let state = State::new(LabState::default());
         let mut driver = UiTestDriver::new("stress-lab", WINDOW_W as f32, WINDOW_H as f32);
 
-        frame_lab_driver(&mut driver, &state, Vec::new());
+        frame_lab_driver(&mut driver, &state);
         let focus_trace = driver
             .click("interactions.input.hit")
             .expect("input hit rect should be clickable");
         assert_eq!(
-            driver.runtime().focused_id(),
+            driver.runtime().diagnostics().focused_id(),
             Some("stress-lab.interactions.input.hit"),
             "{focus_trace}"
         );
@@ -2928,12 +3718,12 @@ mod tests {
             .type_text("signal")
             .expect("focused input should accept keyboard text");
         assert_eq!(state.read(|state| state.input_text.clone()), "EUIsignal");
-        let dirty_ids = state.take_dirty();
+        let dirty_ids = state.dirty_flags();
         assert!(
             dirty_contains(&dirty_ids, "stress-lab.interactions.input"),
             "typing should dirty the input owner: dirty={dirty_ids:?} trace={type_trace}"
         );
-        frame_lab_driver(&mut driver, &state, dirty_ids);
+        frame_lab_driver(&mut driver, &state);
 
         let text = driver
             .find("interactions.input.text")
@@ -2974,7 +3764,7 @@ mod tests {
         let mild = text_draw_color(runtime, "interactions.segment.label.0");
         let odd = text_draw_color(runtime, "interactions.segment.label.1");
         let loud = text_draw_color(runtime, "interactions.segment.label.2");
-        let snapshot = runtime.debug_snapshot_current();
+        let snapshot = runtime.diagnostics().current_snapshot();
         eprintln!(
             "[segment draw] {label}: target={target:?} indicator_frame={:?} indicator_color={:?} label_colors mild={mild:?} odd={odd:?} loud={loud:?} active_animations={} needs_render={} layout={:?}",
             indicator.as_ref().map(|rect| rect.frame),
@@ -2990,8 +3780,8 @@ mod tests {
         let state = State::new(LabState::default());
         let mut driver = UiTestDriver::new("stress-lab", WINDOW_W as f32, WINDOW_H as f32);
 
-        frame_lab_driver(&mut driver, &state, Vec::new());
-        frame_lab_driver(&mut driver, &state, state.take_dirty());
+        frame_lab_driver(&mut driver, &state);
+        frame_lab_driver(&mut driver, &state);
         driver.advance_animations(0.0);
 
         let active_before = driver
@@ -3010,7 +3800,7 @@ mod tests {
         let trace = driver
             .scroll("interactions.scroll.viewport", 0.0, -2.0)
             .expect("interaction viewport should receive scroll");
-        let dirty_ids = state.take_dirty();
+        let dirty_ids = state.dirty_flags();
         eprintln!(
             "[interaction scroll] trace={trace}\n  dirty={dirty_ids:?}\n  offset={}",
             state.read(|state| state.interaction_scroll)
@@ -3020,7 +3810,7 @@ mod tests {
             "scrolling should dirty the interaction scroll owner: dirty={dirty_ids:?} trace={trace}"
         );
 
-        frame_lab_driver(&mut driver, &state, dirty_ids);
+        frame_lab_driver(&mut driver, &state);
         driver.advance_animations(0.0);
 
         let active_after = driver
@@ -3035,7 +3825,7 @@ mod tests {
         let probe_draw_after = rect_draw(driver.runtime(), "interactions.secret.bg")
             .expect("live probe background should draw after scroll")
             .frame;
-        let snapshot = driver.runtime().debug_snapshot_current();
+        let snapshot = driver.runtime().diagnostics().current_snapshot();
         eprintln!(
             "[interaction scroll] active target {active_before:?} -> {active_after:?}, draw {active_draw_before:?} -> {active_draw_after:?}\n  probe target {probe_before:?} -> {probe_after:?}, draw {probe_draw_before:?} -> {probe_draw_after:?}\n  normalized={:?} layout={:?}",
             snapshot.normalized_dirty_ids,
@@ -3065,8 +3855,8 @@ mod tests {
         let state = State::new(LabState::default());
         let mut runtime = Runtime::new("stress-lab");
 
-        frame_lab(&mut runtime, &state, Vec::new());
-        frame_lab(&mut runtime, &state, Vec::new());
+        frame_lab(&mut runtime, &state);
+        frame_lab(&mut runtime, &state);
 
         assert!(runtime.retained_compose_stats().built >= 2);
         assert!(runtime.retained_compose_stats().reused >= 1);
