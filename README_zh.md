@@ -103,6 +103,7 @@ fn main() {
 这些示例会在临时目录里生成源文件、cooked 文件和 manifest，不需要提前准备项目资源目录：
 
 ```bash
+cargo run --example asset_cook_smoke --features asset
 cargo run --example asset_load_texture --features asset
 cargo run --example asset_hot_reload_texture --features asset
 cargo run --example asset_load_with_dependency --features asset
@@ -156,13 +157,12 @@ cargo compare-ecs -- flecs
 
 ## 🎮 示例展示
 
-完整示例索引见 [`examples/README.md`](examples/README.md)。如果你是第一次接触这个仓库，建议按“ECS 入门 → Render API → 完整 Demo”的顺序阅读。
+官方示例索引见 [`examples/README.md`](examples/README.md)。如果你是第一次接触这个仓库，建议按“ECS 入门 → Asset/Scene → Render API → UI”的顺序阅读；大型 demo 和游戏切片保留为本地 showcase 源码，不作为发布 example 门面。
 
 Physics 文档见 [`docs/reference/physics.md`](docs/reference/physics.md)。相关示例：
 
 ```bash
 cargo run --example physics_arcade_demo --features "app physics" --release
-cargo run --example tiled_physics_demo --features "app physics" --release
 ```
 
 Persistence / Prefab 文档见 [`docs/reference/scene.md`](docs/reference/scene.md)：
@@ -182,7 +182,7 @@ cargo run --example scene_basic --features scene
 - `StandardMaterial` 的 normal map 现在走切线空间；`Mesh::from_gltf(...)` 会自动准备 tangent 数据
 - `RenderPipelineAsset::forward_3d()` 现在会为透视视图和可投影的 `DirectionalLight` 自动执行 directional shadow map
 - 只有在需要直接控制 graph / pass / target 时，才下潜到 `render::expert::*`
-- 专家级 backend 示例看 `render_graph_showcase` / `frame_pipeline_showcase`，性能统计看 `renderer_probe`
+- 专家级 backend 示例看 `render_graph_showcase` / `frame_pipeline_showcase`
 
 ---
 

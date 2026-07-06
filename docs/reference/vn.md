@@ -135,7 +135,6 @@ Use:
 cargo test --features vn vn
 cargo run --example vn_runtime_minimal --features vn
 cargo check --example vn_sprite_presentation --features "vn app"
-cargo check --example vn_after_school_promise --features vn-ui
 cargo test --features "vn app" vn::presentation
 ```
 

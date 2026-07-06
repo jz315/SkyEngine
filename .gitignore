@@ -35,6 +35,8 @@ tools/ecs-comparison/target/
 # Local reference and archive checkouts
 _achieved/
 _refs/
+examples/assets/*
+!examples/assets/README.md
 examples/assets/tiled/tiled/
 examples/assets/vn/_source/
 

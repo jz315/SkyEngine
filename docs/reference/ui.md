@@ -181,17 +181,13 @@ fonts.add_font_bytes("ui", include_bytes!("MyFont.ttf").as_slice());
 
 ```bash
 cargo run --example ui_legacy_hud_menu --features ui-legacy --release
-cargo run --example ui_legacy_stress_lab --features ui-legacy --release
-cargo run --example lawn_defense_game --features ui-legacy --release
 ```
 
-`ui_legacy_hud_menu` 是最小 legacy retained UI 示例；`ui_legacy_stress_lab` 是视觉压力测试场，用来检查 anchor、局部 z、Fill、disabled/hidden、overlap 和交互控件；`lawn_defense_game` 使用 legacy UI 做顶部 HUD、血量/波次条、暂停按钮和标题/暂停/胜负菜单。
+`ui_legacy_hud_menu` 是最小 legacy retained UI 官方示例。视觉压力测试和游戏 HUD 源码仍保留在 `examples/`，但不作为发布 Cargo example 门面。
 
 ## Tests
 
 ```bash
 cargo test --features ui-legacy ui
 cargo check --example ui_legacy_hud_menu --features ui-legacy
-cargo check --example ui_legacy_stress_lab --features ui-legacy
-cargo check --example lawn_defense_game --features ui-legacy
 ```

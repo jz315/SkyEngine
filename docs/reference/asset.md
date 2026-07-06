@@ -307,12 +307,14 @@ For cooked, package, and bundle sources, `Assets` validates that manifest `cooke
 最小示例都只需要 `asset` feature，会在临时目录中生成源文件、cooked 文件和 manifest：
 
 ```bash
+cargo run --example asset_cook_smoke --features asset
 cargo run --example asset_load_texture --features asset
 cargo run --example asset_hot_reload_texture --features asset
 cargo run --example asset_load_with_dependency --features asset
 cargo run --example asset_custom_factory --features asset
 ```
 
+- `asset_cook_smoke`：最小 cook/load smoke check。
 - `asset_load_texture`：PNG import/cook -> `AssetPath<TextureAsset>` -> `Handle<TextureAsset>`。
 - `asset_hot_reload_texture`：修改源 PNG、重新 cook、`reload_manifest`、`reload_changed_with_report`。
 - `asset_load_with_dependency`：自定义 factory 在 load 阶段返回 `LoadedAsset::with_dependencies(...)`。

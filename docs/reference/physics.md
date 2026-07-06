@@ -102,6 +102,5 @@ step_physics(&mut world);
 
 ```bash
 cargo run --example physics_arcade_demo --features "app physics" --release
-cargo run --example tiled_physics_demo --features "app physics" --release
 cargo run --example physics_headless_probe --features physics --release
 ```

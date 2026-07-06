@@ -14,8 +14,8 @@ release gates that keep the core runtime maintainable as the engine grows.
 - A Rust-native game engine runtime.
 - A practical engine stack for ECS, rendering, UI, asset, scene, tile, physics,
   audio, video, and VN workflows.
-- A collection of focused examples and vertical slices that exercise the engine
-  as real application code.
+- A curated official example set, plus local showcase sources that exercise the
+  engine as real application code.
 - A codebase that stays small enough for contributors to understand, change,
   and extend.
 
@@ -35,16 +35,16 @@ release gates that keep the core runtime maintainable as the engine grows.
 ## Project Status
 
 SkyEngine is pre-1.0 and production-directed. The ECS core, app runner,
-rendering architecture, asset pipeline, UI host, tile model, and examples are
-treated as release surfaces, with compatibility tracked through documentation,
-tests, examples, and benchmark policy.
+rendering architecture, asset pipeline, UI host, tile model, and official
+examples are treated as release surfaces, with compatibility tracked through
+documentation, tests, examples, and benchmark policy.
 
 Breaking API changes may still happen before 1.0, but they should be deliberate,
 documented in the changelog, and covered by the release checklist.
 
 ## Where To Start
 
-- [Examples Guide](examples/README.md) for the runnable learning path.
+- [Examples Guide](examples/README.md) for the curated runnable learning path.
 - [Documentation Index](docs/README.md) for all docs.
 - [API Reference](docs/reference/index.md) for module-level API docs.
 - [Render Reference](docs/reference/render.md) for the rendering stack.
@@ -58,6 +58,7 @@ The asset examples create temporary source and cooked data, so they can be run
 without preparing a project asset folder:
 
 ```bash
+cargo run --example asset_cook_smoke --features asset
 cargo run --example asset_load_texture --features asset
 cargo run --example asset_hot_reload_texture --features asset
 cargo run --example asset_load_with_dependency --features asset
@@ -78,7 +79,7 @@ and custom factory details.
 - Tile maps and Tiled IO
 - Scene and prefab documents
 - Physics, audio, video, Live2D, and VN runtime support
-- Benchmarks and comparison examples
+- Official examples, local showcase sources, and comparison examples
 
 ## License
 

@@ -10,6 +10,12 @@ documentation = "https://docs.rs/sky_engine"
 keywords = ["ecs", "game-engine", "performance", "data-oriented"]
 categories = ["game-engines", "data-structures"]
 autobenches = false
+autoexamples = false
+exclude = [
+    "examples/assets/**",
+    "examples/demo/**/asset/**",
+    "examples/**/*.ps1",
+]
 
 [dependencies]
 mimalloc = "0.1.48"
@@ -75,7 +81,11 @@ yakui-core = { path = "crates/vendor/yakui/crates/yakui-core", optional = true }
 yakui-wgpu = { path = "crates/vendor/yakui/crates/yakui-wgpu", optional = true }
 yakui-winit = { path = "crates/vendor/yakui/crates/yakui-winit", optional = true }
 
-# ── ECS tutorials (no GPU needed) ─────────────────────────────────────────────
+# ── Official release examples ────────────────────────────────────────────────
+# `autoexamples = false` keeps local showcase sources out of the published
+# Cargo example surface unless they are deliberately allowlisted here.
+
+# ECS tutorials (no GPU needed)
 
 [[example]]
 name = "hello_ecs"
@@ -97,31 +107,14 @@ path = "examples/ecs/systems.rs"
 name = "tiny_defense"
 path = "examples/ecs/tiny_defense.rs"
 
-# ── Visual novel tutorials (--features vn) ──────────────────────────────────
-
-[[example]]
-name = "vn_runtime_minimal"
-path = "examples/vn/runtime_minimal.rs"
-required-features = ["vn"]
-
-[[example]]
-name = "vn_sprite_presentation"
-path = "examples/vn/sprite_presentation.rs"
-required-features = ["vn", "app"]
-
-[[example]]
-name = "vn_after_school_promise"
-path = "examples/vn/after_school_promise.rs"
-required-features = ["vn-ui"]
-
-# ── Scene/prefab tutorials (--features scene) ────────────────────────────────
+# Scene/prefab tutorials
 
 [[example]]
 name = "scene_basic"
 path = "examples/scene/basic.rs"
 required-features = ["scene"]
 
-# ── Render API showcases (GPU, --features app) ───────────────────────────────
+# Render/app tutorials
 
 [[example]]
 name = "clear_screen"
@@ -139,11 +132,6 @@ path = "examples/render/textured_demo.rs"
 required-features = ["app"]
 
 [[example]]
-name = "perf_test"
-path = "examples/render/perf_test.rs"
-required-features = ["app"]
-
-[[example]]
 name = "lighting_demo"
 path = "examples/render/lighting_demo.rs"
 required-features = ["app"]
@@ -151,11 +139,6 @@ required-features = ["app"]
 [[example]]
 name = "render_graph_showcase"
 path = "examples/render/render_graph_showcase.rs"
-required-features = ["app"]
-
-[[example]]
-name = "renderer_probe"
-path = "examples/render/renderer_probe.rs"
 required-features = ["app"]
 
 [[example]]
@@ -174,41 +157,11 @@ path = "examples/render/custom_material_demo.rs"
 required-features = ["app"]
 
 [[example]]
-name = "three_d_demo"
-path = "examples/render/three_d_demo.rs"
-required-features = ["app"]
-
-[[example]]
-name = "kajiya_3d"
-path = "examples/render/kajiya_3d.rs"
-required-features = ["app", "kajiya-renderer"]
-
-[[example]]
-name = "renderling_3d"
-path = "examples/render/renderling_3d.rs"
-required-features = ["app", "renderling-renderer"]
-
-[[example]]
 name = "tilemap_demo"
 path = "examples/render/tilemap_demo.rs"
 required-features = ["app"]
 
-[[example]]
-name = "tiled_import_demo"
-path = "examples/render/tiled_import_demo.rs"
-required-features = ["app"]
-
-[[example]]
-name = "tiled_browser_demo"
-path = "examples/render/tiled_browser_demo/main.rs"
-required-features = ["app"]
-
-# ── Physics showcases (--features app physics) ──────────────────────────────
-
-[[example]]
-name = "tiled_physics_demo"
-path = "examples/physics/tiled_topdown.rs"
-required-features = ["app", "physics"]
+# Physics tutorials
 
 [[example]]
 name = "physics_arcade_demo"
@@ -216,115 +169,16 @@ path = "examples/physics/arcade.rs"
 required-features = ["app", "physics"]
 
 [[example]]
-name = "block_on_plank_demo"
-path = "examples/physics/block_on_plank.rs"
-required-features = ["app"]
-
-[[example]]
 name = "physics_headless_probe"
 path = "examples/physics/headless_probe.rs"
 required-features = ["physics"]
 
-# ── Playable game vertical slices (--features app physics) ──────────────────
-
-[[example]]
-name = "neon_dungeon_game"
-path = "examples/game/neon_dungeon/main.rs"
-required-features = ["app", "physics"]
-
-[[example]]
-name = "lawn_defense_game"
-path = "examples/game/lawn_defense/main.rs"
-required-features = ["ui-legacy"]
-
-[[example]]
-name = "miniature_builder_game"
-path = "examples/game/miniature_builder/main.rs"
-required-features = ["app"]
-
-[[example]]
-name = "kenney_platformer_game"
-path = "examples/game/kenney_platformer/main.rs"
-required-features = ["ui-legacy"]
-
-[[example]]
-name = "last_light_guild"
-path = "examples/game/last_light_guild/main.rs"
-required-features = ["ui-legacy"]
-
-[[example]]
-name = "fog_lantern_station"
-path = "examples/game/fog_lantern_station/main.rs"
-required-features = ["ui-neo"]
-
-# ── Full demo showcases (GPU, --features app) ────────────────────────────────
-
-[[example]]
-name = "boids"
-path = "examples/demo/boids.rs"
-required-features = ["app"]
-
-[[example]]
-name = "boids_classic"
-path = "examples/demo/boids_classic.rs"
-required-features = ["app"]
-
-[[example]]
-name = "cosmic_jellyfish"
-path = "examples/demo/cosmic_jellyfish.rs"
-required-features = ["app"]
-
-[[example]]
-name = "neon_galaxy"
-path = "examples/demo/neon_galaxy.rs"
-required-features = ["app"]
-
-[[example]]
-name = "rimworld"
-path = "examples/demo/rimworld/main.rs"
-required-features = ["app", "asset"]
-
-# ── Live2D (--features live2d) ───────────────────────────────────────────────
-
-[[example]]
-name = "hello_live2d"
-path = "examples/live2d/hello_live2d.rs"
-required-features = ["live2d"]
-
-[[example]]
-name = "live2d_demo"
-path = "examples/live2d/live2d_demo.rs"
-required-features = ["live2d", "egui"]
-
-[[example]]
-name = "live2d_probe"
-path = "examples/live2d/live2d_probe.rs"
-required-features = ["live2d"]
-
-[[example]]
-name = "egui_demo"
-path = "examples/render/egui_demo.rs"
-required-features = ["egui"]
+# UI tutorials
 
 [[example]]
 name = "ui_legacy_hud_menu"
 path = "examples/ui/legacy/hud_menu.rs"
 required-features = ["ui-legacy"]
-
-[[example]]
-name = "ui_legacy_stress_lab"
-path = "examples/ui/legacy/stress_lab.rs"
-required-features = ["ui-legacy"]
-
-[[example]]
-name = "ui_neo_stress_lab"
-path = "examples/ui/neo/stress_lab.rs"
-required-features = ["ui-neo"]
-
-[[example]]
-name = "ui_neo_eui_demo"
-path = "examples/ui/neo/eui_demo.rs"
-required-features = ["ui-neo"]
 
 [[example]]
 name = "ui_neo_eui_gallery"
@@ -342,49 +196,11 @@ path = "examples/ui/neo/scroll_y.rs"
 required-features = ["ui-neo"]
 
 [[example]]
-name = "ui_neo_scroll_x"
-path = "examples/ui/neo/scroll_x.rs"
-required-features = ["ui-neo"]
-
-[[example]]
-name = "ui_neo_scroll_xy"
-path = "examples/ui/neo/scroll_xy.rs"
-required-features = ["ui-neo"]
-
-[[example]]
-name = "ui_neo_calculator"
-path = "examples/ui/neo/calculator.rs"
-required-features = ["ui-neo"]
-
-[[example]]
-name = "ui_neo_ai_chat"
-path = "examples/ui/neo/ai_chat.rs"
-required-features = ["ui-neo"]
-
-[[example]]
-name = "ui_neo_game_hud"
-path = "examples/ui/neo/game_hud.rs"
-required-features = ["ui-neo"]
-
-[[example]]
-name = "ui_neo_kenney_showcase"
-path = "examples/ui/neo/kenney_showcase.rs"
-required-features = ["ui-neo"]
-
-[[example]]
-name = "ui_neo_control_center"
-path = "examples/ui/neo/control_center/main.rs"
-required-features = ["ui-neo"]
-
-[[example]]
 name = "ui_yakui_demo"
 path = "examples/ui/yakui/demo.rs"
 required-features = ["yakui-ui"]
 
-[[example]]
-name = "ui_yakui_stress_lab"
-path = "examples/ui/yakui/stress_lab.rs"
-required-features = ["yakui-ui"]
+# Asset tutorials
 
 [[example]]
 name = "asset_cook_smoke"
@@ -410,6 +226,20 @@ required-features = ["asset"]
 name = "asset_custom_factory"
 path = "examples/asset/custom_factory.rs"
 required-features = ["asset"]
+
+# VN tutorials
+
+[[example]]
+name = "vn_runtime_minimal"
+path = "examples/vn/runtime_minimal.rs"
+required-features = ["vn"]
+
+[[example]]
+name = "vn_sprite_presentation"
+path = "examples/vn/sprite_presentation.rs"
+required-features = ["vn", "app"]
+
+# Media tutorials
 
 [[example]]
 name = "audio_demo"

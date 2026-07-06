@@ -195,27 +195,18 @@ RenderGraph 位于 `render::expert`，用于声明式组织 render pass / comput
 
 Tilemap 在 `app` feature 下可用。Tiled import 和 physics collider 提取分别属于 render/tilemap 与 physics integration。
 
-示例：
+官方示例：
 
 ```bash
 cargo run --example tilemap_demo --features app
-cargo run --example tiled_import_demo --features app
-cargo run --example tiled_browser_demo --features app
 ```
 
-Tiled physics 需要：
-
-```bash
-cargo run --example tiled_physics_demo --features "app physics"
-```
+Tiled import/browser/physics showcase 源码仍保留在 `examples/`，但不作为发布 Cargo example 门面。
 
 ## Live2D
 
 Live2D 通过 `live2d` feature 启用，走同一 render composition/transparent phase 思路。
-
-```bash
-cargo run --example live2d_demo --features "live2d egui"
-```
+完整 Live2D demo/probe 源码仍保留在 `examples/live2d/`，但不作为发布 Cargo example 门面。
 
 ## Debug / Stats
 
