@@ -216,6 +216,11 @@ path = "examples/physics/arcade.rs"
 required-features = ["app", "physics"]
 
 [[example]]
+name = "block_on_plank_demo"
+path = "examples/physics/block_on_plank.rs"
+required-features = ["app"]
+
+[[example]]
 name = "physics_headless_probe"
 path = "examples/physics/headless_probe.rs"
 required-features = ["physics"]
