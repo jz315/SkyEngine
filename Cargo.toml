@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "High-performance ECS with chunk-based columnar storage"
 license = "MIT"
+repository = "https://github.com/jz315/SkyEngine"
+homepage = "https://github.com/jz315/SkyEngine"
+documentation = "https://docs.rs/sky_engine"
 keywords = ["ecs", "game-engine", "performance", "data-oriented"]
 categories = ["game-engines", "data-structures"]
 autobenches = false
@@ -478,7 +481,7 @@ vn-ui = ["vn", "ui-neo"]
 vn-audio = ["vn", "audio"]
 vn-live2d = ["vn", "live2d"]
 vn-tools = ["vn"]
-# GPU-accelerated demos (future)
+# GPU-accelerated demos
 demo = ["app", "asset"]
 # Live2D Cubism SDK integration
 live2d = ["app", "asset", "dep:cubism-sys", "dep:serde_json"]

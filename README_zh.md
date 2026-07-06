@@ -1,23 +1,23 @@
+# SkyEngine
+
+高性能块列式 ECS、可编程 wgpu 渲染栈、资产/输入/UI/Tile/物理/音频/视频/场景/VN 等可选运行时模块。
+
+SkyEngine 的目标是成为可用于真实项目的 Rust 原生 2D 与混合游戏运行时。项目以清晰的公开 API、feature-gated 子系统、可运行示例、基准测试和发布门禁作为工程边界。
+
 <p align="center">
-  <h1 align="center">🚀 SkyEngine</h1>
-  <p align="center">
-    <strong>高性能 · 块列式 ECS · wgpu 2D 渲染 · Rust 原生</strong>
-  </p>
-  <p align="center">
-    <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/Rust-2021_Edition-orange?logo=rust&logoColor=white" alt="Rust"></a>
-    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
-    <a href="https://github.com/nicories/wgpu"><img src="https://img.shields.io/badge/GPU-wgpu_24-green?logo=webgpu" alt="wgpu"></a>
-    <a href="benches/BENCHMARKS_CN.md"><img src="https://img.shields.io/badge/Bench-Criterion-purple" alt="Criterion"></a>
-  </p>
+  <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/Rust-2021_Edition-orange?logo=rust&logoColor=white" alt="Rust"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="https://github.com/gfx-rs/wgpu"><img src="https://img.shields.io/badge/GPU-wgpu_29-green?logo=webgpu" alt="wgpu"></a>
+  <a href="benches/BENCHMARKS_CN.md"><img src="https://img.shields.io/badge/Bench-Criterion-purple" alt="Criterion"></a>
 </p>
 
 <p align="center">
-  <a href="README_EN.md">English</a> · <a href="#-快速上手">快速上手</a> · <a href="#-性能基准">性能基准</a> · <a href="docs/reference/index.md">API 文档</a> · <a href="docs/reference/scene.md">Persistence 文档</a> · <a href="docs/reference/physics.md">Physics 文档</a> · <a href="#-示例展示">示例展示</a>
+  <a href="README.md">English</a> · <a href="#快速上手">快速上手</a> · <a href="#性能基准">性能基准</a> · <a href="docs/reference/index.md">API 文档</a> · <a href="docs/reference/scene.md">Persistence 文档</a> · <a href="docs/reference/physics.md">Physics 文档</a> · <a href="#示例展示">示例展示</a>
 </p>
 
 ---
 
-## 📖 简介
+## 简介
 
 **SkyEngine** 是一款 Rust 原生 2D 游戏引擎。核心特性包括：
 
@@ -26,9 +26,7 @@
 - **Persistence / Prefab**：`scene` feature 提供 `#[persist(component)]`、World 存档、Prefab 子树保存和文档中间层
 - **可选 2D 物理**：`physics` feature 提供 top-down/Tiled 2D 物理、事件、查询和 debug draw
 - **数学模块**：提供 engine-owned 的 `sky_engine::math` 公共数学层，当前内部基于 `glam`
-- **简单易用**：用户友好的API，详细的文档
-
-🚧 项目目前处于快速开发阶段，欢迎贡献！
+- **工程化发布门禁**：格式化、Clippy、测试、示例编译和发布清单共同维护质量底线
 
 ---
 
@@ -43,7 +41,7 @@
 ---
 
 
-## 🚀 快速上手
+## 快速上手
 
 ### 前置条件
 
@@ -115,7 +113,7 @@ cargo run --example asset_custom_factory --features asset
 
 ---
 
-## 📊 性能基准
+## 性能基准
 
 所有数据来自 `cargo compare-ecs` 公平横向对比，使用 Criterion 框架在同一台 Windows 机器上采集。详细历史记录见 [BENCHMARKS.md](benches\BENCHMARKS_CN.md)。
 

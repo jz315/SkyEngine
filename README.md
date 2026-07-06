@@ -1,20 +1,19 @@
 # SkyEngine
 
-SkyEngine is an experimental Rust game engine for building data-driven game
-runtime systems. It combines a fast ECS core, a programmable renderer, and a
-set of opt-in engine modules for assets, UI, tile maps, physics, audio, video,
-scenes, and visual-novel style presentation.
+SkyEngine is a production-oriented Rust game engine for building data-driven
+2D and hybrid game runtime systems. It combines a fast chunk-based ECS core, a
+programmable render stack, and opt-in engine modules for assets, UI, tile maps,
+physics, audio, video, scenes, and visual-novel style presentation.
 
-The goal is not to be a finished commercial engine yet. SkyEngine is a compact
-engine workspace for exploring how a modern Rust game runtime can be organized:
-entity storage, rendering composition, asset lifetime, UI integration, gameplay
-examples, and editor-adjacent data models all live in one repo.
+The project is organized around practical engine use: stable public entry
+points, feature-gated subsystems, runnable examples, benchmark coverage, and
+release gates that keep the core runtime maintainable as the engine grows.
 
 ## What It Is
 
-- A Rust-native game engine research project.
-- A practical playground for ECS, rendering, UI, asset, scene, tile, physics,
-  audio, video, and VN runtime ideas.
+- A Rust-native game engine runtime.
+- A practical engine stack for ECS, rendering, UI, asset, scene, tile, physics,
+  audio, video, and VN workflows.
 - A collection of focused examples and vertical slices that exercise the engine
   as real application code.
 - A codebase that stays small enough for contributors to understand, change,
@@ -24,7 +23,7 @@ examples, and editor-adjacent data models all live in one repo.
 
 - Run ECS-only examples without a GPU.
 - Render sprite, tilemap, material, lighting, shadow, and post-processing
-  experiments through a wgpu-based stack.
+  workloads through a wgpu-based stack.
 - Drive windowed app examples with input, assets, screenshots, and frame
   lifecycle support.
 - Build native UI overlays with retained UI, EUI-NEO-style UI, yakui, or egui.
@@ -35,12 +34,13 @@ examples, and editor-adjacent data models all live in one repo.
 
 ## Project Status
 
-SkyEngine is in active development. The ECS, render architecture, examples, and
-several runtime modules are usable, but public APIs are still changing as the
-engine is split into cleaner layers.
+SkyEngine is pre-1.0 and production-directed. The ECS core, app runner,
+rendering architecture, asset pipeline, UI host, tile model, and examples are
+treated as release surfaces, with compatibility tracked through documentation,
+tests, examples, and benchmark policy.
 
-Use it if you want to study or extend an engine codebase. Expect movement if
-you want a stable dependency.
+Breaking API changes may still happen before 1.0, but they should be deliberate,
+documented in the changelog, and covered by the release checklist.
 
 ## Where To Start
 
