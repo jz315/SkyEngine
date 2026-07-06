@@ -11,6 +11,7 @@ mod io;
 mod lease;
 mod load;
 mod provider;
+mod query;
 mod registry;
 mod reload;
 mod request;
@@ -19,7 +20,13 @@ mod server;
 mod store;
 mod texture;
 mod types;
+mod update;
 mod watcher;
+
+#[cfg(test)]
+mod test_support;
+#[cfg(test)]
+mod tests;
 
 pub use font::FontAsset;
 pub use install::{
