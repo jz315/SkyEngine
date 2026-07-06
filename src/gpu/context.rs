@@ -1822,10 +1822,12 @@ impl GpuContext {
 
     /// Finish the frame: submit the command encoder and present the surface.
     pub fn end_frame(&mut self) {
-        let mut frame = self
+        let frame = self
             .frame
             .take()
             .expect("end_frame called without begin_frame");
+        #[cfg(feature = "profile-gpu")]
+        let mut frame = frame;
         #[cfg(feature = "profile-gpu")]
         self.timestamps.resolve_frame(&mut frame.encoder);
         self.queue.submit(std::iter::once(frame.encoder.finish()));

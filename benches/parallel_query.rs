@@ -178,6 +178,7 @@ fn world_with_real_scene_entities(count: usize) -> (World, Vec<[f32; 2]>) {
 }
 
 #[inline(always)]
+#[allow(clippy::too_many_arguments)]
 fn real_scene_kernel(
     position: &mut Position2D,
     velocity: &mut Velocity2D,

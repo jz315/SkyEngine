@@ -110,7 +110,7 @@ fn step(world: &mut World) {
 fn spawn_enemy(world: &mut World) {
     let lane = {
         let state = world.get_resource_mut::<GameState>().unwrap();
-        if state.wave_index >= ENEMY_LANES.len() || state.tick % 3 != 0 {
+        if state.wave_index >= ENEMY_LANES.len() || !state.tick.is_multiple_of(3) {
             return;
         }
         let lane = ENEMY_LANES[state.wave_index];
