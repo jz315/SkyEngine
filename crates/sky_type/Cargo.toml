@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "Foundational runtime type identity and layout metadata for Sky"
 license = "MIT"
+repository = "https://github.com/jz315/SkyEngine"
+homepage = "https://github.com/jz315/SkyEngine"
+documentation = "https://docs.rs/sky_type"
 
 [dependencies]
 lazy_static = "1.4.0"

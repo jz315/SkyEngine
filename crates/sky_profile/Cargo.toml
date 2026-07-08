@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "Structured profiling facade for SkyEngine"
 license = "MIT"
+repository = "https://github.com/jz315/SkyEngine"
+homepage = "https://github.com/jz315/SkyEngine"
+documentation = "https://docs.rs/sky_profile"
 
 [features]
 default = []
