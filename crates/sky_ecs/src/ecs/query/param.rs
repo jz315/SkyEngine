@@ -4,6 +4,10 @@ use crate::ecs::component_type;
 use core::slice;
 use smallvec::SmallVec;
 
+mod sealed {
+    pub trait QuerySpecSealed {}
+}
+
 pub trait QueryParam {
     type Slice<'w>;
     type Item<'w>;
@@ -119,7 +123,12 @@ impl<T: 'static> QueryParam for Option<&mut T> {
 // QuerySpec
 // ---------------------------------------------------------------------------
 
-pub trait QuerySpec {
+/// Type-level description of a typed query.
+///
+/// This trait is sealed; use the built-in query parameter forms (`&T`,
+/// `&mut T`, `Option<&T>`, `Option<&mut T>`, and tuples of those) rather
+/// than implementing it directly.
+pub trait QuerySpec: sealed::QuerySpecSealed {
     type Chunk<'w>;
     type Item<'w>;
 
@@ -131,6 +140,8 @@ pub trait QuerySpec {
 }
 
 pub trait ReadOnlyQuerySpec: QuerySpec {}
+
+impl<P: QueryParam> sealed::QuerySpecSealed for P {}
 
 impl<P: QueryParam> QuerySpec for P {
     type Chunk<'w> = P::Slice<'w>;
@@ -167,6 +178,8 @@ impl<P: ReadOnlyQueryParam> ReadOnlyQuerySpec for P {}
 
 macro_rules! impl_query_spec_tuple {
     ($(($Param:ident, $base:ident, $index:tt)),+ $(,)?) => {
+        impl<$($Param: QueryParam),+> sealed::QuerySpecSealed for ($($Param,)+) {}
+
         impl<$($Param: QueryParam),+> QuerySpec for ($($Param,)+) {
             type Chunk<'w> = ($($Param::Slice<'w>,)+);
             type Item<'w> = ($($Param::Item<'w>,)+);

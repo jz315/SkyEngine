@@ -99,14 +99,14 @@ mod sealed {
 impl<Q: QuerySpec> QueryWorld<Q> for &mut World {
     #[inline(always)]
     fn as_world(&self) -> &World {
-        &**self
+        self
     }
 }
 
 impl<Q: ReadOnlyQuerySpec> QueryWorld<Q> for &World {
     #[inline(always)]
     fn as_world(&self) -> &World {
-        *self
+        self
     }
 }
 

@@ -17,6 +17,10 @@ pub(crate) struct BundleMeta {
     pub columns: SmallVec<[(usize, usize); MAX_COMPONENTS]>,
 }
 
+mod sealed {
+    pub trait BundleSealed {}
+}
+
 fn assert_unique_types(types: &[ComponentType]) {
     for (index, ty) in types.iter().enumerate() {
         for other in &types[(index + 1)..] {
@@ -80,9 +84,12 @@ fn bundle_meta<B: 'static>(
 /// Trait implemented by component tuples for spawning entities.
 ///
 /// You do not need to implement this manually — it is auto-implemented
-/// for tuples of up to 16 `'static` types.  Both `Copy` and non-`Copy`
+/// for tuples of up to 8 `'static` types.  Both `Copy` and non-`Copy`
 /// types are supported.
-pub trait Bundle: 'static {
+///
+/// This trait is sealed so Sky ECS can keep the storage invariants behind
+/// [`World::spawn`](crate::ecs::World::spawn) sound.
+pub trait Bundle: sealed::BundleSealed + 'static {
     fn cached_meta() -> (Archetype, &'static [(usize, usize)]);
 
     fn archetype() -> Archetype;
@@ -93,11 +100,19 @@ pub trait Bundle: 'static {
     unsafe fn write(self, chunk: &mut Chunk, entity_index: usize);
 
     /// Fast write using pre-computed column indices. Skips binary search.
+    ///
+    /// # Safety
+    ///
+    /// `entity_index` must be a valid uninitialized slot within `chunk`.
+    /// `columns` must come from this bundle's [`cached_meta`](Self::cached_meta)
+    /// result and therefore match the chunk archetype and tuple element order.
     unsafe fn write_fast(self, chunk: &mut Chunk, entity_index: usize, columns: &[(usize, usize)]);
 }
 
 macro_rules! impl_bundle_tuple {
     ($(($Type:ident, $value:ident, $idx:tt)),+ $(,)?) => {
+        impl<$($Type: 'static),+> sealed::BundleSealed for ($($Type,)+) {}
+
         impl<$($Type: 'static),+> Bundle for ($($Type,)+) {
             fn cached_meta() -> (Archetype, &'static [(usize, usize)]) {
                 let meta = bundle_meta::<Self>(|| smallvec![$(component_type::<$Type>()),+]);
