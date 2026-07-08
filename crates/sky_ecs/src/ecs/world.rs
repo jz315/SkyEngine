@@ -20,7 +20,7 @@ struct TransitionKey {
 
 struct TransitionPlan {
     copy_spans: SmallVec<[(usize, usize, usize); MAX_COMPONENTS]>,
-    target_component_offset: Option<usize>,
+    target_component_index: Option<usize>,
     target_data_index: Cell<Option<usize>>,
 }
 
@@ -627,9 +627,10 @@ impl World {
     }
 
     /// Build copy-span descriptors for transitioning entity data from `source`
-    /// to `target`.  Components whose type-id appears in `skip_component_ids`
-    /// are excluded (used by insert-batches to avoid copying the newly-inserted
-    /// column).  Pass `&[]` when no components should be skipped.
+    /// to `target`. Each span stores source/target component indices rather
+    /// than byte offsets because chunks of the same archetype may use different
+    /// block sizes. Components whose type-id appears in `skip_component_ids`
+    /// are excluded.
     fn build_copy_spans(
         source: &Data,
         target: &Data,
@@ -645,11 +646,7 @@ impl World {
             let Some(target_index) = target.archetype.query_component_index(component) else {
                 continue;
             };
-            spans.push((
-                source.layout.column_offset(source_index),
-                target.layout.column_offset(target_index),
-                component.size,
-            ));
+            spans.push((source_index, target_index, component.size));
         }
 
         spans
@@ -679,19 +676,15 @@ impl World {
 
             let target_archetype = Self::archetype_with_component(base, component);
             let target_data_index = self.ensure_data_index(target_archetype);
-            let target_component_offset = {
-                let target_index = target_archetype.query_component_index(&component).unwrap();
-                self.data[target_data_index]
-                    .layout
-                    .column_offset(target_index)
-            };
+            let target_component_index =
+                target_archetype.query_component_index(&component).unwrap();
             TransitionPlan {
                 copy_spans: Self::build_copy_spans(
                     &self.data[source_data_index],
                     &self.data[target_data_index],
                     &[],
                 ),
-                target_component_offset: Some(target_component_offset),
+                target_component_index: Some(target_component_index),
                 target_data_index: Cell::new(Some(target_data_index)),
             }
         } else {
@@ -703,7 +696,7 @@ impl World {
                     &self.data[target_data_index],
                     &[],
                 ),
-                target_component_offset: None,
+                target_component_index: None,
                 target_data_index: Cell::new(Some(target_data_index)),
             }
         };
@@ -722,14 +715,15 @@ impl World {
         target_entity_index: usize,
         spans: &[(usize, usize, usize)],
     ) {
-        let source_base = source.data_ptr();
-        let target_base = target.data_ptr();
-
-        for &(source_offset, target_offset, component_size) in spans {
+        for &(source_component_index, target_component_index, component_size) in spans {
             unsafe {
                 std::ptr::copy_nonoverlapping(
-                    source_base.add(source_offset + source_entity_index * component_size),
-                    target_base.add(target_offset + target_entity_index * component_size),
+                    source
+                        .column_ptr(source_component_index)
+                        .add(source_entity_index * component_size),
+                    target
+                        .column_ptr(target_component_index)
+                        .add(target_entity_index * component_size),
                     component_size,
                 );
             }
@@ -807,13 +801,13 @@ impl World {
                 &plan.copy_spans,
             );
 
-            let component_offset = plan
-                .target_component_offset
+            let target_component_index = plan
+                .target_component_index
                 .expect("add transition plans must include the inserted component offset");
             unsafe {
-                let ptr = target_chunk.data_ptr().add(
-                    component_offset + target_location.entity_index * std::mem::size_of::<T>(),
-                );
+                let ptr = target_chunk
+                    .column_ptr(target_component_index)
+                    .add(target_location.entity_index * std::mem::size_of::<T>());
                 std::ptr::write(ptr as *mut T, component);
             }
         }
@@ -1003,13 +997,13 @@ impl World {
                 &plan.copy_spans,
             );
 
-            let component_offset = plan
-                .target_component_offset
+            let target_component_index = plan
+                .target_component_index
                 .expect("add transition plans must include the inserted component offset");
             let ptr = unsafe {
                 target_chunk
-                    .data_ptr()
-                    .add(component_offset + target_location.entity_index * component.size)
+                    .column_ptr(target_component_index)
+                    .add(target_location.entity_index * component.size)
             };
             value.write(ptr);
         }
@@ -1293,6 +1287,46 @@ mod tests {
         actual.sort_by(|(left, _), (right, _)| left.x.total_cmp(&right.x));
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn insert_preserves_components_when_source_chunk_uses_large_layout() {
+        let mut world = World::new();
+        let mut migrated = None;
+
+        for i in 0..4097 {
+            let entity = world.spawn((
+                Position {
+                    x: i as f32,
+                    y: i as f32 + 0.5,
+                },
+                Velocity {
+                    x: i as f32 * 2.0,
+                    y: i as f32 * 3.0,
+                },
+            ));
+            if i == 4096 {
+                migrated = Some(entity);
+            }
+        }
+
+        let entity = migrated.unwrap();
+        assert!(world.insert(entity, Health(7.0)));
+        assert_eq!(
+            world.get::<Position>(entity),
+            Some(&Position {
+                x: 4096.0,
+                y: 4096.5
+            })
+        );
+        assert_eq!(
+            world.get::<Velocity>(entity),
+            Some(&Velocity {
+                x: 8192.0,
+                y: 12288.0
+            })
+        );
+        assert_eq!(world.get::<Health>(entity), Some(&Health(7.0)));
     }
 
     #[test]
@@ -1916,7 +1950,7 @@ mod tests {
     impl Drop for HighAlignDroppable {
         fn drop(&mut self) {
             let address = self as *const Self as usize;
-            if address % std::mem::align_of::<Self>() != 0 {
+            if !address.is_multiple_of(std::mem::align_of::<Self>()) {
                 self.misaligned_count.fetch_add(1, Ordering::Relaxed);
             }
             self.drop_count.fetch_add(1, Ordering::Relaxed);

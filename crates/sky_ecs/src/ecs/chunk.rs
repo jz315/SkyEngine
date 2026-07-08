@@ -6,9 +6,11 @@ use std::cmp::Ordering;
 use std::mem;
 use std::ptr::{self, NonNull};
 
-pub(crate) const CHUNK_SIZE: usize = 512 * 1024;
+pub(crate) const SMALL_CHUNK_SIZE: usize = 16 * 1024;
+pub(crate) const LARGE_CHUNK_SIZE: usize = 512 * 1024;
+pub(crate) const CHUNK_SIZE: usize = LARGE_CHUNK_SIZE;
 const BACKING_POOL_BUDGET_BYTES: usize = 4 * 1024 * 1024;
-const ZST_CHUNK_ENTITY_CAPACITY: usize = CHUNK_SIZE;
+const SMALL_CHUNKS_BEFORE_LARGE: usize = 2;
 
 thread_local! {
     static CHUNK_BLOCK_POOL: RefCell<ChunkBlockPool> =
@@ -26,8 +28,8 @@ struct ChunkBlock {
 }
 
 impl ChunkBlock {
-    fn fresh(alignment: usize) -> Self {
-        let alloc_layout = Layout::from_size_align(CHUNK_SIZE, alignment.max(1)).unwrap();
+    fn fresh(size: usize, alignment: usize) -> Self {
+        let alloc_layout = Layout::from_size_align(size, alignment.max(1)).unwrap();
         let data = unsafe {
             let raw = alloc_zeroed(alloc_layout);
             NonNull::new(raw).unwrap_or_else(|| handle_alloc_error(alloc_layout))
@@ -38,7 +40,12 @@ impl ChunkBlock {
 
     #[inline(always)]
     fn retained_size(&self) -> usize {
-        CHUNK_SIZE
+        self.alloc_layout.size()
+    }
+
+    #[inline(always)]
+    fn size(&self) -> usize {
+        self.alloc_layout.size()
     }
 
     #[inline(always)]
@@ -76,6 +83,7 @@ struct ChunkBlockPool {
 
 #[derive(Clone)]
 pub(crate) struct ChunkLayout {
+    chunk_size: usize,
     max_entity_count: usize,
     column_offsets: SmallVec<[usize; MAX_COMPONENTS]>,
 }
@@ -84,6 +92,7 @@ impl ChunkLayout {
     fn compute_column_offsets(
         archetype: Archetype,
         entity_capacity: usize,
+        chunk_size: usize,
     ) -> Option<SmallVec<[usize; MAX_COMPONENTS]>> {
         let mut offsets = SmallVec::with_capacity(archetype.components.len());
         let mut cursor = 0usize;
@@ -93,7 +102,7 @@ impl ChunkLayout {
 
             let bytes = component.size.checked_mul(entity_capacity)?;
             let end = cursor.checked_add(bytes)?;
-            if end > CHUNK_SIZE {
+            if end > chunk_size {
                 return None;
             }
 
@@ -104,7 +113,7 @@ impl ChunkLayout {
         Some(offsets)
     }
 
-    fn for_archetype(archetype: Archetype) -> Self {
+    fn try_for_archetype(archetype: Archetype, chunk_size: usize) -> Option<Self> {
         let component_bytes: usize = archetype
             .components
             .iter()
@@ -112,32 +121,41 @@ impl ChunkLayout {
             .sum();
 
         if component_bytes == 0 {
-            let column_offsets = Self::compute_column_offsets(archetype, ZST_CHUNK_ENTITY_CAPACITY)
+            let column_offsets = Self::compute_column_offsets(archetype, chunk_size, chunk_size)
                 .expect("zero-sized archetypes should always fit in a chunk");
-            return Self {
-                max_entity_count: ZST_CHUNK_ENTITY_CAPACITY,
+            return Some(Self {
+                chunk_size,
+                max_entity_count: chunk_size,
                 column_offsets,
-            };
+            });
         }
 
-        let mut entity_capacity = (CHUNK_SIZE / component_bytes).max(1);
+        let mut entity_capacity = (chunk_size / component_bytes).max(1);
 
         while entity_capacity > 0 {
-            if let Some(column_offsets) = Self::compute_column_offsets(archetype, entity_capacity) {
-                return Self {
+            if let Some(column_offsets) =
+                Self::compute_column_offsets(archetype, entity_capacity, chunk_size)
+            {
+                return Some(Self {
+                    chunk_size,
                     max_entity_count: entity_capacity,
                     column_offsets,
-                };
+                });
             }
             entity_capacity -= 1;
         }
 
-        panic!("archetype is too large to fit in a chunk");
+        None
+    }
+
+    fn for_archetype(archetype: Archetype, chunk_size: usize) -> Self {
+        Self::try_for_archetype(archetype, chunk_size)
+            .unwrap_or_else(|| panic!("archetype is too large to fit in a {chunk_size}-byte chunk"))
     }
 
     #[inline(always)]
-    pub(crate) fn column_offset(&self, component_index: usize) -> usize {
-        self.column_offsets[component_index]
+    pub(crate) fn chunk_size(&self) -> usize {
+        self.chunk_size
     }
 }
 
@@ -149,10 +167,14 @@ impl ChunkBlockPool {
         tick
     }
 
-    fn acquire(&mut self, alignment: usize) -> Option<ChunkBlock> {
+    fn acquire(&mut self, size: usize, alignment: usize) -> Option<ChunkBlock> {
         let mut best: Option<(usize, usize)> = None;
 
         for (index, entry) in self.entries.iter().enumerate() {
+            if entry.block.size() != size {
+                continue;
+            }
+
             let entry_alignment = entry.block.alignment();
             if entry_alignment < alignment {
                 continue;
@@ -221,19 +243,19 @@ pub struct Chunk {
 }
 
 impl Chunk {
-    fn take_block(alignment: usize) -> ChunkBlock {
+    fn take_block(size: usize, alignment: usize) -> ChunkBlock {
         CHUNK_BLOCK_POOL
-            .with(|pool| pool.borrow_mut().acquire(alignment))
-            .unwrap_or_else(|| ChunkBlock::fresh(alignment))
+            .with(|pool| pool.borrow_mut().acquire(size, alignment))
+            .unwrap_or_else(|| ChunkBlock::fresh(size, alignment))
     }
 
     pub fn new(archetype: Archetype) -> Self {
-        let layout = ChunkLayout::for_archetype(archetype);
+        let layout = ChunkLayout::for_archetype(archetype, CHUNK_SIZE);
         Self::new_with_layout(archetype, &layout)
     }
 
     pub(crate) fn new_with_layout(archetype: Archetype, layout: &ChunkLayout) -> Self {
-        let block = Self::take_block(archetype.alignment.max(1));
+        let block = Self::take_block(layout.chunk_size(), archetype.alignment.max(1));
         let (data, alloc_layout) = block.into_raw_parts();
 
         Self {
@@ -253,6 +275,11 @@ impl Chunk {
 
     pub fn is_empty(&self) -> bool {
         self.entity_count == 0
+    }
+
+    #[inline(always)]
+    pub(crate) fn block_size(&self) -> usize {
+        self.alloc_layout.size()
     }
 
     /// Adds a logical entity slot without initializing component columns.
@@ -445,7 +472,8 @@ impl Drop for Chunk {
 
 pub struct Data {
     pub archetype: Archetype,
-    pub(crate) layout: ChunkLayout,
+    pub(crate) small_layout: ChunkLayout,
+    pub(crate) large_layout: ChunkLayout,
     pub chunks: Vec<Chunk>,
     /// Cached empty chunk to avoid pool round-trips on spawn/despawn churn.
     spare_chunk: Option<Chunk>,
@@ -459,19 +487,39 @@ pub struct ChunkEntityLocation {
 
 impl Data {
     pub fn new(archetype: Archetype) -> Self {
+        let large_layout = ChunkLayout::for_archetype(archetype, LARGE_CHUNK_SIZE);
+        let small_layout = ChunkLayout::try_for_archetype(archetype, SMALL_CHUNK_SIZE)
+            .unwrap_or_else(|| large_layout.clone());
         Self {
             archetype,
-            layout: ChunkLayout::for_archetype(archetype),
+            small_layout,
+            large_layout,
             chunks: Vec::new(),
             spare_chunk: None,
         }
     }
 
+    fn next_layout(&self) -> &ChunkLayout {
+        if self.small_layout.chunk_size() == self.large_layout.chunk_size()
+            || self.chunks.len() >= SMALL_CHUNKS_BEFORE_LARGE
+        {
+            &self.large_layout
+        } else {
+            &self.small_layout
+        }
+    }
+
     fn add_chunk(&mut self) {
-        let chunk = self
+        let layout = self.next_layout();
+        let chunk = if self
             .spare_chunk
-            .take()
-            .unwrap_or_else(|| Chunk::new_with_layout(self.archetype, &self.layout));
+            .as_ref()
+            .is_some_and(|chunk| chunk.block_size() == layout.chunk_size())
+        {
+            self.spare_chunk.take().unwrap()
+        } else {
+            Chunk::new_with_layout(self.archetype, layout)
+        };
         self.chunks.push(chunk);
     }
 
@@ -613,8 +661,9 @@ impl Data {
         self.chunks[last_chunk_index].remove_last_entity();
         if self.chunks.last().is_some_and(Chunk::is_empty) {
             let empty = self.chunks.pop().unwrap();
-            // Cache one spare chunk; drop extras back to the pool.
-            if self.spare_chunk.is_none() {
+            // Cache one small spare chunk; large empty chunks go back to the
+            // shared pool to avoid per-archetype 512 KiB retention.
+            if self.spare_chunk.is_none() && empty.block_size() <= SMALL_CHUNK_SIZE {
                 self.spare_chunk = Some(empty);
             }
         }
@@ -705,7 +754,9 @@ impl Data {
 
 #[cfg(test)]
 mod tests {
-    use super::{Chunk, BACKING_POOL_BUDGET_BYTES, CHUNK_BLOCK_POOL};
+    use super::{
+        Chunk, BACKING_POOL_BUDGET_BYTES, CHUNK_BLOCK_POOL, LARGE_CHUNK_SIZE, SMALL_CHUNK_SIZE,
+    };
     use crate::ecs::{create_archetype, register_component_type};
 
     #[repr(align(16))]
@@ -849,21 +900,30 @@ mod tests {
 
         let archetype = create_archetype().add_rust_component::<Huge>().build();
         let mut data = super::Data::new(archetype);
-        assert_eq!(data.layout.max_entity_count, 32);
+        assert_eq!(data.small_layout.max_entity_count, 1);
+        assert_eq!(data.large_layout.max_entity_count, 32);
 
         let entities: Vec<_> = (0..40).map(test_entity).collect();
         let locations = data.add_entities_batch(&entities);
 
         assert_eq!(locations.len(), entities.len());
         assert_eq!(locations[0].chunk_index, 0);
-        assert_eq!(locations[31].chunk_index, 0);
-        assert_eq!(locations[31].entity_index, 31);
-        assert_eq!(locations[32].chunk_index, 1);
-        assert_eq!(locations[32].entity_index, 0);
-        assert_eq!(data.chunks[0].entity_count, 32);
-        assert_eq!(data.chunks[1].entity_count, 8);
+        assert_eq!(locations[1].chunk_index, 1);
+        assert_eq!(locations[2].chunk_index, 2);
+        assert_eq!(locations[2].entity_index, 0);
+        assert_eq!(locations[33].chunk_index, 2);
+        assert_eq!(locations[33].entity_index, 31);
+        assert_eq!(locations[34].chunk_index, 3);
+        assert_eq!(locations[34].entity_index, 0);
+        assert_eq!(data.chunks[0].block_size(), SMALL_CHUNK_SIZE);
+        assert_eq!(data.chunks[1].block_size(), SMALL_CHUNK_SIZE);
+        assert_eq!(data.chunks[2].block_size(), LARGE_CHUNK_SIZE);
+        assert_eq!(data.chunks[0].entity_count, 1);
+        assert_eq!(data.chunks[1].entity_count, 1);
+        assert_eq!(data.chunks[2].entity_count, 32);
+        assert_eq!(data.chunks[3].entity_count, 6);
         assert_eq!(data.chunks[0].entity_id(0), Some(entities[0]));
-        assert_eq!(data.chunks[1].entity_id(7), Some(entities[39]));
+        assert_eq!(data.chunks[3].entity_id(5), Some(entities[39]));
     }
 
     #[test]
@@ -877,12 +937,13 @@ mod tests {
 
         let moved = data.remove_entities_batch_desc(&[locations[38], locations[5]]);
 
-        assert_eq!(data.chunks.len(), 2);
-        assert_eq!(data.chunks[0].entity_count, 32);
-        assert_eq!(data.chunks[1].entity_count, 6);
-        assert_eq!(data.chunks[0].entity_id(5), Some(entities[39]));
+        assert_eq!(data.chunks.len(), 4);
+        assert_eq!(data.chunks[0].entity_count, 1);
+        assert_eq!(data.chunks[2].entity_count, 32);
+        assert_eq!(data.chunks[3].entity_count, 4);
+        assert_eq!(data.chunks[2].entity_id(3), Some(entities[39]));
         assert!(moved.iter().any(|(entity, location)| {
-            *entity == entities[39] && location.chunk_index == 0 && location.entity_index == 5
+            *entity == entities[39] && location.chunk_index == 2 && location.entity_index == 3
         }));
     }
 
