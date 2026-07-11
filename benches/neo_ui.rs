@@ -72,7 +72,7 @@ fn render_row(ui: &mut sky_engine::ui::neo::Ui, index: usize, height: f32) {
         .content(|ui| {
             ui.rect(format!("{id}.bg"))
                 .size(Size::fill(), height)
-                .color(if index % 2 == 0 {
+                .color(if index.is_multiple_of(2) {
                     Color::new(0.10, 0.12, 0.15, 1.0)
                 } else {
                     Color::new(0.12, 0.14, 0.18, 1.0)
@@ -166,8 +166,10 @@ fn compose_common_controls(runtime: &mut Runtime) {
 }
 
 fn control_center_state(page: model::Page) -> State<model::AppModel> {
-    let mut model = model::AppModel::default();
-    model.page = page;
+    let model = model::AppModel {
+        page,
+        ..Default::default()
+    };
     State::new(model)
 }
 
@@ -392,7 +394,7 @@ fn bench_neo_ui_motion(c: &mut Criterion) {
         compose_motion_scene(&mut runtime, expanded, 0.0);
 
         b.iter(|| {
-            if frame % 12 == 0 {
+            if frame.is_multiple_of(12) {
                 expanded = !expanded;
             }
             frame = frame.wrapping_add(1);

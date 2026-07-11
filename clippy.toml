@@ -1,0 +1,4 @@
+# Engine orchestration functions often pass explicit resource sets. Keep the
+# lint useful for accidental growth while allowing the established context
+# boundaries without scattering suppressions across every subsystem.
+too-many-arguments-threshold = 12
