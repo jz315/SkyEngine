@@ -556,7 +556,7 @@ impl DdgiRuntime {
                 self.frame_index,
                 ddgi.rays_per_probe.max(1),
                 probes_per_frame,
-                ddgi.bounces.max(1).min(4) | (debug_mode << 16),
+                ddgi.bounces.clamp(1, 4) | (debug_mode << 16),
             ],
             ambient: scene.ambient_color.to_array(),
         };

@@ -99,7 +99,7 @@ impl RenderPass for CountingFinalizePass {
             setup.read(input.handle());
             setup.write_color(0, sink);
         });
-        let _ = ctx.state().set_current_color(sink, input.format());
+        ctx.state().set_current_color(sink, input.format());
     }
 
     fn execute(

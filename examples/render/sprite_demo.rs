@@ -40,38 +40,35 @@ impl AppState for SpriteDemo {
         let dt = ctx.dt;
         let view_size = ctx.logical_view_size();
 
-        let mut query = ctx.world.query::<(
+        let mut query = ctx.world.query_mut::<(
             &mut Transform,
             &mut SpriteRenderer,
             &Velocity,
             &Spin,
             &mut Hue,
         )>();
-        query.for_each(
-            &mut *ctx.world,
-            |(transform, sprite, velocity, spin, hue)| {
-                transform.position[0] += velocity.x * dt;
-                transform.position[1] += velocity.y * dt;
-                transform.rotate_z(spin.0 * dt);
-                hue.0 = (hue.0 + 20.0 * dt) % 360.0;
-                sprite.color = Color::hsl(hue.0, 0.8, 0.6);
+        query.for_each(|(transform, sprite, velocity, spin, hue)| {
+            transform.position[0] += velocity.x * dt;
+            transform.position[1] += velocity.y * dt;
+            transform.rotate_z(spin.0 * dt);
+            hue.0 = (hue.0 + 20.0 * dt) % 360.0;
+            sprite.color = Color::hsl(hue.0, 0.8, 0.6);
 
-                let hw = view_size.width * 0.5 + sprite.width;
-                let hh = view_size.height * 0.5 + sprite.height;
-                if transform.position[0] > hw {
-                    transform.position[0] = -hw;
-                }
-                if transform.position[0] < -hw {
-                    transform.position[0] = hw;
-                }
-                if transform.position[1] > hh {
-                    transform.position[1] = -hh;
-                }
-                if transform.position[1] < -hh {
-                    transform.position[1] = hh;
-                }
-            },
-        );
+            let hw = view_size.width * 0.5 + sprite.width;
+            let hh = view_size.height * 0.5 + sprite.height;
+            if transform.position[0] > hw {
+                transform.position[0] = -hw;
+            }
+            if transform.position[0] < -hw {
+                transform.position[0] = hw;
+            }
+            if transform.position[1] > hh {
+                transform.position[1] = -hh;
+            }
+            if transform.position[1] < -hh {
+                transform.position[1] = hh;
+            }
+        });
 
         ctx.render();
 
@@ -82,7 +79,7 @@ impl AppState for SpriteDemo {
             self.fps_smooth * 0.95 + fps_instant * 0.05
         };
         self.frame_count += 1;
-        if self.frame_count % 30 == 0 {
+        if self.frame_count.is_multiple_of(30) {
             let stats = ctx.render_stats();
             ctx.set_title(&format!(
                 "SkyEngine — ECS Sprite Demo | {:.0} FPS | {} sprites",

@@ -186,7 +186,7 @@ impl Live2DModel {
             if ptr.is_null() || count == 0 {
                 return &[];
             }
-            std::slice::from_raw_parts(ptr as *const u16, count)
+            std::slice::from_raw_parts(ptr, count)
         }
     }
 

@@ -14,7 +14,7 @@ pub fn compile_yarn_source(
     source: &str,
 ) -> Result<YarnCompileSummary, VnCompileError> {
     let source_id = source_id.into();
-    let compiler_source = source.trim_start_matches(|ch| matches!(ch, '\u{feff}' | '\r' | '\n'));
+    let compiler_source = source.trim_start_matches(['\u{feff}', '\r', '\n']);
     let file = YarnFile {
         file_name: source_id,
         source: compiler_source.to_owned(),

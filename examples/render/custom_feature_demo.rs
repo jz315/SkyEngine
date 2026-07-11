@@ -40,8 +40,8 @@ impl AppState for CustomFeatureDemo {
         let view_size = ctx.logical_view_size();
         let mut query = ctx
             .world
-            .query::<(&mut Transform, &SpriteRenderer, &Velocity)>();
-        query.for_each(&mut *ctx.world, |(transform, sprite, velocity)| {
+            .query_mut::<(&mut Transform, &SpriteRenderer, &Velocity)>();
+        query.for_each(|(transform, sprite, velocity)| {
             transform.position[0] += velocity.x * dt;
             transform.position[1] += velocity.y * dt;
             transform.rotate_z(0.35 * dt);
@@ -71,7 +71,7 @@ impl AppState for CustomFeatureDemo {
             self.fps_smooth * 0.92 + fps_instant * 0.08
         };
         self.frame_count += 1;
-        if self.frame_count % 30 == 0 {
+        if self.frame_count.is_multiple_of(30) {
             let stats = ctx.render_stats();
             ctx.set_title(&format!(
                 "SkyEngine — Custom Feature Demo | {:.0} FPS | {} draws | {} sprites",

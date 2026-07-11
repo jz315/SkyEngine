@@ -1,6 +1,8 @@
 use std::marker::PhantomData;
 
-use crate::math::{Mat4, Vec4};
+use crate::math::Mat4;
+#[cfg(test)]
+use crate::math::Vec4;
 
 /// Live2D model-local logical coordinates before view/projection transforms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

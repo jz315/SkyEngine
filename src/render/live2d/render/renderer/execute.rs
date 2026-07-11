@@ -211,7 +211,7 @@ impl Live2DRenderer {
                 &[draw.uniform_offset],
             );
             render_pass.set_bind_group(1, &bind_group, &[]);
-            FullscreenPass::draw(&mut *render_pass);
+            FullscreenPass::draw(&mut render_pass);
 
             needs_clear = false;
             drawable_cursor += 1;
@@ -297,7 +297,7 @@ impl Live2DRenderer {
         render_pass.set_pipeline(&pipeline);
         render_pass.set_bind_group(0, self.blit_uniforms.bind_group(), &[uniform_offset]);
         render_pass.set_bind_group(1, &bind_group, &[]);
-        FullscreenPass::draw(&mut *render_pass);
+        FullscreenPass::draw(&mut render_pass);
     }
 
     pub(super) fn blit_root_target_to_target(
@@ -339,7 +339,7 @@ impl Live2DRenderer {
         render_pass.set_pipeline(&pipeline);
         render_pass.set_bind_group(0, self.blit_uniforms.bind_group(), &[uniform_offset]);
         render_pass.set_bind_group(1, &bind_group, &[]);
-        FullscreenPass::draw(&mut *render_pass);
+        FullscreenPass::draw(&mut render_pass);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────

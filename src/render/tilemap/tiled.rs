@@ -390,7 +390,6 @@ impl TiledImport {
         let mut layers = Vec::new();
         let mut object_layers = Vec::new();
         let mut source_order = 0i32;
-        let map_pixel_height = raw.height as f32 * raw.tileheight as f32;
         collect_tile_layers(
             &raw.layers,
             LayerContext::default(),
@@ -398,7 +397,6 @@ impl TiledImport {
             &mut layers,
             &mut object_layers,
             base_dir,
-            map_pixel_height,
         )?;
 
         Self::from_parts(ParsedMap {
@@ -625,7 +623,6 @@ fn collect_tile_layers(
     out: &mut Vec<ParsedLayer>,
     object_layers: &mut Vec<ParsedObjectLayer>,
     base_dir: &Path,
-    map_pixel_height: f32,
 ) -> Result<(), TiledImportError> {
     for raw in raw_layers {
         let child_context = LayerContext {
@@ -682,7 +679,6 @@ fn collect_tile_layers(
                     out,
                     object_layers,
                     base_dir,
-                    map_pixel_height,
                 )?;
             }
             _ => {

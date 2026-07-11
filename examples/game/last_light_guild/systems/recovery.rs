@@ -21,8 +21,10 @@ pub fn recovery_system(world: &mut World) {
     };
 
     let mut healed = medicine_used;
-    let mut adventurers = world.query_filtered::<&mut Condition, With<Adventurer>>();
-    adventurers.for_each(&mut *world, |condition| {
+    let mut adventurers = world
+        .query_mut::<&mut Condition>()
+        .filter::<With<Adventurer>>();
+    adventurers.for_each(|condition| {
         if fed {
             condition.fatigue -= 2;
             condition.stress -= 1;
@@ -51,8 +53,8 @@ pub fn recovery_system(world: &mut World) {
 
 fn count_adventurers(world: &World) -> i32 {
     let mut count = 0;
-    let mut query = world.query_filtered::<&Adventurer, With<Adventurer>>();
-    query.for_each(world, |_| {
+    let query = world.query::<&Adventurer>().filter::<With<Adventurer>>();
+    query.for_each(|_| {
         count += 1;
     });
     count
@@ -60,8 +62,8 @@ fn count_adventurers(world: &World) -> i32 {
 
 fn count_wounded(world: &World) -> i32 {
     let mut count = 0;
-    let mut query = world.query_filtered::<&Condition, With<Adventurer>>();
-    query.for_each(world, |condition| {
+    let query = world.query::<&Condition>().filter::<With<Adventurer>>();
+    query.for_each(|condition| {
         if condition.health < 10 {
             count += 1;
         }

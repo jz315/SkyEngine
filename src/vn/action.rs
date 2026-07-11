@@ -41,21 +41,10 @@ impl VnInputState {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub struct VnPlaybackState {
     pub auto_mode: bool,
     pub skip_mode: bool,
     pub ui_hidden: bool,
     pub selected_choice: usize,
-}
-
-impl Default for VnPlaybackState {
-    fn default() -> Self {
-        Self {
-            auto_mode: false,
-            skip_mode: false,
-            ui_hidden: false,
-            selected_choice: 0,
-        }
-    }
 }

@@ -148,7 +148,7 @@ fn sound_section(
                 .content(|ui| {
                     ui.text("settings.sound.scale")
                         .size(body_w, 18.0)
-                        .text(&locale::ui_scale_text(
+                        .text(locale::ui_scale_text(
                             model.locale,
                             (model.ui_scale * 100.0).round() as u32,
                         ))
@@ -164,7 +164,7 @@ fn sound_section(
 
                     ui.text("settings.sound.volume")
                         .size(body_w, 18.0)
-                        .text(&locale::volume_text(
+                        .text(locale::volume_text(
                             model.locale,
                             (model.volume * 100.0).round() as u32,
                         ))

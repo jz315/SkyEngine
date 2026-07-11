@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+#[cfg(test)]
+use crate::ecs::Update;
 use crate::ecs::World;
 use crate::vn::action::VnAction;
 use crate::vn::loader::VnLoadRequest;
@@ -545,8 +547,10 @@ mod tests {
     use crate::vn::{VnLoaderStatus, VnPlugin, VnResource};
 
     fn insert_vn_runtime(world: &mut World, runtime: VnRuntime) {
-        let mut vn = VnResource::default();
-        vn.runtime = Some(runtime);
+        let vn = VnResource {
+            runtime: Some(runtime),
+            ..Default::default()
+        };
         world.insert_resource(vn);
     }
 
@@ -567,16 +571,18 @@ Hello. #line:start.1
         )
         .unwrap();
         let mut world = World::new();
-        let mut vn = VnResource::default();
-        vn.runtime = Some(VnRuntime::from_script(script, "Start").unwrap());
-        vn.system_config = VnSystemConfig {
-            reveal_chars_per_second: 10.0,
+        let vn = VnResource {
+            runtime: Some(VnRuntime::from_script(script, "Start").unwrap()),
+            system_config: VnSystemConfig {
+                reveal_chars_per_second: 10.0,
+                ..Default::default()
+            },
             ..Default::default()
         };
         world.insert_resource(vn);
-        world.group("vn/script").add(vn_script_system);
+        world.stage(Update).add_exclusive(vn_script_system);
 
-        world.tick_with_delta(0.1);
+        world.tick_with_delta(0.1).unwrap();
         let runtime = vn_resource(&world).runtime().unwrap();
         assert_eq!(runtime.status(), &VnStatus::Line);
         assert_eq!(runtime.dialogue().visible_text(), "H");
@@ -737,7 +743,7 @@ Hello. #line:start.1
             .load_script(script, "Start")
             .unwrap();
 
-        world.tick_with_delta(0.016);
+        world.tick_with_delta(0.016).unwrap();
 
         assert!(vn_resource(&world).runtime().is_some());
         assert_eq!(
@@ -776,7 +782,7 @@ Replacement. #line:start.1
             .load_script(replacement, "Missing");
         assert!(result.is_err());
 
-        world.tick_with_delta(0.016);
+        world.tick_with_delta(0.016).unwrap();
 
         let runtime = vn_resource(&world).runtime().unwrap();
         assert_eq!(
@@ -836,7 +842,7 @@ title: Start
             .load_script(script, "Start")
             .unwrap();
 
-        world.tick_with_delta(0.016);
+        world.tick_with_delta(0.016).unwrap();
 
         assert_eq!(
             vn_resource(&world).load_status(),
@@ -852,7 +858,7 @@ title: Start
         let assets = world.get_resource::<Assets>().unwrap().clone();
         for _ in 0..64 {
             assets.update().unwrap();
-            world.tick_with_delta(0.016);
+            world.tick_with_delta(0.016).unwrap();
             let textures = vn_resource(&world).sprite_textures();
             if textures.size("white.png").is_some()
                 && textures.size("alice.png").is_some()

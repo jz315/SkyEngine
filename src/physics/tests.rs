@@ -5,7 +5,7 @@ use crate::plugin::Plugin;
 use super::*;
 
 fn run_fixed(world: &mut World, dt: f32) {
-    world.tick_with_delta(dt);
+    world.tick_with_delta(dt).unwrap();
 }
 
 #[test]

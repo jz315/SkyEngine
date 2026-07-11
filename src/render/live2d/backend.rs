@@ -124,9 +124,7 @@ impl Live2DBackend {
         if self.active_only.is_some_and(|active| active != entry_index) {
             return None;
         }
-        let Some(entry) = self.entries.get_mut(entry_index) else {
-            return None;
-        };
+        let entry = self.entries.get_mut(entry_index)?;
         if !entry.visible {
             return None;
         }

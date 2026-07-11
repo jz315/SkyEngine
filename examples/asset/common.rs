@@ -91,7 +91,7 @@ pub fn wait_until_ready<T: Asset>(assets: &Assets, handle: &Handle<T>) -> Exampl
                     Some(error) => error.to_string(),
                     None => format!("asset {} failed without an error", handle.id()),
                 };
-                return Err(std::io::Error::new(std::io::ErrorKind::Other, message).into());
+                return Err(std::io::Error::other(message).into());
             }
             _ if Instant::now() >= deadline => {
                 let message = format!(

@@ -165,7 +165,7 @@ fn export_tmj_value(
             scene
                 .layers
                 .iter()
-                .map(|layer| export_layer(scene, layer, &palette_order))
+                .map(|layer| export_layer(scene, layer, palette_order))
                 .collect::<Result<Vec<_>, _>>()?,
         ),
     );

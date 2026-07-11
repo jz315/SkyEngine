@@ -192,7 +192,7 @@ impl SpriteBatch {
         &self.texture_bgl
     }
 
-    /// Set the active texture for subsequent [`draw`] calls.
+    /// Set the active texture for subsequent [`Self::draw`] calls.
     pub fn set_texture(&mut self, texture: &Texture) {
         let idx = self
             .frame_textures
@@ -262,7 +262,7 @@ impl SpriteBatch {
             let mut pass =
                 frame.begin_surface_pass("sprite_batch_pass", clear.map(|c| c.to_wgpu()));
             Self::execute(
-                &mut *pass,
+                &mut pass,
                 &self.draw_cmds,
                 &self.texture_bind_group_scratch,
                 &self.camera.bind_group,
@@ -302,7 +302,7 @@ impl SpriteBatch {
             let mut frame = ctx.frame();
             let mut pass = frame.begin_target_pass("sprite_batch_pass", target, load);
             Self::execute(
-                &mut *pass,
+                &mut pass,
                 &self.draw_cmds,
                 &self.texture_bind_group_scratch,
                 &self.camera.bind_group,

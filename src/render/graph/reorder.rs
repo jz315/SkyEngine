@@ -201,9 +201,7 @@ fn can_attract_safely(
     let target_pass = order[target_pos];
 
     // Check every pass between current_pos+1 and target_pos (exclusive).
-    for intermediate_pos in (current_pos + 1)..target_pos {
-        let intermediate_pass = order[intermediate_pos];
-
+    for &intermediate_pass in order.iter().take(target_pos).skip(current_pos + 1) {
         // target_pass cannot depend on intermediate (would violate order if moved before it).
         if has_path(target_pass, intermediate_pass, reverse_edges) {
             return false;
@@ -742,7 +740,7 @@ mod tests {
     fn jaccard_many_shared_few_unique() {
         // A shares 5 resources with B, each has 1 unique.
         // shared=5, A=6, B=6, union=7. affinity = 5/7 ≈ 0.714
-        let shared: Vec<ResourceRef> = (0..5).map(|i| tex(i)).collect();
+        let shared: Vec<ResourceRef> = (0..5).map(tex).collect();
         let passes = vec![
             make_pass(&shared, &[tex(100)]),
             make_pass(&shared, &[tex(101)]),

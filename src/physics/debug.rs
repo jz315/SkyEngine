@@ -1,6 +1,6 @@
 use std::f32::consts::{PI, TAU};
 
-use crate::ecs::{EntityId, System, World};
+use crate::ecs::{EntityId, ExclusiveSystem, PostUpdate, World};
 use crate::math::{Transform, Vec2};
 use crate::plugin::{Plugin, PluginResult};
 use crate::render::{Color, SortingLayer, SpriteRenderer};
@@ -154,7 +154,7 @@ impl PhysicsDebugDraw2D {
 
 struct PhysicsDebugDrawSystem;
 
-impl System for PhysicsDebugDrawSystem {
+impl ExclusiveSystem for PhysicsDebugDrawSystem {
     fn run(&mut self, world: &mut World) {
         sync_physics_debug_draw(world);
     }
@@ -207,7 +207,9 @@ fn install_physics_debug_plugin(world: &mut World, options: PhysicsDebugDrawOpti
     {
         return;
     }
-    world.group("physics_debug").add(PhysicsDebugDrawSystem);
+    world
+        .stage(PostUpdate)
+        .add_exclusive(PhysicsDebugDrawSystem);
     world.insert_resource(PhysicsDebugDrawInstalled2D);
 }
 
@@ -235,9 +237,9 @@ struct DebugSegment {
 }
 
 fn collect_debug_segments(world: &World, options: PhysicsDebugDrawOptions2D) -> Vec<DebugSegment> {
-    let mut query = world.query::<(&Transform, &RigidBody2D, &Collider2D)>();
+    let query = world.query::<(&Transform, &RigidBody2D, &Collider2D)>();
     let mut segments = Vec::new();
-    query.for_each(world, |(transform, body, collider)| {
+    query.for_each(|(transform, body, collider)| {
         let center = Vec2::new(transform.position.x(), transform.position.y())
             + rotate(collider.offset, transform.rotation_z());
         let rotation = transform.rotation_z() + collider.rotation;
@@ -482,8 +484,8 @@ mod tests {
         debug.sync(&mut world);
 
         assert_eq!(debug.segment_count(), 4);
-        let mut query = world.query::<&PhysicsDebugLine2D>();
-        assert_eq!(query.count(&world), 4);
+        let query = world.query::<&PhysicsDebugLine2D>();
+        assert_eq!(query.count(), 4);
     }
 
     #[test]

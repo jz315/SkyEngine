@@ -416,7 +416,7 @@ fn asset_events_include_backend_residency_context() -> Result<(), Box<dyn std::e
         dir.path(),
         vec![
             AssetManifestEntry {
-                asset_id: asset_id,
+                asset_id,
                 asset_type: "dummy".to_string(),
                 importer: "dummy".to_string(),
                 cooker: "dummy".to_string(),

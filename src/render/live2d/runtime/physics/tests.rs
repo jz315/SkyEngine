@@ -1,7 +1,7 @@
 use super::*;
 
 #[cfg(test)]
-mod tests {
+mod cases {
     use super::*;
 
     fn sample_model() -> crate::render::live2d::model::Live2DModel {

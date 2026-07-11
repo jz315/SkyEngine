@@ -7,7 +7,7 @@ use winit::window::Window;
 
 use crate::asset::{Assets, Handle, TextureAsset};
 use crate::diagnostics::Diagnostics;
-use crate::ecs::{Time, World};
+use crate::ecs::{ScheduleError, TickReport, Time, World};
 use crate::gpu::GpuContext;
 use crate::input::raw::Input;
 use crate::logging::LogStore;
@@ -73,9 +73,10 @@ impl<'a> FrameContext<'a> {
     ///
     /// This is useful when an app wants to run frame-local work before systems,
     /// such as updating UI interaction state before domain input systems drain
-    /// semantic actions.
-    pub fn tick(&mut self) {
-        self.world.tick_with_delta(self.dt);
+    /// semantic actions. A missing required resource is returned before any
+    /// schedule system runs or frame time advances.
+    pub fn tick(&mut self) -> Result<TickReport, ScheduleError> {
+        self.world.tick_with_delta(self.dt)
     }
 
     /// Execute the installed render pipeline.
@@ -461,15 +462,14 @@ impl<'a> FrameContext<'a> {
 
     /// Run an egui UI overlay.
     ///
-    /// The closure receives the raw [`egui::Context`] — write standard egui
-    /// code directly. The UI is rendered on top of the current surface
-    /// content at the end of the frame.
+    /// The closure receives egui's root [`egui::Ui`]. The UI is rendered on
+    /// top of the current surface content at the end of the frame.
     ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// ctx.egui(|egui_ctx| {
-    ///     egui::Window::new("Debug").show(egui_ctx, |ui| {
+    /// ctx.egui(|root_ui| {
+    ///     egui::Window::new("Debug").show(root_ui.ctx(), |ui| {
     ///         ui.label("hello");
     ///     });
     /// });
@@ -477,7 +477,7 @@ impl<'a> FrameContext<'a> {
     ///
     /// Requires `--features egui`.
     #[cfg(feature = "egui")]
-    pub fn egui(&mut self, ui_fn: impl FnMut(&egui::Context)) {
+    pub fn egui(&mut self, ui_fn: impl FnMut(&mut egui::Ui)) {
         self.egui
             .as_mut()
             .expect("FrameContext::egui is only available for the wgpu render backend")

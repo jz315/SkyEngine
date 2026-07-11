@@ -239,7 +239,7 @@ impl AppState for VnUiDemo {
         });
         self.apply_demo_actions(ctx);
 
-        ctx.tick();
+        ctx.tick().expect("manual ECS schedule tick failed");
         ctx.render();
         ctx.ui().render_overlays();
         self.screenshot.update(ctx);

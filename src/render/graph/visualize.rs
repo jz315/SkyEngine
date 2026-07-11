@@ -5,7 +5,7 @@ use std::fmt::Write;
 use super::*;
 
 /// Options for exporting a render graph as GraphViz DOT.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RenderGraphDotOptions {
     /// Include compile-time details such as execution index, dependency level,
     /// pass flags, resource lifetime, liveness, and external source/sink state.
@@ -13,15 +13,6 @@ pub struct RenderGraphDotOptions {
     /// Include alias group nodes and dashed links to their virtual texture
     /// members. Alias groups are only available after physical allocation.
     pub include_alias_groups: bool,
-}
-
-impl Default for RenderGraphDotOptions {
-    fn default() -> Self {
-        Self {
-            include_debug_details: false,
-            include_alias_groups: false,
-        }
-    }
 }
 
 impl RenderGraphDotOptions {
@@ -42,7 +33,7 @@ impl RenderGraphDotOptions {
 impl RenderGraph {
     /// Export the render graph as a GraphViz DOT string.
     ///
-    /// For accurate alive/culled state, call [`compile`] first.
+    /// For accurate alive/culled state, call [`Self::compile`] first.
     pub fn export_dot(&self) -> String {
         self.export_dot_with_options(RenderGraphDotOptions::compact())
     }

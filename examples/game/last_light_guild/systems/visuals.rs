@@ -7,8 +7,9 @@ use crate::palette;
 
 pub fn animate_adventurers(world: &mut World, dt: f32) {
     let mut query = world
-        .query_filtered::<(&Condition, &mut PixelVisual, &mut SpriteRenderer), With<Adventurer>>();
-    query.for_each(&mut *world, |(condition, visual, sprite)| {
+        .query_mut::<(&Condition, &mut PixelVisual, &mut SpriteRenderer)>()
+        .filter::<With<Adventurer>>();
+    query.for_each(|(condition, visual, sprite)| {
         visual.pulse += dt * (2.5 + condition.stress as f32 * 0.25);
         let blink = (visual.pulse.sin() * 0.5 + 0.5) * 0.12;
         sprite.color = if condition.health <= 5 {
@@ -20,9 +21,9 @@ pub fn animate_adventurers(world: &mut World, dt: f32) {
         };
     });
 
-    let mut pips = world.query_filtered::<&Follow, With<StatusPip>>();
+    let pips = world.query::<&Follow>().filter::<With<StatusPip>>();
     let mut follows = Vec::new();
-    pips.for_each_with_entity(&mut *world, |entity, follow| {
+    pips.for_each_with_entity(|entity, follow| {
         follows.push((entity, *follow));
     });
 
@@ -47,8 +48,8 @@ pub fn animate_adventurers(world: &mut World, dt: f32) {
 }
 
 pub fn sync_transforms(world: &mut World, dt: f32) {
-    let mut query = world.query::<(&GridPos, &mut Transform)>();
-    query.for_each(world, |(grid, transform)| {
+    let mut query = world.query_mut::<(&GridPos, &mut Transform)>();
+    query.for_each(|(grid, transform)| {
         let next = grid_to_world(*grid, transform.position[2]);
         let dx = next.position[0] - transform.position[0];
         let dy = next.position[1] - transform.position[1];
@@ -82,8 +83,8 @@ pub fn entities_settled(world: &World, entities: &[EntityId]) -> bool {
 
 pub fn sync_followers(world: &mut World) {
     let mut followers = Vec::new();
-    let mut query = world.query::<&Follow>();
-    query.for_each_with_entity(&mut *world, |entity, follow| {
+    let query = world.query::<&Follow>();
+    query.for_each_with_entity(|entity, follow| {
         followers.push((entity, *follow));
     });
 

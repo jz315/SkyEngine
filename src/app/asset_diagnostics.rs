@@ -194,7 +194,7 @@ fn slowest_state_age(stats: &AssetStats) -> Option<(AssetState, Duration)> {
         let Some(age) = age else {
             continue;
         };
-        if slowest.map_or(true, |(_, current)| age > current) {
+        if slowest.is_none_or(|(_, current)| age > current) {
             slowest = Some((state, age));
         }
     }

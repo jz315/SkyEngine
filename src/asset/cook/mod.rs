@@ -106,9 +106,7 @@ pub fn cook_all_with_registry(
     manifest
         .assets
         .sort_by(|a, b| a.source_path.cmp(&b.source_path));
-    manifest
-        .provenance
-        .sort_by(|a, b| a.asset_id.to_string().cmp(&b.asset_id.to_string()));
+    manifest.provenance.sort_by_key(|a| a.asset_id.to_string());
     write_manifest(config, &manifest)?;
     Ok(manifest)
 }
@@ -156,9 +154,7 @@ pub fn cook_target_with_registry(
     manifest
         .assets
         .sort_by(|a, b| a.source_path.cmp(&b.source_path));
-    manifest
-        .provenance
-        .sort_by(|a, b| a.asset_id.to_string().cmp(&b.asset_id.to_string()));
+    manifest.provenance.sort_by_key(|a| a.asset_id.to_string());
     write_manifest(config, &manifest)?;
     Ok(manifest)
 }
@@ -754,7 +750,7 @@ fn canonical_cycle_key(cycle: &[AssetId]) -> String {
         }
         rotated.push(rotated[0].clone());
         let candidate = rotated.join(" -> ");
-        if best.as_ref().map_or(true, |current| candidate < *current) {
+        if best.as_ref().is_none_or(|current| candidate < *current) {
             best = Some(candidate);
         }
     }

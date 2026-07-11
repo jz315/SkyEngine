@@ -5,7 +5,7 @@ mod pressure;
 mod recovery;
 mod visuals;
 
-use sky_engine::ecs::{System, World};
+use sky_engine::ecs::{ExclusiveSystem, Update, World};
 use sky_engine::input::{Input, KeyCode};
 
 use crate::components::GridPos;
@@ -13,15 +13,17 @@ use crate::resources::{Calendar, GameFlow, GamePhase, GuildStock, HudState, SimC
 use crate::ui::{self, GuildAction, GuildUi};
 
 pub fn install_systems(world: &mut World) {
-    world.group("input").add(input_system);
-    world.group("simulation").add(DayBootstrapSystem);
-    world.group("simulation").add(phase_system);
-    world.group("presentation").add(presentation_system);
+    world
+        .stage(Update)
+        .add_exclusive(input_system)
+        .add_exclusive(DayBootstrapSystem)
+        .add_exclusive(phase_system)
+        .add_exclusive(presentation_system);
 }
 
 struct DayBootstrapSystem;
 
-impl System for DayBootstrapSystem {
+impl ExclusiveSystem for DayBootstrapSystem {
     fn init(&mut self, world: &mut World) {
         start_new_day(world);
     }

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use super::timing::AssetLoadTimingAccumulator;
@@ -182,16 +182,11 @@ impl AssetLoadQueue {
 
     pub(crate) fn drain_ready(&mut self) -> Vec<CompletedLoad> {
         let mut completions = Vec::new();
-        loop {
-            match self.load_rx.try_recv() {
-                Ok(completion) => {
-                    self.inflight_loads
-                        .remove(&(completion.id, completion.generation));
-                    self.record_timing(completion.timings, completion.result.is_ok());
-                    completions.push(completion);
-                }
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
-            }
+        while let Ok(completion) = self.load_rx.try_recv() {
+            self.inflight_loads
+                .remove(&(completion.id, completion.generation));
+            self.record_timing(completion.timings, completion.result.is_ok());
+            completions.push(completion);
         }
         completions
     }

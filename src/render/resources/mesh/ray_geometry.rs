@@ -49,9 +49,9 @@ impl RayAabb {
     }
 
     fn grow(&mut self, point: [f32; 3]) {
-        for axis in 0..3 {
-            self.min[axis] = self.min[axis].min(point[axis]);
-            self.max[axis] = self.max[axis].max(point[axis]);
+        for ((min, max), value) in self.min.iter_mut().zip(&mut self.max).zip(point) {
+            *min = min.min(value);
+            *max = max.max(value);
         }
     }
 

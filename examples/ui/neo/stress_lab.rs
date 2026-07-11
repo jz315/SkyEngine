@@ -302,8 +302,8 @@ impl NeoUiStressLab {
             return;
         };
         let debug = &mut self.debug;
-        ctx.egui(move |egui_ctx| {
-            debug.show(egui_ctx, &data);
+        ctx.egui(move |root_ui| {
+            debug.show(root_ui, &data);
         });
     }
 
@@ -2248,10 +2248,10 @@ impl Default for NeoEguiDebug {
 
 #[cfg(feature = "egui")]
 impl NeoEguiDebug {
-    fn show(&mut self, ctx: &sky_engine::app::egui::Context, data: &NeoDebugPanelData) {
+    fn show(&mut self, root_ui: &mut sky_engine::app::egui::Ui, data: &NeoDebugPanelData) {
         use sky_engine::app::egui;
 
-        let toggle_requested = ctx.input(|input| {
+        let toggle_requested = root_ui.input(|input| {
             input.key_pressed(egui::Key::F12)
                 || (input.modifiers.ctrl && input.key_pressed(egui::Key::D))
         });
@@ -2263,7 +2263,7 @@ impl NeoEguiDebug {
             egui::Area::new(egui::Id::new("neo_debug_toggle"))
                 .order(egui::Order::Foreground)
                 .fixed_pos([12.0, 12.0])
-                .show(ctx, |ui| {
+                .show(root_ui.ctx(), |ui| {
                     if ui.button("Neo Debug").clicked() {
                         self.visible = true;
                     }
@@ -2275,7 +2275,7 @@ impl NeoEguiDebug {
             .default_pos([12.0, 12.0])
             .default_size([560.0, 680.0])
             .resizable(true)
-            .show(ctx, |ui| {
+            .show(root_ui.ctx(), |ui| {
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut self.visible, "visible");
                     if ui.button("dropdown").clicked() {
@@ -2585,7 +2585,7 @@ struct DrawSummary {
 
 #[cfg(feature = "egui")]
 fn collect_element_summary(
-    element: &sky_engine::ui::neo::eui::Element,
+    element: &sky_engine::ui::neo::expert::Element,
     parent: Option<&str>,
     filter: &str,
     max_rows: usize,

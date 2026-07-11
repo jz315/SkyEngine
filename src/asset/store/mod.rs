@@ -4,6 +4,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+type InstalledAsset = Arc<dyn Any + Send + Sync>;
+type ErasedAssetInstallTask = Box<dyn AssetInstallTask<Output = InstalledAsset>>;
+
 use super::font::FontAsset;
 use super::install::AssetInstallTask;
 use super::lease::AssetDependencyLeases;
@@ -192,8 +195,7 @@ impl AssetStore {
     pub(crate) fn take_record_install_task(
         &mut self,
         id: AssetId,
-    ) -> Result<Option<Box<dyn AssetInstallTask<Output = Arc<dyn Any + Send + Sync>>>>, AssetError>
-    {
+    ) -> Result<Option<ErasedAssetInstallTask>, AssetError> {
         self.records
             .get_mut(&id)
             .ok_or_else(|| AssetError::InvalidState {
@@ -229,7 +231,7 @@ impl AssetStore {
     pub(crate) fn defer_record_install(
         &mut self,
         id: AssetId,
-        task: Box<dyn AssetInstallTask<Output = Arc<dyn Any + Send + Sync>>>,
+        task: ErasedAssetInstallTask,
     ) -> Result<(), AssetError> {
         let record = self
             .records
@@ -508,9 +510,8 @@ impl AssetStore {
                 return AssetDependencyEvaluation::MissingManifest { dependency };
             };
 
-            if !self.records.contains_key(&dependency) {
-                self.records
-                    .insert(dependency, AssetRecord::new(dependency, asset_type));
+            if let std::collections::hash_map::Entry::Vacant(e) = self.records.entry(dependency) {
+                e.insert(AssetRecord::new(dependency, asset_type));
                 let record = self
                     .records
                     .get_mut(&dependency)
@@ -625,7 +626,7 @@ pub(crate) struct AssetRecord {
     pub(crate) held_dependencies: AssetDependencyLeases,
     pub(crate) loaded: Option<Arc<dyn Any + Send + Sync>>,
     pub(crate) installed: Option<Arc<dyn Any + Send + Sync>>,
-    pub(crate) install_task: Option<Box<dyn AssetInstallTask<Output = Arc<dyn Any + Send + Sync>>>>,
+    pub(crate) install_task: Option<ErasedAssetInstallTask>,
     pub(crate) reload_backup: Option<AssetReloadBackup>,
     pub(crate) error: Option<AssetError>,
     pub(crate) failure_phase: Option<AssetFailurePhase>,
@@ -846,9 +847,7 @@ impl AssetRecord {
         self.set_state(AssetState::Unloaded);
     }
 
-    pub(crate) fn take_install_task(
-        &mut self,
-    ) -> Option<Box<dyn AssetInstallTask<Output = Arc<dyn Any + Send + Sync>>>> {
+    pub(crate) fn take_install_task(&mut self) -> Option<ErasedAssetInstallTask> {
         self.install_task.take()
     }
 
@@ -883,10 +882,7 @@ impl AssetRecord {
         self.set_state(AssetState::Installed);
     }
 
-    pub(crate) fn defer_install(
-        &mut self,
-        task: Box<dyn AssetInstallTask<Output = Arc<dyn Any + Send + Sync>>>,
-    ) {
+    pub(crate) fn defer_install(&mut self, task: ErasedAssetInstallTask) {
         self.install_task = Some(task);
         self.set_state(AssetState::Installing);
     }

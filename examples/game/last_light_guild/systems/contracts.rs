@@ -1,4 +1,4 @@
-use sky_engine::ecs::{Commands, EntityId, With, World};
+use sky_engine::ecs::{CommandBuffer, EntityId, With, World};
 use sky_engine::render::{SortingLayer, SpriteRenderer};
 
 use crate::components::{
@@ -54,9 +54,10 @@ pub fn contract_board_system(world: &mut World) {
 
 pub fn contract_by_slot(world: &World, slot: usize) -> Option<ContractChoice> {
     let mut found = None;
-    let mut contracts =
-        world.query_filtered::<(&Name, &ContractSpec, &ContractSlot), With<ContractMarker>>();
-    contracts.for_each_with_entity(world, |entity, (name, spec, contract_slot)| {
+    let contracts = world
+        .query::<(&Name, &ContractSpec, &ContractSlot)>()
+        .filter::<With<ContractMarker>>();
+    contracts.for_each_with_entity(|entity, (name, spec, contract_slot)| {
         if contract_slot.0 == slot {
             found = Some(ContractChoice {
                 entity,
@@ -71,9 +72,10 @@ pub fn contract_by_slot(world: &World, slot: usize) -> Option<ContractChoice> {
 
 pub fn contract_choices(world: &World) -> Vec<ContractChoice> {
     let mut choices = Vec::new();
-    let mut contracts =
-        world.query_filtered::<(&Name, &ContractSpec, &ContractSlot), With<ContractMarker>>();
-    contracts.for_each_with_entity(world, |entity, (name, spec, slot)| {
+    let contracts = world
+        .query::<(&Name, &ContractSpec, &ContractSlot)>()
+        .filter::<With<ContractMarker>>();
+    contracts.for_each_with_entity(|entity, (name, spec, slot)| {
         choices.push(ContractChoice {
             entity,
             slot: slot.0,
@@ -90,9 +92,10 @@ pub fn sync_contract_visuals(world: &mut World) {
         .get_resource::<GameFlow>()
         .map(|flow| flow.selected_slot)
         .unwrap_or(0);
-    let mut query =
-        world.query_filtered::<(&ContractSlot, &ContractSpec, &mut SpriteRenderer), With<ContractMarker>>();
-    query.for_each(world, |(slot, spec, sprite)| {
+    let mut query = world
+        .query_mut::<(&ContractSlot, &ContractSpec, &mut SpriteRenderer)>()
+        .filter::<With<ContractMarker>>();
+    query.for_each(|(slot, spec, sprite)| {
         let selected = slot.0 == selected_slot;
         let color = spec.kind.color();
         sprite.color = if selected {
@@ -111,9 +114,11 @@ pub fn sync_contract_visuals(world: &mut World) {
 }
 
 fn clear_contracts(world: &mut World) {
-    let mut commands = Commands::new();
-    let mut contracts = world.query_filtered::<&ContractMarker, With<ContractMarker>>();
-    contracts.for_each_with_entity(&mut *world, |entity, _| {
+    let mut commands = CommandBuffer::new();
+    let contracts = world
+        .query::<&ContractMarker>()
+        .filter::<With<ContractMarker>>();
+    contracts.for_each_with_entity(|entity, _| {
         commands.despawn(entity);
     });
     commands.apply(world);

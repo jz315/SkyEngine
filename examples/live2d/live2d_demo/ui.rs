@@ -12,7 +12,7 @@ pub struct PendingUiActions {
 }
 
 pub fn draw_live2d_panel(
-    egui_ctx: &egui::Context,
+    root_ui: &mut egui::Ui,
     slots: &[ModelSlot],
     active: &mut usize,
     fps_display: f32,
@@ -23,7 +23,7 @@ pub fn draw_live2d_panel(
     egui::Panel::left("live2d_panel")
         .default_size(240.0)
         .resizable(true)
-        .show(egui_ctx, |ui| {
+        .show_inside(root_ui, |ui| {
             ui.heading("Live2D");
             ui.separator();
 

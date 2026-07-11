@@ -40,12 +40,14 @@ pub fn update_camera(world: &mut World) {
     let zoom_input = actions.action_value(ACTION_CAMERA_ZOOM);
     let dt = world.time.delta;
 
-    let mut query = world.query_filtered::<(
-        &mut Transform,
-        &mut Projection,
-        &mut BuilderCameraController,
-    ), With<BuilderCamera>>();
-    query.for_each(world, |(transform, projection, controller)| {
+    let mut query = world
+        .query_mut::<(
+            &mut Transform,
+            &mut Projection,
+            &mut BuilderCameraController,
+        )>()
+        .filter::<With<BuilderCamera>>();
+    query.for_each(|(transform, projection, controller)| {
         let pan_speed = controller.zoom * 0.75 * dt;
         transform.position[0] += pan[0] * pan_speed;
         transform.position[1] += pan[1] * pan_speed;
@@ -59,10 +61,11 @@ pub fn update_camera(world: &mut World) {
 }
 
 pub fn camera_frame(world: &World) -> Option<CameraFrame> {
-    let mut query =
-        world.query_filtered::<(&Transform, &BuilderCameraController), With<BuilderCamera>>();
+    let query = world
+        .query::<(&Transform, &BuilderCameraController)>()
+        .filter::<With<BuilderCamera>>();
     let mut frame = None;
-    query.for_each(world, |(transform, controller)| {
+    query.for_each(|(transform, controller)| {
         if frame.is_none() {
             frame = Some(CameraFrame {
                 position: Vec2::new(transform.position[0], transform.position[1]),

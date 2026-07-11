@@ -170,7 +170,7 @@ pub(crate) fn load_record_now_and_apply_or_fail(
     ) {
         Ok(()) => Ok(()),
         Err(load_failure) => {
-            let error = load_failure.error;
+            let error = *load_failure.error;
             failure::fail_record_and_request(
                 store,
                 events,

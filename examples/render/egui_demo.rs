@@ -48,8 +48,8 @@ impl AppState for EguiDemo {
         let slider_val = &mut self.slider_val;
 
         // egui overlay
-        ctx.egui(|egui_ctx| {
-            egui::CentralPanel::default().show(egui_ctx, |ui| {
+        ctx.egui(|root_ui| {
+            egui::CentralPanel::default().show_inside(root_ui, |ui| {
                 ui.heading("🚀 SkyEngine + egui");
                 ui.separator();
 

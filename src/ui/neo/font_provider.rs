@@ -8,22 +8,12 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::asset::{AssetId, Assets, FontAsset, Handle};
 
+#[derive(Default)]
 pub(crate) struct SkyNeoFontStore {
     handles: FxHashMap<FontRef, Handle<FontAsset>>,
     revisions: FxHashMap<FontRef, u64>,
     failed: FxHashSet<FontRef>,
     pending_frame: FxHashSet<FontRef>,
-}
-
-impl Default for SkyNeoFontStore {
-    fn default() -> Self {
-        Self {
-            handles: FxHashMap::default(),
-            revisions: FxHashMap::default(),
-            failed: FxHashSet::default(),
-            pending_frame: FxHashSet::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

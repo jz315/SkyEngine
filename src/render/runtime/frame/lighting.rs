@@ -8,8 +8,8 @@ pub(crate) fn collect_gpu_lights(
     transforms: &crate::render::view::ResolvedSceneTransforms,
 ) -> Vec<GpuLight> {
     let mut lights = Vec::new();
-    let mut point_lights = world.query::<(&Transform, &PointLight)>();
-    point_lights.for_each_with_entity(world, |entity, (transform, light)| {
+    let point_lights = world.query::<(&Transform, &PointLight)>();
+    point_lights.for_each_with_entity(|entity, (transform, light)| {
         if !light.visible {
             return;
         }
@@ -31,8 +31,8 @@ pub(crate) fn collect_gpu_lights(
             dir_shadow: [0.0, 0.0, 0.0, -1.0],
         });
     });
-    let mut spot_lights = world.query::<(&Transform, &SpotLight)>();
-    spot_lights.for_each_with_entity(world, |entity, (transform, light)| {
+    let spot_lights = world.query::<(&Transform, &SpotLight)>();
+    spot_lights.for_each_with_entity(|entity, (transform, light)| {
         if !light.visible {
             return;
         }
@@ -56,8 +56,8 @@ pub(crate) fn collect_gpu_lights(
             dir_shadow: [direction[0], direction[1], direction[2], -1.0],
         });
     });
-    let mut directional_lights = world.query::<&DirectionalLight>();
-    directional_lights.for_each(world, |light| {
+    let directional_lights = world.query::<&DirectionalLight>();
+    directional_lights.for_each(|light| {
         if !light.visible {
             return;
         }

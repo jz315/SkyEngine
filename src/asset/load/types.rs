@@ -57,13 +57,13 @@ pub(crate) struct AssetLoadTimingSample {
 }
 #[derive(Debug)]
 pub(crate) struct TimedAssetLoadError {
-    pub(crate) error: AssetError,
+    pub(crate) error: Box<AssetError>,
     pub(crate) timings: AssetLoadTimingSample,
 }
 impl From<AssetError> for TimedAssetLoadError {
     fn from(error: AssetError) -> Self {
         Self {
-            error,
+            error: Box::new(error),
             timings: AssetLoadTimingSample::default(),
         }
     }

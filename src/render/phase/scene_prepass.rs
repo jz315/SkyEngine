@@ -212,6 +212,10 @@ pub(crate) struct SceneMaterialPrepassContext<'ctx, 'pass> {
 
 impl<'ctx, 'pass> SceneMaterialPrepassContext<'ctx, 'pass> {
     #[inline]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "constructor mirrors the fixed material-prepass attachment contract"
+    )]
     pub(crate) fn new(
         device: &'ctx wgpu::Device,
         pass: &'ctx mut wgpu::RenderPass<'pass>,

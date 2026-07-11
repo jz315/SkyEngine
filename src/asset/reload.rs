@@ -82,9 +82,8 @@ impl AssetReloadController {
     }
 
     pub(crate) fn interval_scan_due(&self, config: &AssetConfig, now: Instant) -> bool {
-        !self
-            .last_auto_reload_check
-            .is_some_and(|last| now.saturating_duration_since(last) < config.auto_reload_interval)
+        self.last_auto_reload_check
+            .is_none_or(|last| now.saturating_duration_since(last) >= config.auto_reload_interval)
     }
 
     pub(crate) fn merge_pending_roots(&mut self, changed_roots: Vec<AssetId>, now: Instant) {
@@ -625,7 +624,7 @@ pub(crate) fn apply_reload_roots(
 }
 
 fn sort_asset_ids(ids: &mut [AssetId]) {
-    ids.sort_by(|left, right| left.to_string().cmp(&right.to_string()));
+    ids.sort_by_key(|left| left.to_string());
 }
 
 fn dedupe_sort_asset_ids(ids: &mut Vec<AssetId>) {

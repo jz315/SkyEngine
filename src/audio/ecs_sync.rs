@@ -15,8 +15,8 @@ impl AudioServer {
         self.set_listener_pose(listener_position, listener_rotation)?;
 
         let mut seen = HashSet::new();
-        let mut emitters = world.query::<(&Transform, &AudioEmitter2D)>();
-        emitters.for_each_with_entity(world, |entity, (transform, emitter)| {
+        let emitters = world.query::<(&Transform, &AudioEmitter2D)>();
+        emitters.for_each_with_entity(|entity, (transform, emitter)| {
             if !emitter.enabled || !emitter.autoplay {
                 let _ = self.stop_emitter_binding(entity);
                 return;
@@ -45,9 +45,9 @@ impl AudioServer {
 }
 
 fn find_listener_pose(world: &World) -> ([f32; 2], f32) {
-    let mut explicit = world.query::<(&AudioListener2D, &Transform)>();
+    let explicit = world.query::<(&AudioListener2D, &Transform)>();
     let mut result = None;
-    explicit.for_each(world, |(listener, transform)| {
+    explicit.for_each(|(listener, transform)| {
         if result.is_none() && listener.enabled {
             result = Some(([transform.x(), transform.y()], transform.rotation_z()));
         }
@@ -56,9 +56,9 @@ fn find_listener_pose(world: &World) -> ([f32; 2], f32) {
         return result;
     }
 
-    let mut camera = world.query::<(&MainCamera, &Transform)>();
+    let camera = world.query::<(&MainCamera, &Transform)>();
     let mut fallback = None;
-    camera.for_each(world, |(_, transform)| {
+    camera.for_each(|(_, transform)| {
         if fallback.is_none() {
             fallback = Some(([transform.x(), transform.y()], transform.rotation_z()));
         }
@@ -93,6 +93,9 @@ mod tests {
 
         let (position, rotation) = find_listener_pose(&world);
         assert_eq!(position, [3.0, 4.0]);
-        assert!((rotation - 0.75).abs() < f32::EPSILON);
+        assert!(
+            (rotation - 0.75).abs() <= 1.0e-6,
+            "expected 0.75 radians, got {rotation:?}"
+        );
     }
 }

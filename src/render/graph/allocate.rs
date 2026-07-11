@@ -50,22 +50,22 @@ impl RenderGraph {
             for &pass_idx in &self.order {
                 let pass = &self.passes[pass_idx];
                 if pass.reads.contains(&resource) || pass.writes.contains(&resource) {
-                    usage = usage | wgpu::BufferUsages::STORAGE;
+                    usage |= wgpu::BufferUsages::STORAGE;
                 }
 
                 for op in &pass.copy_ops {
                     match op {
                         CopyOp::BufferToBuffer { src, dst } => {
                             if *src == handle {
-                                usage = usage | wgpu::BufferUsages::COPY_SRC;
+                                usage |= wgpu::BufferUsages::COPY_SRC;
                             }
                             if *dst == handle {
-                                usage = usage | wgpu::BufferUsages::COPY_DST;
+                                usage |= wgpu::BufferUsages::COPY_DST;
                             }
                         }
                         CopyOp::BufferToTexture { src, .. } => {
                             if *src == handle {
-                                usage = usage | wgpu::BufferUsages::COPY_SRC;
+                                usage |= wgpu::BufferUsages::COPY_SRC;
                             }
                         }
                         CopyOp::TextureToTexture { .. } | CopyOp::UploadToTexture { .. } => {}
@@ -265,7 +265,11 @@ impl RenderGraph {
         }
 
         // ── Allocate non-aliased textures ───────────────────────────────
-        for tex_idx in 0..self.textures.len() {
+        for (tex_idx, &effective_usage) in effective_texture_usages
+            .iter()
+            .enumerate()
+            .take(self.textures.len())
+        {
             let (
                 desc_format,
                 desc_size,
@@ -319,7 +323,6 @@ impl RenderGraph {
             }
 
             let [w, h] = resolve_target_size(surface_size, desc_size);
-            let effective_usage = effective_texture_usages[tex_idx];
             let key = PoolKey {
                 format: desc_format,
                 usage: effective_usage,

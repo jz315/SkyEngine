@@ -30,7 +30,7 @@ use sky_engine::app::{
     App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, RunnerPlugin,
     SetupContext, WindowPlugin,
 };
-use sky_engine::ecs::World;
+use sky_engine::ecs::{Update, World};
 use sky_engine::render::{
     Color, RenderPipelineAsset, RenderSettings, SpriteFeature, TilemapFeature, TransparentPhase,
 };
@@ -72,27 +72,23 @@ impl AppState for MiniatureBuilder {
         });
 
         app_bridge::install_app_bridge(world);
-        world.group("camera").add(camera::update_camera);
         world
-            .group("input")
-            .add(selection::update_selection)
-            .add(selection::update_hover)
-            .add(board::collect_board_intents)
-            .add(app_bridge::request_exit_from_actions);
-        world.group("simulation").add(board::apply_board_intents);
-        world
-            .group("projection")
-            .add(projection::apply_board_deltas);
-        world
-            .group("presentation")
-            .add(preview::update_preview)
-            .add(title::update_window_title)
-            .add(screenshot::update_screenshot_probe);
+            .stage(Update)
+            .add_exclusive(camera::update_camera)
+            .add_exclusive(selection::update_selection)
+            .add_exclusive(selection::update_hover)
+            .add_exclusive(board::collect_board_intents)
+            .add_exclusive(app_bridge::request_exit_from_actions)
+            .add_exclusive(board::apply_board_intents)
+            .add_exclusive(projection::apply_board_deltas)
+            .add_exclusive(preview::update_preview)
+            .add_exclusive(title::update_window_title)
+            .add_exclusive(screenshot::update_screenshot_probe);
     }
 
     fn update(&mut self, ctx: &mut FrameContext<'_>) {
         app_bridge::sync_frame_state(ctx);
-        ctx.tick();
+        ctx.tick().expect("manual ECS schedule tick failed");
         if app_bridge::apply_app_requests(ctx) {
             return;
         }

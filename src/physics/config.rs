@@ -12,8 +12,8 @@ pub struct PhysicsConfig2D {
     pub gravity: Vec2,
     /// Fixed simulation step in seconds.
     ///
-    /// [`PhysicsPlugin`](crate::physics::PhysicsPlugin) registers a fixed `"physics"` system group using this
-    /// value. Reinstalling physics updates the group step.
+    /// [`PhysicsPlugin`](crate::physics::PhysicsPlugin) configures the
+    /// [`FixedUpdate`](crate::ecs::FixedUpdate) stage with this value.
     pub fixed_dt: f32,
     /// Conversion factor between render/world units and Rapier meters.
     ///

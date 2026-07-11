@@ -569,7 +569,7 @@ impl Texture {
         let mut data = vec![0u8; (size * size * 4) as usize];
         for y in 0..size {
             for x in 0..size {
-                let is_a = ((x / tile_size) + (y / tile_size)) % 2 == 0;
+                let is_a = ((x / tile_size) + (y / tile_size)).is_multiple_of(2);
                 let color = if is_a { color_a } else { color_b };
                 let i = ((y * size + x) * 4) as usize;
                 data[i..i + 4].copy_from_slice(&color);
@@ -588,7 +588,7 @@ impl Texture {
                 let dx = x as f32 + 0.5 - center;
                 let dy = y as f32 + 0.5 - center;
                 let dist = (dx * dx + dy * dy).sqrt();
-                let alpha = ((radius - dist).max(0.0).min(1.0) * 255.0) as u8;
+                let alpha = ((radius - dist).clamp(0.0, 1.0) * 255.0) as u8;
                 let i = ((y * size + x) * 4) as usize;
                 data[i] = 255;
                 data[i + 1] = 255;

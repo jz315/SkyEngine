@@ -1,7 +1,7 @@
 use super::*;
 
 #[cfg(test)]
-mod tests {
+mod cases {
     use super::*;
     use std::{cell::RefCell, rc::Rc};
 

@@ -1,3 +1,5 @@
+#[path = "runtime.rs"]
+mod engine_runtime;
 mod executor;
 mod frame;
 mod frame_coordinator;
@@ -5,7 +7,6 @@ mod history;
 mod outcome;
 mod pipeline_runtime;
 mod presentation;
-mod runtime;
 mod state;
 mod stats;
 mod temporal;
@@ -13,9 +14,9 @@ mod temporal;
 mod tests;
 mod view_collection;
 
+pub use engine_runtime::RenderRuntime;
 pub use history::{HistoryTexture, HistoryTextureRequest, HistoryTextureSize};
 pub use outcome::{FrameRenderOutcome, FrameSkipReason};
-pub use runtime::RenderRuntime;
 pub use stats::RenderTimingStats;
 
 pub(crate) use frame::PreviousModelMatrices;

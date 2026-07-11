@@ -2996,7 +2996,7 @@ fn icon(codepoint: u32) -> String {
 fn bing_api_text() -> String {
     #[cfg(not(feature = "ui-neo-net"))]
     {
-        return "Network text support requires the `ui-neo-net` feature.".to_string();
+        "Network text support requires the `ui-neo-net` feature.".to_string()
     }
 
     #[cfg(feature = "ui-neo-net")]

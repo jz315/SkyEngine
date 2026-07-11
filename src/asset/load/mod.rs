@@ -83,7 +83,7 @@ pub(crate) fn submit_record_load(
                 entry,
                 cooked_hash: None,
                 timings: failure.timings,
-                result: Err(failure.error),
+                result: Err(*failure.error),
             },
         }
     })
@@ -147,7 +147,10 @@ pub(crate) fn load_record_now(
         loaded_source.loaded,
         Some(loaded_source.content_hash),
     )
-    .map_err(|error| TimedAssetLoadError { error, timings })?;
+    .map_err(|error| TimedAssetLoadError {
+        error: Box::new(error),
+        timings,
+    })?;
     let dependency_update = store
         .finish_loaded_record(
             id,
@@ -157,7 +160,10 @@ pub(crate) fn load_record_now(
             prepared.content_hash,
         )
         .ok_or(AssetError::AssetNotFound { id })
-        .map_err(|error| TimedAssetLoadError { error, timings })?;
+        .map_err(|error| TimedAssetLoadError {
+            error: Box::new(error),
+            timings,
+        })?;
     Ok(LoadedRecordNow {
         dependency_update,
         timings,

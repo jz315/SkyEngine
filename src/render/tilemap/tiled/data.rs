@@ -141,7 +141,7 @@ fn decompress_gzip(bytes: &[u8], layer_name: &str) -> Result<Vec<u8>, TiledImpor
 }
 
 fn decode_little_endian_gids(bytes: &[u8], layer_name: &str) -> Result<Vec<u32>, TiledImportError> {
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return Err(TiledImportError::UnsupportedLayerData {
             layer: layer_name.to_string(),
             reason: "base64 tile data byte length must be divisible by 4",

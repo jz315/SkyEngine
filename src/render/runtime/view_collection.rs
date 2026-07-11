@@ -5,16 +5,18 @@ use crate::render::view::{
 };
 use rustc_hash::FxHashSet;
 
+type ViewQuery = (
+    &'static Transform,
+    &'static Camera,
+    Option<&'static Projection>,
+    Option<&'static CameraViewport>,
+    Option<&'static MainCamera>,
+);
+
 pub(crate) struct WorldViewCollector {
     transform_resolver: SceneTransformResolver,
     logged_missing_projection: FxHashSet<EntityId>,
-    view_query: PreparedQuery<(
-        &'static Transform,
-        &'static Camera,
-        Option<&'static Projection>,
-        Option<&'static CameraViewport>,
-        Option<&'static MainCamera>,
-    )>,
+    view_query: PreparedQuery<ViewQuery>,
 }
 
 impl WorldViewCollector {

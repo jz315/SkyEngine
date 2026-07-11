@@ -472,12 +472,11 @@ impl KajiyaRenderAssetCache {
             KajiyaBackendError::cache_io("create Kajiya cache dir", &self.cache_dir, error)
         })?;
 
-        let unique_images = packed
-            .maps
-            .iter()
-            .cloned()
-            .collect::<HashSet<::turbosloth::Lazy<::kajiya::asset::mesh::GpuImage::Proto>>>();
-        for image in unique_images {
+        let mut seen_images = HashSet::new();
+        for image in &packed.maps {
+            if !seen_images.insert(image.identity()) {
+                continue;
+            }
             let image_path = self
                 .cache_dir
                 .join(format!("{:8.8x}.image", image.identity()));
@@ -536,27 +535,25 @@ fn cached_key_references_event(
         return true;
     }
 
-    if event.asset_type.is_empty() || event.asset_type == StandardMaterialAsset::TYPE {
-        if key.materials.contains(&event.id)
+    if (event.asset_type.is_empty() || event.asset_type == StandardMaterialAsset::TYPE)
+        && (key.materials.contains(&event.id)
             || cached
                 .sources
                 .materials
                 .iter()
-                .any(|material| material.id == Some(event.id))
-        {
-            return true;
-        }
+                .any(|material| material.id == Some(event.id)))
+    {
+        return true;
     }
 
-    if event.asset_type.is_empty() || event.asset_type == TextureAsset::TYPE {
-        if cached
+    if (event.asset_type.is_empty() || event.asset_type == TextureAsset::TYPE)
+        && cached
             .sources
             .materials
             .iter()
             .any(|material| material.references_texture(event.id))
-        {
-            return true;
-        }
+    {
+        return true;
     }
 
     false

@@ -199,10 +199,10 @@ fn refresh_scroll_content(
     resolved: &[super::layout::ResolvedUiNode],
     rects: &FxHashMap<EntityId, UiRect>,
 ) -> bool {
-    let mut query = world.query::<(&UiNode, Option<&UiScroll>)>();
+    let query = world.query::<(&UiNode, Option<&UiScroll>)>();
     let mut parents = FxHashMap::default();
     let mut scroll_entities = Vec::new();
-    query.for_each_with_entity(&mut *world, |entity, (node, scroll)| {
+    query.for_each_with_entity(|entity, (node, scroll)| {
         parents.insert(entity, node.parent);
         if scroll.is_some() {
             scroll_entities.push(entity);

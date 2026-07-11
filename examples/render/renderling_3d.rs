@@ -13,8 +13,7 @@ use sky_engine::ecs::{EntityId, World};
 use sky_engine::math::{Quat, Vec3};
 use sky_engine::render::{
     CameraMarker, Color, DirectionalLight, MeshAsset, MeshAssetDescriptor, MeshIndexData,
-    MeshRenderer, MeshVertexLayout, PointLight, Projection, RenderPipelineAsset,
-    StandardMaterialAsset, Transform,
+    MeshRenderer, MeshVertexLayout, PointLight, Projection, StandardMaterialAsset, Transform,
 };
 
 #[repr(C)]
@@ -108,7 +107,7 @@ impl AppState for RenderlingDemo {
                 Transform::from_xyz(x, -1.05 + height * 0.5, z)
                     .with_scale3(0.55, height, 0.55)
                     .with_rotation_quat(Quat::from_rotation_y(index as f32 * 0.45)),
-                MeshRenderer::new(cube, stone),
+                MeshRenderer::new(cube.clone(), stone.clone()),
             ));
         }
 
@@ -116,12 +115,16 @@ impl AppState for RenderlingDemo {
             let angle = index as f32 / 10.0 * TAU;
             let radius = 3.0;
             let y = -0.25 + (index % 2) as f32 * 0.35;
-            let material = if index % 2 == 0 { blue } else { teal };
+            let material = if index % 2 == 0 {
+                blue.clone()
+            } else {
+                teal.clone()
+            };
             let entity = ctx.world.spawn((
                 Transform::from_xyz(angle.cos() * radius, y, angle.sin() * radius)
                     .with_scale3(0.42, 0.42, 0.42)
                     .with_rotation_quat(Quat::from_rotation_y(angle + FRAC_PI_2)),
-                MeshRenderer::new(cube, material),
+                MeshRenderer::new(cube.clone(), material),
             ));
             self.orbiters.push(entity);
         }
@@ -144,7 +147,7 @@ impl AppState for RenderlingDemo {
         );
         self.glow_a = Some(ctx.world.spawn((
             Transform::from_xyz(-2.8, 1.6, 1.8).with_scale3(0.18, 0.18, 0.18),
-            MeshRenderer::new(cube, warm_glow).casts_shadows(false),
+            MeshRenderer::new(cube.clone(), warm_glow).casts_shadows(false),
         )));
         self.glow_b = Some(ctx.world.spawn((
             Transform::from_xyz(2.8, 1.2, -1.8).with_scale3(0.18, 0.18, 0.18),

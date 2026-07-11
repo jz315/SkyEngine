@@ -342,6 +342,37 @@ fn create_light_buffer(ctx: &GpuContext, capacity: usize) -> wgpu::Buffer {
     })
 }
 
+fn create_light_bind_group(
+    ctx: &GpuContext,
+    layout: &wgpu::BindGroupLayout,
+    buffer: &wgpu::Buffer,
+    meta_buffer: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("gpu_light_table_bg"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: meta_buffer.as_entire_binding(),
+            },
+        ],
+    })
+}
+
+fn create_light_meta_buffer(ctx: &GpuContext) -> wgpu::Buffer {
+    ctx.device().create_buffer(&wgpu::BufferDescriptor {
+        label: Some("gpu_light_table_meta"),
+        size: std::mem::size_of::<LightTableMeta>() as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,35 +453,4 @@ mod tests {
         ));
         assert!(lighting.scene_bind_group().is_none());
     }
-}
-
-fn create_light_bind_group(
-    ctx: &GpuContext,
-    layout: &wgpu::BindGroupLayout,
-    buffer: &wgpu::Buffer,
-    meta_buffer: &wgpu::Buffer,
-) -> wgpu::BindGroup {
-    ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("gpu_light_table_bg"),
-        layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: meta_buffer.as_entire_binding(),
-            },
-        ],
-    })
-}
-
-fn create_light_meta_buffer(ctx: &GpuContext) -> wgpu::Buffer {
-    ctx.device().create_buffer(&wgpu::BufferDescriptor {
-        label: Some("gpu_light_table_meta"),
-        size: std::mem::size_of::<LightTableMeta>() as u64,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
 }

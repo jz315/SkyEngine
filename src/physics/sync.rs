@@ -59,10 +59,11 @@ impl PhysicsWorld2D {
         }
     }
 
-    pub(crate) fn write_back(&self, world: &World) {
+    pub(crate) fn write_back(&self, world: &mut World) {
         let ppm = self.pixels_per_meter();
-        let mut query = world.query::<(&mut Transform, &RigidBody2D, Option<&mut Velocity2D>)>();
-        query.for_each_with_entity(world, |entity, (transform, _body, velocity)| {
+        let mut query =
+            world.query_mut::<(&mut Transform, &RigidBody2D, Option<&mut Velocity2D>)>();
+        query.for_each_with_entity(|entity, (transform, _body, velocity)| {
             let Some(handle) = self.handles.body_handles.get(&entity).copied() else {
                 return;
             };
@@ -112,10 +113,10 @@ impl PhysicsWorld2D {
 
     fn sync_bodies(&mut self, world: &World, dt: f32) {
         let ppm = self.pixels_per_meter();
-        let mut query = world.query::<(&RigidBody2D, &Transform, Option<&Velocity2D>)>();
+        let query = world.query::<(&RigidBody2D, &Transform, Option<&Velocity2D>)>();
         let mut kinematic = Vec::new();
 
-        query.for_each_with_entity(world, |entity, (body, transform, velocity)| {
+        query.for_each_with_entity(|entity, (body, transform, velocity)| {
             let handle = self.ensure_body(entity, *body, *transform, velocity.copied());
             self.update_body(handle, entity, *body, *transform, velocity.copied());
 
@@ -230,8 +231,8 @@ impl PhysicsWorld2D {
     }
 
     fn sync_colliders(&mut self, world: &World) {
-        let mut query = world.query::<(&Collider2D, &RigidBody2D, &Transform)>();
-        query.for_each_with_entity(world, |entity, (collider, _body, _transform)| {
+        let query = world.query::<(&Collider2D, &RigidBody2D, &Transform)>();
+        query.for_each_with_entity(|entity, (collider, _body, _transform)| {
             let body_handle = match self.handles.body_handles.get(&entity).copied() {
                 Some(handle) => handle,
                 None => return,

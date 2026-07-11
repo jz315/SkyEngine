@@ -27,16 +27,19 @@ use crate::render::view::{column_major_mul, scene_transform_matrix};
 use crate::render::view::{RenderQueueSort, ResolvedSceneTransforms, SceneView};
 
 #[cfg(feature = "live2d")]
+type Live2DInstanceQuery = (
+    &'static Live2DModelInstance,
+    Option<&'static Transform>,
+    Option<&'static RenderLayerMask>,
+    Option<&'static SortingLayer>,
+    Option<&'static Live2DAnimator>,
+);
+
+#[cfg(feature = "live2d")]
 pub struct Live2DFeature {
     backend: Live2DBackend,
     draw_function_id: Option<DrawFunctionId>,
-    instance_query: PreparedQuery<(
-        &'static Live2DModelInstance,
-        Option<&'static Transform>,
-        Option<&'static RenderLayerMask>,
-        Option<&'static SortingLayer>,
-        Option<&'static Live2DAnimator>,
-    )>,
+    instance_query: PreparedQuery<Live2DInstanceQuery>,
     entity_to_index: FxHashMap<EntityId, usize>,
     failed_entities: FxHashMap<EntityId, String>,
     pending_instances: Vec<PendingLive2DInstance>,
@@ -400,7 +403,7 @@ impl Live2DFeature {
                 }
                 continue;
             }
-            match self.ensure_entity_loaded(entity, &instance, gpu) {
+            match self.ensure_entity_loaded(entity, instance, gpu) {
                 Ok(index) => {
                     self.backend.set_visible(index, instance.visible);
                     if instance.visible {

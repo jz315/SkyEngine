@@ -1,11 +1,11 @@
-use crate::ecs::{System, World};
-use crate::plugin::{Plugin, PluginResult};
+use crate::ecs::{ExclusiveSystem, FixedStep, FixedUpdate, World};
+use crate::plugin::{Plugin, PluginError, PluginResult};
 
 use super::{PhysicsConfig2D, PhysicsEvents, PhysicsWorld2D};
 
 struct PhysicsStepSystem;
 
-impl System for PhysicsStepSystem {
+impl ExclusiveSystem for PhysicsStepSystem {
     fn run(&mut self, world: &mut World) {
         step_physics(world);
     }
@@ -31,20 +31,31 @@ impl Plugin for PhysicsPlugin {
     }
 
     fn install(self, world: &mut World) -> PluginResult {
-        install_physics_plugin(world, self.config);
-        Ok(())
+        install_physics_plugin(world, self.config)
     }
 }
 
 /// Installs the physics world resources and fixed-step physics system.
 ///
 /// This inserts or updates [`PhysicsWorld2D`], ensures [`PhysicsEvents`] exists,
-/// and registers one fixed `"physics"` group system. Calling this more than
+/// and registers one system in [`FixedUpdate`]. Calling this more than
 /// once updates the config without adding duplicate systems.
 ///
-/// Group order matters: if you want input/control systems to affect the same
-/// physics tick, create those groups before installing [`PhysicsPlugin`].
-fn install_physics_plugin(world: &mut World, config: PhysicsConfig2D) {
+/// Systems in [`PreUpdate`](crate::ecs::PreUpdate) run after fixed simulation;
+/// put fixed-step control systems before physics inside [`FixedUpdate`].
+fn install_physics_plugin(world: &mut World, config: PhysicsConfig2D) -> PluginResult {
+    let step = FixedStep::seconds(f64::from(config.fixed_dt))
+        .map_err(|error| PluginError::new("physics", error.to_string()))?;
+    let already_installed = world.get_resource::<PhysicsInstalled2D>().is_some();
+    {
+        let mut stage = world.stage(FixedUpdate);
+        stage
+            .fixed(step)
+            .map_err(|error| PluginError::new("physics", error.to_string()))?;
+        if !already_installed {
+            stage.add_exclusive(PhysicsStepSystem);
+        }
+    }
     if let Some(physics) = world.get_resource_mut::<PhysicsWorld2D>() {
         physics.set_config(config);
     } else {
@@ -53,17 +64,10 @@ fn install_physics_plugin(world: &mut World, config: PhysicsConfig2D) {
     if world.get_resource::<PhysicsEvents>().is_none() {
         world.insert_resource(PhysicsEvents::default());
     }
-    let already_installed = world.get_resource::<PhysicsInstalled2D>().is_some();
-    {
-        let mut group = world.group("physics");
-        group.fixed(config.fixed_dt);
-        if !already_installed {
-            group.add(PhysicsStepSystem);
-        }
-    }
     if !already_installed {
         world.insert_resource(PhysicsInstalled2D);
     }
+    Ok(())
 }
 
 /// Runs one physics step immediately using `world.time.delta`.

@@ -32,7 +32,7 @@ impl Live2DModel {
             screen_h,
         );
         multiply_matrices(
-            make_aspect_projection(screen_w, screen_h, self.canvas_width_units),
+            make_aspect_projection(screen_w, screen_h),
             fitted_transform.to_matrix(),
         )
     }

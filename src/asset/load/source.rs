@@ -51,7 +51,7 @@ fn load_resolved_source_asset_inner(
         phase.set(AssetSourceLoadPhase::Reading);
     }
     let bytes = source.read_bytes(id).map_err(|error| TimedAssetLoadError {
-        error,
+        error: Box::new(error),
         timings: AssetLoadTimingSample {
             sampled: true,
             read_time: read_start.elapsed(),
@@ -97,7 +97,10 @@ fn load_resolved_source_asset_inner(
             content_hash,
             timings,
         }),
-        Err(error) => Err(TimedAssetLoadError { error, timings }),
+        Err(error) => Err(TimedAssetLoadError {
+            error: Box::new(error),
+            timings,
+        }),
     }
 }
 

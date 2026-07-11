@@ -65,8 +65,9 @@ impl AssetSource {
 }
 
 /// Texture backing for a tile palette.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub enum TileTextureSource {
+    #[default]
     None,
     Image(PathBuf),
     ImageCollectionAtlas {
@@ -77,12 +78,6 @@ pub enum TileTextureSource {
         handle: Handle<TextureAsset>,
         size: [u32; 2],
     },
-}
-
-impl Default for TileTextureSource {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 /// Per-tile source image used to build a runtime image-collection atlas.

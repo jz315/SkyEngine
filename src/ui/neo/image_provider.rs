@@ -19,6 +19,7 @@ use crate::render::{SharedRenderAssetCache, Texture, TextureReadiness};
 
 const IMAGE_RETRY_DELAY: Duration = Duration::from_secs(5);
 
+#[derive(Default)]
 pub(crate) struct SkyNeoImageStore {
     handles: FxHashMap<ImageRef, Handle<TextureAsset>>,
     pending_remote: FxHashMap<ImageRef, Receiver<Result<TextureAsset, String>>>,
@@ -26,19 +27,6 @@ pub(crate) struct SkyNeoImageStore {
     ready: FxHashMap<ImageRef, SkyReadyImage>,
     revisions: FxHashMap<ImageRef, u64>,
     pending_frame: FxHashSet<ImageRef>,
-}
-
-impl Default for SkyNeoImageStore {
-    fn default() -> Self {
-        Self {
-            handles: FxHashMap::default(),
-            pending_remote: FxHashMap::default(),
-            failed: FxHashMap::default(),
-            ready: FxHashMap::default(),
-            revisions: FxHashMap::default(),
-            pending_frame: FxHashSet::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -316,18 +304,15 @@ fn load_texture_handle(
     asset_server: &Assets,
     key: &ImageRef,
 ) -> Result<Handle<TextureAsset>, String> {
-    match key.kind() {
-        ImageRefKind::Asset => {
-            if let Ok(id) = AssetId::parse_str(key.source()) {
-                return asset_server
-                    .load_id::<TextureAsset>(id)
-                    .map_err(|error| error.to_string());
-            }
+    if key.kind() == ImageRefKind::Asset {
+        if let Ok(id) = AssetId::parse_str(key.source()) {
             return asset_server
-                .load_texture(PathBuf::from(key.source()))
+                .load_id::<TextureAsset>(id)
                 .map_err(|error| error.to_string());
         }
-        _ => {}
+        return asset_server
+            .load_texture(PathBuf::from(key.source()))
+            .map_err(|error| error.to_string());
     }
     if let Some(value) = key.source().strip_prefix("asset://") {
         if let Ok(id) = AssetId::parse_str(value) {
@@ -371,7 +356,7 @@ fn load_remote_texture_asset(key: &ImageRef) -> Result<TextureAsset, String> {
     #[cfg(not(feature = "ui-neo-net"))]
     {
         let _ = key;
-        return Err("remote neo image loading requires the `ui-neo-net` feature".to_string());
+        Err("remote neo image loading requires the `ui-neo-net` feature".to_string())
     }
 
     #[cfg(feature = "ui-neo-net")]

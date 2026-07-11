@@ -769,7 +769,7 @@ pub fn render_ui(
 }
 
 fn collect_widgets(world: &World) -> FxHashMap<EntityId, WidgetSnapshot> {
-    let mut query = world.query::<(
+    let query = world.query::<(
         &UiNode,
         Option<&UiPanel>,
         Option<&UiImage>,
@@ -780,7 +780,6 @@ fn collect_widgets(world: &World) -> FxHashMap<EntityId, WidgetSnapshot> {
     )>();
     let mut widgets = FxHashMap::default();
     query.for_each_with_entity(
-        world,
         |entity, (_node, panel, image, button, progress, slider, toggle)| {
             widgets.insert(
                 entity,
@@ -797,8 +796,8 @@ fn collect_widgets(world: &World) -> FxHashMap<EntityId, WidgetSnapshot> {
             );
         },
     );
-    let mut text_query = world.query::<(&UiNode, Option<&UiText>, Option<&UiScroll>)>();
-    text_query.for_each_with_entity(world, |entity, (_node, text, scroll)| {
+    let text_query = world.query::<(&UiNode, Option<&UiText>, Option<&UiScroll>)>();
+    text_query.for_each_with_entity(|entity, (_node, text, scroll)| {
         let widget = widgets.entry(entity).or_default();
         widget.text = text.cloned();
         widget.scroll = scroll.copied();

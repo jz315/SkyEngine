@@ -393,9 +393,7 @@ impl Live2DMotionPlayer {
             return None;
         }
 
-        let Some(group_index) = self.find_group_index(group_name) else {
-            return None;
-        };
+        let group_index = self.find_group_index(group_name)?;
         self.start_motion_internal(group_index, index_in_group, priority)
     }
 
@@ -410,9 +408,7 @@ impl Live2DMotionPlayer {
         group_name: &str,
         priority: MotionPriority,
     ) -> Option<MotionHandle> {
-        let Some(group_index) = self.find_group_index(group_name) else {
-            return None;
-        };
+        let group_index = self.find_group_index(group_name)?;
         let count = self.groups[group_index].motions.len();
         if count == 0 {
             return None;
@@ -438,9 +434,7 @@ impl Live2DMotionPlayer {
     }
 
     pub(super) fn start_next_idle(&mut self) -> Option<MotionHandle> {
-        let Some(idle_group_index) = self.idle_group_index else {
-            return None;
-        };
+        let idle_group_index = self.idle_group_index?;
         let idle_motion_count = self.groups[idle_group_index].motions.len();
         if idle_motion_count == 0 {
             return None;
@@ -478,9 +472,7 @@ impl Live2DMotionPlayer {
         motion_index: usize,
         priority: MotionPriority,
     ) -> Option<MotionHandle> {
-        let Some(group) = self.groups.get(group_index) else {
-            return None;
-        };
+        let group = self.groups.get(group_index)?;
         if motion_index >= group.motions.len() {
             return None;
         }

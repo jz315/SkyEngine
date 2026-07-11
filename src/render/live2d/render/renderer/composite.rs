@@ -489,7 +489,7 @@ impl Live2DRenderer {
                     vertex: wgpu::VertexState {
                         module: &self.shader,
                         entry_point: Some("vs_main"),
-                        buffers: &[vertex_layout.clone()],
+                        buffers: std::slice::from_ref(&vertex_layout),
                         compilation_options: Default::default(),
                     },
                     fragment: Some(wgpu::FragmentState {
@@ -556,7 +556,7 @@ impl Live2DRenderer {
                     vertex: wgpu::VertexState {
                         module: &self.shader,
                         entry_point: Some("vs_main"),
-                        buffers: &[vertex_layout.clone()],
+                        buffers: std::slice::from_ref(&vertex_layout),
                         compilation_options: Default::default(),
                     },
                     fragment: Some(wgpu::FragmentState {

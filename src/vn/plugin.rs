@@ -1,4 +1,5 @@
 use crate::ecs::World;
+use crate::ecs::{First, PostUpdate, PreUpdate, Update};
 use crate::plugin::{Plugin, PluginResult};
 use crate::vn::preferences::VnPreferences;
 use crate::vn::resource::VnResource;
@@ -76,10 +77,10 @@ impl Plugin for VnPlugin {
             self.system_config,
         ));
         if self.install_systems {
-            world.group("vn/load").add(vn_load_system);
-            world.group("vn/input").add(vn_input_system);
-            world.group("vn/script").add(vn_script_system);
-            world.group("vn/ui").add(vn_ui_system);
+            world.stage(First).add_exclusive(vn_load_system);
+            world.stage(PreUpdate).add_exclusive(vn_input_system);
+            world.stage(Update).add_exclusive(vn_script_system);
+            world.stage(PostUpdate).add_exclusive(vn_ui_system);
         }
         Ok(())
     }

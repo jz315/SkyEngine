@@ -267,12 +267,7 @@ impl Live2DModel {
 
     pub fn find_part(&self, id: &str) -> Option<usize> {
         let count = self.part_count();
-        for i in 0..count {
-            if self.part_id(i) == id {
-                return Some(i);
-            }
-        }
-        None
+        (0..count).find(|&index| self.part_id(index) == id)
     }
 
     pub fn part_opacities_mut(&mut self) -> &mut [f32] {

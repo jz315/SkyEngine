@@ -502,7 +502,7 @@ impl ArcadeHud {
         debug_draw: bool,
     ) {
         self.frame_count = self.frame_count.wrapping_add(1);
-        if self.frame_count % 15 != 0 {
+        if !self.frame_count.is_multiple_of(15) {
             return;
         }
         ctx.set_title(&format!(
@@ -577,8 +577,8 @@ fn debug_draw_enabled(world: &World) -> bool {
 }
 
 fn animate_mixers(world: &mut World, dt: f32) {
-    let mut mixers = world.query::<(&mut Transform, &MixerArm)>();
-    mixers.for_each(world, |(transform, mixer)| {
+    let mut mixers = world.query_mut::<(&mut Transform, &MixerArm)>();
+    mixers.for_each(|(transform, mixer)| {
         transform.rotate_z(mixer.speed * dt);
     });
 }

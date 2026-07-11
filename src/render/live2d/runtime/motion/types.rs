@@ -459,6 +459,9 @@ pub struct MotionEntryRef<'a> {
 /// - `Idle` motions auto-cycle when nothing else plays
 /// - `Normal` motions preempt Idle
 /// - `Force` always preempts
+type MotionStartedHandler = Box<dyn FnMut(&MotionStartedEvent)>;
+type MotionFinishedHandler = Box<dyn FnMut(&MotionFinishedEvent)>;
+
 pub struct Live2DMotionPlayer {
     pub(super) groups: Vec<MotionGroup>,
     pub(super) idle_group_index: Option<usize>,
@@ -473,6 +476,6 @@ pub struct Live2DMotionPlayer {
     pub(super) pending_started: Vec<MotionStartedEvent>,
     pub(super) pending_finished: Vec<MotionFinishedEvent>,
     pub(super) pending_sounds: Vec<String>,
-    pub(super) began_motion_handler: Option<Box<dyn FnMut(&MotionStartedEvent)>>,
-    pub(super) finished_motion_handler: Option<Box<dyn FnMut(&MotionFinishedEvent)>>,
+    pub(super) began_motion_handler: Option<MotionStartedHandler>,
+    pub(super) finished_motion_handler: Option<MotionFinishedHandler>,
 }

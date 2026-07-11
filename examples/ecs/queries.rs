@@ -1,13 +1,13 @@
 //! # Queries & Filters
 //!
 //! Demonstrates the typed query API: single and multi-component queries,
-//! optional components, `With` / `Without` filters, and chunk iteration.
+//! optional components, named query data, filters, and chunk iteration.
 //!
 //! ```
 //! cargo run --example queries
 //! ```
 
-use sky_engine::ecs::{With, Without, World};
+use sky_engine::ecs::{QueryData, With, Without, World};
 
 #[derive(Clone, Copy, Debug)]
 struct Position {
@@ -29,6 +29,12 @@ struct Enemy;
 
 #[derive(Clone, Copy, Debug)]
 struct Player;
+
+#[derive(QueryData)]
+struct Movement<'w> {
+    position: &'w mut Position,
+    velocity: &'w Velocity,
+}
 
 fn main() {
     let mut world = World::new();
@@ -58,27 +64,31 @@ fn main() {
 
     // --- 1. Simple query: all entities with Position ---
     println!("=== All positioned entities ===");
-    let mut q = world.query::<&Position>();
-    println!("  Count: {}\n", q.count(&world));
+    let q = world.query::<&Position>();
+    println!("  Count: {}\n", q.count());
 
     // --- 2. Filtered query: enemies only ---
     println!("=== Enemies ===");
-    let mut q = world.query_filtered::<(&Position, &Health), With<Enemy>>();
-    q.for_each(&world, |(pos, hp)| {
+    let q = world
+        .query::<(&Position, &Health)>()
+        .filter::<With<Enemy>>();
+    q.for_each(|(pos, hp)| {
         println!("  pos=({:.0}, {:.0})  hp={:.0}", pos.x, pos.y, hp.0);
     });
 
     // --- 3. Exclude filter: everything that is NOT an enemy ---
     println!("\n=== Non-enemies (player) ===");
-    let mut q = world.query_filtered::<(&Position, &Health), Without<Enemy>>();
-    q.for_each(&world, |(pos, hp)| {
+    let q = world
+        .query::<(&Position, &Health)>()
+        .filter::<Without<Enemy>>();
+    q.for_each(|(pos, hp)| {
         println!("  pos=({:.0}, {:.0})  hp={:.0}", pos.x, pos.y, hp.0);
     });
 
     // --- 4. Optional: Position + optional Velocity ---
     println!("\n=== Optional velocity ===");
-    let mut q = world.query::<(&Position, Option<&Velocity>)>();
-    q.for_each(&world, |(pos, vel)| match vel {
+    let q = world.query::<(&Position, Option<&Velocity>)>();
+    q.for_each(|(pos, vel)| match vel {
         Some(v) => println!(
             "  ({:.0}, {:.0}) moving at ({:.1}, {:.1})",
             pos.x, pos.y, v.x, v.y
@@ -86,11 +96,18 @@ fn main() {
         None => println!("  ({:.0}, {:.0}) stationary", pos.x, pos.y),
     });
 
-    // --- 5. Chunk iteration for batch processing ---
+    // --- 5. Named query data for readable business logic ---
+    println!("\n=== Named movement query ===");
+    world.query_mut::<Movement>().for_each(|movement| {
+        movement.position.x += movement.velocity.x;
+        movement.position.y += movement.velocity.y;
+    });
+
+    // --- 6. Chunk iteration for batch processing ---
     println!("\n=== Chunk iteration (move all with velocity) ===");
     let dt = 1.0;
-    let mut q = world.query::<(&mut Position, &Velocity)>();
-    q.for_each_chunk(&mut world, |(positions, velocities)| {
+    let mut q = world.query_mut::<(&mut Position, &Velocity)>();
+    q.for_each_chunk(|(positions, velocities)| {
         println!("  Processing chunk of {} entities", positions.len());
         for i in 0..positions.len() {
             positions[i].x += velocities[i].x * dt;
@@ -98,10 +115,12 @@ fn main() {
         }
     });
 
-    // --- 6. Combined filter ---
+    // --- 7. Combined filter ---
     println!("\n=== Moving enemies only (With<Enemy>, With<Velocity>) ===");
-    let mut q = world.query_filtered::<&Position, (With<Enemy>, With<Velocity>)>();
-    q.for_each(&world, |pos| {
+    let q = world
+        .query::<&Position>()
+        .filter::<(With<Enemy>, With<Velocity>)>();
+    q.for_each(|pos| {
         println!("  ({:.0}, {:.0})", pos.x, pos.y);
     });
 }

@@ -1,4 +1,4 @@
-/// Rendering backend requested by a [`RenderPipelineAsset`].
+/// Rendering backend requested by a [`super::RenderPipelineAsset`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RenderBackendKind {
     /// SkyEngine's native `wgpu` renderer.
@@ -20,7 +20,7 @@ pub enum KajiyaDpiMode {
     Physical,
 }
 
-/// Runtime settings for [`RenderPipelineAsset::kajiya_3d`].
+/// Runtime settings for [`super::RenderPipelineAsset::kajiya_3d`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct KajiyaRendererSettings {
     temporal_upsampling: f32,

@@ -177,7 +177,7 @@ fn dependency_blocker_for(
         return None;
     }
 
-    let reason = reason_override.unwrap_or_else(|| match state {
+    let reason = reason_override.unwrap_or(match state {
         None => AssetDependencyBlockerReason::Missing,
         Some(AssetState::Failed) => AssetDependencyBlockerReason::Failed,
         Some(_) => AssetDependencyBlockerReason::Waiting,
@@ -227,7 +227,7 @@ pub(crate) fn failed_asset_snapshots(store: &AssetStore) -> Vec<AssetFailureSnap
             })
         })
         .collect::<Vec<_>>();
-    snapshots.sort_by(|left, right| left.asset_id.to_string().cmp(&right.asset_id.to_string()));
+    snapshots.sort_by_key(|left| left.asset_id.to_string());
     snapshots
 }
 

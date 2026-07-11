@@ -22,7 +22,7 @@ fn validate_node(node: &PersistNode, seen: &mut FxHashSet<PersistId>) -> Result<
     if !seen.insert(node.id.clone()) {
         return Err(PersistError::DuplicatePersistId(node.id.clone()));
     }
-    for type_name in node.components.duplicate_type_names() {
+    if let Some(type_name) = node.components.duplicate_type_names().first() {
         if type_name == TRANSFORM_COMPONENT_TYPE {
             return Err(PersistError::DuplicateTransform(node.id.clone()));
         }

@@ -504,10 +504,7 @@ impl Mesh {
                 continue;
             }
 
-            let end = sub_mesh
-                .index_offset
-                .checked_add(sub_mesh.index_count)
-                .unwrap_or(u32::MAX);
+            let end = sub_mesh.index_offset.saturating_add(sub_mesh.index_count);
             if end > mesh_index_count {
                 return Err(MeshError::IndexedSubMeshOutOfBounds {
                     end,

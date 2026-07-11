@@ -418,6 +418,47 @@ fn kajiya_perspective_infinite_reverse_z(
     )
 }
 
+struct KajiyaWindowHandle03 {
+    raw: raw_window_handle_03::RawWindowHandle,
+}
+
+impl KajiyaWindowHandle03 {
+    fn from_window(window: &Window) -> Result<Self, KajiyaBackendError> {
+        platform_window_handle_03(window).map(|raw| Self { raw })
+    }
+}
+
+unsafe impl raw_window_handle_03::HasRawWindowHandle for KajiyaWindowHandle03 {
+    fn raw_window_handle(&self) -> raw_window_handle_03::RawWindowHandle {
+        self.raw
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn platform_window_handle_03(
+    window: &Window,
+) -> Result<raw_window_handle_03::RawWindowHandle, KajiyaBackendError> {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let handle = window
+        .window_handle()
+        .map_err(|error| KajiyaBackendError::WindowHandle(error.to_string()))?;
+
+    match handle.as_raw() {
+        RawWindowHandle::Win32(handle) => {
+            let mut legacy = raw_window_handle_03::windows::WindowsHandle::empty();
+            legacy.hwnd = handle.hwnd.get() as *mut _;
+            legacy.hinstance = handle
+                .hinstance
+                .map_or(std::ptr::null_mut(), |value| value.get() as *mut _);
+            Ok(raw_window_handle_03::RawWindowHandle::Windows(legacy))
+        }
+        other => Err(KajiyaBackendError::UnsupportedWindowHandle(format!(
+            "Kajiya native runtime requires a Win32 window handle on Windows, got {other:?}"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -484,47 +525,6 @@ mod tests {
             [640, 360]
         );
         assert_eq!(super::super::config::render_extent_for([1, 1], 8.0), [1, 1]);
-    }
-}
-
-struct KajiyaWindowHandle03 {
-    raw: raw_window_handle_03::RawWindowHandle,
-}
-
-impl KajiyaWindowHandle03 {
-    fn from_window(window: &Window) -> Result<Self, KajiyaBackendError> {
-        platform_window_handle_03(window).map(|raw| Self { raw })
-    }
-}
-
-unsafe impl raw_window_handle_03::HasRawWindowHandle for KajiyaWindowHandle03 {
-    fn raw_window_handle(&self) -> raw_window_handle_03::RawWindowHandle {
-        self.raw
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn platform_window_handle_03(
-    window: &Window,
-) -> Result<raw_window_handle_03::RawWindowHandle, KajiyaBackendError> {
-    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-
-    let handle = window
-        .window_handle()
-        .map_err(|error| KajiyaBackendError::WindowHandle(error.to_string()))?;
-
-    match handle.as_raw() {
-        RawWindowHandle::Win32(handle) => {
-            let mut legacy = raw_window_handle_03::windows::WindowsHandle::empty();
-            legacy.hwnd = handle.hwnd.get() as *mut _;
-            legacy.hinstance = handle
-                .hinstance
-                .map_or(std::ptr::null_mut(), |value| value.get() as *mut _);
-            Ok(raw_window_handle_03::RawWindowHandle::Windows(legacy))
-        }
-        other => Err(KajiyaBackendError::UnsupportedWindowHandle(format!(
-            "Kajiya native runtime requires a Win32 window handle on Windows, got {other:?}"
-        ))),
     }
 }
 

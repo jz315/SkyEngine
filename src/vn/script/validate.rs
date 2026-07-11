@@ -90,14 +90,12 @@ fn validate_instructions(
                         ));
                     }
                 }
-                "endif" => {
-                    if condition_stack.pop().is_none() {
-                        diagnostics.push(VnDiagnostic::error(
-                            "vn.yarn.condition.unmatched_endif",
-                            "<<endif>> has no matching <<if>>",
-                            command.span.clone(),
-                        ));
-                    }
+                "endif" if condition_stack.pop().is_none() => {
+                    diagnostics.push(VnDiagnostic::error(
+                        "vn.yarn.condition.unmatched_endif",
+                        "<<endif>> has no matching <<if>>",
+                        command.span.clone(),
+                    ));
                 }
                 _ => {}
             },

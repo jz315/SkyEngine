@@ -116,12 +116,13 @@ impl AppState for LightingDemo {
         let dt = ctx.dt;
         let logical_view_size = ctx.logical_view_size();
 
-        let mut camera_query = ctx
+        let camera_query = ctx
             .world
-            .query_filtered::<(&Transform, &Projection), With<MainCamera>>();
+            .query::<(&Transform, &Projection)>()
+            .filter::<With<MainCamera>>();
         let mut camera_transform = None;
         let mut projection = None;
-        camera_query.for_each(&mut *ctx.world, |(transform, camera_projection)| {
+        camera_query.for_each(|(transform, camera_projection)| {
             if camera_transform.is_none() {
                 camera_transform = Some(*transform);
                 projection = Some(*camera_projection);
@@ -134,7 +135,7 @@ impl AppState for LightingDemo {
         let mouse_world =
             projection.screen_to_world_logical(camera_transform, logical_view_size, mouse);
 
-        let mut orbs = ctx.world.query::<(
+        let mut orbs = ctx.world.query_mut::<(
             &mut Transform,
             &mut SpriteRenderer,
             &mut PointLight,
@@ -142,44 +143,41 @@ impl AppState for LightingDemo {
             &Hue,
             &mut Pulse,
         )>();
-        orbs.for_each(
-            &mut *ctx.world,
-            |(transform, sprite, light, velocity, hue, pulse)| {
-                transform.position[0] += velocity.x * dt;
-                transform.position[1] += velocity.y * dt;
-                pulse.0 += dt * 0.8;
+        orbs.for_each(|(transform, sprite, light, velocity, hue, pulse)| {
+            transform.position[0] += velocity.x * dt;
+            transform.position[1] += velocity.y * dt;
+            pulse.0 += dt * 0.8;
 
-                let half_w = logical_view_size.width * 0.5 + sprite.width;
-                let half_h = logical_view_size.height * 0.5 + sprite.height;
-                if transform.position[0] > half_w {
-                    transform.position[0] = -half_w;
-                }
-                if transform.position[0] < -half_w {
-                    transform.position[0] = half_w;
-                }
-                if transform.position[1] > half_h {
-                    transform.position[1] = -half_h;
-                }
-                if transform.position[1] < -half_h {
-                    transform.position[1] = half_h;
-                }
+            let half_w = logical_view_size.width * 0.5 + sprite.width;
+            let half_h = logical_view_size.height * 0.5 + sprite.height;
+            if transform.position[0] > half_w {
+                transform.position[0] = -half_w;
+            }
+            if transform.position[0] < -half_w {
+                transform.position[0] = half_w;
+            }
+            if transform.position[1] > half_h {
+                transform.position[1] = -half_h;
+            }
+            if transform.position[1] < -half_h {
+                transform.position[1] = half_h;
+            }
 
-                let pulse_scale = 1.0 + 0.18 * pulse.0.sin();
-                transform.scale[0] = pulse_scale;
-                transform.scale[1] = pulse_scale;
+            let pulse_scale = 1.0 + 0.18 * pulse.0.sin();
+            transform.scale[0] = pulse_scale;
+            transform.scale[1] = pulse_scale;
 
-                let shifted_hue = (hue.base + hue.shift * dt + pulse.0 * 4.0) % 360.0;
-                let lightness = 0.46 + 0.14 * (pulse.0 * 0.7).cos();
-                let tint = Color::hsl(shifted_hue, 0.72, lightness);
-                sprite.color = Color::new(tint.r, tint.g, tint.b, 0.95);
-                light.color = tint;
-            },
-        );
+            let shifted_hue = (hue.base + hue.shift * dt + pulse.0 * 4.0) % 360.0;
+            let lightness = 0.46 + 0.14 * (pulse.0 * 0.7).cos();
+            let tint = Color::hsl(shifted_hue, 0.72, lightness);
+            sprite.color = Color::new(tint.r, tint.g, tint.b, 0.95);
+            light.color = tint;
+        });
 
         let mut mouse_light = ctx
             .world
-            .query::<(&mut Transform, &mut PointLight, &MouseLight)>();
-        mouse_light.for_each(&mut *ctx.world, |(transform, light, _)| {
+            .query_mut::<(&mut Transform, &mut PointLight, &MouseLight)>();
+        mouse_light.for_each(|(transform, light, _)| {
             transform.position[0] = mouse_world[0];
             transform.position[1] = mouse_world[1];
             light.intensity = 1.8 + 0.25 * (dt * 60.0).sin().abs();
@@ -194,7 +192,7 @@ impl AppState for LightingDemo {
             self.fps_smooth * 0.95 + fps_instant * 0.05
         };
         self.frame_count += 1;
-        if self.frame_count % 30 == 0 {
+        if self.frame_count.is_multiple_of(30) {
             let stats = ctx.render_stats();
             ctx.set_title(&format!(
                 "SkyEngine — ECS Lighting Demo | {:.0} FPS | {} sprites | {} lights",

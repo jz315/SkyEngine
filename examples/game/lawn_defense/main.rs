@@ -1359,8 +1359,8 @@ fn spawn_ambient_sun(
 }
 
 fn update_cards(world: &mut World, selected: PlantKind, sun: i32) {
-    let mut cards = world.query::<(&mut SpriteRenderer, &Card)>();
-    cards.for_each(world, |(sprite, card)| {
+    let mut cards = world.query_mut::<(&mut SpriteRenderer, &Card)>();
+    cards.for_each(|(sprite, card)| {
         let affordable = sun >= card.kind.cost();
         let mut color = card.kind.color();
         if !affordable {
@@ -1382,8 +1382,8 @@ fn update_cards(world: &mut World, selected: PlantKind, sun: i32) {
 }
 
 fn flash_cards(world: &mut World, kind: PlantKind) {
-    let mut cards = world.query::<(&mut SpriteRenderer, &Card)>();
-    cards.for_each(world, |(sprite, card)| {
+    let mut cards = world.query_mut::<(&mut SpriteRenderer, &Card)>();
+    cards.for_each(|(sprite, card)| {
         if card.kind == kind {
             sprite.color = Color::rgb(1.0, 0.25, 0.25);
         }
@@ -1407,8 +1407,8 @@ fn spawn_victory_suns(world: &mut World, assets: &GameAssets, level: &mut LevelS
 }
 
 fn animate_lawn(world: &mut World, dt: f32) {
-    let mut pulses = world.query::<(&mut SpriteRenderer, &mut LawnPulse)>();
-    pulses.for_each(world, |(sprite, pulse)| {
+    let mut pulses = world.query_mut::<(&mut SpriteRenderer, &mut LawnPulse)>();
+    pulses.for_each(|(sprite, pulse)| {
         pulse.phase += pulse.speed * dt;
         let scale = 1.0 + pulse.phase.sin() * pulse.amplitude;
         sprite.width = pulse.base_width * scale;
@@ -1418,8 +1418,8 @@ fn animate_lawn(world: &mut World, dt: f32) {
 
 fn lane_has_zombie_ahead(world: &World, row: usize, x: f32) -> bool {
     let mut found = false;
-    let mut query = world.query::<(&Transform, &Zombie)>();
-    query.for_each(world, |(transform, zombie)| {
+    let query = world.query::<(&Transform, &Zombie)>();
+    query.for_each(|(transform, zombie)| {
         if zombie.row == row && transform.x() > x {
             found = true;
         }
@@ -1453,8 +1453,8 @@ fn blocking_plant_in_row(
 fn first_zombie_hit(world: &World, row: usize, pea_pos: Vec2) -> Option<EntityId> {
     let mut hit = None;
     let mut hit_x = f32::MAX;
-    let mut query = world.query::<(&Transform, &Zombie)>();
-    query.for_each_with_entity(world, |entity, (transform, zombie)| {
+    let query = world.query::<(&Transform, &Zombie)>();
+    query.for_each_with_entity(|entity, (transform, zombie)| {
         let x = transform.x();
         if zombie.row == row
             && x >= pea_pos.x() - 8.0
@@ -1471,8 +1471,8 @@ fn first_zombie_hit(world: &World, row: usize, pea_pos: Vec2) -> Option<EntityId
 fn zombies_near(world: &World, row: usize, center: Vec2, radius: f32) -> Vec<EntityId> {
     let mut hits = Vec::new();
     let radius_sq = radius * radius;
-    let mut query = world.query::<(&Transform, &Zombie)>();
-    query.for_each_with_entity(world, |entity, (transform, zombie)| {
+    let query = world.query::<(&Transform, &Zombie)>();
+    query.for_each_with_entity(|entity, (transform, zombie)| {
         let position = Vec2::new(transform.x(), transform.y());
         if zombie.row == row && (position - center).length_squared() <= radius_sq {
             hits.push(entity);
@@ -1483,8 +1483,8 @@ fn zombies_near(world: &World, row: usize, center: Vec2, radius: f32) -> Vec<Ent
 
 fn lane_has_zombie_past(world: &World, row: usize, x: f32) -> bool {
     let mut found = false;
-    let mut query = world.query::<(&Transform, &Zombie)>();
-    query.for_each(world, |(transform, zombie)| {
+    let query = world.query::<(&Transform, &Zombie)>();
+    query.for_each(|(transform, zombie)| {
         if zombie.row == row && transform.x() < x {
             found = true;
         }

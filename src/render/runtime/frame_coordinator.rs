@@ -4,13 +4,13 @@ use crate::gpu::GpuContext;
 use crate::render::resources::texture_cache::SharedRenderAssetCache;
 use crate::render::runtime::{FrameRenderOutcome, FrameSkipReason};
 
+use super::engine_runtime::RenderRuntime;
 use super::frame::{
     begin_frame_inputs, execute_prepared_frame, extract_frame, finish_frame_stats,
     finish_render_assets, finish_skipped_frame_stats, prepare_frame_assets,
     prepare_global_illumination, prepare_shadows, remember_previous_models, upload_scene_data,
     FrameRuntimeParts,
 };
-use super::runtime::RenderRuntime;
 
 pub(crate) struct FrameCoordinator;
 

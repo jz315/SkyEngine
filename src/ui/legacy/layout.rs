@@ -28,7 +28,7 @@ struct NodeSnapshot {
 }
 
 pub(crate) fn resolve_world_layout(world: &World, surface_size: [f32; 2]) -> Vec<ResolvedUiNode> {
-    let mut query = world.query::<(
+    let query = world.query::<(
         &UiNode,
         Option<&UiText>,
         Option<&UiButton>,
@@ -37,18 +37,15 @@ pub(crate) fn resolve_world_layout(world: &World, surface_size: [f32; 2]) -> Vec
         Option<&UiScroll>,
     )>();
     let mut nodes = Vec::new();
-    query.for_each_with_entity(
-        world,
-        |entity, (node, text, button, slider, toggle, scroll)| {
-            let preferred_size = preferred_widget_size(node, text, button, slider, toggle);
-            nodes.push(NodeSnapshot {
-                entity,
-                node: node.clone(),
-                scroll: scroll.copied(),
-                preferred_size,
-            });
-        },
-    );
+    query.for_each_with_entity(|entity, (node, text, button, slider, toggle, scroll)| {
+        let preferred_size = preferred_widget_size(node, text, button, slider, toggle);
+        nodes.push(NodeSnapshot {
+            entity,
+            node: node.clone(),
+            scroll: scroll.copied(),
+            preferred_size,
+        });
+    });
     resolve_snapshots(&nodes, surface_size)
 }
 

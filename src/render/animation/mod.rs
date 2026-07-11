@@ -108,8 +108,8 @@ pub fn animate_sprites(world: &mut World) {
         return;
     };
     let delta_seconds = world.time.delta.max(0.0);
-    let mut query = world.query::<(&mut SpriteRenderer, &mut SpriteAnimator)>();
-    query.for_each(world, |(sprite, animator)| {
+    let mut query = world.query_mut::<(&mut SpriteRenderer, &mut SpriteAnimator)>();
+    query.for_each(|(sprite, animator)| {
         let Some(clip) = asset_server.try_get(&animator.clip) else {
             return;
         };

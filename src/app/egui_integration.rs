@@ -59,11 +59,10 @@ impl EguiIntegration {
 
     /// Run the user's egui UI closure. Call this during the frame callback.
     ///
-    /// The closure receives a raw `&egui::Context` so users write standard
-    /// egui code with no wrapper types.
-    pub fn run(&mut self, window: &winit::window::Window, ui_fn: impl FnMut(&egui::Context)) {
+    /// The closure receives egui's root [`egui::Ui`] for this frame.
+    pub fn run(&mut self, window: &winit::window::Window, ui_fn: impl FnMut(&mut egui::Ui)) {
         let raw_input = self.winit_state.take_egui_input(window);
-        let output = self.winit_state.egui_ctx().run(raw_input, ui_fn);
+        let output = self.winit_state.egui_ctx().run_ui(raw_input, ui_fn);
         self.pending_output = Some(output);
     }
 

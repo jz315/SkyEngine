@@ -200,7 +200,7 @@ fn snapshot_layer(import: &TiledImport, layer: &RenderTiledLayer) -> TiledLayer 
                 y,
                 tile_id: tile.id.0,
                 flags: tile.flags.into(),
-                tint: tile.tint.into(),
+                tint: tile.tint,
             });
         }
     }
@@ -320,7 +320,7 @@ fn snapshot_property(property: &RenderTiledProperty) -> TiledProperty {
             RenderTiledPropertyValue::Int(value) => TiledPropertyValue::Int(*value),
             RenderTiledPropertyValue::Float(value) => TiledPropertyValue::Float(*value),
             RenderTiledPropertyValue::String(value) => TiledPropertyValue::String(value.clone()),
-            RenderTiledPropertyValue::Color(color) => TiledPropertyValue::Color((*color).into()),
+            RenderTiledPropertyValue::Color(color) => TiledPropertyValue::Color(*color),
             RenderTiledPropertyValue::File(path) => TiledPropertyValue::File(path.clone()),
             RenderTiledPropertyValue::Object(value) => TiledPropertyValue::Object(*value),
         },

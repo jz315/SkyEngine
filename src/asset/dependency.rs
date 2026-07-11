@@ -165,5 +165,5 @@ fn find_dependency_cycle_from(
 }
 
 fn sort_asset_ids(ids: &mut [AssetId]) {
-    ids.sort_by(|left, right| left.to_string().cmp(&right.to_string()));
+    ids.sort_by_key(|left| left.to_string());
 }

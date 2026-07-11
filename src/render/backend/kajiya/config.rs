@@ -58,7 +58,7 @@ impl KajiyaRendererConfig {
 
     #[inline]
     pub(crate) fn should_trace_frame(&self, frame_index: u64) -> bool {
-        self.trace && (frame_index < 8 || frame_index % 120 == 0)
+        self.trace && (frame_index < 8 || frame_index.is_multiple_of(120))
     }
 
     #[inline]

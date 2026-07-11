@@ -52,22 +52,20 @@ pub fn resolve_contract(world: &mut World, contract: ContractChoice, party: &[En
 
 fn select_party(world: &World, spec: &ContractSpec) -> Vec<EntityId> {
     let mut candidates = Vec::new();
-    let mut adventurers = world
-        .query_filtered::<(&Name, &Role, &Stats, &Condition, &Personality), With<Adventurer>>();
+    let adventurers = world
+        .query::<(&Name, &Role, &Stats, &Condition, &Personality)>()
+        .filter::<With<Adventurer>>();
 
-    adventurers.for_each_with_entity(
-        world,
-        |entity, (name, role, stats, condition, personality)| {
-            if condition.health <= 2 {
-                return;
-            }
-            candidates.push(PartyCandidate {
-                entity,
-                name: name.0,
-                score: adventurer_score(*role, *stats, *condition, *personality, spec),
-            });
-        },
-    );
+    adventurers.for_each_with_entity(|entity, (name, role, stats, condition, personality)| {
+        if condition.health <= 2 {
+            return;
+        }
+        candidates.push(PartyCandidate {
+            entity,
+            name: name.0,
+            score: adventurer_score(*role, *stats, *condition, *personality, spec),
+        });
+    });
 
     candidates.sort_by_key(|candidate| (Reverse(candidate.score), candidate.name));
     candidates
@@ -183,8 +181,8 @@ fn apply_relationship_aftermath(world: &mut World, party: &[EntityId], success: 
 
     let a = party[0];
     let b = party[1];
-    let mut relationships = world.query::<&mut Relationship>();
-    relationships.for_each(world, |relationship| {
+    let mut relationships = world.query_mut::<&mut Relationship>();
+    relationships.for_each(|relationship| {
         if !relationship_contains(relationship, a, b) {
             return;
         }

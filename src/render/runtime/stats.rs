@@ -17,7 +17,8 @@ pub struct RenderTimingStats {
 pub(crate) type TimingStart = Instant;
 
 #[cfg(not(feature = "render-timings"))]
-pub(crate) type TimingStart = ();
+#[derive(Clone, Copy)]
+pub(crate) struct TimingStart;
 
 #[inline]
 pub(crate) fn timing_start() -> TimingStart {
@@ -27,7 +28,9 @@ pub(crate) fn timing_start() -> TimingStart {
     }
 
     #[cfg(not(feature = "render-timings"))]
-    {}
+    {
+        TimingStart
+    }
 }
 
 #[inline]

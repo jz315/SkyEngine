@@ -2,7 +2,7 @@ use std::env;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
@@ -333,7 +333,7 @@ fn crop_image_in_place(
         .map_err(|error| format!("failed to replace crop {}: {error}", path.display()))
 }
 
-fn read_endpoint(debug_dir: &PathBuf, app: &str) -> Result<Endpoint, String> {
+fn read_endpoint(debug_dir: &Path, app: &str) -> Result<Endpoint, String> {
     let path = debug_dir.join(app).join("endpoint.json");
     let text = fs::read_to_string(&path)
         .map_err(|error| format!("failed to read {}: {error}", path.display()))?;

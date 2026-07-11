@@ -229,8 +229,8 @@ fn populate_map(map: &mut sky_engine::render::Tilemap) {
 
     for y in 17..27 {
         for x in 0..MAP_WIDTH {
-            let band = (y as i32 - 22).abs() as u32;
-            if band <= 4 && (x + y + band) % 3 != 0 {
+            let band = (y as i32 - 22).unsigned_abs();
+            if band <= 4 && !(x + y + band).is_multiple_of(3) {
                 let tint = if band < 2 {
                     Color::new(1.0, 0.95, 0.72, 0.95)
                 } else {
@@ -342,7 +342,7 @@ fn make_tileset_texture() -> TextureAsset {
                         1.0
                     } else if diamond > 0.9 {
                         0.78
-                    } else if (px + py + tile_id) % 7 == 0 {
+                    } else if (px + py + tile_id).is_multiple_of(7) {
                         1.12
                     } else {
                         1.0

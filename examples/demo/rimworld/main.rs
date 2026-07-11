@@ -79,7 +79,7 @@ impl AppState for RimworldApp {
         if let Some(surface) = ctx.world.get_resource_mut::<SurfaceInfo>() {
             surface.size = size;
         }
-        ctx.world.tick_with_delta(ctx.dt);
+        ctx.world.tick_with_delta(ctx.dt).unwrap();
         ctx.render();
         if let Some(title) = ctx
             .world

@@ -8,7 +8,7 @@
 //! cargo run --example commands
 //! ```
 
-use sky_engine::ecs::{Commands, World};
+use sky_engine::ecs::{CommandBuffer, World};
 
 #[derive(Clone, Copy, Debug)]
 struct Position {
@@ -40,7 +40,7 @@ fn main() {
     print_entities(&world);
 
     // --- Deferred commands ---
-    let mut cmds = Commands::new();
+    let mut cmds = CommandBuffer::new();
 
     // Give the warrior a shield
     cmds.insert(warrior, Shield);
@@ -66,7 +66,7 @@ fn main() {
     println!("Rogue alive?       {}", world.contains(rogue));
 
     // --- Remove a component ---
-    let mut cmds = Commands::new();
+    let mut cmds = CommandBuffer::new();
     cmds.remove::<Poison>(mage);
     cmds.apply(&mut world);
 
@@ -76,8 +76,8 @@ fn main() {
 }
 
 fn print_entities(world: &World) {
-    let mut q = world.query::<(&Position, &Health)>();
-    q.for_each_with_entity(world, |entity, (pos, hp)| {
+    let q = world.query::<(&Position, &Health)>();
+    q.for_each_with_entity(|entity, (pos, hp)| {
         println!(
             "  {:?}: pos=({:.0}, {:.0}) hp={:.0}",
             entity, pos.x, pos.y, hp.0

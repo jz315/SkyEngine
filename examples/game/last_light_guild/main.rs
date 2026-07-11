@@ -44,7 +44,7 @@ impl AppState for LastLightGuild {
             ctx.world.insert_resource(ui);
         }
 
-        ctx.world.tick_with_delta(ctx.dt);
+        ctx.world.tick_with_delta(ctx.dt).unwrap();
 
         ctx.set_title(&systems::title(ctx.world));
         ctx.render();

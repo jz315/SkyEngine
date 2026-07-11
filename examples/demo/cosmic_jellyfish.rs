@@ -242,7 +242,7 @@ fn main() {
     world.install(AssetPlugin::default()).unwrap();
 
     App::new(world).run(move |ctx: &mut sky_engine::app::FrameContext| {
-        ctx.world.tick();
+        ctx.world.tick().unwrap();
         let dt = ctx.dt.min(0.05);
         sim_time += dt;
         let time = sim_time;
@@ -282,8 +282,8 @@ fn main() {
         {
             let mut q = ctx
                 .world
-                .query::<(&mut Position, &mut Drift, &mut JellyfishData)>();
-            q.for_each(&mut *ctx.world, |(pos, drift, jelly)| {
+                .query_mut::<(&mut Position, &mut Drift, &mut JellyfishData)>();
+            q.for_each(|(pos, drift, jelly)| {
                 drift.wobble_phase += drift.wobble_freq * dt;
                 jelly.pulse_phase += jelly.pulse_speed * dt;
                 jelly.hue = (jelly.hue + jelly.hue_drift * dt) % 360.0;
@@ -326,8 +326,8 @@ fn main() {
 
         let mut visuals = Vec::with_capacity(NUM_JELLYFISH);
         {
-            let mut q = ctx.world.query::<(&Position, &Drift, &JellyfishData)>();
-            q.for_each(&mut *ctx.world, |(pos, drift, jelly)| {
+            let q = ctx.world.query::<(&Position, &Drift, &JellyfishData)>();
+            q.for_each(|(pos, drift, jelly)| {
                 let pulse = 0.85 + 0.2 * jelly.pulse_phase.sin();
                 visuals.push(JellyVisual {
                     x: pos.x,

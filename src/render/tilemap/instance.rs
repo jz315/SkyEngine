@@ -407,7 +407,7 @@ fn is_parallax_factor(factor: [f32; 2]) -> bool {
     (factor[0] - 1.0).abs() > f32::EPSILON || (factor[1] - 1.0).abs() > f32::EPSILON
 }
 
-fn tile_animation<'a>(tileset: &'a TilesetGrid, tile_id: TileId) -> Option<&'a TileAnimation> {
+fn tile_animation(tileset: &TilesetGrid, tile_id: TileId) -> Option<&TileAnimation> {
     tileset
         .animations
         .iter()

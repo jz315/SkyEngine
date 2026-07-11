@@ -29,7 +29,7 @@ impl VertexAttribute {
     }
 }
 
-/// Vertex buffer layout metadata stored alongside a [`Mesh`].
+/// Vertex buffer layout metadata stored alongside a [`super::Mesh`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct VertexLayout {
     stride: u32,

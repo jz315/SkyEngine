@@ -207,9 +207,9 @@ impl RunnerHandler {
             crate::app::services::update_assets(world);
             app_profile_samples.assets_ms = app_profile.mark();
 
-            if auto_tick {
-                world.tick_with_frame_delta(dt, raw_dt);
-            }
+            let schedule_error = auto_tick
+                .then(|| world.tick_with_frame_delta(dt, raw_dt).err())
+                .flatten();
             app_profile_samples.tick_ms = app_profile.mark();
             let frame_dt = if auto_tick {
                 world.time.frame_delta
@@ -219,10 +219,17 @@ impl RunnerHandler {
             logs.set_frame(Some(world.time.frame_count));
             logging::set_logger_frame(Some(world.time.frame_count));
 
-            crate::app::services::update_video(world, frame_dt);
+            if schedule_error.is_none() {
+                crate::app::services::update_video(world, frame_dt);
+            }
             app_profile_samples.video_ms = app_profile.mark();
 
-            if exit_on_escape && input_snapshot.key_pressed(KeyCode::Escape) {
+            if let Some(error) = schedule_error {
+                eprintln!("[SkyEngine] ECS schedule tick failed: {error}");
+                rt.input.begin_frame();
+                app_profile_samples.input_reset_ms = app_profile.mark();
+                should_exit = true;
+            } else if exit_on_escape && input_snapshot.key_pressed(KeyCode::Escape) {
                 rt.input.begin_frame();
                 app_profile_samples.input_reset_ms = app_profile.mark();
                 should_exit = true;
@@ -750,7 +757,7 @@ impl ApplicationHandler for RunnerHandler {
 }
 
 fn should_trace_kajiya_runner_frame(frame_index: u64) -> bool {
-    kajiya_trace_enabled() && (frame_index < 8 || frame_index % 120 == 0)
+    kajiya_trace_enabled() && (frame_index < 8 || frame_index.is_multiple_of(120))
 }
 
 #[cfg(feature = "profile")]
@@ -1020,7 +1027,7 @@ fn app_startup_profile_egui_ms(_samples: &AppStartupProfileSamples) -> f32 {
 }
 
 fn should_trace_app_profile_frame(frame_index: u64) -> bool {
-    frame_index < 8 || frame_index % 120 == 0
+    frame_index < 8 || frame_index.is_multiple_of(120)
 }
 
 fn app_startup_profile_enabled() -> bool {

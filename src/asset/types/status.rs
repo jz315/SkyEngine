@@ -145,7 +145,7 @@ impl AssetActiveStateAgeStats {
 }
 
 fn record_oldest(slot: &mut Option<Duration>, age: Duration) {
-    if slot.map_or(true, |current| age > current) {
+    if slot.is_none_or(|current| age > current) {
         *slot = Some(age);
     }
 }

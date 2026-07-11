@@ -256,8 +256,10 @@ fn set_button(world: &mut World, entity: EntityId, label: &str, enabled: bool) {
 
 fn roster_text(world: &World) -> String {
     let mut rows = Vec::new();
-    let mut query = world.query_filtered::<(&Name, &Role, &Stats, &Condition), With<Adventurer>>();
-    query.for_each(world, |(name, role, stats, condition)| {
+    let query = world
+        .query::<(&Name, &Role, &Stats, &Condition)>()
+        .filter::<With<Adventurer>>();
+    query.for_each(|(name, role, stats, condition)| {
         rows.push(format!(
             "{} [{}] hp {} stress {} fatigue {} | M{} F{} W{} S{}",
             name.0,

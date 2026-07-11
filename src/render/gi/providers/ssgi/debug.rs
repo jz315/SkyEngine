@@ -17,5 +17,5 @@ pub(crate) fn render_debug_log_enabled() -> bool {
 
 #[inline]
 pub(crate) fn should_log_scene_view(scene_view: &SceneView) -> bool {
-    render_debug_log_enabled() && scene_view.temporal.frame_index % 120 == 0
+    render_debug_log_enabled() && scene_view.temporal.frame_index.is_multiple_of(120)
 }

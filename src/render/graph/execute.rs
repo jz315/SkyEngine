@@ -669,7 +669,7 @@ impl RenderGraph {
                     // staging internally and accepts any valid bytes_per_row.
                     ctx.queue().write_texture(
                         dst_tex.as_image_copy(),
-                        *data,
+                        data,
                         wgpu::TexelCopyBufferLayout {
                             offset: 0,
                             bytes_per_row: Some(*width * *bytes_per_pixel),
@@ -791,7 +791,7 @@ impl RenderGraph {
         }
     }
 
-    /// Convenience wrapper around [`try_execute`] that panics on error.
+    /// Convenience wrapper around [`Self::try_execute`] that panics on error.
     pub fn execute<F>(&mut self, ctx: &mut GpuContext, run_pass: F)
     where
         F: FnMut(
@@ -804,7 +804,7 @@ impl RenderGraph {
             .expect("RenderGraph::execute failed");
     }
 
-    /// Like [`try_execute`], but with a [`RenderGraphProfiler`] for timing.
+    /// Like [`Self::try_execute`], but with a [`RenderGraphProfiler`] for timing.
     pub fn try_execute_profiled<P, F>(
         &mut self,
         ctx: &mut GpuContext,
@@ -912,7 +912,7 @@ impl RenderGraph {
         }
     }
 
-    /// Like [`execute`], but with a [`RenderGraphProfiler`] for timing.
+    /// Like [`Self::execute`], but with a [`RenderGraphProfiler`] for timing.
     pub fn execute_profiled<P, F>(&mut self, ctx: &mut GpuContext, profiler: &mut P, run_pass: F)
     where
         P: RenderGraphProfiler,

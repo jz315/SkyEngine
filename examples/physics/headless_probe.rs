@@ -54,7 +54,7 @@ impl Scenario {
     }
 
     fn dt_for_frame(self, frame: usize) -> f32 {
-        if self == Self::Catchup && frame > 0 && frame % CATCHUP_PERIOD == 0 {
+        if self == Self::Catchup && frame > 0 && frame.is_multiple_of(CATCHUP_PERIOD) {
             CATCHUP_DT
         } else {
             FRAME_DT
@@ -215,7 +215,7 @@ impl ToySpawner {
     fn spawn_to_target(&mut self, world: &mut World, target: usize, with_velocity: bool) {
         while self.toys.len() < target {
             let slot = self.toys.len();
-            let center = if slot % 2 == 0 {
+            let center = if slot.is_multiple_of(2) {
                 [-170.0, 205.0]
             } else {
                 [140.0, 240.0]
@@ -439,7 +439,7 @@ fn main() {
         let expected_substeps = step_counter.count_for_delta(dt);
 
         let tick_start = Instant::now();
-        probe.world.tick_with_delta(dt);
+        probe.world.tick_with_delta(dt).unwrap();
         let tick_ms = elapsed_ms(tick_start);
 
         let counts = physics_counts(&probe.world);
@@ -698,8 +698,8 @@ fn spawn_paddle(world: &mut World) -> EntityId {
 }
 
 fn animate_mixers(world: &mut World, dt: f32) {
-    let mut mixers = world.query::<(&mut Transform, &MixerArm)>();
-    mixers.for_each(world, |(transform, mixer)| {
+    let mut mixers = world.query_mut::<(&mut Transform, &MixerArm)>();
+    mixers.for_each(|(transform, mixer)| {
         transform.rotate_z(mixer.speed * dt);
     });
 }

@@ -917,16 +917,17 @@ fn update_camera(ctx: &mut FrameContext, yaw: f32, pitch: f32, distance: f32) {
 
     let mut cameras = ctx
         .world
-        .query_filtered::<&mut Transform, With<MainCamera>>();
-    cameras.for_each(&mut *ctx.world, |transform| {
+        .query_mut::<&mut Transform>()
+        .filter::<With<MainCamera>>();
+    cameras.for_each(|transform| {
         *transform =
             Transform::from_xyz(position.x, position.y, position.z).with_rotation_quat(rotation);
     });
 }
 
 fn animate_blocks(ctx: &mut FrameContext, time: f32) {
-    let mut blocks = ctx.world.query::<(&mut Transform, &ShowcaseBlock)>();
-    blocks.for_each(&mut *ctx.world, |(transform, block)| {
+    let mut blocks = ctx.world.query_mut::<(&mut Transform, &ShowcaseBlock)>();
+    blocks.for_each(|(transform, block)| {
         let bob = block.bob_amplitude * (time * block.bob_speed + block.phase).sin();
         let pitch = block.tilt * (time * (block.bob_speed * 0.75) + block.phase * 1.3).sin();
         let roll = block.tilt * 0.65 * (time * 0.55 + block.phase).cos();
@@ -944,8 +945,8 @@ fn animate_blocks(ctx: &mut FrameContext, time: f32) {
 fn animate_lights(ctx: &mut FrameContext, time: f32) {
     let mut lights = ctx
         .world
-        .query::<(&mut Transform, &mut PointLight, &OrbitLight)>();
-    lights.for_each(&mut *ctx.world, |(transform, light, orbit)| {
+        .query_mut::<(&mut Transform, &mut PointLight, &OrbitLight)>();
+    lights.for_each(|(transform, light, orbit)| {
         let angle = time * orbit.speed + orbit.phase;
         transform.position = Vec3::new(
             angle.cos() * orbit.radius,

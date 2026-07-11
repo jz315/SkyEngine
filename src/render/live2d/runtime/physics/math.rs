@@ -327,7 +327,7 @@ pub(super) fn normalize_parameter_value(
     if is_inverted {
         result
     } else {
-        result * -1.0
+        -result
     }
 }
 

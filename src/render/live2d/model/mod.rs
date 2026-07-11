@@ -461,11 +461,9 @@ fn fit_render_transform_for_view(
     transform
 }
 
-fn make_aspect_projection(screen_w: f32, screen_h: f32, canvas_width_units: f32) -> [f32; 16] {
+fn make_aspect_projection(screen_w: f32, screen_h: f32) -> [f32; 16] {
     let aspect = if screen_w > screen_h {
         (screen_h / screen_w.max(f32::EPSILON), 1.0)
-    } else if canvas_width_units > 1.0 + f32::EPSILON {
-        (1.0, screen_w / screen_h.max(f32::EPSILON))
     } else {
         (1.0, screen_w / screen_h.max(f32::EPSILON))
     };

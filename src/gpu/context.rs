@@ -1892,7 +1892,7 @@ impl GpuContext {
 
 fn align_up(value: u64, alignment: u64) -> u64 {
     debug_assert!(alignment > 0);
-    ((value + alignment - 1) / alignment) * alignment
+    value.div_ceil(alignment) * alignment
 }
 
 #[inline]

@@ -39,9 +39,8 @@ impl RenderGraph {
     /// resources are added.
     ///
     /// Memory alias analysis is deferred to
-    /// [`allocate_physical_resources`] where the real surface dimensions are
+    /// [`Self::allocate_physical_resources`] where the real surface dimensions are
     /// available for accurate best-fit waste calculations.
-    #[must_use]
     pub fn compile(&mut self) -> Result<Vec<CompiledPass>, RenderGraphError> {
         if self.compiled {
             return Ok(self.cached_compiled.clone());
@@ -277,8 +276,8 @@ impl RenderGraph {
         let execution_order = reorder::reorder_for_affinity(
             &alive_order,
             &self.passes,
-            &edges,
-            &reverse_edges,
+            edges,
+            reverse_edges,
             &reorder::ReorderConfig::default(),
         );
 

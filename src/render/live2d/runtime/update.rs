@@ -166,7 +166,7 @@ impl Live2DUpdateScheduler {
         let stages = Self::STAGES;
         let mut index = 1usize;
         while index < stages.len() {
-            if !(stages[index - 1].order() <= stages[index].order()) {
+            if stages[index - 1].order() > stages[index].order() {
                 return false;
             }
             index += 1;

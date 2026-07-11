@@ -160,7 +160,7 @@ fn write_test_gltf(
     positions_b: &[[f32; 3]],
 ) -> std::path::PathBuf {
     fn push_aligned(buffer: &mut Vec<u8>, align: usize) {
-        while buffer.len() % align != 0 {
+        while !buffer.len().is_multiple_of(align) {
             buffer.push(0);
         }
     }

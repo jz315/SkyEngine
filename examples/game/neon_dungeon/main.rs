@@ -169,7 +169,7 @@ impl NeonDungeonGame {
         update_portal_visual(ctx.world, self.level.portal, self.stats.portal_open());
 
         self.stats.elapsed += ctx.dt;
-        ctx.world.tick_with_delta(ctx.dt);
+        ctx.world.tick_with_delta(ctx.dt).unwrap();
 
         self.handle_physics_events(ctx.world);
         self.apply_player_touch_damage(ctx.world);
@@ -445,8 +445,8 @@ impl NeonDungeonGame {
 
         let mut touched = None;
         {
-            let mut enemies = world.query::<(&Transform, &Enemy)>();
-            enemies.for_each_with_entity(world, |entity, (transform, enemy)| {
+            let enemies = world.query::<(&Transform, &Enemy)>();
+            enemies.for_each_with_entity(|entity, (transform, enemy)| {
                 if touched.is_none()
                     && enemy.damage_cooldown <= 0.0
                     && (position_of(transform) - player_pos).length() < 34.0
@@ -936,8 +936,8 @@ fn update_enemy_ai(world: &mut World, player: Option<EntityId>, dt: f32) {
         return;
     };
 
-    let mut query = world.query::<(&Transform, &mut Velocity2D, &mut Enemy)>();
-    query.for_each(world, |(transform, velocity, enemy)| {
+    let mut query = world.query_mut::<(&Transform, &mut Velocity2D, &mut Enemy)>();
+    query.for_each(|(transform, velocity, enemy)| {
         enemy.damage_cooldown = (enemy.damage_cooldown - dt).max(0.0);
         let to_player = player_pos - position_of(transform);
         let wobble = Vec2::new((transform.position[1] * 0.013).sin(), 0.0) * 22.0;
@@ -967,8 +967,8 @@ fn update_bullets(world: &mut World, level: &mut LevelEntities, dt: f32) {
 
 fn update_sparks(world: &mut World, level: &mut LevelEntities, dt: f32) {
     let mut despawn = Vec::new();
-    let mut query = world.query::<(&mut Transform, &mut SpriteRenderer, &mut Spark)>();
-    query.for_each_with_entity(world, |entity, (transform, sprite, spark)| {
+    let mut query = world.query_mut::<(&mut Transform, &mut SpriteRenderer, &mut Spark)>();
+    query.for_each_with_entity(|entity, (transform, sprite, spark)| {
         spark.ttl -= dt;
         transform.position[0] += spark.velocity.x() * dt;
         transform.position[1] += spark.velocity.y() * dt;
@@ -987,8 +987,8 @@ fn update_sparks(world: &mut World, level: &mut LevelEntities, dt: f32) {
 }
 
 fn animate_pulses(world: &mut World, dt: f32) {
-    let mut query = world.query::<(&mut SpriteRenderer, &mut Pulse)>();
-    query.for_each(world, |(sprite, pulse)| {
+    let mut query = world.query_mut::<(&mut SpriteRenderer, &mut Pulse)>();
+    query.for_each(|(sprite, pulse)| {
         pulse.phase += dt * pulse.speed;
         let scale = 1.0 + pulse.phase.sin() * pulse.amplitude;
         sprite.width = pulse.base_width * scale;
@@ -1060,8 +1060,8 @@ fn stop_player(world: &mut World, player: Option<EntityId>) {
 fn nearest_enemy(world: &World, from: Vec2) -> Option<Vec2> {
     let mut nearest = None;
     let mut nearest_distance = f32::MAX;
-    let mut query = world.query::<(&Transform, &Enemy)>();
-    query.for_each(world, |(transform, _enemy)| {
+    let query = world.query::<(&Transform, &Enemy)>();
+    query.for_each(|(transform, _enemy)| {
         let position = position_of(transform);
         let distance = (position - from).length_squared();
         if distance < nearest_distance {

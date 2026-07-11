@@ -194,7 +194,7 @@ impl WgpuRenderAssetCache {
     ) {
         if event.asset_type.is_empty() || event.asset_type == MeshAsset::TYPE {
             let current = assets.try_get_id::<MeshAsset>(event.id);
-            if current.as_ref().map_or(true, |current| {
+            if current.as_ref().is_none_or(|current| {
                 self.meshes
                     .get(&event.id)
                     .is_some_and(|cached| !Arc::ptr_eq(&cached.source, current))
@@ -205,7 +205,7 @@ impl WgpuRenderAssetCache {
 
         if event.asset_type.is_empty() || event.asset_type == StandardMaterialAsset::TYPE {
             let current = assets.try_get_id::<StandardMaterialAsset>(event.id);
-            if current.as_ref().map_or(true, |current| {
+            if current.as_ref().is_none_or(|current| {
                 self.standard_materials
                     .get(&event.id)
                     .is_some_and(|cached| !Arc::ptr_eq(&cached.source, current))

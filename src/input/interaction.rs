@@ -26,7 +26,7 @@ pub struct InteractionCapture {
 /// `InteractionContext` records which physical inputs have already been claimed
 /// so later systems do not reinterpret the same click or key as a second
 /// semantic action.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct InteractionContext {
     pointer_consumed: [bool; 5],
     scroll_consumed: bool,
@@ -109,20 +109,6 @@ impl InteractionContext {
 
     pub fn wants_pointer(&self) -> bool {
         self.hovered.is_some() || self.pressed.is_some() || self.capture.is_some()
-    }
-}
-
-impl Default for InteractionContext {
-    fn default() -> Self {
-        Self {
-            pointer_consumed: [false; 5],
-            scroll_consumed: false,
-            key_consumed: FxHashSet::default(),
-            hovered: None,
-            pressed: None,
-            focused: None,
-            capture: None,
-        }
     }
 }
 

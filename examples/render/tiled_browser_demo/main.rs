@@ -416,7 +416,9 @@ impl TiledBrowserDemo {
 impl AppState for TiledBrowserDemo {
     fn setup(&mut self, ctx: &mut SetupContext<'_>) {
         let world = &mut *ctx.world;
-        world.group("animation").add(animate_sprites);
+        world
+            .stage(sky_engine::ecs::Update)
+            .add_exclusive(animate_sprites);
 
         self.camera = Some(world.spawn((
             Transform::from_xyz(0.0, 0.0, 0.0),

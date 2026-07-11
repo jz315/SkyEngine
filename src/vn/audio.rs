@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::vn::script::{VnValue, YarnCommand};
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub struct VnAudioState {
     #[serde(default)]
     pub volumes: VnAudioVolumes,
@@ -14,18 +14,6 @@ pub struct VnAudioState {
     pub sfx_events: Vec<VnSfxEvent>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub intents: Vec<VnAudioIntent>,
-}
-
-impl Default for VnAudioState {
-    fn default() -> Self {
-        Self {
-            volumes: VnAudioVolumes::default(),
-            bgm: None,
-            voice: None,
-            sfx_events: Vec::new(),
-            intents: Vec::new(),
-        }
-    }
 }
 
 impl VnAudioState {

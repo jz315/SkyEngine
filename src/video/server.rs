@@ -220,8 +220,8 @@ impl VideoServer {
             .lock()
             .expect("video server mutex poisoned")
             .consume_asset_events();
-        let mut query = world.query::<(&mut VideoPlayer2D, &mut SpriteRenderer)>();
-        query.for_each(world, |(player, sprite)| {
+        let mut query = world.query_mut::<(&mut VideoPlayer2D, &mut SpriteRenderer)>();
+        query.for_each(|(player, sprite)| {
             self.sync_player(player, sprite);
         });
         Ok(())

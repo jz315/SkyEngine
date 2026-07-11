@@ -11,7 +11,7 @@ use rustc_hash::FxHashMap;
 /// High-level input system — query game actions instead of raw keys.
 ///
 /// Register this as an ECS resource.  The runner calls
-/// [`update()`](Self::update) automatically each frame after syncing
+/// `update()` automatically each frame after syncing
 /// the raw [`Input`](super::raw::Input) state.
 ///
 /// # Example
@@ -81,7 +81,7 @@ impl InputActions {
 
     /// Whether a named action map is currently enabled.
     pub fn is_map_enabled(&self, name: &str) -> bool {
-        self.map(name).map_or(false, |m| m.is_enabled())
+        self.map(name).is_some_and(|m| m.is_enabled())
     }
 
     // ── Action queries ──────────────────────────────────────────────────
@@ -89,7 +89,7 @@ impl InputActions {
     /// Is the action currently held (value > 0.5)?
     #[inline]
     pub fn action_held(&self, name: &str) -> bool {
-        self.curr.get(name).map_or(false, |v| v.as_bool())
+        self.curr.get(name).is_some_and(|v| v.as_bool())
     }
 
     /// Was the action just pressed this frame?
@@ -97,16 +97,16 @@ impl InputActions {
     /// True when current frame is active but previous frame was not.
     #[inline]
     pub fn action_pressed(&self, name: &str) -> bool {
-        let curr = self.curr.get(name).map_or(false, |v| v.as_bool());
-        let prev = self.prev.get(name).map_or(false, |v| v.as_bool());
+        let curr = self.curr.get(name).is_some_and(|v| v.as_bool());
+        let prev = self.prev.get(name).is_some_and(|v| v.as_bool());
         curr && !prev
     }
 
     /// Was the action just released this frame?
     #[inline]
     pub fn action_released(&self, name: &str) -> bool {
-        let curr = self.curr.get(name).map_or(false, |v| v.as_bool());
-        let prev = self.prev.get(name).map_or(false, |v| v.as_bool());
+        let curr = self.curr.get(name).is_some_and(|v| v.as_bool());
+        let prev = self.prev.get(name).is_some_and(|v| v.as_bool());
         !curr && prev
     }
 

@@ -36,8 +36,8 @@ fn main() {
     }
 
     println!("=== Before movement ===");
-    let mut q = world.query::<(&Position, &Velocity)>();
-    q.for_each_with_entity(&world, |entity, (pos, vel)| {
+    let q = world.query::<(&Position, &Velocity)>();
+    q.for_each_with_entity(|entity, (pos, vel)| {
         println!(
             "  Entity {:?}: pos=({:.1}, {:.1}) vel=({:.1}, {:.1})",
             entity, pos.x, pos.y, vel.x, vel.y
@@ -47,16 +47,16 @@ fn main() {
     // Simulate 10 ticks
     let dt = 1.0 / 60.0;
     for _ in 0..10 {
-        let mut q = world.query::<(&mut Position, &Velocity)>();
-        q.for_each(&mut world, |(pos, vel)| {
+        let mut q = world.query_mut::<(&mut Position, &Velocity)>();
+        q.for_each(|(pos, vel)| {
             pos.x += vel.x * dt;
             pos.y += vel.y * dt;
         });
     }
 
     println!("\n=== After 10 ticks ===");
-    let mut q = world.query::<&Position>();
-    q.for_each_with_entity(&world, |entity, pos| {
+    let q = world.query::<&Position>();
+    q.for_each_with_entity(|entity, pos| {
         println!("  Entity {:?}: pos=({:.2}, {:.2})", entity, pos.x, pos.y);
     });
 

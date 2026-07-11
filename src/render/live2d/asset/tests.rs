@@ -1,7 +1,7 @@
 #[cfg(test)]
 use super::*;
 
-mod tests {
+mod cases {
     use super::super::helpers::premultiply_rgba8;
     use super::*;
     use crate::render::live2d::model::Live2DLayout;

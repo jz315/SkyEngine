@@ -449,7 +449,7 @@ fn directional_shadow_cascade_boundary_keeps_near_and_far_receivers_consistent()
         RenderPipelineAsset::builder()
             .register_material::<StandardMaterial>()
             .add_phase(crate::render::lighting::shadow::DirectionalShadowPhase::new())
-            .add_compute(crate::render::GiUpdateCompute::default())
+            .add_compute(crate::render::GiUpdateCompute)
             .add_phase(crate::render::OpaquePhase::new())
             .add_postfx(CaptureCurrentColorPass {
                 target: capture.clone(),
@@ -878,7 +878,7 @@ fn standard_material_directional_shadow_darkens_final_color() {
             RenderPipelineAsset::builder()
                 .register_material::<StandardMaterial>()
                 .add_phase(crate::render::lighting::shadow::DirectionalShadowPhase::new())
-                .add_compute(crate::render::GiUpdateCompute::default())
+                .add_compute(crate::render::GiUpdateCompute)
                 .add_phase(crate::render::OpaquePhase::new())
                 .add_postfx(CaptureCurrentColorPass {
                     target: capture.clone(),

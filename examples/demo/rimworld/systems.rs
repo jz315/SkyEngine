@@ -1,4 +1,4 @@
-use sky_engine::ecs::World;
+use sky_engine::ecs::{Update, World};
 use sky_engine::input::{Input, KeyCode};
 use sky_engine::math::{Projection, Transform, Vec2};
 use sky_engine::render::{Color, SpriteRenderer};
@@ -12,10 +12,12 @@ use crate::model::{
 };
 
 pub fn install_systems(world: &mut World) {
-    world.group("input").add(handle_input_system);
-    world.group("simulation").add(needs_and_farms_system);
-    world.group("simulation").add(simulation_system);
-    world.group("presentation").add(sync_visuals_system);
+    world
+        .stage(Update)
+        .add_exclusive(handle_input_system)
+        .add_exclusive(needs_and_farms_system)
+        .add_exclusive(simulation_system)
+        .add_exclusive(sync_visuals_system);
 }
 
 fn handle_input_system(world: &mut World) {

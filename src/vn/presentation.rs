@@ -506,8 +506,10 @@ title: Start
         ));
 
         let mut world = World::new();
-        let mut vn = VnResource::default();
-        vn.runtime = Some(runtime);
+        let vn = VnResource {
+            runtime: Some(runtime),
+            ..Default::default()
+        };
         world.insert_resource(vn);
         sync_runtime_scene_to_world(&mut world);
 

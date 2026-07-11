@@ -4,7 +4,7 @@
 //! than rendering. It demonstrates:
 //!
 //! - `World` for entities and resources
-//! - typed `PreparedQuery`
+//! - typed world-bound queries
 //! - `With<T>` filters
 //! - chunk iteration for movement
 //! - `Commands` for deferred spawn / despawn during queries
@@ -13,7 +13,7 @@
 //! cargo run --example tiny_defense
 //! ```
 
-use sky_engine::ecs::{Commands, EntityId, With, World};
+use sky_engine::ecs::{CommandBuffer, EntityId, With, World};
 
 const WIDTH: i32 = 24;
 const HEIGHT: i32 = 7;
@@ -131,16 +131,16 @@ fn spawn_enemy(world: &mut World) {
 
 fn turret_ai(world: &mut World) {
     let Some(target_lane) = find_target_lane(world) else {
-        let mut turrets = world.query::<&mut Turret>();
-        turrets.for_each(&mut *world, |turret| {
+        let mut turrets = world.query_mut::<&mut Turret>();
+        turrets.for_each(|turret| {
             turret.cooldown = turret.cooldown.saturating_sub(1);
         });
         return;
     };
 
-    let mut commands = Commands::new();
-    let mut turrets = world.query::<(&mut Position, &mut Turret)>();
-    turrets.for_each(&mut *world, |(pos, turret)| {
+    let mut commands = CommandBuffer::new();
+    let mut turrets = world.query_mut::<(&mut Position, &mut Turret)>();
+    turrets.for_each(|(pos, turret)| {
         turret.cooldown = turret.cooldown.saturating_sub(1);
 
         if pos.y < target_lane {
@@ -170,8 +170,8 @@ fn turret_ai(world: &mut World) {
 
 fn find_target_lane(world: &World) -> Option<i32> {
     let mut best: Option<(i32, i32)> = None;
-    let mut enemies = world.query_filtered::<&Position, With<Enemy>>();
-    enemies.for_each(world, |pos| match best {
+    let enemies = world.query::<&Position>().filter::<With<Enemy>>();
+    enemies.for_each(|pos| match best {
         Some((best_x, _)) if pos.x >= best_x => {}
         _ => best = Some((pos.x, pos.y)),
     });
@@ -179,8 +179,8 @@ fn find_target_lane(world: &World) -> Option<i32> {
 }
 
 fn move_entities(world: &mut World) {
-    let mut moving = world.query::<(&mut Position, &Velocity)>();
-    moving.for_each_chunk(&mut *world, |(positions, velocities)| {
+    let mut moving = world.query_mut::<(&mut Position, &Velocity)>();
+    moving.for_each_chunk(|(positions, velocities)| {
         for i in 0..positions.len() {
             positions[i].x += velocities[i].x;
             positions[i].y += velocities[i].y;
@@ -190,14 +190,16 @@ fn move_entities(world: &mut World) {
 
 fn resolve_hits(world: &mut World) {
     let mut bullets = Vec::new();
-    let mut bullet_query = world.query::<(&Position, &Bullet)>();
-    bullet_query.for_each_with_entity(&*world, |entity, (pos, bullet)| {
+    let bullet_query = world.query::<(&Position, &Bullet)>();
+    bullet_query.for_each_with_entity(|entity, (pos, bullet)| {
         bullets.push((entity, *pos, bullet.damage));
     });
 
     let mut enemies = Vec::new();
-    let mut enemy_query = world.query_filtered::<(&Position, &Health), With<Enemy>>();
-    enemy_query.for_each_with_entity(&*world, |entity, (pos, health)| {
+    let enemy_query = world
+        .query::<(&Position, &Health)>()
+        .filter::<With<Enemy>>();
+    enemy_query.for_each_with_entity(|entity, (pos, health)| {
         enemies.push((entity, *pos, health.hp));
     });
 
@@ -216,7 +218,7 @@ fn resolve_hits(world: &mut World) {
     }
 
     let mut defeated = 0;
-    let mut commands = Commands::new();
+    let mut commands = CommandBuffer::new();
 
     for bullet in bullets_to_remove {
         commands.despawn(bullet);
@@ -256,17 +258,17 @@ fn add_damage(damages: &mut Vec<(EntityId, i32)>, entity: EntityId, amount: i32)
 
 fn cleanup(world: &mut World) {
     let mut leaked = 0;
-    let mut commands = Commands::new();
+    let mut commands = CommandBuffer::new();
 
-    let mut bullets = world.query::<(&Position, &Bullet)>();
-    bullets.for_each_with_entity(&*world, |entity, (pos, _)| {
+    let bullets = world.query::<(&Position, &Bullet)>();
+    bullets.for_each_with_entity(|entity, (pos, _)| {
         if pos.x >= WIDTH - 1 {
             commands.despawn(entity);
         }
     });
 
-    let mut enemies = world.query_filtered::<&Position, With<Enemy>>();
-    enemies.for_each_with_entity(&*world, |entity, pos| {
+    let enemies = world.query::<&Position>().filter::<With<Enemy>>();
+    enemies.for_each_with_entity(|entity, pos| {
         if pos.x <= 0 {
             leaked += 1;
             commands.despawn(entity);
@@ -290,8 +292,8 @@ fn is_finished(world: &World) -> bool {
         return false;
     }
 
-    let mut enemies = world.query_filtered::<&Position, With<Enemy>>();
-    enemies.is_empty(world)
+    let enemies = world.query::<&Position>().filter::<With<Enemy>>();
+    enemies.is_empty()
 }
 
 fn render(world: &World) {
@@ -300,22 +302,22 @@ fn render(world: &World) {
         row[0] = '|';
     }
 
-    let mut turrets = world.query_filtered::<&Position, With<Turret>>();
-    turrets.for_each(world, |pos| {
+    let turrets = world.query::<&Position>().filter::<With<Turret>>();
+    turrets.for_each(|pos| {
         if pos.x >= 0 && pos.x < WIDTH && pos.y >= 0 && pos.y < HEIGHT {
             grid[pos.y as usize][pos.x as usize] = 'T';
         }
     });
 
-    let mut enemies = world.query_filtered::<&Position, With<Enemy>>();
-    enemies.for_each(world, |pos| {
+    let enemies = world.query::<&Position>().filter::<With<Enemy>>();
+    enemies.for_each(|pos| {
         if pos.x >= 0 && pos.x < WIDTH && pos.y >= 0 && pos.y < HEIGHT {
             grid[pos.y as usize][pos.x as usize] = 'E';
         }
     });
 
-    let mut bullets = world.query::<(&Position, &Bullet)>();
-    bullets.for_each(world, |(pos, _)| {
+    let bullets = world.query::<(&Position, &Bullet)>();
+    bullets.for_each(|(pos, _)| {
         if pos.x >= 0 && pos.x < WIDTH && pos.y >= 0 && pos.y < HEIGHT {
             grid[pos.y as usize][pos.x as usize] = '*';
         }

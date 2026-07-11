@@ -370,6 +370,6 @@ fn gi_sample_indirect_diffuse(
 }
 "#;
 
-pub(crate) fn first_lit_view<'a>(views: &'a [SceneView]) -> Option<(usize, &'a SceneView)> {
+pub(crate) fn first_lit_view(views: &[SceneView]) -> Option<(usize, &SceneView)> {
     views.iter().enumerate().find(|(_, view)| !view.is_shadow())
 }

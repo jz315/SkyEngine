@@ -132,7 +132,7 @@ fn draw_launchpad(
 
                     ui.text("overview.launchpad.progress.label")
                         .size(body_w, 18.0)
-                        .text(&locale::completion_text(
+                        .text(locale::completion_text(
                             model.locale,
                             model.completed_tasks(),
                             model.tasks.len(),
@@ -284,7 +284,7 @@ fn draw_signal_strip(ui: &mut Ui, width: f32, model: &AppModel, app_theme: AppTh
                     let urgent = model.urgent_tasks();
                     ui.text("overview.signals.queue.value")
                         .size(body_w, 28.0)
-                        .text(&locale::urgent_items_text(model.locale, urgent))
+                        .text(locale::urgent_items_text(model.locale, urgent))
                         .font_size(24.0)
                         .line_height(28.0)
                         .color(if urgent > 0 {

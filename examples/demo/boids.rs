@@ -19,7 +19,7 @@ use std::f32::consts::TAU;
 use sky_engine::app::{
     App, AppState, AssetPlugin, FrameContext, InputPlugin, SetupContext, WindowPlugin,
 };
-use sky_engine::ecs::{EntityId, PreparedQuery, System, World};
+use sky_engine::ecs::{EntityId, ExclusiveSystem, PreparedQuery, Update, World};
 use sky_engine::gpu::GpuContext;
 use sky_engine::input::KeyCode;
 use sky_engine::math::Transform;
@@ -360,7 +360,7 @@ impl AttractorDecaySystem {
     }
 }
 
-impl System for AttractorDecaySystem {
+impl ExclusiveSystem for AttractorDecaySystem {
     fn run(&mut self, world: &mut World) {
         let dt = world.time.delta;
         let (click, mouse_valid, mouse_x, mouse_y) = {
@@ -414,7 +414,7 @@ impl SnapshotSystem {
         }
     }
 }
-impl System for SnapshotSystem {
+impl ExclusiveSystem for SnapshotSystem {
     fn run(&mut self, world: &mut World) {
         let snap = world.get_resource_mut::<BoidSnapshot>().unwrap();
         let mut positions = std::mem::take(&mut snap.positions);
@@ -450,7 +450,7 @@ impl BoidStepSystem {
         }
     }
 }
-impl System for BoidStepSystem {
+impl ExclusiveSystem for BoidStepSystem {
     fn run(&mut self, world: &mut World) {
         let dt = world.time.delta;
         let (mouse_x, mouse_y, mouse_valid, panic_mode) = {
@@ -1126,10 +1126,10 @@ fn main() {
     }
 
     world
-        .group("simulation")
-        .add(AttractorDecaySystem::new())
-        .add(SnapshotSystem::new())
-        .add(BoidStepSystem::new());
+        .stage(Update)
+        .add_exclusive(AttractorDecaySystem::new())
+        .add_exclusive(SnapshotSystem::new())
+        .add_exclusive(BoidStepSystem::new());
 
     eprintln!(
         "[spirit_wisps] {} wisps | Mouse=predator  Click=attractor  Space=scatter",

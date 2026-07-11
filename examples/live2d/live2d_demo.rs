@@ -219,8 +219,8 @@ impl Live2DDemoApp {
         let active = &mut self.active;
         let benchmark = self.benchmark.as_ref().map(BenchmarkState::config);
 
-        ctx.egui(|egui_ctx| {
-            actions = ui::draw_live2d_panel(egui_ctx, slots, active, fps_display, benchmark);
+        ctx.egui(|root_ui| {
+            actions = ui::draw_live2d_panel(root_ui, slots, active, fps_display, benchmark);
         });
 
         actions
@@ -520,9 +520,11 @@ impl AppState for Live2DDemoApp {
 }
 
 fn first_main_camera(world: &mut World) -> Option<(Transform, Projection)> {
-    let mut query = world.query_filtered::<(&Transform, &Projection), With<MainCamera>>();
+    let query = world
+        .query::<(&Transform, &Projection)>()
+        .filter::<With<MainCamera>>();
     let mut result = None;
-    query.for_each(world, |(transform, projection)| {
+    query.for_each(|(transform, projection)| {
         if result.is_none() {
             result = Some((*transform, *projection));
         }

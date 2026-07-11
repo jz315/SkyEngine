@@ -188,7 +188,7 @@ mod tests {
             runtime.diagnostics().committed_snapshot().layout_mode,
             sky_engine::ui::neo::expert::LayoutMode::Full(
                 sky_engine::ui::neo::expert::FullLayoutReason::StructureChanged {
-                    ids: vec!["neo.control-center.workspace".to_string()]
+                    ids: vec!["neo.control-center.workspace".into()]
                 }
             )
         );

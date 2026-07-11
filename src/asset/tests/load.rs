@@ -239,7 +239,7 @@ fn load_record_now_reports_memory_source_read_failure_without_filesystem() {
         Ok(_) => panic!("memory read failure should fail before factory decode"),
         Err(failure) => failure,
     };
-    assert_eq!(failure.error, read_error);
+    assert_eq!(*failure.error, read_error);
     assert_eq!(
         AssetFailurePhase::from_error(&failure.error),
         AssetFailurePhase::Read

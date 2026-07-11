@@ -336,7 +336,7 @@ fn mesh_registry_tracks_builtin_and_dynamic_meshes() {
 #[test]
 fn gltf_loader_builds_submeshes_and_material_slots() {
     fn push_aligned(buffer: &mut Vec<u8>, align: usize) {
-        while buffer.len() % align != 0 {
+        while !buffer.len().is_multiple_of(align) {
             buffer.push(0);
         }
     }

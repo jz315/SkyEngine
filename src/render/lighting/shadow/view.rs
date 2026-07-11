@@ -40,7 +40,7 @@ fn shadow_sync_log_index() -> Option<u64> {
         return None;
     }
     let index = SYNC_INDEX.fetch_add(1, Ordering::Relaxed);
-    (index % 120 == 0).then_some(index)
+    index.is_multiple_of(120).then_some(index)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -469,8 +469,8 @@ pub(crate) fn append_directional_shadow_views(
 ) -> Vec<DirectionalShadowSetup> {
     let base_view_count = views.len();
     let mut lights = Vec::new();
-    let mut query = world.query::<&DirectionalLight>();
-    query.for_each(world, |light| {
+    let query = world.query::<&DirectionalLight>();
+    query.for_each(|light| {
         if light.visible && light.casts_shadows {
             lights.push(*light);
         }
@@ -478,13 +478,13 @@ pub(crate) fn append_directional_shadow_views(
 
     let mut setups = Vec::new();
     let mut shadow_views = Vec::new();
-    for binding_index in 0..base_view_count {
-        let view = views[binding_index];
+    for (binding_index, view_slot) in views.iter_mut().take(base_view_count).enumerate() {
+        let view = *view_slot;
         if view.is_shadow() {
             continue;
         }
 
-        views[binding_index] = view.with_shadow_binding(binding_index);
+        *view_slot = view.with_shadow_binding(binding_index);
         let Some(light) = select_shadow_light(&lights, view.layer_mask) else {
             continue;
         };
@@ -794,11 +794,11 @@ fn build_shadow_view(
     // write into the cascade. The shadow shaders clamp clip Z to emulate the
     // depth-clamp part of that contract without requiring DEPTH_CLIP_CONTROL.
     let receiver_depth_extent = (center[2] - min_z).abs() * 4.0;
-    let caster_depth_extent = view
-        .far
-        .is_finite()
-        .then_some(view.far.max(0.0).min(2000.0) * 0.5)
-        .unwrap_or(0.0);
+    let caster_depth_extent = if view.far.is_finite() {
+        view.far.clamp(0.0, 2000.0) * 0.5
+    } else {
+        0.0
+    };
     let culling_depth_extent = receiver_depth_extent.max(caster_depth_extent);
     let min_z = center[2] - receiver_depth_extent;
     let max_z = center[2] + receiver_depth_extent;

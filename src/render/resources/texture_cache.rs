@@ -258,7 +258,7 @@ impl TexturePrepareQueue {
     }
 
     fn retain_current(&mut self, id: AssetId, source: Option<&Arc<TextureAsset>>) {
-        if source.map_or(true, |source| {
+        if source.is_none_or(|source| {
             self.queued
                 .get(&id)
                 .is_some_and(|entry| !Arc::ptr_eq(&entry.source, source))
@@ -490,7 +490,7 @@ impl RenderAssetCache {
         };
 
         let id = handle.id();
-        let Some(source) = assets.try_get(&handle) else {
+        let Some(source) = assets.try_get(handle) else {
             self.invalidate_stale_cpu_asset(id, None);
             return self.cpu_readiness(assets, handle);
         };
@@ -529,7 +529,7 @@ impl RenderAssetCache {
         priority: TexturePreparePriority,
     ) -> TextureReadiness {
         let id = handle.id();
-        let Some(source) = assets.try_get(&handle) else {
+        let Some(source) = assets.try_get(handle) else {
             self.invalidate_stale_cpu_asset(id, None);
             return self.cpu_readiness(assets, handle);
         };
@@ -692,7 +692,7 @@ impl RenderAssetCache {
         handle: &Handle<TextureAsset>,
     ) -> TextureReadiness {
         let id = handle.id();
-        match assets.state(&handle) {
+        match assets.state(handle) {
             AssetState::Unloaded => {
                 if self.textures.requested.insert(id) {
                     if let Err(error) = assets.load_id::<TextureAsset>(id) {
@@ -735,7 +735,7 @@ impl RenderAssetCache {
     }
 
     fn invalidate_stale_cpu_asset(&mut self, id: AssetId, source: Option<&Arc<TextureAsset>>) {
-        if source.map_or(true, |source| {
+        if source.is_none_or(|source| {
             self.textures
                 .textures
                 .get(&id)
@@ -743,7 +743,7 @@ impl RenderAssetCache {
         }) {
             self.textures.remove_resident(id);
         }
-        if source.map_or(true, |source| {
+        if source.is_none_or(|source| {
             self.textures
                 .prepare_failures
                 .get(&id)

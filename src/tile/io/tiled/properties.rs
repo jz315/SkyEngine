@@ -19,7 +19,7 @@ fn property_value_from_tiled(value: &TiledPropertyValue) -> PropertyValue {
         TiledPropertyValue::Int(value) => PropertyValue::Int(*value as i64),
         TiledPropertyValue::Float(value) => PropertyValue::Float(*value as f64),
         TiledPropertyValue::String(value) => PropertyValue::String(value.clone()),
-        TiledPropertyValue::Color(color) => PropertyValue::Color((*color).into()),
+        TiledPropertyValue::Color(color) => PropertyValue::Color(*color),
         TiledPropertyValue::File(path) => PropertyValue::File(path.clone()),
         TiledPropertyValue::Object(id) => PropertyValue::Object(*id as u64),
     }

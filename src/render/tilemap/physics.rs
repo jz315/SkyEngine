@@ -364,7 +364,7 @@ mod tests {
                 .unwrap();
 
         assert_eq!(instance.entities.len(), 2);
-        world.tick_with_delta(1.0 / 60.0);
+        world.tick_with_delta(1.0 / 60.0).unwrap();
         assert_eq!(
             world
                 .get_resource::<PhysicsWorld2D>()
@@ -479,7 +479,7 @@ mod tests {
         let instance =
             TiledPhysicsInstance::spawn(&mut world, &import, [0.0, 0.0], Default::default())
                 .unwrap();
-        world.tick_with_delta(1.0 / 60.0);
+        world.tick_with_delta(1.0 / 60.0).unwrap();
         assert_eq!(
             world
                 .get_resource::<PhysicsWorld2D>()
@@ -489,7 +489,7 @@ mod tests {
         );
 
         instance.despawn(&mut world);
-        world.tick_with_delta(1.0 / 60.0);
+        world.tick_with_delta(1.0 / 60.0).unwrap();
 
         let physics = world.get_resource::<PhysicsWorld2D>().unwrap();
         assert_eq!(physics.body_count(), 0);

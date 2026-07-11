@@ -110,12 +110,12 @@ fn next_handle_token() -> u64 {
 ///
 /// 1. **Declaration** — register virtual resources and passes with their
 ///    read/write dependencies using builder closures.
-/// 2. **Execution** — call [`compile`] then [`execute`] to allocate physical
+/// 2. **Execution** — call [`Self::compile`] then [`Self::execute`] to allocate physical
 ///    resources and run passes in dependency order.
 ///
 /// Passes don't contain closures; instead, `compile()` returns a
 /// `Vec<CompiledPass>` and the caller drives execution.  For the common
-/// "self-contained graph" case, use [`execute`] which does everything.
+/// "self-contained graph" case, use [`Self::execute`] which does everything.
 pub struct RenderGraph {
     handle_token: u64,
 
@@ -275,14 +275,14 @@ impl RenderGraph {
 
     fn validate_pass_resource(
         &self,
-        pass: &Cow<'static, str>,
+        pass: &str,
         resource: ResourceRef,
     ) -> Result<(), RenderGraphError> {
         if self.resource_handle_is_valid(resource) {
             return Ok(());
         }
         Err(RenderGraphError::InvalidResourceHandle {
-            pass: Some(pass.clone()),
+            pass: Some(Cow::Owned(pass.to_owned())),
             resource,
         })
     }

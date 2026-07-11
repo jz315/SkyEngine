@@ -220,7 +220,7 @@ impl DirectionalShadowPhase {
             (std::ptr::from_ref(material_layout) as usize).hash(&mut hasher);
         }
         let key = hasher.finish();
-        if !self.pipelines.contains_key(&key) {
+        if let std::collections::hash_map::Entry::Vacant(e) = self.pipelines.entry(key) {
             let vertex_attributes = shadow_vertex_attributes(mesh_layout, kind)
                 .map_err(shadow_pipeline_material_error)?;
             let (shader_label, shader_source) = match kind {
@@ -343,7 +343,7 @@ impl DirectionalShadowPhase {
                 multiview_mask: None,
                 cache: None,
             });
-            self.pipelines.insert(key, pipeline);
+            e.insert(pipeline);
         }
         Ok(self
             .pipelines

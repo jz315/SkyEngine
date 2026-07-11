@@ -28,6 +28,10 @@ pub struct DrawContext<'ctx, 'pass, 'tex> {
 
 impl<'ctx, 'pass, 'tex> DrawContext<'ctx, 'pass, 'tex> {
     #[inline]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "constructor mirrors the complete per-pass resource contract"
+    )]
     pub(crate) fn new(
         device: &'ctx wgpu::Device,
         sampler_nearest: &'ctx wgpu::Sampler,
@@ -149,6 +153,10 @@ pub struct StandaloneDrawContext<'ctx, 'frame, 'tex> {
 
 impl<'ctx, 'frame, 'tex> StandaloneDrawContext<'ctx, 'frame, 'tex> {
     #[inline]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "constructor mirrors the standalone draw resource contract"
+    )]
     pub fn new(
         gpu: &'ctx mut crate::gpu::GpuContext,
         target: &'ctx RenderTarget,

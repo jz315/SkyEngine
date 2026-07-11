@@ -39,7 +39,7 @@ impl AudioBackend {
 
         match KiraBackend::new(config, buses) {
             Ok(backend) => Self {
-                state: BackendState::Ready(backend),
+                state: BackendState::Ready(Box::new(backend)),
             },
             Err(error) => Self {
                 state: BackendState::Disabled {
@@ -281,7 +281,7 @@ impl AudioBackend {
 }
 
 enum BackendState {
-    Ready(KiraBackend),
+    Ready(Box<KiraBackend>),
     Disabled { reason: String },
 }
 

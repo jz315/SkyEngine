@@ -306,7 +306,7 @@ fn main() {
     world.install(AssetPlugin::default()).unwrap();
 
     App::new(world).run(move |ctx: &mut sky_engine::app::FrameContext| {
-        ctx.world.tick();
+        ctx.world.tick().unwrap();
         sim_time += ctx.dt;
         let time = sim_time;
 
