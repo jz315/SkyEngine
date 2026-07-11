@@ -8,7 +8,7 @@
 use rustc_hash::FxHashMap;
 use std::alloc::Layout;
 use std::any::{type_name, TypeId};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -113,6 +113,7 @@ lazy_static::lazy_static! {
 }
 
 thread_local! {
+    static LAST_RUST_TYPE: Cell<Option<(TypeId, Type)>> = const { Cell::new(None) };
     static LOCAL_RUST_TYPES: RefCell<FxHashMap<TypeId, Type>> =
         RefCell::new(FxHashMap::default());
 }
@@ -236,7 +237,14 @@ pub fn register(name: &str, size: usize, align: usize) -> Type {
 pub fn type_of<T: 'static>() -> Type {
     let rust_type_id = TypeId::of::<T>();
 
+    if let Some((cached_type_id, ty)) = LAST_RUST_TYPE.get() {
+        if cached_type_id == rust_type_id {
+            return ty;
+        }
+    }
+
     if let Some(ty) = LOCAL_RUST_TYPES.with(|cache| cache.borrow().get(&rust_type_id).copied()) {
+        LAST_RUST_TYPE.set(Some((rust_type_id, ty)));
         return ty;
     }
 
@@ -246,6 +254,7 @@ pub fn type_of<T: 'static>() -> Type {
             LOCAL_RUST_TYPES.with(|cache| {
                 cache.borrow_mut().insert(rust_type_id, ty);
             });
+            LAST_RUST_TYPE.set(Some((rust_type_id, ty)));
             return ty;
         }
     }
@@ -255,6 +264,7 @@ pub fn type_of<T: 'static>() -> Type {
     LOCAL_RUST_TYPES.with(|cache| {
         cache.borrow_mut().insert(rust_type_id, ty);
     });
+    LAST_RUST_TYPE.set(Some((rust_type_id, ty)));
     ty
 }
 
@@ -267,7 +277,14 @@ pub fn query_by_name(name: &str) -> Option<Type> {
 /// Queries a Rust type if it was already registered.
 pub fn query_by_rust_type<T: 'static>() -> Option<Type> {
     let rust_type_id = TypeId::of::<T>();
+    if let Some((cached_type_id, ty)) = LAST_RUST_TYPE.get() {
+        if cached_type_id == rust_type_id {
+            return Some(ty);
+        }
+    }
+
     if let Some(ty) = LOCAL_RUST_TYPES.with(|cache| cache.borrow().get(&rust_type_id).copied()) {
+        LAST_RUST_TYPE.set(Some((rust_type_id, ty)));
         return Some(ty);
     }
 
@@ -276,6 +293,7 @@ pub fn query_by_rust_type<T: 'static>() -> Option<Type> {
     LOCAL_RUST_TYPES.with(|cache| {
         cache.borrow_mut().insert(rust_type_id, ty);
     });
+    LAST_RUST_TYPE.set(Some((rust_type_id, ty)));
     Some(ty)
 }
 
