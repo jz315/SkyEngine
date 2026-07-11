@@ -31,6 +31,10 @@ tools/*
 !tools/ecs-comparison/
 !tools/ecs-comparison/**
 tools/ecs-comparison/target/
+!tools/showcase-check/
+!tools/showcase-check/**
+tools/showcase-check/target/
+tools/showcase-check/Cargo.lock
 
 # Local reference and archive checkouts
 _achieved/

@@ -1,0 +1,222 @@
+[package]
+name = "sky-showcase-check"
+version = "0.0.0"
+edition = "2021"
+publish = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+
+[dependencies]
+sky_engine = { path = "../..", default-features = false }
+bytemuck = { version = "1", features = ["derive"] }
+egui = { version = "0.34", optional = true }
+glam = "0.32.1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "webp"] }
+pollster = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+wgpu = "29"
+yakui = { path = "../../crates/vendor/yakui/crates/yakui", optional = true }
+
+[features]
+default = []
+app = ["sky_engine/app"]
+physics = ["app", "sky_engine/physics"]
+ui-legacy = ["app", "sky_engine/ui-legacy"]
+ui-neo = ["app", "sky_engine/ui-neo"]
+yakui-ui = ["app", "dep:yakui", "sky_engine/yakui-ui"]
+egui = ["app", "dep:egui", "sky_engine/egui"]
+live2d = ["app", "sky_engine/live2d"]
+live2d-egui = ["live2d", "egui"]
+kajiya-renderer = ["app", "sky_engine/kajiya-renderer"]
+renderling-renderer = ["app", "sky_engine/renderling-renderer"]
+vn-ui = ["ui-neo", "sky_engine/vn-ui"]
+
+[[bin]]
+name = "boids-classic"
+path = "../../examples/demo/boids_classic.rs"
+required-features = ["app"]
+
+[[bin]]
+name = "boids"
+path = "../../examples/demo/boids.rs"
+required-features = ["app"]
+
+[[bin]]
+name = "cosmic-jellyfish"
+path = "../../examples/demo/cosmic_jellyfish.rs"
+required-features = ["app"]
+
+[[bin]]
+name = "neon-galaxy"
+path = "../../examples/demo/neon_galaxy.rs"
+required-features = ["app"]
+
+[[bin]]
+name = "rimworld"
+path = "../../examples/demo/rimworld/main.rs"
+required-features = ["app"]
+
+[[bin]]
+name = "fog-lantern-station"
+path = "../../examples/game/fog_lantern_station/main.rs"
+required-features = ["ui-neo"]
+
+[[bin]]
+name = "kenney-platformer"
+path = "../../examples/game/kenney_platformer/main.rs"
+required-features = ["ui-legacy"]
+
+[[bin]]
+name = "last-light-guild"
+path = "../../examples/game/last_light_guild/main.rs"
+required-features = ["ui-legacy"]
+
+[[bin]]
+name = "lawn-defense"
+path = "../../examples/game/lawn_defense/main.rs"
+required-features = ["ui-legacy"]
+
+[[bin]]
+name = "miniature-builder"
+path = "../../examples/game/miniature_builder/main.rs"
+required-features = ["app"]
+
+[[bin]]
+name = "neon-dungeon"
+path = "../../examples/game/neon_dungeon/main.rs"
+required-features = ["physics"]
+
+[[bin]]
+name = "hello-live2d"
+path = "../../examples/live2d/hello_live2d.rs"
+required-features = ["live2d"]
+
+[[bin]]
+name = "live2d-demo"
+path = "../../examples/live2d/live2d_demo.rs"
+required-features = ["live2d-egui"]
+
+[[bin]]
+name = "live2d-probe"
+path = "../../examples/live2d/live2d_probe.rs"
+required-features = ["live2d"]
+
+[[bin]]
+name = "block-on-plank"
+path = "../../examples/physics/block_on_plank.rs"
+required-features = ["app"]
+
+[[bin]]
+name = "tiled-topdown"
+path = "../../examples/physics/tiled_topdown.rs"
+required-features = ["physics"]
+
+[[bin]]
+name = "egui-demo"
+path = "../../examples/render/egui_demo.rs"
+required-features = ["egui"]
+
+[[bin]]
+name = "kajiya-3d"
+path = "../../examples/render/kajiya_3d.rs"
+required-features = ["kajiya-renderer"]
+
+[[bin]]
+name = "render-perf-test"
+path = "../../examples/render/perf_test.rs"
+required-features = ["app"]
+
+[[bin]]
+name = "renderer-probe"
+path = "../../examples/render/renderer_probe.rs"
+required-features = ["app"]
+
+[[bin]]
+name = "renderling-3d"
+path = "../../examples/render/renderling_3d.rs"
+required-features = ["renderling-renderer"]
+
+[[bin]]
+name = "three-d-demo"
+path = "../../examples/render/three_d_demo.rs"
+required-features = ["app"]
+
+[[bin]]
+name = "tiled-browser-demo"
+path = "../../examples/render/tiled_browser_demo/main.rs"
+required-features = ["app"]
+
+[[bin]]
+name = "tiled-import-demo"
+path = "../../examples/render/tiled_import_demo.rs"
+required-features = ["app"]
+
+[[bin]]
+name = "ui-legacy-stress-lab"
+path = "../../examples/ui/legacy/stress_lab.rs"
+required-features = ["ui-legacy"]
+
+[[bin]]
+name = "ui-neo-ai-chat"
+path = "../../examples/ui/neo/ai_chat.rs"
+required-features = ["ui-neo"]
+
+[[bin]]
+name = "ui-neo-calculator"
+path = "../../examples/ui/neo/calculator.rs"
+required-features = ["ui-neo"]
+
+[[bin]]
+name = "ui-neo-control-center"
+path = "../../examples/ui/neo/control_center/main.rs"
+required-features = ["ui-neo"]
+
+[[bin]]
+name = "ui-neo-eui-demo"
+path = "../../examples/ui/neo/eui_demo.rs"
+required-features = ["ui-neo"]
+
+[[bin]]
+name = "ui-neo-game-hud"
+path = "../../examples/ui/neo/game_hud.rs"
+required-features = ["ui-neo"]
+
+[[bin]]
+name = "ui-neo-kenney-showcase"
+path = "../../examples/ui/neo/kenney_showcase.rs"
+required-features = ["ui-neo"]
+
+[[bin]]
+name = "ui-neo-scroll-x"
+path = "../../examples/ui/neo/scroll_x.rs"
+required-features = ["ui-neo"]
+
+[[bin]]
+name = "ui-neo-scroll-xy"
+path = "../../examples/ui/neo/scroll_xy.rs"
+required-features = ["ui-neo"]
+
+[[bin]]
+name = "ui-neo-stress-lab"
+path = "../../examples/ui/neo/stress_lab.rs"
+required-features = ["ui-neo"]
+
+[[bin]]
+name = "ui-yakui-stress-lab"
+path = "../../examples/ui/yakui/stress_lab.rs"
+required-features = ["yakui-ui"]
+
+[[bin]]
+name = "vn-after-school-promise"
+path = "../../examples/vn/after_school_promise.rs"
+required-features = ["vn-ui"]
+
+[patch.crates-io]
+rspirv = { git = "https://github.com/gfx-rs/rspirv.git", rev = "dae552c" }
+spirv_headers = { git = "https://github.com/gfx-rs/rspirv.git", rev = "dae552c" }
+
+[patch."https://github.com/h3r2tic/gpu-profiler.git"]
+gpu-profiler = { path = "../../crates/vendor/gpu-profiler" }
