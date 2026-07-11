@@ -1,0 +1,34 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">SkyEngine mark</title>
+  <desc id="desc">A sky-blue query path flowing through modular ECS chunks inside an open engine frame.</desc>
+  <defs>
+    <linearGradient id="sky-path" x1="166" y1="118" x2="346" y2="394" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7DD3FC"/>
+      <stop offset="0.52" stop-color="#38BDF8"/>
+      <stop offset="1" stop-color="#0EA5E9"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="38" y="38" width="436" height="436" rx="108" fill="#F8FBFF"/>
+
+  <path d="M158 114H116C94 114 76 132 76 154V196" stroke="#334155" stroke-width="14" stroke-linecap="round"/>
+  <path d="M354 114H396C418 114 436 132 436 154V196" stroke="#334155" stroke-width="14" stroke-linecap="round"/>
+  <path d="M76 316V358C76 380 94 398 116 398H158" stroke="#334155" stroke-width="14" stroke-linecap="round"/>
+  <path d="M436 316V358C436 380 418 398 396 398H354" stroke="#334155" stroke-width="14" stroke-linecap="round"/>
+
+  <rect x="166" y="138" width="78" height="54" rx="18" fill="#E7F5FF"/>
+  <rect x="268" y="138" width="78" height="54" rx="18" fill="#E7F5FF"/>
+  <rect x="166" y="229" width="78" height="54" rx="18" fill="#E7F5FF"/>
+  <rect x="268" y="229" width="78" height="54" rx="18" fill="#E7F5FF"/>
+  <rect x="166" y="320" width="78" height="54" rx="18" fill="#E7F5FF"/>
+  <rect x="268" y="320" width="78" height="54" rx="18" fill="#E7F5FF"/>
+
+  <path
+    d="M320 126C244 126 192 145 192 184C192 218 229 226 262 226H293C326 226 350 242 350 273C350 324 286 346 196 386"
+    stroke="url(#sky-path)"
+    stroke-width="30"
+    stroke-linecap="round"
+    stroke-linejoin="round"/>
+  <circle cx="320" cy="126" r="11" fill="#7DD3FC"/>
+  <circle cx="196" cy="386" r="11" fill="#0EA5E9"/>
+</svg>

@@ -1,0 +1,40 @@
+<svg width="1200" height="360" viewBox="0 0 1200 360" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">SkyEngine logo</title>
+  <desc id="desc">SkyEngine wordmark with a sky-blue query path flowing through modular ECS chunks.</desc>
+  <defs>
+    <linearGradient id="sky-path" x1="118" y1="76" x2="242" y2="284" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7DD3FC"/>
+      <stop offset="0.52" stop-color="#38BDF8"/>
+      <stop offset="1" stop-color="#0EA5E9"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="32" y="32" width="296" height="296" rx="76" fill="#F8FBFF"/>
+
+  <path d="M120 88H88C72 88 60 100 60 116V148" stroke="#334155" stroke-width="9" stroke-linecap="round"/>
+  <path d="M240 88H272C288 88 300 100 300 116V148" stroke="#334155" stroke-width="9" stroke-linecap="round"/>
+  <path d="M60 212V244C60 260 72 272 88 272H120" stroke="#334155" stroke-width="9" stroke-linecap="round"/>
+  <path d="M300 212V244C300 260 288 272 272 272H240" stroke="#334155" stroke-width="9" stroke-linecap="round"/>
+
+  <rect x="126" y="106" width="46" height="34" rx="11" fill="#E7F5FF"/>
+  <rect x="188" y="106" width="46" height="34" rx="11" fill="#E7F5FF"/>
+  <rect x="126" y="164" width="46" height="34" rx="11" fill="#E7F5FF"/>
+  <rect x="188" y="164" width="46" height="34" rx="11" fill="#E7F5FF"/>
+  <rect x="126" y="222" width="46" height="34" rx="11" fill="#E7F5FF"/>
+  <rect x="188" y="222" width="46" height="34" rx="11" fill="#E7F5FF"/>
+
+  <path
+    d="M220 96C170 96 136 110 136 136C136 159 160 164 182 164H203C225 164 242 175 242 196C242 230 200 245 140 272"
+    stroke="url(#sky-path)"
+    stroke-width="20"
+    stroke-linecap="round"
+    stroke-linejoin="round"/>
+  <circle cx="220" cy="96" r="7" fill="#7DD3FC"/>
+  <circle cx="140" cy="272" r="7" fill="#0EA5E9"/>
+
+  <text x="394" y="198"
+        fill="#17212F"
+        font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
+        font-size="86"
+        font-weight="620">SkyEngine</text>
+</svg>

@@ -1,0 +1,46 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">SkyEngine skyline mark</title>
+  <desc id="desc">A minimal sky arc lifting modular engine blocks, representing SkyEngine as a foundation for high-performance systems.</desc>
+  <defs>
+    <linearGradient id="sky-arc" x1="96" y1="142" x2="416" y2="240" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#BAE6FD"/>
+      <stop offset="0.45" stop-color="#38BDF8"/>
+      <stop offset="1" stop-color="#0EA5E9"/>
+    </linearGradient>
+    <linearGradient id="sky-lift" x1="152" y1="310" x2="360" y2="220" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0EA5E9"/>
+      <stop offset="1" stop-color="#7DD3FC"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="40" y="40" width="432" height="432" rx="108" fill="#F8FBFF"/>
+  <rect x="40" y="40" width="432" height="432" rx="108" stroke="#E0EDF7" stroke-width="8"/>
+
+  <path
+    d="M116 206C164 150 237 120 320 124C356 126 388 136 416 154"
+    stroke="url(#sky-arc)"
+    stroke-width="30"
+    stroke-linecap="round"/>
+  <path
+    d="M150 236C198 210 252 199 306 205C332 208 356 215 378 226"
+    stroke="#CFF2FF"
+    stroke-width="10"
+    stroke-linecap="round"/>
+
+  <rect x="136" y="286" width="76" height="66" rx="20" fill="#E7F5FF"/>
+  <rect x="218" y="286" width="76" height="66" rx="20" fill="#DDF2FF"/>
+  <rect x="300" y="286" width="76" height="66" rx="20" fill="#E7F5FF"/>
+
+  <path
+    d="M150 316C196 316 226 297 256 268C286 239 319 222 366 222"
+    stroke="url(#sky-lift)"
+    stroke-width="24"
+    stroke-linecap="round"
+    stroke-linejoin="round"/>
+  <circle cx="150" cy="316" r="9" fill="#0EA5E9"/>
+  <circle cx="366" cy="222" r="9" fill="#7DD3FC"/>
+
+  <path d="M134 388H200" stroke="#334155" stroke-width="14" stroke-linecap="round"/>
+  <path d="M223 388H289" stroke="#334155" stroke-width="14" stroke-linecap="round"/>
+  <path d="M312 388H378" stroke="#334155" stroke-width="14" stroke-linecap="round"/>
+</svg>

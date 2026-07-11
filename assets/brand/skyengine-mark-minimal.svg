@@ -1,0 +1,20 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">SkyEngine mark</title>
+  <desc id="desc">A minimal sky-blue S path mark inside a soft rounded square.</desc>
+  <defs>
+    <linearGradient id="skyengine-blue" x1="148" y1="108" x2="344" y2="404" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#38BDF8"/>
+      <stop offset="1" stop-color="#0EA5E9"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="40" y="40" width="432" height="432" rx="108" fill="#F8FBFF"/>
+  <rect x="40" y="40" width="432" height="432" rx="108" stroke="#DDEAF5" stroke-width="8"/>
+
+  <path
+    d="M340 126C256 126 172 165 158 228C146 281 190 310 255 310H303C348 310 369 333 354 364C334 403 267 423 170 423"
+    stroke="url(#skyengine-blue)"
+    stroke-width="52"
+    stroke-linecap="round"
+    stroke-linejoin="round"/>
+</svg>

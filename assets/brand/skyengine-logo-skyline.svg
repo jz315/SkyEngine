@@ -1,0 +1,52 @@
+<svg width="1200" height="360" viewBox="0 0 1200 360" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">SkyEngine skyline logo</title>
+  <desc id="desc">SkyEngine wordmark with a sky arc lifting modular engine blocks.</desc>
+  <defs>
+    <linearGradient id="sky-arc" x1="82" y1="108" x2="274" y2="172" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#BAE6FD"/>
+      <stop offset="0.45" stop-color="#38BDF8"/>
+      <stop offset="1" stop-color="#0EA5E9"/>
+    </linearGradient>
+    <linearGradient id="sky-lift" x1="116" y1="218" x2="244" y2="150" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0EA5E9"/>
+      <stop offset="1" stop-color="#7DD3FC"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="32" y="32" width="296" height="296" rx="76" fill="#F8FBFF"/>
+  <rect x="32" y="32" width="296" height="296" rx="76" stroke="#E0EDF7" stroke-width="4"/>
+
+  <path
+    d="M84 146C116 108 164 88 220 92C244 94 266 100 284 112"
+    stroke="url(#sky-arc)"
+    stroke-width="20"
+    stroke-linecap="round"/>
+  <path
+    d="M106 168C138 151 174 144 212 148C230 150 246 154 260 162"
+    stroke="#CFF2FF"
+    stroke-width="7"
+    stroke-linecap="round"/>
+
+  <rect x="100" y="202" width="48" height="42" rx="13" fill="#E7F5FF"/>
+  <rect x="154" y="202" width="48" height="42" rx="13" fill="#DDF2FF"/>
+  <rect x="208" y="202" width="48" height="42" rx="13" fill="#E7F5FF"/>
+
+  <path
+    d="M108 222C140 222 160 208 180 188C201 168 224 156 256 156"
+    stroke="url(#sky-lift)"
+    stroke-width="16"
+    stroke-linecap="round"
+    stroke-linejoin="round"/>
+  <circle cx="108" cy="222" r="6" fill="#0EA5E9"/>
+  <circle cx="256" cy="156" r="6" fill="#7DD3FC"/>
+
+  <path d="M98 270H140" stroke="#334155" stroke-width="10" stroke-linecap="round"/>
+  <path d="M159 270H201" stroke="#334155" stroke-width="10" stroke-linecap="round"/>
+  <path d="M220 270H262" stroke="#334155" stroke-width="10" stroke-linecap="round"/>
+
+  <text x="394" y="198"
+        fill="#17212F"
+        font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
+        font-size="86"
+        font-weight="620">SkyEngine</text>
+</svg>
