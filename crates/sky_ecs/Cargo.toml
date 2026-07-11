@@ -15,6 +15,7 @@ rustc-hash = "2.1.2"
 sky_type = { version = "0.1.0", path = "../sky_type" }
 sky_profile = { version = "0.1.0", path = "../sky_profile", optional = true }
 smallvec = "1.13.2"
+sky_ecs_derive = { version = "0.1.0", path = "../sky_ecs_derive" }
 
 [features]
 default = []

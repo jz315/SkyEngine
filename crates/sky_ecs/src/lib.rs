@@ -3,6 +3,8 @@
 //! The crate owns entities, component storage, typed queries, resources,
 //! commands, scheduling, and the lightweight plugin installation protocol.
 
+extern crate self as sky_ecs;
+
 pub mod ecs;
 pub mod plugin;
 

@@ -2,7 +2,7 @@ use super::commands::InsertValue;
 use super::resource::Resources;
 use super::*;
 use crate::ecs::entity::{EntityLocation, EntityRecord};
-use crate::ecs::system::{GroupBuilder, Schedule, TickPolicy};
+use crate::ecs::system::{Schedule, StageBuilder};
 use crate::ecs::time::Time;
 use crate::ecs::{component_type, ComponentType};
 use crate::plugin::{Plugin, PluginError, PluginRegistry, PluginResult};
@@ -10,6 +10,7 @@ use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use std::cell::Cell;
 use std::ptr::NonNull;
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct TransitionKey {
@@ -22,6 +23,43 @@ struct TransitionPlan {
     copy_spans: SmallVec<[(usize, usize, usize); MAX_COMPONENTS]>,
     target_component_index: Option<usize>,
     target_data_index: Cell<Option<usize>>,
+}
+
+struct ScheduleRestoreGuard {
+    slot: *mut Option<Schedule>,
+    schedule: Option<Schedule>,
+}
+
+impl ScheduleRestoreGuard {
+    fn new(slot: &mut Option<Schedule>, schedule: Schedule) -> Self {
+        Self {
+            slot: std::ptr::from_mut(slot),
+            schedule: Some(schedule),
+        }
+    }
+
+    fn schedule_mut(&mut self) -> &mut Schedule {
+        self.schedule.as_mut().unwrap()
+    }
+}
+
+impl Drop for ScheduleRestoreGuard {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            let discard = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.schedule.as_mut().unwrap().discard_commands();
+            }));
+            if let Err(payload) = discard {
+                // Never let a user payload's destructor turn schedule cleanup
+                // into a double-panic abort. The process is already unwinding;
+                // leaking this secondary panic payload is the only safe exit.
+                std::mem::forget(payload);
+            }
+        }
+        unsafe {
+            *self.slot = self.schedule.take();
+        }
+    }
 }
 
 /// The central container for all ECS data.
@@ -49,11 +87,18 @@ struct TransitionPlan {
 /// assert_eq!(world.get::<Position>(entity).unwrap().x, 0.0);
 /// ```
 pub struct World {
+    cache_token: Arc<()>,
+    query_cache: QueryCacheStore,
+    command_poisoned: bool,
     pub time: Time,
     pub(crate) data: Vec<Data>,
     archetype_epoch: usize,
+    storage_epoch: u64,
+    resource_epoch: u64,
     archetype_to_data_index: FxHashMap<Archetype, usize>,
+    last_data_index: Option<(Archetype, usize)>,
     transitions: FxHashMap<TransitionKey, Box<TransitionPlan>>,
+    last_transition: Option<(TransitionKey, NonNull<TransitionPlan>)>,
     entities: Vec<EntityRecord>,
     free_entities: Vec<u32>,
     resources: Resources,
@@ -71,17 +116,34 @@ impl World {
     /// Creates an empty world with no entities, resources, or systems.
     pub fn new() -> Self {
         Self {
+            cache_token: Arc::new(()),
+            query_cache: QueryCacheStore::default(),
+            command_poisoned: false,
             time: Time::default(),
             data: Vec::new(),
             archetype_epoch: 0,
+            storage_epoch: 0,
+            resource_epoch: 0,
             archetype_to_data_index: FxHashMap::default(),
+            last_data_index: None,
             transitions: FxHashMap::default(),
+            last_transition: None,
             entities: Vec::new(),
             free_entities: Vec::new(),
             resources: Resources::default(),
             plugins: PluginRegistry::default(),
             schedule: Some(Schedule::default()),
         }
+    }
+
+    /// Returns whether a deferred command panicked while being applied.
+    ///
+    /// A poisoned World remains inspectable and can be shut down, but it
+    /// cannot safely apply more command buffers or advance its schedule: an
+    /// arbitrary command may have mutated only part of its intended state.
+    #[inline]
+    pub fn is_poisoned(&self) -> bool {
+        self.command_poisoned
     }
 
     /// Install an engine module plugin into this world.
@@ -136,17 +198,64 @@ impl World {
     // Schedule API
     // -----------------------------------------------------------------------
 
-    /// Returns a `GroupBuilder` for the named system group.
+    /// Returns the builder for an installed typed schedule stage.
     ///
-    /// Groups execute in creation order during [`tick`](Self::tick).
-    /// If the group already exists, the builder appends to it.
-    pub fn group(&mut self, name: &str) -> GroupBuilder<'_> {
+    /// # Panics
+    ///
+    /// Panics when a custom stage has not been installed explicitly with
+    /// [`World::insert_stage_after`]. Use [`World::try_stage`] when the stage
+    /// may be optional.
+    pub fn stage<L: StageLabel>(&mut self, label: L) -> StageBuilder<'_> {
+        self.try_stage(label)
+            .unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    /// Tries to return the builder for an already-installed typed stage.
+    pub fn try_stage<L: StageLabel>(
+        &mut self,
+        _label: L,
+    ) -> Result<StageBuilder<'_>, ScheduleBuildError> {
         let schedule = self
             .schedule
             .as_mut()
             .expect("cannot modify schedule during tick");
-        let index = schedule.find_or_create_group(name);
-        GroupBuilder::new(schedule, index)
+        let index = schedule
+            .stage_index::<L>()
+            .ok_or(ScheduleBuildError::UnknownStage(L::name()))?;
+        Ok(StageBuilder::new(schedule, index))
+    }
+
+    /// Inserts a custom typed stage after an installed stage.
+    ///
+    /// The returned builder configures the newly installed stage directly.
+    /// Repeated insertions after the same anchor preserve call order. A stage
+    /// inserted under an earlier sibling stays with that sibling's subtree.
+    pub fn insert_stage_after<Anchor, L>(
+        &mut self,
+        _anchor: Anchor,
+        _label: L,
+    ) -> Result<StageBuilder<'_>, ScheduleBuildError>
+    where
+        Anchor: StageLabel,
+        L: StageLabel,
+    {
+        let schedule = self
+            .schedule
+            .as_mut()
+            .expect("cannot modify schedule during tick");
+        let index = schedule.insert_after::<Anchor, L>()?;
+        Ok(StageBuilder::new(schedule, index))
+    }
+
+    /// Returns an owned snapshot of the compiled schedule and access graph.
+    ///
+    /// This does not initialize or run systems. It may compile dirty stage
+    /// waves, so it requires exclusive access to the World.
+    pub fn schedule_diagnostics(&mut self) -> ScheduleDiagnostics {
+        self.schedule
+            .as_mut()
+            .expect("cannot inspect schedule during tick")
+            .diagnostics()
     }
 
     /// Advances the world by one frame using wall-clock time.
@@ -158,20 +267,25 @@ impl World {
     ///
     /// # Panics
     ///
-    /// Panics if called recursively (e.g. from within a running system).
-    pub fn tick(&mut self) {
-        let mut schedule = self.schedule.take().expect("cannot call tick recursively");
-
+    /// Panics if the World is poisoned, if called recursively (e.g. from
+    /// within a running system), or if a running system removes a resource
+    /// required later in the same frame.
+    /// Missing resources detected before the frame begins are returned as an
+    /// error without advancing time or running any system.
+    pub fn tick(&mut self) -> Result<TickReport, ScheduleError> {
+        self.assert_schedule_tick_allowed();
+        let schedule = self.schedule.take().expect("cannot call tick recursively");
+        let mut guard = ScheduleRestoreGuard::new(&mut self.schedule, schedule);
         let now = std::time::Instant::now();
-        let raw_delta = match schedule.last_tick {
+        let raw_delta = match guard.schedule_mut().last_tick {
             Some(last) => (now - last).as_secs_f32(),
             None => 0.0,
         };
-        schedule.last_tick = Some(now);
-
-        self.run_schedule(&mut schedule, raw_delta, raw_delta);
-
-        self.schedule = Some(schedule);
+        let result = guard.schedule_mut().run(self, raw_delta, raw_delta);
+        if result.is_ok() {
+            guard.schedule_mut().last_tick = Some(now);
+        }
+        result
     }
 
     /// Advances the world by the given delta (in seconds).
@@ -181,9 +295,11 @@ impl World {
     ///
     /// # Panics
     ///
-    /// Panics if called recursively.
-    pub fn tick_with_delta(&mut self, delta: f32) {
-        self.tick_with_frame_delta(delta, delta);
+    /// Panics if the World is poisoned, if called recursively, or if a running
+    /// system removes a resource required later in the same frame. Missing resources found by frame
+    /// preflight are returned without advancing time or running systems.
+    pub fn tick_with_delta(&mut self, delta: f32) -> Result<TickReport, ScheduleError> {
+        self.tick_with_frame_delta(delta, delta)
     }
 
     /// Advances the world by a clamped frame delta and the raw real delta.
@@ -194,82 +310,18 @@ impl World {
     ///
     /// # Panics
     ///
-    /// Panics if called recursively.
-    pub fn tick_with_frame_delta(&mut self, frame_delta: f32, raw_delta: f32) {
-        let mut schedule = self.schedule.take().expect("cannot call tick recursively");
-
-        self.run_schedule(&mut schedule, frame_delta, raw_delta);
-
-        self.schedule = Some(schedule);
-    }
-
-    fn run_schedule(&mut self, schedule: &mut Schedule, frame_delta: f32, raw_delta: f32) {
-        #[cfg(feature = "profile")]
-        let _schedule_scope = sky_profile::profile_scope!("ecs", "World::run_schedule");
-
-        let raw_delta = raw_delta.max(0.0);
-        let frame_delta = frame_delta.max(0.0);
-        let scaled_delta = frame_delta * self.time.time_scale;
-        self.time.raw_delta = raw_delta;
-        self.time.frame_delta = scaled_delta;
-        self.time.delta = scaled_delta;
-        self.time.frame_count += 1;
-
-        for group in &mut schedule.groups {
-            #[cfg(feature = "profile")]
-            let _group_scope = sky_profile::profile_scope!("ecs", format!("group:{}", group.name));
-
-            match group.tick_policy {
-                TickPolicy::EveryFrame => {
-                    self.time.delta = scaled_delta;
-                    for registered in &mut group.systems {
-                        #[cfg(feature = "profile")]
-                        let _system_scope = sky_profile::profile_scope!(
-                            "ecs",
-                            format!("system:{}", registered.name)
-                        );
-
-                        if !registered.initialized {
-                            registered.system.init(self);
-                            registered.initialized = true;
-                        }
-                        registered.system.run(self);
-                    }
-                }
-                TickPolicy::Fixed(fixed_dt) => {
-                    group.accumulator += scaled_delta;
-                    self.time.delta = fixed_dt;
-                    let mut substep_index = 0u32;
-                    while group.accumulator >= fixed_dt {
-                        #[cfg(feature = "profile")]
-                        let _substep_scope = sky_profile::profile_scope!(
-                            "ecs",
-                            format!("fixed_substep:{}#{substep_index}", group.name)
-                        );
-
-                        for registered in &mut group.systems {
-                            #[cfg(feature = "profile")]
-                            let _system_scope = sky_profile::profile_scope!(
-                                "ecs",
-                                format!("system:{}", registered.name)
-                            );
-
-                            if !registered.initialized {
-                                registered.system.init(self);
-                                registered.initialized = true;
-                            }
-                            registered.system.run(self);
-                        }
-                        group.accumulator -= fixed_dt;
-                        substep_index = substep_index.wrapping_add(1);
-                    }
-                }
-            }
-        }
-
-        self.time.delta = self.time.frame_delta;
-        self.time.elapsed += scaled_delta;
-        self.time.raw_elapsed += raw_delta;
+    /// Panics if the World is poisoned, if called recursively, or if a running
+    /// system removes a resource required later in the same frame. Missing resources found by frame
+    /// preflight are returned without advancing time or running systems.
+    pub fn tick_with_frame_delta(
+        &mut self,
+        frame_delta: f32,
+        raw_delta: f32,
+    ) -> Result<TickReport, ScheduleError> {
+        self.assert_schedule_tick_allowed();
+        let schedule = self.schedule.take().expect("cannot call tick recursively");
+        let mut guard = ScheduleRestoreGuard::new(&mut self.schedule, schedule);
+        guard.schedule_mut().run(self, frame_delta, raw_delta)
     }
 
     /// Tears down all initialised systems in reverse order.
@@ -277,18 +329,9 @@ impl World {
     /// Call this before dropping the world if your systems need a clean
     /// shutdown (e.g. flushing buffers, releasing external resources).
     pub fn shutdown(&mut self) {
-        let mut schedule = self.schedule.take().expect("cannot shutdown during tick");
-
-        for group in schedule.groups.iter_mut().rev() {
-            for registered in group.systems.iter_mut().rev() {
-                if registered.initialized {
-                    registered.system.teardown(self);
-                    registered.initialized = false;
-                }
-            }
-        }
-
-        self.schedule = Some(schedule);
+        let schedule = self.schedule.take().expect("cannot shutdown during tick");
+        let mut guard = ScheduleRestoreGuard::new(&mut self.schedule, schedule);
+        guard.schedule_mut().shutdown(self);
     }
 
     fn allocate_entity(&mut self) -> EntityId {
@@ -297,23 +340,66 @@ impl World {
             EntityId::new(index, record.generation)
         } else {
             let index = self.entities.len() as u32;
-            self.entities.push(EntityRecord {
-                generation: 0,
-                location: None,
-            });
+            self.entities.push(EntityRecord::vacant(0));
             EntityId::new(index, 0)
         }
     }
 
+    /// Invalidates cached views whose raw ranges depend on chunk layout.
+    ///
+    /// Bump this before any operation that can change chunk addresses, entity
+    /// ranges, or entity ordering. Component value updates do not affect it.
+    #[inline(always)]
+    fn bump_storage_epoch(&mut self) {
+        self.storage_epoch = self
+            .storage_epoch
+            .checked_add(1)
+            .expect("world storage epoch exhausted");
+    }
+
+    #[inline(always)]
+    fn bump_resource_epoch(&mut self) {
+        self.resource_epoch = self
+            .resource_epoch
+            .checked_add(1)
+            .expect("world resource epoch exhausted");
+    }
+
+    pub(crate) fn assert_command_apply_allowed(&self) {
+        assert!(
+            !self.command_poisoned,
+            "cannot apply commands to a poisoned World"
+        );
+    }
+
+    pub(crate) fn poison_after_command_panic(&mut self) {
+        self.command_poisoned = true;
+    }
+
+    fn assert_schedule_tick_allowed(&self) {
+        assert!(
+            !self.command_poisoned,
+            "cannot tick a poisoned World after a deferred command panic"
+        );
+    }
+
     #[inline(always)]
     fn ensure_data_index(&mut self, archetype: Archetype) -> usize {
+        if let Some((cached_archetype, data_index)) = self.last_data_index {
+            if cached_archetype == archetype {
+                return data_index;
+            }
+        }
+
         if let Some(index) = self.archetype_to_data_index.get(&archetype).copied() {
+            self.last_data_index = Some((archetype, index));
             return index;
         }
 
         let index = self.data.len();
         self.data.push(Data::new(archetype));
         self.archetype_to_data_index.insert(archetype, index);
+        self.last_data_index = Some((archetype, index));
         self.archetype_epoch += 1;
         index
     }
@@ -325,14 +411,14 @@ impl World {
             return None;
         }
 
-        record.location
+        record.location()
     }
 
     #[inline(always)]
     pub(crate) fn set_entity_location(&mut self, entity: EntityId, location: EntityLocation) {
         let record = &mut self.entities[entity.index() as usize];
         debug_assert_eq!(record.generation, entity.generation());
-        record.location = Some(location);
+        record.set_location(location);
     }
 
     /// Adds an entity in `archetype` without initializing component columns.
@@ -344,6 +430,7 @@ impl World {
     pub(crate) unsafe fn add_entity(&mut self, archetype: Archetype) -> EntityId {
         let entity = self.allocate_entity();
         let data_index = self.ensure_data_index(archetype);
+        self.bump_storage_epoch();
         let location = unsafe { self.data[data_index].add_entity(entity) };
         self.set_entity_location(
             entity,
@@ -372,6 +459,7 @@ impl World {
         let (archetype, columns) = B::cached_meta();
         let entity = self.allocate_entity();
         let data_index = self.ensure_data_index(archetype);
+        self.bump_storage_epoch();
         let location = unsafe { self.data[data_index].add_entity(entity) };
         self.set_entity_location(
             entity,
@@ -403,6 +491,7 @@ impl World {
 
         let (archetype, columns) = B::cached_meta();
         let data_index = self.ensure_data_index(archetype);
+        self.bump_storage_epoch();
 
         // Pre-reserve entity record storage to avoid per-entity Vec reallocation.
         if lower > 0 {
@@ -488,26 +577,56 @@ impl World {
 
     /// Inserts a singleton resource, returning the previous value if one existed.
     pub fn insert_resource<R: 'static>(&mut self, resource: R) -> Option<R> {
+        assert_ne!(
+            std::any::TypeId::of::<R>(),
+            std::any::TypeId::of::<Time>(),
+            "Time is permanent World frame state and cannot be inserted"
+        );
+        self.bump_resource_epoch();
         self.resources.insert(resource)
     }
 
     /// Returns an immutable reference to resource `R`, or `None`.
     pub fn get_resource<R: 'static>(&self) -> Option<&R> {
+        if std::any::TypeId::of::<R>() == std::any::TypeId::of::<Time>() {
+            // Safety: equal TypeIds prove that `R` is exactly `Time`.
+            return Some(unsafe { &*std::ptr::from_ref(&self.time).cast::<R>() });
+        }
         self.resources.get::<R>()
     }
 
     /// Returns a mutable reference to resource `R`, or `None`.
     pub fn get_resource_mut<R: 'static>(&mut self) -> Option<&mut R> {
+        if std::any::TypeId::of::<R>() == std::any::TypeId::of::<Time>() {
+            // Safety: equal TypeIds prove that `R` is exactly `Time`.
+            return Some(unsafe { &mut *std::ptr::from_mut(&mut self.time).cast::<R>() });
+        }
         self.resources.get_mut::<R>()
     }
 
     /// Returns `true` if the world contains resource `R`.
     pub fn contains_resource<R: 'static>(&self) -> bool {
+        if std::any::TypeId::of::<R>() == std::any::TypeId::of::<Time>() {
+            return true;
+        }
         self.resources.contains::<R>()
+    }
+
+    pub(crate) fn contains_resource_id(&self, id: std::any::TypeId) -> bool {
+        id == std::any::TypeId::of::<Time>() || self.resources.contains_id(id)
     }
 
     /// Removes and returns resource `R`, or `None` if not present.
     pub fn remove_resource<R: 'static>(&mut self) -> Option<R> {
+        assert_ne!(
+            std::any::TypeId::of::<R>(),
+            std::any::TypeId::of::<Time>(),
+            "Time is permanent World frame state and cannot be removed"
+        );
+        if !self.resources.contains::<R>() {
+            return None;
+        }
+        self.bump_resource_epoch();
         self.resources.remove::<R>()
     }
 
@@ -532,6 +651,8 @@ impl World {
             return false;
         };
 
+        self.bump_storage_epoch();
+
         // Safety: location is valid and the entity is about to be destroyed.
         // We must drop its components before the swap-remove overwrites the slot.
         unsafe {
@@ -545,7 +666,7 @@ impl World {
         });
 
         let record = &mut self.entities[entity.index() as usize];
-        record.location = None;
+        record.clear_location();
         record.generation = record.generation.wrapping_add(1);
         self.free_entities.push(entity.index());
 
@@ -665,8 +786,16 @@ impl World {
             add,
         };
 
+        if let Some((cached_key, plan)) = self.last_transition {
+            if cached_key == key {
+                return Some(plan);
+            }
+        }
+
         if let Some(plan) = self.transitions.get(&key) {
-            return Some(NonNull::from(plan.as_ref()));
+            let plan = NonNull::from(plan.as_ref());
+            self.last_transition = Some((key, plan));
+            return Some(plan);
         }
 
         let plan = if add {
@@ -705,7 +834,9 @@ impl World {
             .transitions
             .entry(key)
             .or_insert_with(|| Box::new(plan));
-        Some(NonNull::from(entry.as_ref()))
+        let plan = NonNull::from(entry.as_ref());
+        self.last_transition = Some((key, plan));
+        Some(plan)
     }
 
     pub(crate) fn copy_components_with_spans(
@@ -773,6 +904,7 @@ impl World {
             .target_data_index
             .get()
             .expect("transition plans must cache the target data index");
+        self.bump_storage_epoch();
         let target_location = unsafe { self.data[target_data_index].add_entity(entity) };
 
         {
@@ -862,6 +994,7 @@ impl World {
             .target_data_index
             .get()
             .expect("transition plans must cache the target data index");
+        self.bump_storage_epoch();
         let target_location = unsafe { self.data[target_data_index].add_entity(entity) };
 
         {
@@ -972,6 +1105,7 @@ impl World {
             .target_data_index
             .get()
             .expect("transition plans must cache the target data index");
+        self.bump_storage_epoch();
         let target_location = unsafe { self.data[target_data_index].add_entity(entity) };
 
         {
@@ -1050,6 +1184,7 @@ impl World {
             .target_data_index
             .get()
             .expect("transition plans must cache the target data index");
+        self.bump_storage_epoch();
         let target_location = unsafe { self.data[target_data_index].add_entity(entity) };
 
         {
@@ -1120,6 +1255,64 @@ impl World {
         self.archetype_epoch
     }
 
+    pub(crate) fn storage_epoch(&self) -> u64 {
+        self.storage_epoch
+    }
+
+    pub(crate) fn resource_epoch(&self) -> u64 {
+        self.resource_epoch
+    }
+
+    /// Returns a stable resource pointer while `resource_epoch` is unchanged.
+    /// Scheduler access validation determines whether it may be dereferenced as
+    /// shared or exclusive during a prepared system wave.
+    pub(crate) fn resource_ptr<R: 'static>(&self) -> Option<*mut R> {
+        if std::any::TypeId::of::<R>() == std::any::TypeId::of::<Time>() {
+            return Some(std::ptr::from_ref(&self.time).cast::<R>().cast_mut());
+        }
+        self.resources
+            .get::<R>()
+            .map(|resource| std::ptr::from_ref(resource).cast_mut())
+    }
+
+    pub(crate) fn cache_token(&self) -> &Arc<()> {
+        &self.cache_token
+    }
+
+    pub(crate) fn query_snapshot<Q, Flt>(&self) -> Arc<Vec<CachedArchetype>>
+    where
+        Q: QuerySpec + 'static,
+        Flt: QueryFilter + 'static,
+    {
+        self.query_cache.snapshot::<Q, Flt>(self)
+    }
+
+    pub(crate) fn query_parallel_snapshot<Q, Flt>(
+        &self,
+        archetypes: &[CachedArchetype],
+    ) -> ParallelJobSnapshot
+    where
+        Q: QuerySpec + 'static,
+        Flt: QueryFilter + 'static,
+    {
+        self.query_cache
+            .parallel_snapshot::<Q, Flt>(self, archetypes)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn query_cache_len(&self) -> usize {
+        self.query_cache.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn query_parallel_rebuild_count<Q, Flt>(&self) -> usize
+    where
+        Q: QuerySpec + 'static,
+        Flt: QueryFilter + 'static,
+    {
+        self.query_cache.parallel_rebuild_count::<Q, Flt>()
+    }
+
     /// Returns the total number of live entities across all archetypes.
     pub fn entity_count(&self) -> usize {
         self.data
@@ -1137,26 +1330,28 @@ impl World {
     ///
     /// Component destructors are called for every live entity.
     pub fn clear(&mut self) {
+        self.bump_storage_epoch();
         self.data.clear();
         self.archetype_to_data_index.clear();
+        self.last_data_index = None;
         self.transitions.clear();
+        self.last_transition = None;
         self.free_entities.clear();
         for (index, record) in self.entities.iter_mut().enumerate() {
-            if record.location.is_some() {
+            if record.is_alive() {
                 record.generation = record.generation.wrapping_add(1);
-                record.location = None;
+                record.clear_location();
             }
             self.free_entities.push(index as u32);
         }
         self.archetype_epoch += 1;
     }
 
-    /// Creates a typed, cached query.
+    /// Creates a read-only query bound to this world.
     ///
-    /// The query parameter `Q` is usually a reference (`&T`), a mutable
-    /// reference (`&mut T`), an optional (`Option<&T>`), or a tuple of
-    /// those.  The returned [`PreparedQuery`] caches matched archetypes
-    /// and refreshes automatically when the world's archetype set changes.
+    /// The query parameter `Q` is usually a shared reference (`&T`), an
+    /// optional shared reference (`Option<&T>`), or a tuple of those.
+    /// Type-level filters can be attached with [`Query::filter`].
     ///
     /// # Examples
     ///
@@ -1166,45 +1361,54 @@ impl World {
     /// # #[derive(Clone, Copy)] struct Vel { x: f32, y: f32 }
     /// # let mut world = World::new();
     /// # world.spawn((Pos { x: 0.0, y: 0.0 }, Vel { x: 1.0, y: 0.0 }));
-    /// let mut query = world.query::<(&mut Pos, &Vel)>();
-    /// query.for_each(&mut world, |(pos, vel)| {
+    /// let query = world.query::<(&Pos, &Vel)>();
+    /// query.for_each(|(pos, vel)| {
+    ///     let _ = (pos.x, vel.x);
+    /// });
+    /// ```
+    ///
+    /// Mutable parameters use [`World::query_mut`] instead:
+    ///
+    /// ```compile_fail
+    /// # use sky_ecs::World;
+    /// # #[derive(Clone, Copy)] struct Pos { x: f32, y: f32 }
+    /// # let world = World::new();
+    /// let _query = world.query::<&mut Pos>();
+    /// ```
+    pub fn query<Q>(&self) -> Query<'_, Q>
+    where
+        Q: ReadOnlyQuerySpec + 'static,
+    {
+        Query::new(self)
+    }
+
+    /// Creates a query with exclusive access to this world.
+    ///
+    /// Mutable query parameters require this entry point. Read-only
+    /// parameters may be mixed into the same query.
+    ///
+    /// ```
+    /// # use sky_ecs::World;
+    /// # #[derive(Clone, Copy)] struct Pos { x: f32, y: f32 }
+    /// # #[derive(Clone, Copy)] struct Vel { x: f32, y: f32 }
+    /// # let mut world = World::new();
+    /// # world.spawn((Pos { x: 0.0, y: 0.0 }, Vel { x: 1.0, y: 0.0 }));
+    /// let mut query = world.query_mut::<(&mut Pos, &Vel)>();
+    /// query.for_each(|(pos, vel)| {
     ///     pos.x += vel.x;
     /// });
     /// ```
-    pub fn query<Q>(&self) -> PreparedQuery<Q>
+    pub fn query_mut<Q>(&mut self) -> QueryMut<'_, Q>
     where
-        Q: QuerySpec,
+        Q: QuerySpec + 'static,
     {
-        PreparedQuery::new()
-    }
-
-    /// Creates a typed, cached query with an archetype filter.
-    ///
-    /// Filters narrow which archetypes are matched.  Use [`With<T>`] to
-    /// require that `T` is present, or [`Without<T>`] to exclude it.
-    /// Filter tuples combine with AND semantics.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use sky_ecs::{World, With};
-    /// # #[derive(Clone, Copy)] struct Pos { x: f32, y: f32 }
-    /// # #[derive(Clone, Copy)] struct Enemy;
-    /// # let mut world = World::new();
-    /// let mut enemies = world.query_filtered::<&Pos, With<Enemy>>();
-    /// ```
-    pub fn query_filtered<Q, Flt>(&self) -> PreparedQuery<Q, Flt>
-    where
-        Q: QuerySpec,
-        Flt: QueryFilter,
-    {
-        PreparedQuery::new()
+        QueryMut::new(self)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Commands, World};
+    use super::{CommandBuffer, World};
 
     #[derive(Clone, Copy, Debug, PartialEq)]
     struct Position {
@@ -1216,6 +1420,38 @@ mod tests {
     struct Velocity {
         x: f32,
         y: f32,
+    }
+
+    #[test]
+    fn storage_epoch_tracks_layout_changes_but_not_value_updates() {
+        let mut world = World::new();
+        assert_eq!(world.storage_epoch(), 0);
+
+        let entity = world.spawn((Position { x: 1.0, y: 2.0 },));
+        assert_eq!(world.storage_epoch(), 1);
+
+        world.get_mut::<Position>(entity).unwrap().x = 3.0;
+        assert!(world.insert(entity, Position { x: 4.0, y: 5.0 }));
+        assert_eq!(world.storage_epoch(), 1);
+
+        world.spawn_batch([
+            (Position { x: 6.0, y: 7.0 },),
+            (Position { x: 8.0, y: 9.0 },),
+        ]);
+        assert_eq!(world.storage_epoch(), 2);
+
+        assert!(world.insert(entity, Velocity { x: 1.0, y: 1.0 }));
+        assert_eq!(world.storage_epoch(), 3);
+        assert!(world.remove::<Velocity>(entity));
+        assert_eq!(world.storage_epoch(), 4);
+
+        assert!(world.despawn(entity));
+        assert_eq!(world.storage_epoch(), 5);
+        assert!(!world.despawn(entity));
+        assert_eq!(world.storage_epoch(), 5);
+
+        world.clear();
+        assert_eq!(world.storage_epoch(), 6);
     }
 
     #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1280,8 +1516,8 @@ mod tests {
         world.spawn_batch(expected.iter().copied());
 
         let mut actual = Vec::new();
-        let mut query = world.query::<(&Position, &Velocity)>();
-        query.for_each(&mut world, |(position, velocity)| {
+        let query = world.query::<(&Position, &Velocity)>();
+        query.for_each(|(position, velocity)| {
             actual.push((*position, *velocity));
         });
         actual.sort_by(|(left, _), (right, _)| left.x.total_cmp(&right.x));
@@ -1337,8 +1573,8 @@ mod tests {
 
         assert_eq!(world.entity_count(), 0);
         assert_eq!(world.archetype_count(), 0);
-        let mut positions = world.query::<&Position>();
-        assert!(positions.is_empty(&world));
+        let positions = world.query::<&Position>();
+        assert!(positions.is_empty());
         assert_eq!(positions.cached_archetype_count(), 0);
     }
 
@@ -1440,7 +1676,7 @@ mod tests {
     #[test]
     fn commands_apply_spawns_components_and_resources() {
         let mut world = World::new();
-        let mut commands = Commands::new();
+        let mut commands = CommandBuffer::new();
 
         commands.insert_resource(Tick(10));
         commands.spawn((Position { x: 7.0, y: 8.0 }, Velocity { x: 1.0, y: 2.0 }));
@@ -1449,8 +1685,8 @@ mod tests {
         assert_eq!(world.get_resource::<Tick>(), Some(&Tick(10)));
 
         let mut count = 0usize;
-        let mut query = world.query::<(&Position, &Velocity)>();
-        query.for_each(&mut world, |(position, velocity)| {
+        let query = world.query::<(&Position, &Velocity)>();
+        query.for_each(|(position, velocity)| {
             count += 1;
             assert_eq!(position, &Position { x: 7.0, y: 8.0 });
             assert_eq!(velocity, &Velocity { x: 1.0, y: 2.0 });
@@ -1463,7 +1699,7 @@ mod tests {
     fn commands_apply_entity_changes_in_order() {
         let mut world = World::new();
         let entity = world.spawn((Position { x: 1.0, y: 2.0 },));
-        let mut commands = Commands::new();
+        let mut commands = CommandBuffer::new();
 
         commands.insert(entity, Velocity { x: 3.0, y: 4.0 });
         commands.remove::<Velocity>(entity);
@@ -1477,7 +1713,7 @@ mod tests {
     fn commands_coalesce_repeated_component_changes_per_entity() {
         let mut world = World::new();
         let entity = world.spawn((Position { x: 1.0, y: 2.0 },));
-        let mut commands = Commands::new();
+        let mut commands = CommandBuffer::new();
 
         commands.insert(entity, Velocity { x: 1.0, y: 1.0 });
         commands.insert(entity, Velocity { x: 5.0, y: 8.0 });
@@ -1495,7 +1731,7 @@ mod tests {
     fn commands_ignore_component_changes_after_despawn() {
         let mut world = World::new();
         let entity = world.spawn((Position { x: 1.0, y: 2.0 },));
-        let mut commands = Commands::new();
+        let mut commands = CommandBuffer::new();
 
         commands.insert(entity, Velocity { x: 1.0, y: 1.0 });
         commands.despawn(entity);
@@ -1517,7 +1753,7 @@ mod tests {
         assert_eq!(stale.index(), current.index());
         assert_ne!(stale.generation(), current.generation());
 
-        let mut commands = Commands::new();
+        let mut commands = CommandBuffer::new();
         commands.insert(stale, Velocity { x: 1.0, y: 1.0 });
         commands.insert(current, Velocity { x: 5.0, y: 8.0 });
         commands.apply(&mut world);
@@ -1544,7 +1780,7 @@ mod tests {
             })
             .collect();
 
-        let mut commands = Commands::new();
+        let mut commands = CommandBuffer::new();
         for &entity in &entities {
             commands.insert(entity, Velocity { x: 3.0, y: 4.0 });
         }
@@ -1584,7 +1820,7 @@ mod tests {
             })
             .collect();
 
-        let mut commands = Commands::new();
+        let mut commands = CommandBuffer::new();
         for &entity in &entities[..24] {
             commands.remove::<Velocity>(entity);
         }
@@ -1631,7 +1867,7 @@ mod tests {
             })
             .collect();
 
-        let mut commands = Commands::new();
+        let mut commands = CommandBuffer::new();
         for (i, &entity) in entities.iter().enumerate() {
             if i % 2 == 0 {
                 commands.insert(entity, Health(100.0 + i as f32));
@@ -1739,7 +1975,7 @@ mod tests {
         let a = world.spawn((Position { x: 1.0, y: 2.0 },));
         let b = world.spawn((Position { x: 3.0, y: 4.0 },));
 
-        let mut cmds = Commands::new();
+        let mut cmds = CommandBuffer::new();
         cmds.insert(a, Health(10.0)); // A first seen
         cmds.insert(b, Health(20.0)); // B first seen
         cmds.remove::<Health>(a); // A again — coalesces with first A entry
@@ -1916,7 +2152,7 @@ mod tests {
         let mut world = World::new();
         let entity = world.spawn((Position { x: 0.0, y: 0.0 },));
 
-        let mut cmds = Commands::new();
+        let mut cmds = CommandBuffer::new();
         cmds.insert(entity, Droppable::new(&counter));
         cmds.apply(&mut world);
 
@@ -1933,7 +2169,7 @@ mod tests {
     fn commands_insert_value_dropped_when_not_consumed() {
         let counter = Arc::new(AtomicUsize::new(0));
         {
-            let mut cmds = Commands::new();
+            let mut cmds = CommandBuffer::new();
             let entity = super::EntityId::new(9999, 0); // non-existent
             cmds.insert(entity, Droppable::new(&counter));
             // Drop cmds without applying — the InsertValue should drop its payload.
@@ -1962,7 +2198,7 @@ mod tests {
         let drop_count = Arc::new(AtomicUsize::new(0));
         let misaligned_count = Arc::new(AtomicUsize::new(0));
         {
-            let mut cmds = Commands::new();
+            let mut cmds = CommandBuffer::new();
             cmds.insert(
                 super::EntityId::new(9999, 0),
                 HighAlignDroppable {

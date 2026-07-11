@@ -1,227 +1,96 @@
-use super::{resolve_column_ptr, EntityId, PreparedCache, World};
+use super::{resolve_column_ptr, CachedArchetype, EntityId, QuerySpec, World};
 use rayon::prelude::*;
 use std::slice;
+use std::sync::Arc;
 
 const TARGET_STRIPE_ENTITIES: usize = 4_096;
 const MIN_PARALLEL_STRIPES_PER_THREAD: usize = 3;
 
 #[derive(Clone, Copy)]
-struct RawColumnPtr(*mut u8);
-
-unsafe impl Send for RawColumnPtr {}
-unsafe impl Sync for RawColumnPtr {}
-
-#[derive(Clone, Copy)]
-struct RawChunkDataPtr(*mut u8);
-
-unsafe impl Send for RawChunkDataPtr {}
-unsafe impl Sync for RawChunkDataPtr {}
-
-#[derive(Clone, Copy)]
 struct RawEntityPtr(*const EntityId);
 
+// Safety: pointers are only dereferenced while the originating World remains
+// borrowed by a joined Rayon operation, and each job covers an in-bounds range.
 unsafe impl Send for RawEntityPtr {}
 unsafe impl Sync for RawEntityPtr {}
 
 #[derive(Clone, Copy)]
-pub struct ParallelChunkJob {
+struct ParallelChunkJob {
     start: usize,
     len: usize,
     entities: RawEntityPtr,
-    component_ptrs: [RawColumnPtr; super::INLINE_QUERY_COMPONENTS],
+    component_ptrs: [*mut u8; super::MAX_QUERY_COMPONENTS],
 }
 
-impl ParallelChunkJob {
-    #[inline(always)]
-    fn component_ptr(&self, index: usize) -> *mut u8 {
-        self.component_ptrs[index].0
-    }
+// Safety: component pointers are created from live chunks and mutable columns
+// are partitioned into non-overlapping stripe ranges before jobs are shared.
+unsafe impl Send for ParallelChunkJob {}
+unsafe impl Sync for ParallelChunkJob {}
 
+impl ParallelChunkJob {
     #[inline(always)]
     unsafe fn entities<'w>(&self) -> &'w [EntityId] {
         slice::from_raw_parts(self.entities.0.add(self.start), self.len)
     }
 }
 
-#[derive(Clone, Copy)]
-struct ParallelChunkSignature {
-    data_index: usize,
-    entity_count: usize,
-    chunk_data: RawChunkDataPtr,
-    entities: RawEntityPtr,
-}
-
 #[derive(Default)]
 pub(crate) struct ParallelJobCache {
-    cached_epoch: Option<usize>,
-    jobs: Vec<ParallelChunkJob>,
-    chunk_signatures: Vec<ParallelChunkSignature>,
+    cached_world: Option<Arc<()>>,
+    cached_storage_epoch: Option<u64>,
+    jobs: Arc<Vec<ParallelChunkJob>>,
+    total_entities: usize,
+    #[cfg(test)]
+    rebuild_count: usize,
 }
 
-pub trait ParallelQueryParam {
-    type Slice<'w>;
-
-    unsafe fn slice_from_raw<'w>(ptr: *mut u8, start: usize, len: usize) -> Self::Slice<'w>;
+pub(crate) struct ParallelJobSnapshot {
+    jobs: Arc<Vec<ParallelChunkJob>>,
+    total_entities: usize,
 }
 
-impl<T: Sync + 'static> ParallelQueryParam for &T {
-    type Slice<'w> = &'w [T];
-
-    #[inline(always)]
-    unsafe fn slice_from_raw<'w>(ptr: *mut u8, start: usize, len: usize) -> Self::Slice<'w> {
-        slice::from_raw_parts((ptr as *const T).add(start), len)
-    }
-}
-
-impl<T: Send + 'static> ParallelQueryParam for &mut T {
-    type Slice<'w> = &'w mut [T];
-
-    #[inline(always)]
-    unsafe fn slice_from_raw<'w>(ptr: *mut u8, start: usize, len: usize) -> Self::Slice<'w> {
-        slice::from_raw_parts_mut((ptr as *mut T).add(start), len)
-    }
-}
-
-impl<T: Sync + 'static> ParallelQueryParam for Option<&T> {
-    type Slice<'w> = Option<&'w [T]>;
-
-    #[inline(always)]
-    unsafe fn slice_from_raw<'w>(ptr: *mut u8, start: usize, len: usize) -> Self::Slice<'w> {
-        if ptr.is_null() {
-            None
-        } else {
-            Some(slice::from_raw_parts((ptr as *const T).add(start), len))
+fn visit_chunks<'w, F>(archetypes: &[CachedArchetype], world: &'w World, mut f: F)
+where
+    F: FnMut(&CachedArchetype, &'w super::Chunk),
+{
+    for cached in archetypes {
+        let data = &world.data[cached.data_index];
+        for chunk in &data.chunks {
+            debug_assert!(chunk.entity_count != 0);
+            f(cached, chunk);
         }
     }
 }
-
-impl<T: Send + 'static> ParallelQueryParam for Option<&mut T> {
-    type Slice<'w> = Option<&'w mut [T]>;
-
-    #[inline(always)]
-    unsafe fn slice_from_raw<'w>(ptr: *mut u8, start: usize, len: usize) -> Self::Slice<'w> {
-        if ptr.is_null() {
-            None
-        } else {
-            Some(slice::from_raw_parts_mut((ptr as *mut T).add(start), len))
-        }
-    }
-}
-
-pub trait ParallelQuerySpec {
-    type Chunk<'w>;
-
-    unsafe fn chunk_from_raw<'w>(
-        chunk: &'w super::Chunk,
-        component_indices: &[u8],
-    ) -> Self::Chunk<'w>;
-    unsafe fn chunk_from_job<'w>(job: &'w ParallelChunkJob) -> Self::Chunk<'w>;
-}
-
-impl<P: ParallelQueryParam> ParallelQuerySpec for P {
-    type Chunk<'w> = P::Slice<'w>;
-
-    #[inline(always)]
-    unsafe fn chunk_from_raw<'w>(
-        chunk: &'w super::Chunk,
-        component_indices: &[u8],
-    ) -> Self::Chunk<'w> {
-        P::slice_from_raw(
-            resolve_column_ptr(chunk, component_indices[0]),
-            0,
-            chunk.entity_count,
-        )
-    }
-
-    #[inline(always)]
-    unsafe fn chunk_from_job<'w>(job: &'w ParallelChunkJob) -> Self::Chunk<'w> {
-        P::slice_from_raw(job.component_ptr(0), job.start, job.len)
-    }
-}
-
-macro_rules! impl_parallel_query_spec_tuple {
-    ($(($Param:ident, $index:tt)),+ $(,)?) => {
-        impl<$($Param: ParallelQueryParam),+> ParallelQuerySpec for ($($Param,)+) {
-            type Chunk<'w> = ($($Param::Slice<'w>,)+);
-
-            #[inline(always)]
-            unsafe fn chunk_from_raw<'w>(
-                chunk: &'w super::Chunk,
-                component_indices: &[u8],
-            ) -> Self::Chunk<'w> {
-                (
-                    $(
-                        $Param::slice_from_raw(
-                            resolve_column_ptr(chunk, component_indices[$index]),
-                            0,
-                            chunk.entity_count,
-                        ),
-                    )+
-                )
-            }
-
-            #[inline(always)]
-            unsafe fn chunk_from_job<'w>(job: &'w ParallelChunkJob) -> Self::Chunk<'w> {
-                (
-                    $(
-                        $Param::slice_from_raw(job.component_ptr($index), job.start, job.len),
-                    )+
-                )
-            }
-        }
-    };
-}
-
-impl_parallel_query_spec_tuple!((A, 0), (B, 1));
-impl_parallel_query_spec_tuple!((A, 0), (B, 1), (C, 2));
-impl_parallel_query_spec_tuple!((A, 0), (B, 1), (C, 2), (D, 3));
-impl_parallel_query_spec_tuple!((A, 0), (B, 1), (C, 2), (D, 3), (E, 4));
-impl_parallel_query_spec_tuple!((A, 0), (B, 1), (C, 2), (D, 3), (E, 4), (F, 5));
-impl_parallel_query_spec_tuple!((A, 0), (B, 1), (C, 2), (D, 3), (E, 4), (F, 5), (G, 6));
-impl_parallel_query_spec_tuple!(
-    (A, 0),
-    (B, 1),
-    (C, 2),
-    (D, 3),
-    (E, 4),
-    (F, 5),
-    (G, 6),
-    (H, 7)
-);
 
 fn collect_chunk_jobs(
     cache: &mut ParallelJobCache,
-    prepared: &PreparedCache,
+    prepared: &[CachedArchetype],
     world: &World,
 ) -> usize {
-    cache.cached_epoch = Some(world.archetype_epoch());
-    cache.jobs.clear();
-    cache.chunk_signatures.clear();
+    #[cfg(test)]
+    {
+        cache.rebuild_count += 1;
+    }
+    cache.cached_world = Some(Arc::clone(world.cache_token()));
+    cache.cached_storage_epoch = Some(world.storage_epoch());
+    let mut jobs = Vec::new();
     let mut total_entities = 0usize;
-    prepared.visit_chunks(world, |cached, chunk| {
+    visit_chunks(prepared, world, |cached, chunk| {
         if chunk.entity_count == 0 {
             return;
         }
         total_entities += chunk.entity_count;
 
-        cache.chunk_signatures.push(ParallelChunkSignature {
-            data_index: cached.data_index,
-            entity_count: chunk.entity_count,
-            chunk_data: RawChunkDataPtr(chunk.data_ptr()),
-            entities: RawEntityPtr(chunk.entities().as_ptr()),
-        });
-
-        let mut component_ptrs =
-            [RawColumnPtr(std::ptr::null_mut()); super::INLINE_QUERY_COMPONENTS];
+        let mut component_ptrs = [std::ptr::null_mut(); super::MAX_QUERY_COMPONENTS];
         for (slot, &index) in cached.component_indices.iter().enumerate() {
-            component_ptrs[slot] = RawColumnPtr(resolve_column_ptr(chunk, index));
+            component_ptrs[slot] = resolve_column_ptr(chunk, index);
         }
 
         let entities = chunk.entities();
         let mut start = 0usize;
         while start < chunk.entity_count {
             let len = (chunk.entity_count - start).min(TARGET_STRIPE_ENTITIES);
-            cache.jobs.push(ParallelChunkJob {
+            jobs.push(ParallelChunkJob {
                 start,
                 len,
                 entities: RawEntityPtr(entities.as_ptr()),
@@ -230,60 +99,72 @@ fn collect_chunk_jobs(
             start += len;
         }
     });
+    cache.jobs = Arc::new(jobs);
+    cache.total_entities = total_entities;
     total_entities
 }
 
-fn cached_total_entities(
-    cache: &ParallelJobCache,
-    prepared: &PreparedCache,
-    world: &World,
-) -> Option<usize> {
-    if cache.cached_epoch != Some(world.archetype_epoch()) {
+#[inline(always)]
+fn cached_total_entities(cache: &ParallelJobCache, world: &World) -> Option<usize> {
+    if !cache
+        .cached_world
+        .as_ref()
+        .is_some_and(|cached| Arc::ptr_eq(cached, world.cache_token()))
+        || cache.cached_storage_epoch != Some(world.storage_epoch())
+    {
         return None;
     }
-
-    if cache.chunk_signatures.is_empty() && !cache.jobs.is_empty() {
-        return None;
-    }
-
-    let mut signature_index = 0usize;
-    let mut total_entities = 0usize;
-    let mut valid = true;
-
-    prepared.visit_chunks(world, |cached, chunk| {
-        if !valid {
-            return;
-        }
-
-        let Some(signature) = cache.chunk_signatures.get(signature_index) else {
-            valid = false;
-            return;
-        };
-
-        if signature.data_index != cached.data_index
-            || signature.entity_count != chunk.entity_count
-            || signature.chunk_data.0 != chunk.data_ptr()
-            || signature.entities.0 != chunk.entities().as_ptr()
-        {
-            valid = false;
-            return;
-        }
-
-        total_entities += chunk.entity_count;
-        signature_index += 1;
-    });
-
-    (valid && signature_index == cache.chunk_signatures.len()).then_some(total_entities)
+    Some(cache.total_entities)
 }
 
 #[inline(always)]
 fn ensure_chunk_jobs(
     cache: &mut ParallelJobCache,
-    prepared: &PreparedCache,
+    prepared: &[CachedArchetype],
     world: &World,
 ) -> usize {
-    cached_total_entities(cache, prepared, world)
+    cached_total_entities(cache, world)
         .unwrap_or_else(|| collect_chunk_jobs(cache, prepared, world))
+}
+
+pub(crate) fn prepare_job_snapshot(
+    cache: &mut ParallelJobCache,
+    prepared: &[CachedArchetype],
+    world: &World,
+) -> ParallelJobSnapshot {
+    let total_entities = ensure_chunk_jobs(cache, prepared, world);
+    ParallelJobSnapshot {
+        jobs: Arc::clone(&cache.jobs),
+        total_entities,
+    }
+}
+
+/// Refreshes a scheduler cache without cloning a run snapshot.
+pub(crate) fn prepare_job_cache(
+    cache: &mut ParallelJobCache,
+    prepared: &[CachedArchetype],
+    world: &World,
+) {
+    let _ = ensure_chunk_jobs(cache, prepared, world);
+}
+
+/// Clones a run snapshot from a cache that was refreshed during serial system
+/// preparation. Scheduler-issued ParViews use this so worker execution never
+/// performs cache discovery or stripe construction.
+pub(crate) fn prepared_job_snapshot(cache: &ParallelJobCache) -> ParallelJobSnapshot {
+    debug_assert!(
+        cache.cached_storage_epoch.is_some(),
+        "parallel job cache must be prepared before system execution"
+    );
+    ParallelJobSnapshot {
+        jobs: Arc::clone(&cache.jobs),
+        total_entities: cache.total_entities,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn rebuild_count(cache: &ParallelJobCache) -> usize {
+    cache.rebuild_count
 }
 
 fn should_parallel(total_entities: usize, job_count: usize) -> bool {
@@ -295,41 +176,116 @@ fn should_parallel(total_entities: usize, job_count: usize) -> bool {
     total_entities >= thread_count * TARGET_STRIPE_ENTITIES * MIN_PARALLEL_STRIPES_PER_THREAD
 }
 
-fn seq_for_each_chunk<Q, F>(prepared: &PreparedCache, world: &World, f: &F)
+fn seq_for_each_chunk<Q, F>(prepared: &[CachedArchetype], world: &World, f: &F)
 where
-    Q: ParallelQuerySpec,
-    F: for<'w> Fn(<Q as ParallelQuerySpec>::Chunk<'w>),
+    Q: QuerySpec,
+    F: for<'w> Fn(Q::Chunk<'w>),
 {
-    prepared.visit_chunks(world, |cached, chunk| unsafe {
+    visit_chunks(prepared, world, |cached, chunk| unsafe {
         f(Q::chunk_from_raw(chunk, &cached.component_indices));
     });
 }
 
-fn seq_for_each_chunk_with_entities<Q, F>(prepared: &PreparedCache, world: &World, f: &F)
+fn seq_for_each<Q, F>(prepared: &[CachedArchetype], world: &World, f: &F)
 where
-    Q: ParallelQuerySpec,
-    F: for<'w> Fn(&'w [EntityId], <Q as ParallelQuerySpec>::Chunk<'w>),
+    Q: QuerySpec,
+    F: for<'w> Fn(Q::Item<'w>),
 {
-    prepared.visit_chunks(world, |cached, chunk| unsafe {
+    visit_chunks(prepared, world, |cached, chunk| unsafe {
+        Q::for_each_entity(chunk, &cached.component_indices, &mut |item| f(item));
+    });
+}
+
+fn seq_for_each_chunk_with_entities<Q, F>(prepared: &[CachedArchetype], world: &World, f: &F)
+where
+    Q: QuerySpec,
+    F: for<'w> Fn(&'w [EntityId], Q::Chunk<'w>),
+{
+    visit_chunks(prepared, world, |cached, chunk| unsafe {
         f(
             chunk.entities(),
             Q::chunk_from_raw(chunk, &cached.component_indices),
         );
     });
 }
-pub(crate) fn par_for_each_chunk<Q, F>(
-    cache: &mut ParallelJobCache,
-    prepared: &PreparedCache,
+
+fn seq_for_each_with_entities<Q, F>(prepared: &[CachedArchetype], world: &World, f: &F)
+where
+    Q: QuerySpec,
+    F: for<'w> Fn(EntityId, Q::Item<'w>),
+{
+    visit_chunks(prepared, world, |cached, chunk| unsafe {
+        let entities = chunk.entities();
+        let mut entity_index = 0usize;
+        Q::for_each_entity(chunk, &cached.component_indices, &mut |item| {
+            f(entities[entity_index], item);
+            entity_index += 1;
+        });
+    });
+}
+
+pub(crate) fn par_for_each<Q, F>(
+    prepared: &[CachedArchetype],
     world: &World,
+    jobs: ParallelJobSnapshot,
     f: F,
 ) where
-    Q: ParallelQuerySpec,
-    F: for<'w> Fn(<Q as ParallelQuerySpec>::Chunk<'w>) + Send + Sync,
+    Q: QuerySpec,
+    for<'w> Q::Item<'w>: Send,
+    F: for<'w> Fn(Q::Item<'w>) + Send + Sync,
 {
-    let total_entities = ensure_chunk_jobs(cache, prepared, world);
-    if should_parallel(total_entities, cache.jobs.len()) {
-        cache.jobs.par_iter().for_each(|job| unsafe {
-            f(Q::chunk_from_job(job));
+    if should_parallel(jobs.total_entities, jobs.jobs.len()) {
+        jobs.jobs.par_iter().for_each(|job| unsafe {
+            Q::for_each_entity_raw_parts(&job.component_ptrs, job.start, job.len, &mut |item| {
+                f(item)
+            });
+        });
+    } else {
+        seq_for_each::<Q, _>(prepared, world, &f);
+    }
+}
+
+pub(crate) fn par_for_each_with_entity<Q, F>(
+    prepared: &[CachedArchetype],
+    world: &World,
+    jobs: ParallelJobSnapshot,
+    f: F,
+) where
+    Q: QuerySpec,
+    for<'w> Q::Item<'w>: Send,
+    F: for<'w> Fn(EntityId, Q::Item<'w>) + Send + Sync,
+{
+    if should_parallel(jobs.total_entities, jobs.jobs.len()) {
+        jobs.jobs.par_iter().for_each(|job| unsafe {
+            let entities = job.entities();
+            let mut entity_index = 0usize;
+            Q::for_each_entity_raw_parts(&job.component_ptrs, job.start, job.len, &mut |item| {
+                f(entities[entity_index], item);
+                entity_index += 1;
+            });
+        });
+    } else {
+        seq_for_each_with_entities::<Q, _>(prepared, world, &f);
+    }
+}
+
+pub(crate) fn par_for_each_chunk<Q, F>(
+    prepared: &[CachedArchetype],
+    world: &World,
+    jobs: ParallelJobSnapshot,
+    f: F,
+) where
+    Q: QuerySpec,
+    for<'w> Q::Chunk<'w>: Send,
+    F: for<'w> Fn(Q::Chunk<'w>) + Send + Sync,
+{
+    if should_parallel(jobs.total_entities, jobs.jobs.len()) {
+        jobs.jobs.par_iter().for_each(|job| unsafe {
+            f(Q::chunk_from_raw_parts(
+                &job.component_ptrs,
+                job.start,
+                job.len,
+            ));
         });
     } else {
         seq_for_each_chunk::<Q, _>(prepared, world, &f);
@@ -337,18 +293,21 @@ pub(crate) fn par_for_each_chunk<Q, F>(
 }
 
 pub(crate) fn par_for_each_chunk_with_entities<Q, F>(
-    cache: &mut ParallelJobCache,
-    prepared: &PreparedCache,
+    prepared: &[CachedArchetype],
     world: &World,
+    jobs: ParallelJobSnapshot,
     f: F,
 ) where
-    Q: ParallelQuerySpec,
-    F: for<'w> Fn(&'w [EntityId], <Q as ParallelQuerySpec>::Chunk<'w>) + Send + Sync,
+    Q: QuerySpec,
+    for<'w> Q::Chunk<'w>: Send,
+    F: for<'w> Fn(&'w [EntityId], Q::Chunk<'w>) + Send + Sync,
 {
-    let total_entities = ensure_chunk_jobs(cache, prepared, world);
-    if should_parallel(total_entities, cache.jobs.len()) {
-        cache.jobs.par_iter().for_each(|job| unsafe {
-            f(job.entities(), Q::chunk_from_job(job));
+    if should_parallel(jobs.total_entities, jobs.jobs.len()) {
+        jobs.jobs.par_iter().for_each(|job| unsafe {
+            f(
+                job.entities(),
+                Q::chunk_from_raw_parts(&job.component_ptrs, job.start, job.len),
+            );
         });
     } else {
         seq_for_each_chunk_with_entities::<Q, _>(prepared, world, &f);
@@ -418,7 +377,7 @@ mod tests {
         }
 
         let chunk_visits = AtomicUsize::new(0);
-        let mut query = world.query::<(&mut Position, &Velocity)>();
+        let mut query = PreparedQuery::<(&mut Position, &Velocity)>::new();
         query.par_for_each_chunk(&mut world, |(positions, velocities)| {
             chunk_visits.fetch_add(1, Ordering::Relaxed);
             for index in 0..positions.len() {
@@ -433,7 +392,7 @@ mod tests {
         );
 
         let mut matched = 0usize;
-        let mut check = world.query::<&Position>();
+        let mut check = PreparedQuery::<&Position>::new();
         check.for_each(&mut world, |position| {
             assert_eq!(position.x, 1.0);
             assert_eq!(position.y, 2.0);
@@ -451,13 +410,13 @@ mod tests {
         let mut world = World::new();
         spawn(&mut world, archetype, 128);
 
-        let mut init = world.query::<&mut Velocity>();
+        let mut init = PreparedQuery::<&mut Velocity>::new();
         init.for_each(&mut world, |velocity| {
             velocity.x = 1.5;
             velocity.y = 0.5;
         });
 
-        let mut query = world.query::<(&mut Position, &Velocity)>();
+        let mut query = PreparedQuery::<(&mut Position, &Velocity)>::new();
         query.par_for_each_chunk(&mut world, |(positions, velocities)| {
             for index in 0..positions.len() {
                 positions[index].x += velocities[index].x * 2.0;
@@ -465,7 +424,7 @@ mod tests {
             }
         });
 
-        let mut check = world.query::<&Position>();
+        let mut check = PreparedQuery::<&Position>::new();
         check.for_each(&mut world, |position| {
             assert_eq!(position.x, 3.0);
             assert_eq!(position.y, 2.0);
@@ -488,13 +447,13 @@ mod tests {
         spawn(&mut world, base, 96);
         spawn(&mut world, extended, 96);
 
-        let mut init = world.query::<&mut Velocity>();
+        let mut init = PreparedQuery::<&mut Velocity>::new();
         init.for_each(&mut world, |velocity| {
             velocity.x = 2.0;
             velocity.y = 1.0;
         });
 
-        let mut query = world.query::<(&mut Position, &Velocity)>();
+        let mut query = PreparedQuery::<(&mut Position, &Velocity)>::new();
         query.par_for_each_chunk(&mut world, |(positions, velocities)| {
             for index in 0..positions.len() {
                 positions[index].x += velocities[index].x;
@@ -503,7 +462,7 @@ mod tests {
         });
 
         let mut count = 0usize;
-        let mut check = world.query::<&Position>();
+        let mut check = PreparedQuery::<&Position>::new();
         check.for_each(&mut world, |position| {
             assert_eq!(position.x, 2.0);
             assert_eq!(position.y, 1.0);
@@ -521,7 +480,7 @@ mod tests {
 
         let with_velocity = AtomicUsize::new(0);
         let without_velocity = AtomicUsize::new(0);
-        let mut query = world.query::<(&mut Position, Option<&Velocity>)>();
+        let mut query = PreparedQuery::<(&mut Position, Option<&Velocity>)>::new();
         query.par_for_each_chunk(&mut world, |(positions, velocities)| {
             for index in 0..positions.len() {
                 if let Some(velocities) = velocities {
@@ -539,7 +498,7 @@ mod tests {
         assert_eq!(without_velocity.load(Ordering::Relaxed), 1);
 
         let mut results = Vec::new();
-        let mut check = world.query::<&Position>();
+        let mut check = PreparedQuery::<&Position>::new();
         check.for_each(&mut world, |position| {
             results.push((position.x, position.y))
         });
@@ -561,7 +520,7 @@ mod tests {
 
         let seen = Mutex::new(Vec::new());
         let chunk_lengths = AtomicUsize::new(0);
-        let mut query = world.query::<(&Position, &Velocity)>();
+        let mut query = PreparedQuery::<(&Position, &Velocity)>::new();
         query.par_for_each_chunk_with_entities(&mut world, |entities, (positions, velocities)| {
             assert_eq!(entities.len(), positions.len());
             assert_eq!(entities.len(), velocities.len());
@@ -590,7 +549,7 @@ mod tests {
             })
             .collect();
 
-        let mut init = world.query::<&mut Position>();
+        let mut init = PreparedQuery::<&mut Position>::new();
         let mut next = 0u32;
         init.for_each(&mut world, |position| {
             position.x = next as f32;
@@ -598,7 +557,7 @@ mod tests {
         });
 
         let chunk_visits = AtomicUsize::new(0);
-        let mut query = world.query::<(&Position, &Velocity)>();
+        let mut query = PreparedQuery::<(&Position, &Velocity)>::new();
         query.par_for_each_chunk_with_entities(&mut world, |entities, (positions, velocities)| {
             chunk_visits.fetch_add(1, Ordering::Relaxed);
             assert_eq!(entities.len(), positions.len());
@@ -614,7 +573,7 @@ mod tests {
         );
 
         let seen = Mutex::new(Vec::new());
-        let mut verify = world.query::<&Position>();
+        let mut verify = PreparedQuery::<&Position>::new();
         verify.for_each_with_entity(&mut world, |entity, position| {
             assert_eq!(position.x as u32, entity.index());
             lock(&seen).push(entity);
@@ -656,7 +615,7 @@ mod tests {
         let some_entities = AtomicUsize::new(0);
         let none_entities = AtomicUsize::new(0);
 
-        let mut query = world.query::<(&mut Position, Option<&mut Velocity>)>();
+        let mut query = PreparedQuery::<(&mut Position, Option<&mut Velocity>)>::new();
         query.par_for_each_chunk(&mut world, |(positions, velocities)| {
             if let Some(velocities) = velocities {
                 some_chunks.fetch_add(1, Ordering::Relaxed);
@@ -684,7 +643,7 @@ mod tests {
 
         let mut with_velocity_seen = 0usize;
         let mut without_velocity_seen = 0usize;
-        let mut check = world.query::<(&Position, Option<&Velocity>)>();
+        let mut check = PreparedQuery::<(&Position, Option<&Velocity>)>::new();
         check.for_each(&mut world, |(position, velocity)| {
             if let Some(velocity) = velocity {
                 assert_eq!(velocity.y, 12.0);
@@ -707,7 +666,7 @@ mod tests {
         world.spawn((Position { x: 3.0, y: 4.0 }, LargePad::default()));
 
         let invocations = AtomicUsize::new(0);
-        let mut query = world.query::<(&Position, &Velocity)>();
+        let mut query = PreparedQuery::<(&Position, &Velocity)>::new();
         query.par_for_each_chunk(&mut world, |_| {
             invocations.fetch_add(1, Ordering::Relaxed);
         });
@@ -748,7 +707,7 @@ mod tests {
         assert_eq!(prepared.cached_archetype_count(), 2);
 
         let mut total = 0.0f32;
-        let mut check = world.query::<&Position>();
+        let mut check = PreparedQuery::<&Position>::new();
         check.for_each(&mut world, |position| {
             total += position.x;
         });
@@ -778,7 +737,7 @@ mod tests {
 
         let mut total = 0.0f32;
         let mut count = 0usize;
-        let mut check = world.query::<&Position>();
+        let mut check = PreparedQuery::<&Position>::new();
         check.for_each(&mut world, |position| {
             total += position.x;
             count += 1;
@@ -820,7 +779,7 @@ mod tests {
         });
 
         let mut count = 0usize;
-        let mut check = world.query::<&Position>();
+        let mut check = PreparedQuery::<&Position>::new();
         check.for_each(&mut world, |position| {
             assert_eq!(position.x, 2.0);
             assert_eq!(position.y, 3.0);
@@ -830,7 +789,29 @@ mod tests {
     }
 
     #[test]
-    fn par_for_each_chunk_with_entities_sees_replaced_entities_without_rebuild() {
+    fn par_prepared_query_rebuilds_when_switching_worlds_at_the_same_epoch() {
+        let mut positions = World::new();
+        positions.spawn((Position::default(),));
+
+        let mut extras = World::new();
+        extras.spawn((Extra::default(),));
+
+        let calls = AtomicUsize::new(0);
+        let mut prepared = PreparedQuery::<&mut Position>::new();
+        prepared.par_for_each_chunk(&mut positions, |_| {
+            calls.fetch_add(1, Ordering::Relaxed);
+        });
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+
+        calls.store(0, Ordering::Relaxed);
+        prepared.par_for_each_chunk(&mut extras, |_| {
+            calls.fetch_add(1, Ordering::Relaxed);
+        });
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn par_for_each_chunk_with_entities_sees_replaced_entities_after_layout_refresh() {
         let mut world = World::new();
         let removed = world.spawn((Position::default(), Velocity { x: 1.0, y: 0.0 }));
         world.spawn((Position::default(), Velocity { x: 1.0, y: 0.0 }));

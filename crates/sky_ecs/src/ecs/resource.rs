@@ -29,6 +29,10 @@ impl Resources {
         self.values.contains_key(&TypeId::of::<R>())
     }
 
+    pub(crate) fn contains_id(&self, id: TypeId) -> bool {
+        self.values.contains_key(&id)
+    }
+
     pub(crate) fn remove<R: 'static>(&mut self) -> Option<R> {
         self.values
             .remove(&TypeId::of::<R>())

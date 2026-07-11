@@ -11,6 +11,7 @@ use smallvec::SmallVec;
 use crate::ecs::{component_type, ComponentType};
 
 pub const MAX_COMPONENTS: usize = 32;
+const MISSING_COMPONENT_INDEX: u8 = u8::MAX;
 
 lazy_static::lazy_static! {
     static ref ARCHETYPE_CACHE: RwLock<FxHashMap<Vec<usize>, Archetype>> = RwLock::new(FxHashMap::default());
@@ -83,20 +84,24 @@ impl InternalArchetype {
             LAST_COMPONENT_LOOKUP.with(Cell::get)
         {
             if cached_archetype_id == archetype_id && cached_component_id == component_id {
-                return Some(cached_index as usize);
+                return (cached_index != MISSING_COMPONENT_INDEX).then_some(cached_index as usize);
             }
         }
 
         let index = self
             .components
             .binary_search_by(|component| component.id().cmp(&ty.id()))
-            .ok()?;
+            .ok();
 
-        debug_assert!(index < u8::MAX as usize);
+        debug_assert!(index.is_none_or(|index| index < MISSING_COMPONENT_INDEX as usize));
         LAST_COMPONENT_LOOKUP.with(|cache| {
-            cache.set(Some((archetype_id, component_id, index as u8)));
+            cache.set(Some((
+                archetype_id,
+                component_id,
+                index.map_or(MISSING_COMPONENT_INDEX, |index| index as u8),
+            )));
         });
-        Some(index)
+        index
     }
 }
 

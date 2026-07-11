@@ -2,13 +2,19 @@ use super::{create_archetype, Archetype, Chunk, MAX_COMPONENTS};
 use crate::ecs::{component_type, ComponentType};
 use rustc_hash::FxHashMap;
 use smallvec::{smallvec, SmallVec};
-use std::{any::TypeId, cell::RefCell, ptr, sync::RwLock};
+use std::{
+    any::TypeId,
+    cell::{Cell, RefCell},
+    ptr,
+    sync::RwLock,
+};
 
 lazy_static::lazy_static! {
     static ref BUNDLE_META: RwLock<FxHashMap<TypeId, &'static BundleMeta>> = RwLock::new(FxHashMap::default());
 }
 
 thread_local! {
+    static LAST_BUNDLE_META: Cell<Option<(TypeId, &'static BundleMeta)>> = const { Cell::new(None) };
     static LOCAL_BUNDLE_META: RefCell<FxHashMap<TypeId, &'static BundleMeta>> = RefCell::new(FxHashMap::default());
 }
 
@@ -39,7 +45,14 @@ fn bundle_meta<B: 'static>(
 ) -> &'static BundleMeta {
     let type_id = TypeId::of::<B>();
 
+    if let Some((cached_type_id, meta)) = LAST_BUNDLE_META.get() {
+        if cached_type_id == type_id {
+            return meta;
+        }
+    }
+
     if let Some(meta) = LOCAL_BUNDLE_META.with(|cache| cache.borrow().get(&type_id).copied()) {
+        LAST_BUNDLE_META.set(Some((type_id, meta)));
         return meta;
     }
 
@@ -47,6 +60,7 @@ fn bundle_meta<B: 'static>(
         LOCAL_BUNDLE_META.with(|cache| {
             cache.borrow_mut().insert(type_id, meta);
         });
+        LAST_BUNDLE_META.set(Some((type_id, meta)));
         return meta;
     }
 
@@ -55,6 +69,7 @@ fn bundle_meta<B: 'static>(
         LOCAL_BUNDLE_META.with(|cache| {
             cache.borrow_mut().insert(type_id, meta);
         });
+        LAST_BUNDLE_META.set(Some((type_id, meta)));
         return meta;
     }
 
@@ -78,6 +93,7 @@ fn bundle_meta<B: 'static>(
     LOCAL_BUNDLE_META.with(|cache| {
         cache.borrow_mut().insert(type_id, meta);
     });
+    LAST_BUNDLE_META.set(Some((type_id, meta)));
     meta
 }
 

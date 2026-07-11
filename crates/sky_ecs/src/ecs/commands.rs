@@ -356,12 +356,13 @@ impl PendingEntityBuffer {
 }
 
 // ---------------------------------------------------------------------------
-// Public Commands API
+// Owned command buffer
 // ---------------------------------------------------------------------------
 
 /// A deferred command buffer for batching structural ECS changes.
 ///
-/// Commands are recorded and then applied atomically via [`apply`](Self::apply).
+/// Commands are recorded and then applied in one explicit pass via
+/// [`apply`](Self::apply).
 /// This is useful when you need to make structural changes (spawn, despawn,
 /// insert, remove) from within a query loop or a system, where direct
 /// mutation of the [`World`] is not possible.
@@ -372,24 +373,53 @@ impl PendingEntityBuffer {
 /// # Examples
 ///
 /// ```
-/// # use sky_ecs::{World, Commands};
+/// # use sky_ecs::{CommandBuffer, World};
 /// # #[derive(Clone, Copy)] struct Health(f32);
 /// # let mut world = World::new();
 /// let entity = world.spawn((Health(100.0),));
 ///
-/// let mut cmds = Commands::new();
+/// let mut cmds = CommandBuffer::new();
 /// cmds.insert(entity, Health(50.0));
 /// cmds.apply(&mut world);
 ///
 /// assert_eq!(world.get::<Health>(entity).unwrap().0, 50.0);
 /// ```
 #[derive(Default)]
-pub struct Commands {
+pub struct CommandBuffer {
     queue: Vec<Command>,
     queued_count: usize,
 }
 
-impl Commands {
+struct CommandApplyGuard {
+    world: *mut World,
+    completed: bool,
+}
+
+impl CommandApplyGuard {
+    fn new(world: &mut World) -> Self {
+        world.assert_command_apply_allowed();
+        Self {
+            world: std::ptr::from_mut(world),
+            completed: false,
+        }
+    }
+
+    fn complete(mut self) {
+        self.completed = true;
+    }
+}
+
+impl Drop for CommandApplyGuard {
+    fn drop(&mut self) {
+        if !self.completed && std::thread::panicking() {
+            // Safety: the guard never outlives CommandBuffer::apply's borrowed
+            // World, and apply cannot return while this guard is alive.
+            unsafe { &mut *self.world }.poison_after_command_panic();
+        }
+    }
+}
+
+impl CommandBuffer {
     /// Creates a new, empty command buffer.
     pub fn new() -> Self {
         Self::default()
@@ -497,15 +527,105 @@ impl Commands {
     }
 
     /// Applies all recorded commands to the world and clears the buffer.
+    ///
+    /// # Panics and poisoning
+    ///
+    /// Commands may contain arbitrary user values whose code or destructors
+    /// can panic. General rollback is therefore impossible. If a panic escapes
+    /// this apply pass, the World is marked poisoned and rejects later command
+    /// application and schedule ticks rather than running with a partial
+    /// commit. The World remains inspectable and may be shut down.
     pub fn apply(&mut self, world: &mut World) {
-        for command in self.queue.drain(..) {
+        let apply_guard = CommandApplyGuard::new(world);
+        // Restore the observable invariant before user-owned drops/deferred
+        // work can unwind. On success the emptied Vec (and its capacity) is
+        // returned; on panic `self` already contains a valid empty queue.
+        self.queued_count = 0;
+        let mut queue = std::mem::take(&mut self.queue);
+        for command in queue.drain(..) {
             match command {
                 Command::EntityBatch(batch) => batch.flush(world),
                 Command::SpawnBatch(batch) => batch.apply(world),
                 Command::Deferred(command) => command.apply(world),
             }
         }
+        self.queue = queue;
+        apply_guard.complete();
+    }
 
+    /// Discards every pending command while preserving allocated capacity.
+    pub fn clear(&mut self) {
         self.queued_count = 0;
+        let mut queue = std::mem::take(&mut self.queue);
+        queue.clear();
+        self.queue = queue;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Borrowed system command writer
+// ---------------------------------------------------------------------------
+
+/// A system-local deferred structural writer.
+///
+/// Each scheduled system receives an isolated writer. The scheduler applies
+/// the underlying buffers in deterministic registration order at the next
+/// documented flush boundary.
+pub struct Commands<'w> {
+    buffer: &'w mut CommandBuffer,
+}
+
+impl<'w> Commands<'w> {
+    pub(crate) unsafe fn from_ptr(buffer: *mut CommandBuffer) -> Self {
+        Self {
+            buffer: unsafe { &mut *buffer },
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.buffer.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.buffer.len()
+    }
+
+    pub fn spawn<B>(&mut self, bundle: B)
+    where
+        B: Bundle + Send,
+    {
+        self.buffer.spawn(bundle);
+    }
+
+    pub fn despawn(&mut self, entity: EntityId) {
+        self.buffer.despawn(entity);
+    }
+
+    pub fn insert<T>(&mut self, entity: EntityId, component: T)
+    where
+        T: Send + 'static,
+    {
+        self.buffer.insert(entity, component);
+    }
+
+    pub fn remove<T>(&mut self, entity: EntityId)
+    where
+        T: 'static,
+    {
+        self.buffer.remove::<T>(entity);
+    }
+
+    pub fn insert_resource<R>(&mut self, resource: R)
+    where
+        R: Send + 'static,
+    {
+        self.buffer.insert_resource(resource);
+    }
+
+    pub fn remove_resource<R>(&mut self)
+    where
+        R: 'static,
+    {
+        self.buffer.remove_resource::<R>();
     }
 }

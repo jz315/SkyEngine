@@ -5301,9 +5301,20 @@ dependencies = [
  "lazy_static",
  "rayon",
  "rustc-hash 2.1.2",
+ "sky_ecs_derive",
  "sky_profile",
  "sky_type",
  "smallvec",
+]
+
+[[package]]
+name = "sky_ecs_derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]

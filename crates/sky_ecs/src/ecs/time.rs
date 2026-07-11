@@ -3,13 +3,13 @@
 /// `Time` is built into `World` because it is core frame state rather than a
 /// user-owned resource.  Systems usually read [`delta`](Self::delta).  Render
 /// and UI-facing code should prefer [`frame_delta`](Self::frame_delta), because
-/// fixed-step groups temporarily set `delta` to their fixed step while they run.
+/// fixed stages temporarily set `delta` to their fixed step while they run.
 #[derive(Debug, Clone)]
 pub struct Time {
-    /// Delta time for the currently running system group.
+    /// Delta time for the currently running stage invocation.
     ///
-    /// Equals [`frame_delta`](Self::frame_delta) for normal groups, or the
-    /// fixed step size while a fixed-step group is running.
+    /// Equals [`frame_delta`](Self::frame_delta) for every-frame stages, or the
+    /// fixed step size while a fixed stage is running.
     pub delta: f32,
 
     /// Delta for the current application frame after clamping and
@@ -30,9 +30,26 @@ pub struct Time {
     /// Number of ticks since the schedule started.
     pub frame_count: u64,
 
+    /// Fraction of the next built-in [`FixedUpdate`](crate::ecs::FixedUpdate)
+    /// step accumulated after fixed execution.
+    ///
+    /// This is in `0.0..=1.0`; carried backlog is clamped to `1.0` until the
+    /// fixed stage catches up. Render systems can use it for interpolation.
+    /// Custom fixed stages expose their accumulator through schedule
+    /// diagnostics and do not overwrite this value.
+    pub fixed_alpha: f32,
+
     /// Time multiplier. 1.0 = normal, 0.5 = slow-mo, 0.0 = paused.
     pub time_scale: f32,
+
+    // Ordinary systems may share Time but must not request ResMut<Time>.
+    // Exclusive code can still mutate it through World between worker waves.
+    _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
 }
+
+// Safety: the marker is zero-sized and all actual Time fields are primitive
+// values. Schedule execution permits only shared worker access to Time.
+unsafe impl Sync for Time {}
 
 impl Time {
     #[inline]
@@ -59,6 +76,11 @@ impl Time {
     pub fn raw_elapsed(&self) -> f32 {
         self.raw_elapsed
     }
+
+    #[inline]
+    pub fn fixed_alpha(&self) -> f32 {
+        self.fixed_alpha
+    }
 }
 
 impl Default for Time {
@@ -70,7 +92,9 @@ impl Default for Time {
             elapsed: 0.0,
             raw_elapsed: 0.0,
             frame_count: 0,
+            fixed_alpha: 0.0,
             time_scale: 1.0,
+            _not_send: std::marker::PhantomData,
         }
     }
 }

@@ -696,8 +696,8 @@ mod tests {
             .unwrap();
 
         let mut positions = Vec::new();
-        let mut check = world.query::<&Position>();
-        check.for_each(&world, |position| positions.push(*position));
+        let check = world.query::<&Position>();
+        check.for_each(|position| positions.push(*position));
         positions.sort_by(|left, right| left.x.total_cmp(&right.x));
         assert_eq!(
             positions,
