@@ -12,7 +12,8 @@ use sky_engine::app::{
 };
 use sky_engine::asset::Assets;
 use sky_engine::input::KeyCode;
-use sky_engine::render::{RenderPipelineAsset, SpriteFeature, TilemapFeature, TransparentPhase};
+use sky_engine::render::{RenderPipelineAsset, SpriteFeature, TransparentPhase};
+use sky_engine::render::features::tilemap::TilemapFeature;
 
 struct LastLightGuild;
 

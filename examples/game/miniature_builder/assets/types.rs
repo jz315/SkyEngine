@@ -1,5 +1,5 @@
 use sky_engine::asset::{Handle, TextureAsset};
-use sky_engine::render::TileId;
+use sky_engine::render::features::tilemap::TileId;
 use sky_engine::tile::{PaletteId, TileDefId, TilePaletteStore};
 
 pub const GROUND_PALETTE: PaletteId = PaletteId(1);

@@ -2,14 +2,15 @@
 mod common;
 
 use common::{AuxA, AuxB, Position2D, Velocity2D};
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use sky_engine::ecs::{EntityId, PreparedQuery, World};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use sky_engine::ecs::{EntityId, PreparedQuery, QueryData, World};
 use std::hint::black_box;
 use std::time::Duration;
 
 const LIGHT_ENTITY_COUNTS: [usize; 3] = [100_000, 400_000, 2_000_000];
 const HEAVY_ENTITY_COUNTS: [usize; 2] = [400_000, 2_000_000];
 const REAL_SCENE_ENTITY_COUNTS: [usize; 2] = [250_000, 1_000_000];
+const FACADE_ENTITY_COUNT: usize = 1_000_000;
 
 const REAL_SCENE_WIDTH: f32 = 4096.0;
 const REAL_SCENE_HEIGHT: f32 = 4096.0;
@@ -24,6 +25,12 @@ struct SceneStatus {
     panic: f32,
     drag: f32,
     boost: f32,
+}
+
+#[derive(QueryData)]
+struct Movement<'w> {
+    position: &'w mut Position2D,
+    velocity: &'w Velocity2D,
 }
 
 fn world_with_parallel_entities(count: usize) -> World {
@@ -504,11 +511,67 @@ fn bench_real_scene(c: &mut Criterion) {
     group.finish();
 }
 
+#[inline(always)]
+fn facade_update(position: &mut Position2D, velocity: &Velocity2D) {
+    position.x = black_box(position.x + velocity.x * 0.000_001);
+    position.y = black_box(position.y + velocity.y * 0.000_001);
+}
+
+fn bench_bound_facade(c: &mut Criterion) {
+    let mut group = c.benchmark_group("parallel_query_bound_facade");
+    group.warm_up_time(Duration::from_millis(500));
+    group.measurement_time(Duration::from_secs(3));
+    group.sample_size(30);
+    group.throughput(Throughput::Elements(FACADE_ENTITY_COUNT as u64));
+
+    let mut sequential_world = world_with_parallel_entities(FACADE_ENTITY_COUNT);
+    group.bench_function("tuple_sequential", |b| {
+        b.iter(|| {
+            sequential_world
+                .query_mut::<(&mut Position2D, &Velocity2D)>()
+                .for_each(|(position, velocity)| facade_update(position, velocity));
+        });
+    });
+
+    let mut tuple_world = world_with_parallel_entities(FACADE_ENTITY_COUNT);
+    group.bench_function("tuple_parallel", |b| {
+        b.iter(|| {
+            tuple_world
+                .query_mut::<(&mut Position2D, &Velocity2D)>()
+                .par_for_each(|(position, velocity)| facade_update(position, velocity));
+        });
+    });
+
+    let mut named_world = world_with_parallel_entities(FACADE_ENTITY_COUNT);
+    group.bench_function("named_parallel", |b| {
+        b.iter(|| {
+            named_world
+                .query_mut::<Movement>()
+                .par_for_each(|item| facade_update(item.position, item.velocity));
+        });
+    });
+
+    let mut chunk_world = world_with_parallel_entities(FACADE_ENTITY_COUNT);
+    group.bench_function("tuple_parallel_chunk", |b| {
+        b.iter(|| {
+            chunk_world
+                .query_mut::<(&mut Position2D, &Velocity2D)>()
+                .par_for_each_chunk(|(positions, velocities)| {
+                    for (position, velocity) in positions.iter_mut().zip(velocities) {
+                        facade_update(position, velocity);
+                    }
+                });
+        });
+    });
+    group.finish();
+}
+
 criterion_group!(
     parallel_query_benches,
     bench_chunk_update,
     bench_chunk_update_with_entities,
     bench_chunk_update_heavy,
-    bench_real_scene
+    bench_real_scene,
+    bench_bound_facade
 );
 criterion_main!(parallel_query_benches);

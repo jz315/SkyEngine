@@ -20,8 +20,11 @@ use sky_engine::physics::{
 use sky_engine::plugin::Plugin;
 use sky_engine::render::{
     CameraMarker, Color, MainCamera, Projection, RenderPipelineAsset, RenderSettings, SortingLayer,
-    SpriteFeature, SpriteRenderer, TiledImport, TiledMapInstance, TiledPhysicsInstance,
-    TiledPhysicsOptions, TiledSpawnOptions, TilemapFeature, Transform, TransparentPhase,
+    SpriteFeature, SpriteRenderer, Transform, TransparentPhase,
+};
+use sky_engine::render::features::tilemap::{
+    TiledImport, TiledMapInstance, TiledPhysicsInstance, TiledPhysicsOptions, TiledSpawnOptions,
+    TilemapFeature,
 };
 
 const PLAYER_SPEED: f32 = 160.0;

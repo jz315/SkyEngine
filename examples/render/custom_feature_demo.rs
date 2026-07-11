@@ -12,8 +12,9 @@ use sky_engine::app::{
     App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, WindowPlugin,
 };
 use sky_engine::ecs::World;
-use sky_engine::render::expert::{
-    CompiledPass, FullscreenPass, FullscreenPipeline, PhysicalResources, TargetSize, TextureHandle,
+use sky_engine::render::expert::gpu::{FullscreenPass, FullscreenPipeline};
+use sky_engine::render::expert::graph::{
+    CompiledPass, PhysicalResources, TargetSize, TextureHandle,
 };
 use sky_engine::render::{
     CameraMarker, Color, MainCamera, PostFxPass, PostFxPassExecuteContext, PostFxPassSetupContext,
@@ -184,7 +185,7 @@ impl PostFxPass for WarmTintPass {
     fn execute(
         &mut self,
         ctx: &mut PostFxPassExecuteContext<'_, '_>,
-    ) -> Result<(), sky_engine::render::expert::RenderGraphError> {
+    ) -> Result<(), sky_engine::render::expert::graph::RenderGraphError> {
         let (gpu, pass, resources, _execution) = ctx.split();
         let input = first_read_texture(pass, self.name());
         let output = first_write_texture(pass, self.name());
@@ -233,7 +234,7 @@ impl PostFxPass for WarmTintPass {
 
     fn draw_calls(
         &self,
-        _execution: &sky_engine::render::expert::ViewExecutionContext<'_>,
+        _execution: &sky_engine::render::expert::execution::ViewExecutionContext<'_>,
     ) -> usize {
         1
     }
@@ -243,7 +244,7 @@ fn first_read_texture(pass: &CompiledPass, node_name: &str) -> TextureHandle {
     pass.reads
         .iter()
         .find_map(|resource| match resource {
-            sky_engine::render::expert::ResourceRef::Texture(handle) => Some(*handle),
+            sky_engine::render::expert::graph::ResourceRef::Texture(handle) => Some(*handle),
             _ => None,
         })
         .unwrap_or_else(|| panic!("{node_name} should read an input texture"))
@@ -253,7 +254,7 @@ fn first_write_texture(pass: &CompiledPass, node_name: &str) -> TextureHandle {
     pass.writes
         .iter()
         .find_map(|resource| match resource {
-            sky_engine::render::expert::ResourceRef::Texture(handle) => Some(*handle),
+            sky_engine::render::expert::graph::ResourceRef::Texture(handle) => Some(*handle),
             _ => None,
         })
         .unwrap_or_else(|| panic!("{node_name} should write an output texture"))
@@ -264,7 +265,7 @@ fn require_render_target<'a>(
     handle: TextureHandle,
     node_name: &str,
     label: &str,
-) -> &'a sky_engine::render::expert::RenderTarget {
+) -> &'a sky_engine::render::expert::gpu::RenderTarget {
     resources
         .render_target(handle)
         .unwrap_or_else(|| panic!("{node_name} {label} target should be allocated"))

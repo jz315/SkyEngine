@@ -110,7 +110,7 @@ impl VideoPlayer2D {
 #[derive(Clone, Debug, PartialEq)]
 pub enum VideoError {
     Asset(AssetError),
-    Texture(crate::render::expert::TextureError),
+    Texture(crate::render::expert::gpu::TextureError),
     InstanceNotFound { instance: VideoInstanceId },
     EmptyClip,
     InvalidFrameDuration,
@@ -129,8 +129,8 @@ impl From<AssetError> for VideoError {
     }
 }
 
-impl From<crate::render::expert::TextureError> for VideoError {
-    fn from(value: crate::render::expert::TextureError) -> Self {
+impl From<crate::render::expert::gpu::TextureError> for VideoError {
+    fn from(value: crate::render::expert::gpu::TextureError) -> Self {
         Self::Texture(value)
     }
 }

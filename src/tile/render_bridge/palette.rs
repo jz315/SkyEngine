@@ -1,4 +1,4 @@
-use crate::render::{TilesetGrid, TilesetTileRect};
+use crate::render::features::tilemap::{TilesetGrid, TilesetTileRect};
 use crate::tile::{TilePalette, TileTextureSource};
 
 #[allow(dead_code)]
@@ -36,7 +36,7 @@ pub(crate) fn palette_to_tileset_grid(palette: &TilePalette) -> Option<TilesetGr
 #[cfg(test)]
 mod tests {
     use crate::asset::{AssetConfig, Assets, TextureAsset};
-    use crate::render::TilesetTileRect;
+    use crate::render::features::tilemap::TilesetTileRect;
     use crate::tile::{PaletteId, RectU, TileDef, TileDefId, TilePalette, TileTextureSource};
 
     use super::palette_to_tileset_grid;

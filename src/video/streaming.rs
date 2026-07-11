@@ -1,6 +1,6 @@
 use crate::asset::{Assets, Handle, TextureAsset, TextureColorSpace};
 use crate::gpu::GpuContext;
-use crate::render::expert::{Texture, TextureCreateDesc};
+use crate::render::expert::gpu::{Texture, TextureCreateDesc};
 use crate::video::playback::rgba_len;
 use crate::video::VideoError;
 

@@ -10,7 +10,7 @@ documentation = "https://docs.rs/sky_engine"
 keywords = ["ecs", "game-engine", "performance", "data-oriented"]
 categories = ["game-engines", "data-structures"]
 autobenches = false
-autoexamples = false
+
 exclude = [
     "examples/assets/**",
     "examples/demo/**/asset/**",
@@ -360,6 +360,16 @@ harness = false
 [[bench]]
 name = "bound_query"
 path = "benches/bound_query.rs"
+harness = false
+
+[[bench]]
+name = "archetype_match"
+path = "benches/archetype_match.rs"
+harness = false
+
+[[bench]]
+name = "parallel_job_cache"
+path = "benches/parallel_job_cache.rs"
 harness = false
 
 [[bench]]

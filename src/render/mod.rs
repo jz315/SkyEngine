@@ -16,37 +16,39 @@
 //! scene?", while [`expert`] answers "how do I participate in the renderer
 //! internals?".
 
-pub mod animation;
-pub mod asset;
-pub mod backend;
-pub mod builtins;
-mod color;
-pub mod component;
-pub(crate) mod composite;
-pub(crate) mod execution;
+pub(crate) mod core;
 pub mod expert;
-pub(crate) mod extract;
-pub mod gi;
-pub(crate) mod gpu;
-pub(crate) mod graph;
-pub(crate) mod lighting;
-pub(crate) mod mesh;
-pub(crate) mod phase;
-pub(crate) mod pipeline;
-pub(crate) mod postfx;
-pub(crate) mod resources;
-pub(crate) mod runtime;
-pub(crate) mod sprite;
-pub(crate) mod tilemap;
-pub(crate) mod view;
+pub mod features;
+pub(crate) mod integration;
 
+// Transitional crate-internal names keep existing implementation modules
+// compiling while callers are migrated to the new core/features/integration
+// topology. They are deliberately not public API.
+pub(crate) use core::draw as phase;
+pub(crate) use core::execution;
+pub(crate) use core::extraction as extract;
+pub(crate) use core::gpu;
+pub(crate) use core::graph;
+pub(crate) use core::pipeline;
+pub(crate) use core::resources;
+pub(crate) use core::runtime;
+pub(crate) use core::scene::color;
+pub(crate) use core::view;
+pub(crate) use features::gi;
+pub(crate) use features::lighting;
 #[cfg(feature = "live2d")]
-pub(crate) mod live2d;
+pub(crate) use features::live2d;
+pub(crate) use features::postfx;
+pub(crate) use features::sprite;
+pub(crate) use features::sprite::animation;
+pub(crate) use integration::assets as asset;
+pub(crate) use integration::backend;
 
 pub use crate::math::{Projection, Quat, Transform};
 pub use animation::{animate_sprites, SpriteAnimationClip, SpriteAnimationFrame, SpriteAnimator};
 pub use asset::{
-    MeshAsset, MeshAssetDescriptor, MeshAssetError, MeshBoundingSphere, MeshIndexData, MeshSubMesh,
+    register_render_asset_factories, register_render_cookers, render_cook_registry, MeshAsset,
+    MeshAssetDescriptor, MeshAssetError, MeshBoundingSphere, MeshIndexData, MeshSubMesh,
     MeshVertexAttribute, MeshVertexFormat, MeshVertexLayout, MeshVertexSemantic, RenderAssets,
     StandardMaterialAsset, TextureAddressMode, TextureFilter, TextureSamplerDesc,
 };
@@ -55,23 +57,16 @@ pub use backend::{KajiyaSceneRenderer, KajiyaSceneSyncStats};
 #[cfg(feature = "renderling-renderer")]
 pub use backend::{RenderlingSceneRenderer, RenderlingSceneSyncStats};
 pub use backend::{
-    SceneFrame, SceneFrameClearReason, SceneFrameSkipReason, SceneRenderOutcome, SceneRenderer,
-    SceneRendererError, SceneRendererInitError, SceneSpotLight, WgpuSceneRenderer,
-};
-pub use builtins::{
-    Bloom, ContactShadows, DebugView, GiCompositePass, GiUpdateCompute, SceneMaterialPrepass,
-    SceneNormalPrepass, Sharpen, TemporalAntiAliasing, ToneMap, Vignette,
+    SceneCamera, SceneDirectionalLight, SceneFrame, SceneFrameClearReason, SceneFrameSkipReason,
+    SceneMeshInstance, ScenePointLight, SceneRenderOutcome, SceneRenderer, SceneRendererError,
+    SceneRendererInitError, SceneSnapshot, SceneSnapshotExtractor, SceneSnapshotStats,
+    SceneSpotLight, WgpuSceneRenderer,
 };
 pub use color::Color;
-pub use component::{
+pub use core::scene::{
     BloomSettings, Camera as CameraMarker, CameraViewport, ContactShadowsSettings,
-    DirectionalLight, GlobalIllumination, MainCamera, MeshRenderer, Parent, PointLight,
-    RenderDebugView, RenderLayerMask, RenderSettings, ShadowSamplingMode, ShadowUpdatePolicy,
-    SharpenSettings, SortingLayer, SpotLight, SpriteRenderer, TemporalAntiAliasingSettings,
-    TileAnimation, TileAnimationFrame, TilemapDepthSort, TilemapOrientation, TilemapRenderOrder,
-    TilemapRenderer, TilemapStaggerAxis, TilemapStaggerIndex, TilesetGrid, TilesetTileRect,
-    ToneMapSettings, VignetteSettings, WgpuMeshRenderer, ALL_SHADOW_CASCADE_MASK,
-    MAX_DIRECTIONAL_SHADOW_CASCADES,
+    GlobalIllumination, MainCamera, Parent, RenderDebugView, RenderLayerMask, RenderSettings,
+    SharpenSettings, TemporalAntiAliasingSettings, ToneMapSettings, VignetteSettings,
 };
 pub use execution::SceneTexture;
 pub use execution::{
@@ -80,7 +75,11 @@ pub use execution::{
     PostFxPassExecuteContext, PostFxPassSetupContext, RenderPassExecuteContext,
     RenderPassSetupContext,
 };
-pub use gi::{GiProviderConfig, GiProviderFactory, GiProviderId, GiSettings};
+pub use features::lighting::{
+    DirectionalLight, PointLight, ShadowSamplingMode, ShadowUpdatePolicy, SpotLight,
+};
+pub use features::mesh::{MeshRenderer, WgpuMeshRenderer, ALL_SHADOW_CASCADE_MASK};
+pub use features::sprite::{SortingLayer, SpriteRenderer};
 pub use gpu::{
     is_depth_format, GpuScene, GpuTable, GpuTableManager, ModelMatrixTable, Texture,
     DEFAULT_DEPTH_FORMAT,
@@ -91,7 +90,7 @@ pub use phase::{OpaquePhase, TransparentPhase};
 pub use pipeline::{
     ComputePass, GraphPass, KajiyaDpiMode, KajiyaRendererSettings, PipelineStepDescriptor,
     PostFxPass, RenderBackendKind, RenderFeature, RenderPass, RenderPhase, RenderPipelineAsset,
-    RenderPipelineBuilder, RenderPipelineDescriptor, SpriteFeature, TextureSpec,
+    RenderPipelineBuilder, RenderPipelineDescriptor, TextureSpec,
 };
 pub use resources::material::{
     AlphaMode, MainPassMode, Material, MaterialBinding, MaterialBindingLayout, MaterialError,
@@ -102,32 +101,16 @@ pub use resources::material::{
     UnlitMaterial,
 };
 pub use resources::texture_cache::{SharedRenderAssetCache, TextureReadiness};
+pub use resources::MAX_DIRECTIONAL_SHADOW_CASCADES;
 pub use runtime::RenderRuntime;
 pub use runtime::RenderTimingStats;
 pub use runtime::{FrameRenderOutcome, FrameSkipReason};
 pub use runtime::{HistoryTexture, HistoryTextureRequest, HistoryTextureSize};
-pub use sprite::Sprite;
-pub use tilemap::{
-    Tile, TileChunkBounds, TileFlags, TileId, TiledImport, TiledImportError, TiledLayer,
-    TiledMapInstance, TiledMapInstanceError, TiledObject, TiledObjectLayer, TiledObjectShape,
-    TiledProperty, TiledPropertyValue, TiledSpawnOptions, TiledSpawnOrigin, TiledTileObject,
-    TiledTileset, TiledTilesetImageSource, Tilemap, TilemapCacheConfig, TilemapDescriptor,
-    TilemapFeature, TilemapHandle, TilemapStorage,
-};
-#[cfg(feature = "physics")]
-pub use tilemap::{TiledPhysicsError, TiledPhysicsInstance, TiledPhysicsOptions};
+pub use sprite::{Sprite, SpriteFeature};
 pub use view::{
     Camera, Frustum, RenderQueueSort, RenderStats, SceneView, SceneViewKind, TemporalViewState,
     ViewportRect,
 };
-
-#[cfg(feature = "live2d")]
-pub use component::{
-    Live2DAnimator, Live2DCommand, Live2DCommands, Live2DLookTarget, Live2DModelInstance,
-    Live2DModelPoint,
-};
-#[cfg(feature = "live2d")]
-pub use pipeline::Live2DFeature;
 
 #[cfg(test)]
 mod tests {
@@ -163,22 +146,22 @@ mod tests {
         let _unlit_material = UnlitMaterial::default();
         let _standard_material = StandardMaterial::default();
         let _depth_format = DEFAULT_DEPTH_FORMAT;
-        let _opaque_phase = expert::OpaquePhase::new();
+        let _opaque_phase = expert::draw::OpaquePhase::new();
         let _mesh_renderer = WgpuMeshRenderer::new(
-            expert::Mesh::QUAD,
-            expert::MaterialHandle::new::<SpriteMaterial>(0, 0),
+            expert::resources::Mesh::QUAD,
+            expert::resources::MaterialHandle::new::<SpriteMaterial>(0, 0),
         );
         let _gpu_light_kind = GpuLightKind::Point;
         let _scene_lighting: Option<SceneLightingResources<'_>> = None;
         let _sprite_renderer = SpriteRenderer::new(8.0, 8.0);
-        let _tile = Tile::new(TileId(0));
-        let _tilemap_storage = TilemapStorage::new();
-        let _tilemap_feature = TilemapFeature::unlit();
-        let _tilemap_feature_with_cache =
-            TilemapFeature::unlit().with_cache_config(TilemapCacheConfig::default());
-        let _tilemap_renderer = TilemapRenderer::new(
-            TilemapHandle::new(0, 0),
-            TilesetGrid::new(
+        let _tile = features::tilemap::Tile::new(features::tilemap::TileId(0));
+        let _tilemap_storage = features::tilemap::TilemapStorage::new();
+        let _tilemap_feature = features::tilemap::TilemapFeature::unlit();
+        let _tilemap_feature_with_cache = features::tilemap::TilemapFeature::unlit()
+            .with_cache_config(features::tilemap::TilemapCacheConfig::default());
+        let _tilemap_renderer = features::tilemap::TilemapRenderer::new(
+            features::tilemap::TilemapHandle::new(0, 0),
+            features::tilemap::TilesetGrid::new(
                 crate::asset::Handle::new(crate::asset::AssetId::new()),
                 [8, 8],
                 1,
@@ -186,14 +169,14 @@ mod tests {
             ),
         )
         .cache_prewarm(true);
-        let _tilemap_orientation = TilemapOrientation::Isometric;
-        let _tilemap_render_order = TilemapRenderOrder::RightDown;
-        let _tilemap_stagger_axis = TilemapStaggerAxis::Y;
-        let _tilemap_stagger_index = TilemapStaggerIndex::Odd;
-        let _tiled_error: Option<TiledImportError> = None;
-        let _tiled_map_instance_error: Option<TiledMapInstanceError> = None;
-        let _tiled_spawn_options = TiledSpawnOptions::centered();
-        let _tiled_spawn_origin = TiledSpawnOrigin::Centered;
+        let _tilemap_orientation = features::tilemap::TilemapOrientation::Isometric;
+        let _tilemap_render_order = features::tilemap::TilemapRenderOrder::RightDown;
+        let _tilemap_stagger_axis = features::tilemap::TilemapStaggerAxis::Y;
+        let _tilemap_stagger_index = features::tilemap::TilemapStaggerIndex::Odd;
+        let _tiled_error: Option<features::tilemap::TiledImportError> = None;
+        let _tiled_map_instance_error: Option<features::tilemap::TiledMapInstanceError> = None;
+        let _tiled_spawn_options = features::tilemap::TiledSpawnOptions::centered();
+        let _tiled_spawn_origin = features::tilemap::TiledSpawnOrigin::Centered;
         let _light = PointLight::new(64.0);
         let _spot = SpotLight::new(32.0);
         let _composer = RenderRuntime::from_asset(RenderPipelineAsset::builder().build());
@@ -205,16 +188,34 @@ mod tests {
 
     #[test]
     fn expert_namespace_exposes_low_level_render_api() {
-        let _graph = expert::RenderGraph::new();
-        let _spec = expert::TextureSpec::r32f("expert_texture_spec").storage();
-        let _target: Option<expert::RenderTarget> = None;
-        let _batch: Option<expert::SpriteBatch> = None;
-        let _light: Option<expert::LightPass> = None;
-        let _light_kind = expert::GpuLightKind::Directional;
-        let _scene_lighting: Option<expert::SceneLightingResources<'_>> = None;
-        let _composite: Option<expert::CompositePass> = None;
-        let _bloom: Option<expert::Bloom> = None;
-        let _tonemap: Option<expert::ToneMap> = None;
-        let _vignette: Option<expert::Vignette> = None;
+        let _graph = expert::graph::RenderGraph::new();
+        let _spec = expert::draw::TextureSpec::r32f("expert_texture_spec").storage();
+        let _target: Option<expert::gpu::RenderTarget> = None;
+        let _batch: Option<expert::draw::SpriteBatch> = None;
+        let _light: Option<expert::draw::LightPass> = None;
+        let _light_kind = expert::draw::GpuLightKind::Directional;
+        let _scene_lighting: Option<expert::draw::SceneLightingResources<'_>> = None;
+        let _bloom: Option<expert::draw::Bloom> = None;
+        let _tonemap: Option<expert::draw::ToneMap> = None;
+        let _vignette: Option<expert::draw::Vignette> = None;
+    }
+
+    #[test]
+    fn feature_facades_expose_family_specific_api() {
+        let _gi_feature = features::gi::GiFeature;
+        let _gi_update = features::gi::GiUpdateCompute;
+        let _gi_composite = features::gi::GiCompositePass;
+        let _bloom = features::postfx::Bloom::default();
+        let _tonemap = features::postfx::ToneMap::default();
+        let _tilemap = features::tilemap::TilemapFeature::unlit()
+            .with_cache_config(features::tilemap::TilemapCacheConfig::default());
+        let _tiled_spawn = features::tilemap::TiledSpawnOptions::centered();
+    }
+
+    #[cfg(feature = "live2d")]
+    #[test]
+    fn live2d_feature_facade_exposes_runtime_feature() {
+        let _feature = features::live2d::Live2DFeature::new();
+        let _commands = features::live2d::Live2DCommands::default();
     }
 }

@@ -1,150 +1,110 @@
+# ECS Benchmark Guide
 
+SkyEngine deliberately uses two benchmark tracks. Their numbers answer different questions and must not be combined in one result table.
 
-# Benchmark
+## 1. Cross-engine comparison
 
-## Table of Contents
-1. [Quick Start](#quick-start)
-2. [Performance Overview](#performance-overview)
-3. [Detailed Test Data](#detailed-test-data)
-
----
-
-## Quick Start
+`cargo compare-ecs` is the canonical Sky/hecs/Bevy/Flecs comparison. Workloads use safe public APIs available in all four engines, and prepared/query state is created outside the timed loop.
 
 ```bash
-# Fair comparison of four engines (Sky/hecs/Bevy/Flecs)
 cargo compare-ecs
-
-# Single engine test
 cargo compare-ecs -- sky
-cargo compare-ecs -- hecs
-cargo compare-ecs -- bevy
-cargo compare-ecs -- flecs
-
-# Run a specific benchmark precisely
 cargo compare-ecs -- fair_random_access/get/sky --exact
-
-# Run the repeated traversal stability benchmark
-cargo compare-ecs -- fair_iteration_repeated/simple_x32/sky --exact
-
-# Run the larger 100k-entity traversal benchmark
-cargo compare-ecs -- fair_iteration_large
-
-# Measure the world-bound query facade, named QueryData, and PreparedQuery
-cargo bench --bench bound_query
-
-# Measure typed system dispatch, conflict waves, and system-level parallelism
-cargo bench --bench system_schedule
-
-# Chunk size tuning: modify CHUNK_SIZE in src/ecs/chunk.rs and rerun
 ```
 
----
+Third-party ECS dependencies remain isolated in `tools/ecs-comparison`. Sky-specific internals and archetype microbenchmarks do not belong in this suite.
 
-## Performance Overview
+### Historical cross-engine snapshot
 
-| Test Scenario | Sky Performance | Key Advantage |
-|---------------|-----------------|---------------|
-| **Entity Insertion** | 🏆 Leading | **2.1–2.4x** faster than hecs/Bevy, **23–47x** faster than Flecs |
-| **Sequential Iteration** | 🏆 Leading | **2.9x** faster than hecs, **4.3x** faster than Bevy for simple iteration |
-| **Random Access** | 🥈 Second Best | Bevy is faster with sparse set; Sky is **2x** faster than hecs |
-| **Structural Changes** | 🏆 Tied | On par with hecs, **2.3x** faster than Bevy |
-| **Full Frame** | 🏆 Leading | **14%** ahead of hecs, **19%** ahead of Bevy, **18%** ahead of Flecs |
+The following is a historical snapshot from Windows 11 on an i7-12700F. It is machine- and revision-specific and is retained only as context, not as a current performance claim.
 
----
+| Workload | Sky | hecs | Bevy | Flecs |
+|---|---:|---:|---:|---:|
+| batch insert 10k | 120 µs | 294 µs | 277 µs | 5.67 ms |
+| simple iteration 10k | 1.93 µs | 5.62 µs | 8.23 µs | 2.04 µs |
+| random get 10k | 73 µs | 145 µs | 30 µs | 342 µs |
+| spawn/despawn 1k | 26.3 µs | 25.2 µs | 59.3 µs | 164.6 µs |
+| mixed frame | 181 µs | 211 µs | 224 µs | 220 µs |
 
-## Detailed Test Data
-Note: All tests were run on the same machine
-Test Device: Windows 11, i7-12700F
+Re-run the suite before citing comparisons; never mix this snapshot with current local microbenchmark data.
 
-### 1. Entity Insertion Performance
+## 2. Sky-local hot-path benchmarks
 
-| Workload | Sky | hecs | Bevy | Flecs | Sky Advantage |
-|----------|-----|------|------|-------|---------------|
-| `batch_10k` (Batch Insertion) | **120 µs** | 294 µs | 277 µs | 5.67 ms | vs hecs/Bevy: **2.1–2.4x**<br>vs Flecs: **47x** |
-| `single_10k` (Single Entity Insertion) | **245 µs** | 416 µs | 523 µs | 5.65 ms | vs hecs/Bevy: **1.7–2.1x**<br>vs Flecs: **23x** |
+Criterion benches under `benches/` are mechanism-level regression tools:
 
-### 2. Sequential Iteration Performance
+| Target | Scope |
+|---|---|
+| `bound_query` | World cache hit and tuple/`QueryData`/`PreparedQuery` traversal overhead |
+| `archetype_match` | fresh prepare, filters, cache hit, and incremental refresh |
+| `parallel_query` | sequential and parallel query execution, including the bound facade |
+| `parallel_job_cache` | parallel job-plan rebuild after structural churn |
+| `system_schedule` | typed dispatch, conflict waves, and system parallelism |
 
-| Workload | Sky | hecs | Bevy | Flecs | Notes |
-|----------|-----|------|------|-------|-------|
-| `simple` (10K entities) | **1.93 µs** | 5.62 µs | 8.23 µs | 2.04 µs | **2.9x** faster than hecs, **4.3x** faster than Bevy |
-| `fragmented` (10.4K entities) | **580 ns** | 3.26 µs | 6.20 µs | 843 ns | Significant advantage in fragmented scenarios |
-| `heavy_compute` (Matrix Inversion) | **1.85 ms** | 2.39 ms | 2.05 ms | 1.87 ms | On par with Flecs for compute-intensive tasks |
+```bash
+cargo bench --bench bound_query
+cargo bench --bench archetype_match
+cargo bench --bench parallel_query
+cargo bench --bench parallel_job_cache
+cargo bench --bench system_schedule
+```
 
-### 3. Random Access Performance
+`archetype_match` is a separate process target so million-entity parallel workloads cannot thermally bias its sub-microsecond measurements.
 
-| Workload | Sky | hecs | Bevy | Flecs | Architecture Notes |
-|----------|-----|------|------|-------|-------------------|
-| `get` (10K Random Lookups) | **73 µs** | 145 µs | **30 µs** | 342 µs | Bevy's sparse set architecture excels here |
+## 3. Archetype prepare coverage
 
-### 4. Structural Operation Performance
+The archetype target covers:
 
-| Workload | Sky | hecs | Bevy | Flecs | Sky Advantage |
-|----------|-----|------|------|-------|---------------|
-| `spawn_despawn_1k` | **26.3 µs** | 25.2 µs | 59.3 µs | 164.6 µs | On par with hecs, **2.3x** faster than Bevy |
-| `add_remove_component_1k` | **58.8 µs** | 59.2 µs | 88.7 µs | 124.8 µs | On par with hecs |
+- fresh full scans with 1, 2, 8, and 16 required components;
+- dense matches, early rejection, and missing optional components;
+- prepared-query epoch cache hits;
+- one matching or non-matching archetype appended after preparation;
+- rebuild after `clear`, and switching to a different `World` with the same epoch;
+- single `With`/`Without`, selective filters, redundant and contradictory AND filters, and `Any` fallback.
 
-### 5. Mixed Frame Simulation (Simulating Real Game Loop)
+Incremental cases use `iter_batched`: world mutation happens in setup and only query refresh is timed. These results describe prepare/matching cost, not entity traversal or whole-frame speed.
 
-| Workload | Sky | hecs | Bevy | Flecs | Overall Advantage |
-|----------|-----|------|------|-------|-------------------|
-| `frame` (Full Tick) | **181 µs** | 211 µs | 224 µs | 220 µs | **14–19%** lead |
+Historical direct A/B experiments found meaningful improvements from adaptive sorted matching, a fixed component-index map, and compiled AND filters. Their old one-shot absolute nanosecond values were removed because they are not reproducible run records. Re-measure with named baselines for every new decision.
 
-#### Frame Phase Breakdown
+## 4. Reproducible A/B procedure
 
-| Phase | Sky | hecs | Bevy | Flecs | Key Insight |
-|-------|-----|------|------|-------|-------------|
-| `movement` (Movement System) | 4.93 µs | 13.5 µs | 19.8 µs | 5.75 µs | Chunk-columnar storage advantage is significant |
-| `health` (Health System) | 3.62 µs | 15.2 µs | 38.6 µs | 5.15 µs | Leading in iteration-intensive tasks |
-| `heavy` (Heavy Computation) | 151 µs | 162 µs | 165 µs | 150 µs | All engines converge |
-| `random_access` (Random Addressing) | 3.63 µs | 7.33 µs | 1.57 µs | 17.4 µs | Bevy sparse set advantage |
-| `structural_churn` (Structural Changes) | 14.4 µs | 14.6 µs | 18.8 µs | 31.4 µs | On par with hecs |
-| `spawn_despawn` (Entity Lifecycle) | 54.3 µs | 51.4 µs | 108–248 µs | 332 µs | Significantly better than Bevy/Flecs |
+Use the local driver on a stable machine:
 
-### 6. World-Bound Query API (2026-07-11)
+```powershell
+pwsh tools/bench-ecs.ps1 -Phase Before -Baseline adaptive-match
+# apply the implementation change
+pwsh tools/bench-ecs.ps1 -Phase After -Baseline adaptive-match
+```
 
-Local measurements over 100K matching entities. These numbers validate API/codegen overhead and are not cross-engine results.
+The driver runs each key benchmark ID in a separate process, fixes `RAYON_NUM_THREADS=8`, performs three rounds by default, and cools down between processes. `-IncludeParallel` adds parallel facade cases; `-Only archetype_cache/prepared_epoch_hit` selects individual IDs.
 
-| Workload | Median | Interpretation |
-|----------|--------|----------------|
-| `world_cache_hit` | **13.05 ns** | Recreating a bound query and resolving its cached archetype plan is effectively constant-time |
-| `bound_tuple_for_each` | **101.38 µs** | World-bound tuple query |
-| `bound_named_for_each` | **100.62 µs** | Derived `QueryData` item; no measurable abstraction penalty |
-| `prepared_tuple_for_each` | **101.56 µs** | Persistent explicit `PreparedQuery`; within measurement noise of the bound facade |
+Reports under `target/criterion/` record CPU, OS, Rust version, Git revision/dirty state, timestamp, Criterion baseline names, per-round 95% confidence intervals, and the median of the three round medians.
 
-### 7. Parallel Query API (2026-07-11)
+Accept an optimization only when:
 
-Local measurements over 1M matching entities. Chunks are split into cached 4096-entity stripes; small workloads automatically stay sequential.
+- the target median improves by at least 5%, and at least two of three runs have a 95% comparison interval excluding zero;
+- adjacent common paths do not regress consistently by more than 3%; paths below 500 ns use a 5% tolerance;
+- the conclusion comes from direct named-baseline A/B data, not absolute values collected at different times.
 
-| Workload | Median | Throughput | Interpretation |
-|----------|--------|------------|----------------|
-| `bound_tuple_for_each_sequential` | **2.516 ms** | **397 Melem/s** | Same entity update through the sequential facade |
-| `bound_tuple_par_for_each` | **~0.219 ms** | **~4.57 Gelem/s** | Ergonomic entity-level parallel path; about **11.5x** faster locally |
-| `bound_named_par_for_each` | **~0.220 ms** | **~4.56 Gelem/s** | Direct derived `QueryData` item construction; no tuple-adapter penalty |
-| `bound_tuple_par_for_each_chunk` | **0.17–0.29 ms** | **3.5–5.9 Gelem/s** | Expert slice path; sensitive to OS/Rayon scheduling in this short workload |
+Absolute times are always machine- and time-specific. Ordinary CI does not enforce performance thresholds.
 
-### 8. Typed Parallel System Schedule (2026-07-11)
+## 5. Correctness and allocation invariants
 
-Local release-profile measurements. Dispatch cases use cached compiled graphs and reused command buffers.
+The standalone allocator test keeps world/query construction outside the counted region and prepares a 16-component query against 8 and 64 matching archetypes:
 
-| Workload | Median | Throughput | Interpretation |
-|----------|--------|------------|----------------|
-| `empty_tick` | **43.73 ns** | — | Full empty schedule/timing/report path |
-| `two_tiny_compatible_systems` | **64.56 ns** | — | Default tiny-wave fallback keeps a compatible pair serial and avoids Rayon dispatch |
-| `three_conflicting_systems` | **73.38 ns** | — | Three deterministic write-conflict waves; about 9.9 ns per added system beyond the empty tick |
-| `four_system_parallel_wave` | **55.91 µs** | **2.34 Gelem/s** | Four disjoint CPU resource systems executed in one Rayon wave |
-| `typed_view_for_each_100k` | **104.07 µs** | **961 Melem/s** | Typed `View<(&mut Position, &Velocity)>` system including schedule dispatch |
-| `typed_par_view_for_each_1m` | **179.96 µs** | **5.56 Gelem/s** | Explicit `ParView` stripe preparation and entity-parallel system traversal |
+```bash
+cargo test -p sky_ecs --test query_allocations
+```
 
-### 9. Adaptive Archetype Matching (2026-07-11)
+It rejects allocation growth proportional to matching-archetype count. Internal tests also assert that `ComponentIndexMap` has fixed inline capacity, no `Drop`, and no pointer-sized heap-storage field.
 
-Local release-profile measurements create a fresh `PreparedQuery` each iteration, so they include descriptor construction and a complete archetype scan rather than an epoch-cache hit. Queries with at most two components retain the direct binary-search path; larger queries use the cheaper of suffix binary search and sorted merge. Absolute nanosecond results are sensitive to CPU scheduling and thermal state; the comparisons below were accepted only after direct A/B Criterion runs.
+Before merging benchmark or ECS hot-path changes, run:
 
-| Workload | Median | Result |
-|----------|--------|--------|
-| `fresh_query_1_of_8_shapes` | **172.72 ns** | Small-query binary fast path remains intact |
-| `fresh_query_8_of_8_shapes` | **284.78 ns** | Mixed early-rejection and full-match shapes |
-| `fresh_query_7_dense_matches` | **436.55 ns** | Down from **667.81 ns** with independent binary searches; **30.3%** faster locally |
-| `fresh_query_16_dense_matches` | **506.54 ns** | Fixed 16-slot column map; the allocating `SmallVec<[u8; 8]>` version measured **582.01 ns**, about **13%** slower |
-| `fresh_query_7_redundant_with_tuple` | **~422–457 ns** | Compiled seven-term AND filter; down from **944.67 ns** with repeated typed binary lookups, about **52–55%** faster |
+```bash
+cargo test -p sky_ecs
+cargo test --features app -- --test-threads=1
+cargo clippy --all-targets --features app -- -D warnings
+cargo check --examples --features app
+cargo bench --no-run
+```
+
+Run `cargo compare-ecs` separately as a smoke/regression check; do not place its results beside local archetype microbenchmarks.

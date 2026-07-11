@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::render::{
+use crate::render::features::tilemap::{
     TiledImport, TiledLayer as RenderTiledLayer, TiledObject as RenderTiledObject,
     TiledObjectLayer as RenderTiledObjectLayer, TiledObjectShape as RenderTiledObjectShape,
     TiledProperty as RenderTiledProperty, TiledPropertyValue as RenderTiledPropertyValue,
@@ -154,18 +154,26 @@ pub fn map_snapshot(import: &TiledImport) -> TiledMapSnapshot {
     TiledMapSnapshot {
         map_size: [import.map.width(), import.map.height()],
         orientation: match import.orientation {
-            crate::render::TilemapOrientation::Orthogonal => GridOrientation::Orthogonal,
-            crate::render::TilemapOrientation::Isometric => GridOrientation::Isometric,
-            crate::render::TilemapOrientation::Staggered => GridOrientation::Staggered,
-            crate::render::TilemapOrientation::Hexagonal => GridOrientation::Hexagonal,
+            crate::render::features::tilemap::TilemapOrientation::Orthogonal => {
+                GridOrientation::Orthogonal
+            }
+            crate::render::features::tilemap::TilemapOrientation::Isometric => {
+                GridOrientation::Isometric
+            }
+            crate::render::features::tilemap::TilemapOrientation::Staggered => {
+                GridOrientation::Staggered
+            }
+            crate::render::features::tilemap::TilemapOrientation::Hexagonal => {
+                GridOrientation::Hexagonal
+            }
         },
         stagger_axis: match import.stagger_axis {
-            crate::render::TilemapStaggerAxis::X => StaggerAxis::X,
-            crate::render::TilemapStaggerAxis::Y => StaggerAxis::Y,
+            crate::render::features::tilemap::TilemapStaggerAxis::X => StaggerAxis::X,
+            crate::render::features::tilemap::TilemapStaggerAxis::Y => StaggerAxis::Y,
         },
         stagger_index: match import.stagger_index {
-            crate::render::TilemapStaggerIndex::Odd => StaggerIndex::Odd,
-            crate::render::TilemapStaggerIndex::Even => StaggerIndex::Even,
+            crate::render::features::tilemap::TilemapStaggerIndex::Odd => StaggerIndex::Odd,
+            crate::render::features::tilemap::TilemapStaggerIndex::Even => StaggerIndex::Even,
         },
         hex_side_length: import.hex_side_length,
         render_order: import.render_order.into(),

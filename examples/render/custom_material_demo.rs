@@ -12,7 +12,7 @@ use sky_engine::app::{
     App, AppState, AssetPlugin, FrameContext, InputPlugin, RenderPlugin, WindowPlugin,
 };
 use sky_engine::ecs::World;
-use sky_engine::render::expert::{Mesh, MeshDescriptor, MeshIndexData};
+use sky_engine::render::expert::resources::{Mesh, MeshDescriptor, MeshIndexData};
 use sky_engine::render::{
     CameraMarker, Color, MainCamera, Material, MaterialBinding, MaterialError, MaterialHandle,
     MaterialInterface, MaterialPrepareContext, MaterialRenderState, MaterialShaderSet,
@@ -270,7 +270,7 @@ impl AppState for CustomMaterialDemo {
 
 fn spawn_hologram(
     world: &mut World,
-    mesh: sky_engine::render::expert::MeshHandle,
+    mesh: sky_engine::render::expert::resources::MeshHandle,
     material: MaterialHandle,
     x: f32,
     y: f32,

@@ -9,10 +9,13 @@ use sky_engine::app::{
 };
 use sky_engine::asset::{Assets, TextureAsset, TextureColorSpace};
 use sky_engine::ecs::World;
+use sky_engine::render::features::tilemap::{
+    Tile, TileFlags, TileId, Tilemap, TilemapDescriptor, TilemapFeature, TilemapHandle,
+    TilemapRenderer, TilemapStorage, TilesetGrid,
+};
 use sky_engine::render::{
     CameraMarker, Color, MainCamera, Projection, RenderPipelineAsset, RenderSettings, SortingLayer,
-    SpriteFeature, SpriteRenderer, Tile, TileFlags, TileId, TilemapDescriptor, TilemapFeature,
-    TilemapHandle, TilemapRenderer, TilemapStorage, TilesetGrid, Transform, TransparentPhase,
+    SpriteFeature, SpriteRenderer, Transform, TransparentPhase,
 };
 
 const MAP_WIDTH: u32 = 160;
@@ -212,7 +215,7 @@ fn spawn_character(
     ));
 }
 
-fn populate_map(map: &mut sky_engine::render::Tilemap) {
+fn populate_map(map: &mut Tilemap) {
     for y in 0..MAP_HEIGHT {
         for x in 0..MAP_WIDTH {
             let terrain = if y < 18 {

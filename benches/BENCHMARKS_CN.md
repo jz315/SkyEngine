@@ -1,144 +1,110 @@
-# Benchmark
+# ECS Benchmark 指南
 
-## 目录
-1. [快速开始](#快速开始)
-2. [性能概览](#性能概览)
-3. [详细测试数据](#详细测试数据)
+SkyEngine 刻意保留两条 benchmark 轨道。它们回答的问题不同，结果不能混在同一张表中。
 
----
+## 1. 跨引擎公平对比
 
-## 快速开始
+`cargo compare-ecs` 是 Sky/hecs/Bevy/Flecs 的唯一标准对比。workload 只使用四个引擎都能表达的安全公共 API，query/prepared 状态在计时区间外创建。
 
 ```bash
-# 四引擎公平对比（Sky/hecs/Bevy/Flecs）
 cargo compare-ecs
-
-# 单引擎测试
 cargo compare-ecs -- sky
-cargo compare-ecs -- hecs
-cargo compare-ecs -- bevy
-cargo compare-ecs -- flecs
-
-# 精确运行单个 benchmark
 cargo compare-ecs -- fair_random_access/get/sky --exact
-
-# 测量 world-bound query、命名 QueryData 与 PreparedQuery
-cargo bench --bench bound_query
-
-# 测量 typed system dispatch、冲突 wave 与 system 级并行
-cargo bench --bench system_schedule
-
-# Chunk 大小调优：修改 src/ecs/chunk.rs 中的 CHUNK_SIZE 后重跑
 ```
 
----
+第三方 ECS 依赖只放在 `tools/ecs-comparison`。Sky 专属内部机制和 archetype 微基准不得混入此套件。
 
-## 性能概览
+### 历史跨引擎快照
 
-| 测试场景 | Sky 性能 | 关键优势 |
-|---------|-------------|---------|
-| **实体插入** | 🏆 领先 | 比 hecs/Bevy 快 **2.1–2.4x**，比 Flecs 快 **23–47x** |
-| **顺序迭代** | 🏆 领先 | 简单迭代比 hecs 快 **2.9x**，比 Bevy 快 **4.3x** |
-| **随机访问** | 🥈 次优 | Bevy 凭借稀疏集更快；Sky 比 hecs 快 **2x** |
-| **结构变更** | 🏆 并列 | 与 hecs 持平，比 Bevy 快 **2.3x** |
-| **完整帧** | 🏆 领先 | 综合领先 hecs **14%**、Bevy **19%**、Flecs **18%** |
+下表来自 Windows 11、i7-12700F 的一次历史记录，只用于背景参考，不代表当前版本承诺。
 
----
+| Workload | Sky | hecs | Bevy | Flecs |
+|---|---:|---:|---:|---:|
+| 批量插入 1 万 | 120 µs | 294 µs | 277 µs | 5.67 ms |
+| 简单遍历 1 万 | 1.93 µs | 5.62 µs | 8.23 µs | 2.04 µs |
+| 随机访问 1 万 | 73 µs | 145 µs | 30 µs | 342 µs |
+| spawn/despawn 1 千 | 26.3 µs | 25.2 µs | 59.3 µs | 164.6 µs |
+| 混合帧 | 181 µs | 211 µs | 224 µs | 220 µs |
 
-## 详细测试数据
-注：以下测试均在同一台电脑上运行
-测试设备: Windows 11, i7-12700F
+引用跨引擎结论前必须在当前 revision 重跑，不能把这份历史快照与当前本地微基准拼表。
 
-### 1. 实体插入性能
+## 2. Sky 本地热路径基准
 
-| 工作负载 | Sky | hecs | Bevy | Flecs | Sky 优势 |
-|---------|-----|------|------|-------|---------|
-| `batch_10k` (批量插入) | **120 µs** | 294 µs | 277 µs | 5.67 ms | 比 hecs/Bevy 快 **2.1–2.4x**<br>比 Flecs 快 **47x** |
-| `single_10k` (单实体插入) | **245 µs** | 416 µs | 523 µs | 5.65 ms | 比 hecs/Bevy 快 **1.7–2.1x**<br>比 Flecs 快 **23x** |
+`benches/` 下的 Criterion targets 用于机制级回归：
 
-### 2. 顺序迭代性能
+| Target | 范围 |
+|---|---|
+| `bound_query` | World cache hit，以及 tuple/`QueryData`/`PreparedQuery` 遍历开销 |
+| `archetype_match` | 首次 prepare、filter、cache hit、增量 refresh |
+| `parallel_query` | 顺序/并行 query，包括 bound facade |
+| `parallel_job_cache` | 结构变更后的并行 job plan 重建 |
+| `system_schedule` | typed dispatch、冲突 wave、system 并行 |
 
-| 工作负载 | Sky | hecs | Bevy | Flecs | 备注 |
-|---------|-----|------|------|-------|-----|
-| `simple` (1万实体) | **1.93 µs** | 5.62 µs | 8.23 µs | 2.04 µs | 比 hecs 快 **2.9x**，比 Bevy 快 **4.3x** |
-| `fragmented` (1.04万实体) | **580 ns** | 3.26 µs | 6.20 µs | 843 ns | 碎片化场景优势显著 |
-| `heavy_compute` (矩阵求逆) | **1.85 ms** | 2.39 ms | 2.05 ms | 1.87 ms | 计算密集型任务与 Flecs 持平 |
+```bash
+cargo bench --bench bound_query
+cargo bench --bench archetype_match
+cargo bench --bench parallel_query
+cargo bench --bench parallel_job_cache
+cargo bench --bench system_schedule
+```
 
-### 3. 随机访问性能
+`archetype_match` 使用独立 target/process，避免百万实体并行 workload 的温度和调度状态污染亚微秒匹配测量。
 
-| 工作负载 | Sky | hecs | Bevy | Flecs | 架构说明 |
-|---------|-----|------|------|-------|---------|
-| `get` (1万次乱序查找) | **73 µs** | 145 µs | **30 µs** | 342 µs | Bevy 的稀疏集架构在此场景占优 |
+## 3. Archetype prepare 覆盖
 
-### 4. 结构操作性能
+独立 target 覆盖：
 
-| 工作负载 | Sky | hecs | Bevy | Flecs | Sky 优势 |
-|---------|-----|------|------|-------|---------|
-| `spawn_despawn_1k` | **26.3 µs** | 25.2 µs | 59.3 µs | 164.6 µs | 与 hecs 持平，比 Bevy 快 **2.3x** |
-| `add_remove_component_1k` | **58.8 µs** | 59.2 µs | 88.7 µs | 124.8 µs | 与 hecs 持平 |
+- 1、2、8、16 个必需组件的 fresh full scan；
+- 密集命中、提前拒绝、optional 缺失；
+- prepared-query epoch cache hit；
+- 单个 matching/non-matching archetype 增量追加；
+- `clear` 后重建、相同 epoch 下切换不同 `World`；
+- 单 `With`/`Without`、选择性 filter、重复/矛盾 AND、`Any` fallback。
 
-### 5. 混合帧模拟（模拟真实游戏循环）
+增量场景使用 `iter_batched`：World 变更在 setup 完成，计时区间只包含 query refresh。因此这些数字只描述 prepare/matching，不等价于遍历性能或整帧同比提升。
 
-| 工作负载 | Sky | hecs | Bevy | Flecs | 综合优势 |
-|---------|-----|------|------|-------|---------|
-| `frame` (完整 tick) | **181 µs** | 211 µs | 224 µs | 220 µs | 领先 **14–19%** |
+历史直接 A/B 曾确认自适应有序匹配、固定 component-index map、编译 AND filter 有明显收益。旧的单轮绝对纳秒值已删除，因为它们不是可复现的正式运行记录；新的优化决策必须重跑 named baseline。
 
-#### 帧阶段分别模拟
+## 4. 可复现 A/B 流程
 
-| 阶段 | Sky | hecs | Bevy | Flecs | 备注 |
-|-----|-----|------|------|-------|---------|
-| `movement` (移动系统) | 4.93 µs | 13.5 µs | 19.8 µs | 5.75 µs | 块列式存储优势显著 |
-| `health` (生命系统) | 3.62 µs | 15.2 µs | 38.6 µs | 5.15 µs | 迭代密集型任务领先 |
-| `heavy` (重计算) | 151 µs | 162 µs | 165 µs | 150 µs | 各引擎趋于一致 |
-| `random_access` (随机寻址) | 3.63 µs | 7.33 µs | 1.57 µs | 17.4 µs | Bevy 稀疏集优势 |
-| `structural_churn` (结构变更) | 14.4 µs | 14.6 µs | 18.8 µs | 31.4 µs | 与 hecs 相当 |
-| `spawn_despawn` (实体生命周期) | 54.3 µs | 51.4 µs | 108–248 µs | 332 µs | 显著优于 Bevy/Flecs |
+在固定本机环境执行：
 
-### 6. World-Bound Query API（2026-07-11）
+```powershell
+pwsh tools/bench-ecs.ps1 -Phase Before -Baseline adaptive-match
+# 应用实现变更
+pwsh tools/bench-ecs.ps1 -Phase After -Baseline adaptive-match
+```
 
-本机对 10 万个匹配实体的测量；这里验证 API/codegen 开销，不属于跨引擎比较数据。
+驱动会让每个关键 benchmark ID 在独立进程运行，固定 `RAYON_NUM_THREADS=8`，默认 before/after 各三轮，并在进程间冷却。`-IncludeParallel` 加入并行 facade；`-Only archetype_cache/prepared_epoch_hit` 可选择单项。
 
-| 工作负载 | 中位数 | 结论 |
-|---------|--------|------|
-| `world_cache_hit` | **13.05 ns** | 重建轻量 bound query 并命中 archetype plan 基本是常数开销 |
-| `bound_tuple_for_each` | **101.38 µs** | world-bound tuple query |
-| `bound_named_for_each` | **100.62 µs** | `QueryData` 命名查询，没有可测的抽象损耗 |
-| `prepared_tuple_for_each` | **101.56 µs** | 持久化 `PreparedQuery`，与 bound facade 的差异处于测量噪声内 |
+`target/criterion/` 下的报告记录 CPU、OS、Rust 版本、Git revision/dirty 状态、时间、Criterion baseline 名称、每轮 95% CI，以及三轮中位数的中位数。
 
-### 7. 并行 Query API（2026-07-11）
+接受优化必须同时满足：
 
-本机对 100 万个匹配实体的测量。Chunk 会切成缓存的 4096 实体 stripe；小工作负载自动保持顺序执行。
+- 目标场景中位数至少提升 5%，且至少 2/3 轮的 95% 比较区间排除零；
+- 相邻常见路径不得稳定回退超过 3%；低于 500 ns 的路径容忍线为 5%；
+- 结论只来自直接 named-baseline A/B，不能比较不同时刻的绝对值。
 
-| 工作负载 | 中位数 | 吞吐 | 结论 |
-|---------|--------|------|------|
-| `bound_tuple_for_each_sequential` | **2.516 ms** | **397 Melem/s** | 同一实体更新的顺序基线 |
-| `bound_tuple_par_for_each` | **约 0.219 ms** | **约 4.57 Gelem/s** | 易用的实体级并行路径，本机约 **11.5x** 加速 |
-| `bound_named_par_for_each` | **约 0.220 ms** | **约 4.56 Gelem/s** | `QueryData` 直接构造具名 item，没有 tuple 适配损耗 |
-| `bound_tuple_par_for_each_chunk` | **0.17–0.29 ms** | **3.5–5.9 Gelem/s** | 专家级切片路径；短工作负载对 OS/Rayon 调度较敏感 |
+绝对耗时始终与机器、时间相关。普通 CI 不设置性能阈值。
 
-### 8. Typed 并行 System 调度（2026-07-11）
+## 5. 正确性与 allocation invariant
 
-本机 release profile 测量。dispatch 场景复用已编译 access graph 与 command buffer。
+独立 allocator integration test 将 World/query 构造放在计数区间外，并对 8 与 64 个 matching archetype 执行 16-component 首次 prepare：
 
-| 工作负载 | 中位数 | 吞吐 | 结论 |
-|---------|--------|------|------|
-| `empty_tick` | **43.73 ns** | — | 完整空 schedule、时间更新与 report 路径 |
-| `two_tiny_compatible_systems` | **64.56 ns** | — | compatible 二元 tiny wave 默认顺序执行，避开 Rayon dispatch |
-| `three_conflicting_systems` | **73.38 ns** | — | 三个确定性写冲突 wave；相对空 tick 每增加一个 system 约 9.9 ns |
-| `four_system_parallel_wave` | **55.91 µs** | **2.34 Gelem/s** | 四个不冲突 CPU resource system 在同一 Rayon wave 执行 |
-| `typed_view_for_each_100k` | **104.07 µs** | **961 Melem/s** | 含调度开销的 `View<(&mut Position, &Velocity)>` typed system |
-| `typed_par_view_for_each_1m` | **179.96 µs** | **5.56 Gelem/s** | 显式 `ParView` stripe prepare 与实体级并行 system 遍历 |
+```bash
+cargo test -p sky_ecs --test query_allocations
+```
 
-### 9. 自适应 Archetype 匹配（2026-07-11）
+测试拒绝 allocation 随 matching-archetype 数线性增长。内部测试还断言 `ComponentIndexMap` 是固定内联容量、无 `Drop`，且布局不包含指针大小的堆存储字段。
 
-本机 release profile 测量。每轮都创建新的 `PreparedQuery`，因此包含 descriptor 构造和完整 archetype 扫描，不是 epoch cache 命中。至多两个组件的查询保留直接二分快路径；更大的查询按成本选择后缀二分或有序归并。纳秒级绝对值对 CPU 调度和温度较敏感；下列对比只记录直接 A/B Criterion 验证过的变化。
+合并 benchmark 或 ECS 热路径改动前运行：
 
-| 工作负载 | 中位数 | 结论 |
-|---------|--------|------|
-| `fresh_query_1_of_8_shapes` | **172.72 ns** | 小查询保留二分快路径 |
-| `fresh_query_8_of_8_shapes` | **284.78 ns** | 混合提前拒绝与完整匹配的 shape |
-| `fresh_query_7_dense_matches` | **436.55 ns** | 独立二分为 **667.81 ns**；本机提升 **30.3%** |
-| `fresh_query_16_dense_matches` | **506.54 ns** | 固定 16-slot 列索引 map；会分配的 `SmallVec<[u8; 8]>` 版本为 **582.01 ns**，慢约 **13%** |
-| `fresh_query_7_redundant_with_tuple` | **约 422～457 ns** | 七项 AND filter 编译计划；重复 typed 二分版本为 **944.67 ns**，提升约 **52～55%** |
+```bash
+cargo test -p sky_ecs
+cargo test --features app -- --test-threads=1
+cargo clippy --all-targets --features app -- -D warnings
+cargo check --examples --features app
+cargo bench --no-run
+```
 
----
+`cargo compare-ecs` 只作为独立 smoke/regression 运行；结果不要与本地 archetype microbench 混表。

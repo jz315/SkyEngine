@@ -12,7 +12,7 @@ use ffmpeg_next::{
 };
 
 use crate::gpu::GpuContext;
-use crate::render::expert::Texture;
+use crate::render::expert::gpu::Texture;
 use crate::video::playback::{
     validate_playback_rate, DecodedVideoFrame, VideoClock, VideoFrameQueue,
 };

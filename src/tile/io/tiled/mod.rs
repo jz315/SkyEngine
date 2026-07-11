@@ -10,7 +10,7 @@ mod tests;
 
 use std::path::Path;
 
-use crate::render::TiledImport;
+use crate::render::features::tilemap::TiledImport;
 use crate::tile::{MapData, TilePalette};
 
 pub use error::TiledImportError;

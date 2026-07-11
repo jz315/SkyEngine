@@ -16,8 +16,10 @@ use sky_engine::input::KeyCode;
 use sky_engine::math::Vec2;
 use sky_engine::render::{
     animate_sprites, CameraMarker, Color, MainCamera, Projection, RenderPipelineAsset,
-    RenderSettings, SpriteFeature, SpriteRenderer, TiledImport, TiledMapInstance,
-    TiledSpawnOptions, TilemapFeature, TilemapRenderer, Transform, TransparentPhase,
+    RenderSettings, SpriteFeature, SpriteRenderer, Transform, TransparentPhase,
+};
+use sky_engine::render::features::tilemap::{
+    TiledImport, TiledMapInstance, TiledSpawnOptions, TilemapFeature, TilemapRenderer,
 };
 
 struct TiledBrowserDemo {

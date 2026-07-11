@@ -13,8 +13,10 @@ use sky_engine::app::{
 use sky_engine::ecs::World;
 use sky_engine::render::{
     CameraMarker, Color, MainCamera, Projection, RenderPipelineAsset, RenderSettings,
-    SpriteFeature, TiledMapInstance, TiledSpawnOptions, TilemapFeature, Transform,
-    TransparentPhase,
+    SpriteFeature, Transform, TransparentPhase,
+};
+use sky_engine::render::features::tilemap::{
+    TiledMapInstance, TiledSpawnOptions, TilemapFeature,
 };
 
 struct TiledImportDemo;

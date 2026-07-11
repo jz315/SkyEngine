@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::render::TiledImport;
+use crate::render::features::tilemap::TiledImport;
 use crate::tile::{
     CellCoord, LayerRole, ObjectVisual, PaletteId, PropertyValue, RectU, TileDefId, TileObjectId,
     TileRef, TileTextureSource,

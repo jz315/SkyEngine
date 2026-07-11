@@ -1,8 +1,10 @@
 use sky_engine::asset::{Assets, TextureAsset, TextureColorSpace};
 use sky_engine::ecs::{EntityId, World};
 use sky_engine::render::{
-    CameraMarker, MainCamera, Projection, RenderSettings, SortingLayer, SpriteRenderer, Tile,
-    TileId, TilemapDescriptor, TilemapRenderer, TilemapStorage, TilesetGrid, Transform,
+    CameraMarker, MainCamera, Projection, RenderSettings, SortingLayer, SpriteRenderer, Transform,
+};
+use sky_engine::render::features::tilemap::{
+    Tile, TileId, TilemapDescriptor, TilemapRenderer, TilemapStorage, TilesetGrid,
 };
 
 use crate::components::{
@@ -162,7 +164,7 @@ pub fn spawn_guild_tilemap(world: &mut World) {
     }
 }
 
-fn populate_guild_map(map: &mut sky_engine::render::Tilemap) {
+fn populate_guild_map(map: &mut sky_engine::render::features::tilemap::Tilemap) {
     let rooms = [
         (RoomKind::Bunks, 1, 1, 9, 7),
         (RoomKind::Infirmary, 11, 1, 10, 7),

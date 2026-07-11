@@ -12,7 +12,7 @@ use sky_engine::app::{
     App, AppState, AssetPlugin, FrameContext, InputPlugin, SetupContext, WindowPlugin,
 };
 use sky_engine::ecs::World;
-use sky_engine::render::expert::SpriteBatch;
+use sky_engine::render::expert::draw::SpriteBatch;
 use sky_engine::render::{Camera, Color, Sprite};
 use sky_engine::video::GpuVideoFrameBuffer;
 

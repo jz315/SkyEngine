@@ -53,8 +53,10 @@ use sky_engine::app::{
 use sky_engine::ecs::{With, World};
 use sky_engine::input::KeyCode;
 use sky_engine::math::{Quat, Vec3};
-use sky_engine::render::expert::{BoundingSphere, Mesh, MeshDescriptor, MeshHandle, MeshIndexData};
-use sky_engine::render::gi::providers::{ddgi, ssgi};
+use sky_engine::render::expert::resources::{
+    BoundingSphere, Mesh, MeshDescriptor, MeshHandle, MeshIndexData,
+};
+use sky_engine::render::features::gi::providers::{ddgi, ssgi};
 use sky_engine::render::{
     BloomSettings, CameraMarker, Color, ContactShadowsSettings, DirectionalLight,
     GlobalIllumination, MainCamera, MaterialHandle, PointLight, Projection, RenderDebugView,

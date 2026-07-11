@@ -11,10 +11,9 @@ engine tools. Use it for `FramePipeline`, `RenderGraph`, prepared frame/view
 payloads, draw functions, phase execution contexts, GPU tables, render targets,
 low-level meshes, and texture readback.
 
-Some low-level types are still re-exported from `sky_engine::render` for
-compatibility while the render stack is evolving. New code should prefer the
-expert path for renderer internals so future top-level facade cleanup does not
-force a broad migration.
+Low-level APIs are deliberately grouped under `expert::{graph, execution,
+gpu, draw, resources}`. The old flat `render::graph`, `render::gpu`,
+`render::execution`, and flat `render::expert::*` paths are not public API.
 
 ## Architecture Overview
 
@@ -41,7 +40,7 @@ Application / App
 - frame-local buffer uploads via `FrameUploadArena`
 - reusable dynamic uniform buffers via `DynamicUniformBuffer<T>`
 
-`render::core::camera` also exposes a small view abstraction now:
+`render::core::view` also exposes a small view abstraction now:
 
 - `ViewUniform` is the packed GPU view struct
 - `RenderView` is the pass-facing trait implemented by `Camera2D`
@@ -308,7 +307,7 @@ batch.flush_to_surface(&mut ctx, &camera, Some(clear));
 
 ---
 
-## Mesh / MeshPass (`src/render/resources/mesh/`, `src/render/mesh/`)
+## Mesh / MeshPass (`src/render/core/resources/mesh/`, `src/render/features/mesh/`)
 
 `Mesh` is the persistent custom-geometry counterpart to `SpriteBatch`'s internal quad buffers.
 
@@ -353,7 +352,7 @@ mesh_pass.render_to_target(&mut ctx, &target, &camera, Some(Color::BLACK), &mut 
 
 ---
 
-## Live2D (`src/render/live2d/`)
+## Live2D (`src/render/features/live2d/`)
 
 Live2D is the first renderer fully migrated to the new mid-layer.
 
@@ -390,7 +389,7 @@ It still owns its own submit-boundary rules and may call `ctx.flush(...)` around
 
 For full render-graph details, see:
 
-- [src/render/graph/AGENTS.md](C:/Coding/SkyEngine/src/render/graph/AGENTS.md)
+- [src/render/core/graph/AGENTS.md](C:/Coding/SkyEngine/src/render/core/graph/AGENTS.md)
 
 ---
 

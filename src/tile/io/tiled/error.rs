@@ -1,5 +1,5 @@
 #[derive(Debug)]
-pub struct TiledImportError(pub(crate) crate::render::TiledImportError);
+pub struct TiledImportError(pub(crate) crate::render::features::tilemap::TiledImportError);
 
 impl std::fmt::Display for TiledImportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -13,8 +13,8 @@ impl std::error::Error for TiledImportError {
     }
 }
 
-impl From<crate::render::TiledImportError> for TiledImportError {
-    fn from(value: crate::render::TiledImportError) -> Self {
+impl From<crate::render::features::tilemap::TiledImportError> for TiledImportError {
+    fn from(value: crate::render::features::tilemap::TiledImportError) -> Self {
         Self(value)
     }
 }

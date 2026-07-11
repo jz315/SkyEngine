@@ -12,9 +12,9 @@ use sky_engine::app::{
 };
 use sky_engine::ecs::World;
 use sky_engine::render::{
-    CameraMarker, Live2DAnimator, Live2DModelInstance, MainCamera, Projection, SortingLayer,
-    Transform,
+    CameraMarker, MainCamera, Projection, SortingLayer, Transform,
 };
+use sky_engine::render::features::live2d::{Live2DAnimator, Live2DModelInstance};
 
 const DEFAULT_MODEL_PATH: &str =
     "CubismSdkForNative/CubismSdkForNative-5-r.5/Samples/Resources/Haru/Haru.model3.json";

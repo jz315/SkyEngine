@@ -134,18 +134,18 @@ pub enum TileRenderOrder {
     LeftUp,
 }
 
-impl From<crate::render::TilemapRenderOrder> for TileRenderOrder {
-    fn from(value: crate::render::TilemapRenderOrder) -> Self {
+impl From<crate::render::features::tilemap::TilemapRenderOrder> for TileRenderOrder {
+    fn from(value: crate::render::features::tilemap::TilemapRenderOrder) -> Self {
         match value {
-            crate::render::TilemapRenderOrder::RightDown => Self::RightDown,
-            crate::render::TilemapRenderOrder::RightUp => Self::RightUp,
-            crate::render::TilemapRenderOrder::LeftDown => Self::LeftDown,
-            crate::render::TilemapRenderOrder::LeftUp => Self::LeftUp,
+            crate::render::features::tilemap::TilemapRenderOrder::RightDown => Self::RightDown,
+            crate::render::features::tilemap::TilemapRenderOrder::RightUp => Self::RightUp,
+            crate::render::features::tilemap::TilemapRenderOrder::LeftDown => Self::LeftDown,
+            crate::render::features::tilemap::TilemapRenderOrder::LeftUp => Self::LeftUp,
         }
     }
 }
 
-impl From<TileRenderOrder> for crate::render::TilemapRenderOrder {
+impl From<TileRenderOrder> for crate::render::features::tilemap::TilemapRenderOrder {
     fn from(value: TileRenderOrder) -> Self {
         match value {
             TileRenderOrder::RightDown => Self::RightDown,

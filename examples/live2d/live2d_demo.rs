@@ -32,9 +32,12 @@ use sky_engine::input::KeyCode;
 use sky_engine::math::{LogicalPoint, LogicalSize, PhysicalSize, Vec3};
 use sky_engine::render::expert::live2d::Live2DLoadError;
 use sky_engine::render::{
-    CameraMarker, Color, Live2DAnimator, Live2DCommands, Live2DFeature, Live2DLookTarget,
-    Live2DModelInstance, Live2DModelPoint, MainCamera, Projection, RenderPipelineAsset,
-    RenderSettings, SortingLayer, SpriteRenderer, Transform,
+    CameraMarker, Color, MainCamera, Projection, RenderPipelineAsset, RenderSettings,
+    SortingLayer, SpriteRenderer, Transform,
+};
+use sky_engine::render::features::live2d::{
+    Live2DAnimator, Live2DCommands, Live2DFeature, Live2DLookTarget, Live2DModelInstance,
+    Live2DModelPoint,
 };
 
 const DEMO_CAMERA_HEIGHT: f32 = 720.0;

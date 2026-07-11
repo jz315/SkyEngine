@@ -1,4 +1,5 @@
-use sky_engine::render::{Color, TileId};
+use sky_engine::render::Color;
+use sky_engine::render::features::tilemap::TileId;
 
 use crate::geometry::{COLS, ROWS};
 

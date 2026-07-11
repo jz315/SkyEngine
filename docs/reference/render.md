@@ -1,6 +1,6 @@
 # SkyEngine Render
 
-`sky_engine::render` 是高层渲染 facade，在 `app` feature 下启用。它建立在 `gpu` 模块之上，提供组件、camera/view、sprite、mesh、lighting、postfx、pipeline/phase、tilemap、Live2D 等能力。
+`sky_engine::render` 是高层渲染 facade，在 `app` feature 下启用。它建立在 `gpu` 模块之上，提供常用 scene 组件、camera/view、sprite、mesh、lighting、pipeline 与运行时能力；GI、tilemap、Live2D 和 post-fx 的专属 API 位于 `render::features`。
 
 更完整的低层 API 表格和 GPU 细节见 [Render Expert Reference](render-expert.md)。架构背景见 [Architecture](../architecture/architecture.md)。
 
@@ -26,19 +26,22 @@ use sky_engine::render::{
 
 ```rust
 use sky_engine::render::expert::{
-    FramePipeline, RenderGraph, DrawFunction, OpaquePhase, TransparentPhase,
+    draw::{DrawFunction, OpaquePhase, TransparentPhase},
+    execution::FramePipeline,
+    graph::RenderGraph,
 };
 ```
 
-规则很简单：写游戏内容优先用 `sky_engine::render`；写 renderer family、工具或底层 GPU 编排时用 `sky_engine::render::expert`。顶层暂时保留了一些低层兼容 re-export，但新代码不要把它们当作默认入口。
+规则很简单：写游戏内容优先用 `sky_engine::render`；写 renderer family、工具或底层 GPU 编排时按 `expert::{graph, execution, gpu, draw, resources}` 选择最小所需分组。
 
 ## API 分层
 
 | 层级 | 入口 | 用途 |
 |------|------|------|
-| 稳定 gameplay API | `sky_engine::render` | camera、render components、sprite、tilemap、light、pipeline asset、backend、texture readiness、render stats |
+| 稳定 gameplay API | `sky_engine::render` | camera、通用 scene components、sprite、light、pipeline asset、backend、texture readiness、render stats |
 | 高级扩展 API | `sky_engine::render` | `RenderFeature`、phase/pass/post-fx、material/shader 注册、自定义 renderer family |
 | 专家 / 低层 API | `sky_engine::render::expert` | `FramePipeline`、`RenderGraph`、`PreparedFrame` / `PreparedView`、draw functions、GPU tables、low-level mesh/target/readback |
+| 专属功能 API | `sky_engine::render::features::{gi,tilemap,live2d,postfx}` | family 配置、组件、Tiled 导入、GI provider、Live2D 和 post-fx passes |
 
 ## 推荐高层路径
 
@@ -92,11 +95,11 @@ let asset = RenderPipelineBuilder::new()
     .build();
 ```
 
-具体 builder API 以 `src/render/pipeline` 为准。
+具体 builder API 以 `src/render/core/pipeline` 为准；专属 pass/configuration 从相应的 `render::features::*` 导入。
 
 ## Components
 
-render-facing ECS components 位于 `src/render/component`。
+通用 scene ECS components 位于 `src/render/core/scene`；Sprite、Mesh、Lighting、Tilemap、Live2D 的专属 components 位于相应的 `src/render/features/*/component.rs`。
 
 常见类别：
 
@@ -105,7 +108,7 @@ render-facing ECS components 位于 `src/render/component`。
 - Mesh components
 - Light components
 - Render settings
-- Tilemap components
+- Tilemap components（`render::features::tilemap`）
 
 典型 sprite 实体：
 
@@ -116,7 +119,7 @@ world.spawn((
 ));
 ```
 
-具体 component 名称以 `sky_engine::render` re-export 和 IDE completion 为准，因为 render 模块仍在快速演进。
+通用 component 从 `sky_engine::render` 导入；功能专属 component 从 `sky_engine::render::features::<family>` 导入。
 
 ## Camera / View
 
@@ -189,7 +192,7 @@ RenderGraph 位于 `render::expert`，用于声明式组织 render pass / comput
 更详细规则见：
 
 - [Render Expert Reference](render-expert.md)
-- `src/render/graph/AGENTS.md`
+- `src/render/core/graph/AGENTS.md`
 
 ## Tilemap / Tiled
 
@@ -240,4 +243,4 @@ cargo test --features app graph
 cargo check --examples --features app
 ```
 
-如果改 RenderGraph internals，先读 `src/render/graph/AGENTS.md`。
+如果改 RenderGraph internals，先读 `src/render/core/graph/AGENTS.md`。

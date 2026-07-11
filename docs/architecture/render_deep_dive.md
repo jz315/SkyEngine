@@ -14,15 +14,15 @@
 
 - `src/render/mod.rs`
 - `src/render/AGENTS.md`
-- `src/render/runtime/runtime.rs`
-- `src/render/runtime/frame_coordinator.rs`
-- `src/render/runtime/pipeline_runtime.rs`
-- `src/render/execution/step_nodes/`
-- `src/render/execution/`
-- `src/render/graph/`
-- `src/render/pipeline/`
-- `src/render/phase/`
-- `src/render/extract/`
+- `src/render/core/runtime/runtime.rs`
+- `src/render/core/runtime/frame_coordinator.rs`
+- `src/render/core/runtime/pipeline_runtime.rs`
+- `src/render/core/execution/step_nodes/`
+- `src/render/core/execution/`
+- `src/render/core/graph/`
+- `src/render/core/pipeline/`
+- `src/render/core/draw/`
+- `src/render/core/extraction/`
 - `src/gpu/context.rs`
 - `src/app/runner.rs`
 - `examples/render/three_d_demo.rs`
@@ -414,16 +414,16 @@ World 里的 ECS 渲染组件
 | 对象 | 角色 | 所在位置 |
 |------|------|----------|
 | `World` | ECS 数据源，保存相机、Transform、Sprite、Mesh、Light、RenderSettings 等 | `src/ecs/` |
-| `RenderPipelineAsset` | 声明一套渲染管线有什么 feature、phase、pass、post-fx、material、draw function | `src/render/pipeline/pipeline_asset.rs` |
-| `RenderRuntime` | 高层 wgpu render 运行时，负责把 `World` 准备成 `PreparedFrame` 并执行 | `src/render/runtime/runtime.rs` |
-| `RenderFeature` | 一个 renderer family 的注册和每帧 hook，例如 Sprite、Live2D、Tilemap | `src/render/pipeline/features.rs` |
-| `Extractor` | 从 ECS 查询渲染组件，把可见对象写进 `OpaquePhase` 或 `TransparentPhase` | `src/render/extract/` |
-| `PhaseItem` | phase 中的一个可排序、可批处理 draw item | `src/render/phase/item.rs` |
-| `DrawFunction` | 真正把一批 `PhaseItem` 画进 render pass 的执行器 | `src/render/phase/mesh_draw.rs / sprite_draw.rs` |
-| `GpuScene` | 共享 GPU 表和 view uniform，例如 model matrix table、light table | `src/render/gpu/scene.rs` |
-| `PreparedFrame` / `PreparedView` | render 组合边界，frame/view 级 typed payload 容器 | `src/render/execution/payload.rs` |
-| `FramePipeline` | 每帧执行引擎，组织 setup/view/finalize node | `src/render/execution/frame_pipeline.rs` |
-| `RenderGraph` | 虚拟资源和 pass 依赖图，负责排序、剔除、分配、别名、执行 | `src/render/graph/` |
+| `RenderPipelineAsset` | 声明一套渲染管线有什么 feature、phase、pass、post-fx、material、draw function | `src/render/core/pipeline/pipeline_asset.rs` |
+| `RenderRuntime` | 高层 wgpu render 运行时，负责把 `World` 准备成 `PreparedFrame` 并执行 | `src/render/core/runtime/runtime.rs` |
+| `RenderFeature` | 一个 renderer family 的注册和每帧 hook，例如 Sprite、Live2D、Tilemap | `src/render/core/pipeline/features.rs` |
+| `Extractor` | 从 ECS 查询渲染组件，把可见对象写进 `OpaquePhase` 或 `TransparentPhase` | `src/render/core/extraction/` |
+| `PhaseItem` | phase 中的一个可排序、可批处理 draw item | `src/render/core/draw/item.rs` |
+| `DrawFunction` | 真正把一批 `PhaseItem` 画进 render pass 的执行器 | `src/render/core/draw/mesh_draw.rs / sprite_draw.rs` |
+| `GpuScene` | 共享 GPU 表和 view uniform，例如 model matrix table、light table | `src/render/core/gpu/scene.rs` |
+| `PreparedFrame` / `PreparedView` | render 组合边界，frame/view 级 typed payload 容器 | `src/render/core/execution/payload.rs` |
+| `FramePipeline` | 每帧执行引擎，组织 setup/view/finalize node | `src/render/core/execution/frame_pipeline.rs` |
+| `RenderGraph` | 虚拟资源和 pass 依赖图，负责排序、剔除、分配、别名、执行 | `src/render/core/graph/` |
 | `GpuContext` | wgpu device/queue/surface/frame encoder 的包装 | `src/gpu/context.rs` |
 
 如果上面这串名字还是有点抽象，可以先把它们压成四层：
@@ -591,7 +591,7 @@ FrameContext::render()
   -> RenderRuntime::render_world(&mut gpu, world)
 ```
 
-其中 `FrameContext` 在 `src/app/runner.rs`，`WgpuSceneRenderer` 在 `src/render/backend/wgpu.rs`，`RenderRuntime::render_world` 在 `src/render/runtime/frame_coordinator.rs`。
+其中 `FrameContext` 在 `src/app/runner.rs`，`WgpuSceneRenderer` 在 `src/render/integration/backend/wgpu.rs`，`RenderRuntime::render_world` 在 `src/render/core/runtime/frame_coordinator.rs`。
 
 App runner 在调用用户 `update` 之前已经做了这些事：
 
@@ -699,7 +699,7 @@ RenderPipelineAsset::modern_3d()
 
 ## 6. 内建 Pipeline 预设
 
-当前几个常用预设在 `src/render/pipeline/pipeline_asset.rs`。
+当前几个常用预设在 `src/render/core/pipeline/pipeline_asset.rs`。
 
 ### 6.1 `forward_2d()`
 
@@ -806,7 +806,7 @@ world.spawn((
 ));
 ```
 
-这里 `CameraMarker` 是 `src/render/component/camera.rs` 中的 ECS camera marker，`Projection` 和 `Transform` 来自 math/render facade。
+这里 `CameraMarker` 是 `src/render/core/scene/camera.rs` 中的 ECS camera marker，`Projection` 和 `Transform` 来自 math/render facade。
 
 相机相关组件：
 
@@ -899,7 +899,7 @@ world.get_resource::<RenderSettings>().copied().unwrap_or_default()
 
 ## 8. `RenderRuntime::render_world` 每帧步骤
 
-这是最重要的函数，位于 `src/render/runtime/frame_coordinator.rs`。下面按真实执行顺序讲。
+这是最重要的函数，位于 `src/render/core/runtime/frame_coordinator.rs`。下面按真实执行顺序讲。
 
 ### 8.0 先看一版人话流程
 
@@ -1603,7 +1603,7 @@ let transparent = prepared_view.payload::<TransparentPhase>();
 
 ## 10. FramePipeline 如何执行
 
-`FramePipeline` 在 `src/render/execution/frame_pipeline.rs`。
+`FramePipeline` 在 `src/render/core/execution/frame_pipeline.rs`。
 
 它有三类节点：
 
@@ -2403,7 +2403,7 @@ opaque forward shading 再用 lights、shadow、DDGI 等资源画最终 scene co
 
 ## 16. Material 系统怎么接入渲染
 
-`Material` trait 在 `src/render/resources/material/traits.rs`。
+`Material` trait 在 `src/render/core/resources/material/traits.rs`。
 
 材质不只是“颜色”。在 GPU renderer 里，材质更像一份绘制合约：
 
@@ -2854,14 +2854,14 @@ cap = 4
 |------|------|----------|
 | CPU formula | `src/render/lighting/shadow/formula.rs` | 公式、边界、Wicked fixture 数字 |
 | CPU view geometry | `src/render/lighting/shadow/view.rs` tests | cascade fitting、split corners、caster extent、atlas mapping |
-| GPU readback | `src/render/runtime/tests/shadows.rs` | 实际 wgpu pass、shader、depth atlas、final color 是否工作 |
+| GPU readback | `src/render/core/runtime/tests/shadows.rs` | 实际 wgpu pass、shader、depth atlas、final color 是否工作 |
 
 常用命令：
 
 ```bash
 cargo test --features app render::lighting::shadow::formula
 cargo test --features app render::lighting::shadow::view
-cargo test --features app render::runtime::tests::shadows
+cargo test --features app render::core::runtime::tests::shadows
 ```
 
 现在 GPU readback 覆盖包括：
@@ -2950,7 +2950,7 @@ DDGI 可以先粗略理解成“在世界里放很多探针，探针记录周围
 
 ### 17.3 SsgiPass
 
-`SsgiPass` 是 `PostFxPass`，在 `src/render/gi/ssgi.rs`。
+`SsgiPass` 是 `PostFxPass`，在 `src/render/features/gi/ssgi.rs`。
 
 启用条件：
 
@@ -3044,7 +3044,7 @@ SSGI atlas 是否有内容？
 推荐路径：
 
 ```text
-1. 在 src/render/component/ 增加 ECS authoring component
+1. 在 src/render/core/scene/ 增加 ECS authoring component
 2. 在自己的 family 目录里写 prepare/cache/upload/runtime
 3. 实现 RenderFeature
 4. 在 register() 中注册 draw function、extractor、phase/pass/gpu table/material
@@ -3225,7 +3225,7 @@ contact shadows 是 screen-space 的。它读 scene depth/normal，然后在屏�
 
 ```text
 优先查:
-  src/render/postfx/contact_shadows.rs
+  src/render/features/postfx/contact_shadows.rs
   src/render/shaders/postfx/contact_shadows.wgsl
   RenderSettings.contact_shadows
 
@@ -3353,7 +3353,7 @@ F11 penumbra 忽然变大
 ```bash
 cargo test --features app render::lighting::shadow::formula
 cargo test --features app render::lighting::shadow::view
-cargo test --features app render::runtime::tests::shadows
+cargo test --features app render::core::runtime::tests::shadows
 ```
 
 三类测试分别回答：
@@ -3458,7 +3458,7 @@ classification:
 commands:
   cargo test --features app render::lighting::shadow::formula
   cargo test --features app render::lighting::shadow::view
-  cargo test --features app render::runtime::tests::shadows
+  cargo test --features app render::core::runtime::tests::shadows
 ```
 
 这个模板的价值是强迫问题先归类。归类以后，代码修改范围会自然缩小。
@@ -3487,8 +3487,8 @@ commands:
 ```bash
 cargo test --features app
 cargo test --features app graph
-cargo test --features app render::runtime::tests
-cargo test --features app render::extract
+cargo test --features app render::core::runtime::tests
+cargo test --features app render::core::extraction
 cargo check --examples --features app
 ```
 
@@ -3504,8 +3504,8 @@ cargo check --examples --features app
 cargo fmt
 cargo test --features app render::lighting::shadow::formula
 cargo test --features app render::lighting::shadow::view
-cargo test --features app render::runtime::tests::shadows
-cargo test --features app render::postfx::contact_shadows
+cargo test --features app render::core::runtime::tests::shadows
+cargo test --features app render::features::postfx::contact_shadows
 cargo check --examples --features app
 ```
 
@@ -3576,22 +3576,22 @@ cargo check --examples --features app
 
 1. `examples/render/three_d_demo.rs`
 2. `src/app/runner.rs`
-3. `src/render/backend/wgpu.rs`
-4. `src/render/runtime/frame_coordinator.rs`
-5. `src/render/runtime/view_collection.rs`
-6. `src/render/extract/sprite.rs`
-7. `src/render/extract/mesh.rs`
-8. `src/render/phase/item.rs`
-9. `src/render/phase/containers.rs`
-10. `src/render/phase/mesh_draw.rs / sprite_draw.rs`
-11. `src/render/runtime/pipeline_runtime.rs`
-12. `src/render/execution/step_nodes/`
-13. `src/render/execution/payload.rs`
-14. `src/render/execution/frame_pipeline.rs`
-15. `src/render/execution/slots.rs`
-16. `src/render/graph/AGENTS.md`
-17. `src/render/builtins/`
-18. `src/render/gi/ssgi.rs`
+3. `src/render/integration/backend/wgpu.rs`
+4. `src/render/core/runtime/frame_coordinator.rs`
+5. `src/render/core/runtime/view_collection.rs`
+6. `src/render/core/extraction/sprite.rs`
+7. `src/render/core/extraction/mesh.rs`
+8. `src/render/core/draw/item.rs`
+9. `src/render/core/draw/containers.rs`
+10. `src/render/core/draw/mesh_draw.rs / sprite_draw.rs`
+11. `src/render/core/runtime/pipeline_runtime.rs`
+12. `src/render/core/execution/step_nodes/`
+13. `src/render/core/execution/payload.rs`
+14. `src/render/core/execution/frame_pipeline.rs`
+15. `src/render/core/execution/slots.rs`
+16. `src/render/core/graph/AGENTS.md`
+17. `src/render/integration/presets/`
+18. `src/render/features/gi/ssgi.rs`
 19. `src/render/lighting/shadow/`
 20. `src/gpu/context.rs`
 

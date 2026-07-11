@@ -23,10 +23,10 @@ use sky_engine::ecs::{EntityId, ExclusiveSystem, PreparedQuery, Update, World};
 use sky_engine::gpu::GpuContext;
 use sky_engine::input::KeyCode;
 use sky_engine::math::Transform;
-use sky_engine::render::expert::{
-    Bloom, BloomGraph, CompositePass, Light2D, LightPass, PassHandle, RenderGraph, SpriteBatch,
-    TargetSize, TextureHandle, ToneMap,
+use sky_engine::render::expert::draw::{
+    Bloom, BloomGraph, CompositePass, Light2D, LightPass, SpriteBatch, ToneMap,
 };
+use sky_engine::render::expert::graph::{PassHandle, RenderGraph, TargetSize, TextureHandle};
 use sky_engine::render::{Camera, Color, Sprite, Texture};
 
 // ─── Configuration ──────────────────────────────────────────────────────────

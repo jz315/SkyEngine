@@ -19,7 +19,7 @@ use sky_engine::render::expert::live2d::render::clipping::ClippingManager;
 use sky_engine::render::expert::live2d::{
     runtime::Live2DUpdateTimings, Live2DModelResource, Live2DRenderer, Live2DUserModel,
 };
-use sky_engine::render::expert::RenderTarget;
+use sky_engine::render::expert::gpu::RenderTarget;
 
 const DEFAULT_SURFACE_SIZE: [u32; 2] = [1280, 720];
 const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;

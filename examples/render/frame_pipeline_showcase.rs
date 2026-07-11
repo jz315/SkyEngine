@@ -7,10 +7,12 @@
 //! ```
 
 use sky_engine::gpu::GpuContext;
-use sky_engine::render::expert::{
-    CompiledPass, FinalizeExecutionContext, FinalizePhaseState, FrameFinalizeNode, FramePipeline,
-    FrameSetupNode, FrameViewNode, PhaseState, PhysicalResources, PreparedFrame, PreparedView,
-    RenderGraph, RenderGraphError, TargetSize, ViewExecutionContext, ViewportRect,
+use sky_engine::render::expert::execution::{
+    FinalizeExecutionContext, FinalizePhaseState, FrameFinalizeNode, FramePipeline, FrameSetupNode,
+    FrameViewNode, PhaseState, PreparedFrame, PreparedView, ViewExecutionContext, ViewportRect,
+};
+use sky_engine::render::expert::graph::{
+    CompiledPass, PhysicalResources, RenderGraph, RenderGraphError, TargetSize,
 };
 
 struct SetupSeed;
@@ -42,7 +44,7 @@ impl FrameSetupNode for SetupSeed {
         _pass: &CompiledPass,
         _ctx: &mut GpuContext,
         _resources: &PhysicalResources<'_>,
-        _execution: &sky_engine::render::expert::SetupExecutionContext<'_>,
+        _execution: &sky_engine::render::expert::execution::SetupExecutionContext<'_>,
     ) -> Result<(), RenderGraphError> {
         Ok(())
     }

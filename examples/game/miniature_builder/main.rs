@@ -31,9 +31,8 @@ use sky_engine::app::{
     SetupContext, WindowPlugin,
 };
 use sky_engine::ecs::{Update, World};
-use sky_engine::render::{
-    Color, RenderPipelineAsset, RenderSettings, SpriteFeature, TilemapFeature, TransparentPhase,
-};
+use sky_engine::render::{Color, RenderPipelineAsset, RenderSettings, SpriteFeature, TransparentPhase};
+use sky_engine::render::features::tilemap::TilemapFeature;
 use title::TitleState;
 
 struct MiniatureBuilder;

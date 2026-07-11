@@ -526,3 +526,18 @@ pub(crate) fn resolve_column_ptr(chunk: &Chunk, index: u8) -> *mut u8 {
         chunk.column_ptr(index as usize)
     }
 }
+
+#[cfg(test)]
+mod layout_tests {
+    use super::{ComponentIndexMap, MAX_QUERY_COMPONENTS};
+
+    #[test]
+    fn component_index_map_is_inline_fixed_capacity_storage() {
+        assert_eq!(
+            std::mem::size_of::<ComponentIndexMap>(),
+            MAX_QUERY_COMPONENTS + 1
+        );
+        assert_eq!(std::mem::align_of::<ComponentIndexMap>(), 1);
+        assert!(!std::mem::needs_drop::<ComponentIndexMap>());
+    }
+}

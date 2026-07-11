@@ -216,7 +216,7 @@ cargo run --example scene_basic --features scene
 | [Physics](docs/reference/physics.md) | 2D physics 和 Tiled physics |
 | [benches/BENCHMARKS_CN.md](benches/BENCHMARKS_CN.md) | 基准测试方法论与历史记录 |
 | [src/render/AGENTS.md](src/render/AGENTS.md) | 渲染模块架构指南 |
-| [src/render/graph/AGENTS.md](src/render/graph/AGENTS.md) | RenderGraph 详细设计文档 |
+| [src/render/core/graph/AGENTS.md](src/render/core/graph/AGENTS.md) | RenderGraph 详细设计文档 |
 
 ---
 

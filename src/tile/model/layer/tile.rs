@@ -14,23 +14,23 @@ bitflags::bitflags! {
     }
 }
 
-impl From<crate::render::TileFlags> for TileFlags {
-    fn from(value: crate::render::TileFlags) -> Self {
+impl From<crate::render::features::tilemap::TileFlags> for TileFlags {
+    fn from(value: crate::render::features::tilemap::TileFlags) -> Self {
         let mut flags = Self::empty();
-        if value.contains(crate::render::TileFlags::FLIP_X) {
+        if value.contains(crate::render::features::tilemap::TileFlags::FLIP_X) {
             flags |= Self::FLIP_X;
         }
-        if value.contains(crate::render::TileFlags::FLIP_Y) {
+        if value.contains(crate::render::features::tilemap::TileFlags::FLIP_Y) {
             flags |= Self::FLIP_Y;
         }
-        if value.contains(crate::render::TileFlags::FLIP_DIAGONAL) {
+        if value.contains(crate::render::features::tilemap::TileFlags::FLIP_DIAGONAL) {
             flags |= Self::FLIP_DIAGONAL;
         }
         flags
     }
 }
 
-impl From<TileFlags> for crate::render::TileFlags {
+impl From<TileFlags> for crate::render::features::tilemap::TileFlags {
     fn from(value: TileFlags) -> Self {
         let mut flags = Self::empty();
         if value.contains(TileFlags::FLIP_X) {

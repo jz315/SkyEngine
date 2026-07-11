@@ -10,7 +10,7 @@
 - Reflect API 细节见 `docs/reference/reflect.md`
 - GPU / Render 中层 API 细节见 `docs/reference/gpu.md`、`docs/reference/render.md`、`docs/reference/render-expert.md`
 - Render 模块维护规则见 `src/render/AGENTS.md`
-- RenderGraph 内部规则见 `src/render/graph/AGENTS.md`
+- RenderGraph 内部规则见 `src/render/core/graph/AGENTS.md`
 
 本文档重点回答：
 
@@ -175,7 +175,7 @@ flowchart TB
     subgraph RenderLayer[Render 层]
         RenderRt[RenderRuntime]
         Pipeline[RenderPipelineAsset / Builder]
-        Runtime[render::runtime / execution]
+        Runtime[render::core::runtime / execution]
         Graph[RenderGraph]
     end
 
@@ -192,7 +192,7 @@ flowchart TB
     subgraph SupportLayer[支撑模块]
         Math[math]
         Reflect[reflect]
-        Live2D[render::live2d]
+        Live2D[render::features::live2d]
         Audio[audio]
         Egui[egui integration]
     end
@@ -800,7 +800,9 @@ expert 入口：
 
 ```rust
 use sky_engine::render::expert::{
-    FramePipeline, RenderGraph, PreparedFrame, PreparedView, DrawFunction,
+    draw::DrawFunction,
+    execution::{FramePipeline, PreparedFrame, PreparedView},
+    graph::RenderGraph,
 };
 ```
 
@@ -847,8 +849,8 @@ flowchart TB
 ```mermaid
 flowchart LR
     subgraph Authoring[Authoring / ECS Authoring]
-        Comp[render::component\nCamera SpriteRenderer MeshRenderer PointLight]
-        ViewTypes[render::view\nCamera Projection Viewport]
+        Comp[core::scene + features/*\nCamera SpriteRenderer MeshRenderer PointLight]
+        ViewTypes[core::view\nCamera Projection Viewport]
     end
 
     subgraph Runtime[High-Level Runtime]
@@ -914,8 +916,8 @@ flowchart LR
 
 核心目录：
 
-- `src/render/component/`
-- `src/render/view/`
+- `src/render/core/scene/`
+- `src/render/core/view/`
 
 典型组件：
 
@@ -963,11 +965,11 @@ flowchart LR
 
 核心目录与文件：
 
-- `src/render/runtime/frame_coordinator.rs`
-- `src/render/runtime/view_collection.rs`
-- `src/render/runtime/composer.rs`
-- `src/render/extract/`
-- `src/render/pipeline/features.rs`
+- `src/render/core/runtime/frame_coordinator.rs`
+- `src/render/core/runtime/view_collection.rs`
+- `src/render/core/runtime/composer.rs`
+- `src/render/core/extraction/`
+- `src/render/core/pipeline/features.rs`
 
 主要步骤：
 
@@ -1022,7 +1024,7 @@ flowchart LR
 
 ### 6.6 Pipeline 声明层
 
-`src/render/pipeline/` 负责声明渲染结构，而不是保存每帧执行状态。
+`src/render/core/pipeline/` 负责声明渲染结构，而不是保存每帧执行状态。
 
 核心类型：
 
@@ -1065,7 +1067,7 @@ flowchart LR
 
 ### 6.7 Phase / Draw Dispatch 层
 
-`src/render/phase/` 负责排序和 draw dispatch。
+`src/render/core/draw/` 负责排序和 draw dispatch。
 
 核心概念：
 
@@ -1099,7 +1101,7 @@ Phase 是“高层提取结果”与“底层 draw 行为”之间的桥接层�
 
 ### 6.8 RenderGraph 后端
 
-`src/render/graph/` 是低层 declarative render graph backend。
+`src/render/core/graph/` 是低层 declarative render graph backend。
 
 职责：
 
@@ -1167,7 +1169,7 @@ RenderGraph::try_execute(ctx, run_pass)
 
 ### 6.9 Shared GPU Resource 层
 
-`src/render/gpu/` 管理高层 render 共享 GPU 资源。
+`src/render/core/gpu/` 管理高层 render 共享 GPU 资源。
 
 核心对象：
 
@@ -1201,13 +1203,13 @@ RenderGraph::try_execute(ctx, run_pass)
 
 | Family | 目录 | 输入 | 输出 / 接入点 |
 |--------|------|------|---------------|
-| Sprite | `src/render/sprite/`, `src/render/extract/sprite.rs` | `SpriteRenderer`、sorting、texture/material | transparent / opaque phase items，sprite draw function |
-| Mesh | `src/render/mesh/`, `src/render/resources/mesh/` | `MeshRenderer`、`Mesh`、`Material` | mesh prepare / record，material pipelines，scene prepass |
+| Sprite | `src/render/features/sprite/`, `src/render/core/extraction/sprite.rs` | `SpriteRenderer`、sorting、texture/material | transparent / opaque phase items，sprite draw function |
+| Mesh | `src/render/features/mesh/`, `src/render/core/resources/mesh/` | `MeshRenderer`、`Mesh`、`Material` | mesh prepare / record，material pipelines，scene prepass |
 | Lighting | `src/render/lighting/` | `PointLight`、`DirectionalLight`、light settings | `LightTable`、`LightPass`、`DirectionalShadowPhase` |
-| Composite | `src/render/composite/` | scene color / light target | composite pass |
-| GI | `src/render/gi/`, `src/render/shaders/gi/` | opaque `StandardMaterial` mesh triangles、light table、DDGI settings | `DdgiUpdateCompute`、DDGI irradiance / visibility atlas sampled by forward materials |
-| PostFX | `src/render/postfx/` | scene color / settings | `Bloom`、`ToneMap`、`Vignette` |
-| Live2D | `src/render/live2d/` | `Live2DModelInstance`、Cubism asset/runtime | `Live2DFeature`、transparent phase draw、typed payload |
+| Composite | `src/render/features/lighting/composite/` | scene color / light target | composite pass |
+| GI | `src/render/features/gi/`, `src/render/shaders/gi/` | opaque `StandardMaterial` mesh triangles、light table、DDGI settings | `DdgiUpdateCompute`、DDGI irradiance / visibility atlas sampled by forward materials |
+| PostFX | `src/render/features/postfx/` | scene color / settings | `Bloom`、`ToneMap`、`Vignette` |
+| Live2D | `src/render/features/live2d/` | `Live2DModelInstance`、Cubism asset/runtime | `Live2DFeature`、transparent phase draw、typed payload |
 
 这些 family 的协作方式不是各自维护一套完整渲染主循环，而是：
 
@@ -1246,39 +1248,39 @@ AppState::update(...)
   Curated public facade 与 `expert` namespace。
 - `src/render/expert.rs`
   Expert-facing low-level facade。
-- `src/render/component/`
+- `src/render/core/scene/`
   ECS-facing 渲染 authoring 组件。
-- `src/render/view/`
+- `src/render/core/view/`
   相机、视图、投影、viewport、frustum、transform resolver。
-- `src/render/runtime/`
+- `src/render/core/runtime/`
   高层 orchestration：`RenderRuntime`、frame builder、pipeline runtime、presentation、stats。
-- `src/render/pipeline/`
+- `src/render/core/pipeline/`
   声明式 pipeline、feature、phase/pass/postfx context。
-- `src/render/extract/`
+- `src/render/core/extraction/`
   registered ECS extraction path。
-- `src/render/execution/`
+- `src/render/core/execution/`
   prepared-frame 执行骨架、typed payload、scene slots。
-- `src/render/phase/`
+- `src/render/core/draw/`
   `PhaseItem`、排序、draw dispatch。
-- `src/render/graph/`
+- `src/render/core/graph/`
   declarative render graph backend。
-- `src/render/gpu/`
+- `src/render/core/gpu/`
   shared GPU resources、targets、textures、tables、fullscreen helpers。
-- `src/render/resources/`
+- `src/render/core/resources/`
   material、mesh、atlas、blackboard 等共享资源系统。
 - `src/render/lighting/`
   light data、GPU table、light pass、directional shadow。
-- `src/render/sprite/`
+- `src/render/features/sprite/`
   sprite API 与 batch renderer。
-- `src/render/mesh/`
+- `src/render/features/mesh/`
   mesh draw preparation / recording。
-- `src/render/composite/`
+- `src/render/features/lighting/composite/`
   scene/light composition pass。
-- `src/render/gi/`
+- `src/render/features/gi/`
   DDGI diffuse global illumination runtime。
-- `src/render/postfx/`
+- `src/render/features/postfx/`
   Bloom、ToneMap、Vignette 等屏幕后处理效果。
-- `src/render/live2d/`
+- `src/render/features/live2d/`
   Live2D runtime / renderer / feature bridge，受 `live2d` feature 控制。
 - `src/render/shaders/`
   WGSL shader 源文件。
@@ -1300,7 +1302,7 @@ AppState::update(...)
 
 新增 renderer family 时，推荐按这个顺序设计：
 
-1. Authoring data：如果需要用户在 ECS 中描述对象，新增 `src/render/component/` 组件。
+1. Authoring data：如果需要用户在 ECS 中描述对象，新增 `src/render/core/scene/` 组件。
 2. Asset / resource：如果需要可复用资源，决定是走 `asset`、`render/resources/`，还是 family-local cache。
 3. Feature：实现 `RenderFeature`，在 builder 中注册。
 4. Extract / prepare：从 `World` 提取 ECS 数据，解析 view 相关状态，准备 GPU-facing payload。
@@ -1311,7 +1313,7 @@ AppState::update(...)
 
 验证建议：
 
-- 改 `render/pipeline`、`runtime`、`execution`：跑 `cargo test --features app render::runtime` 或相关模块测试。
+- 改 `render/pipeline`、`runtime`、`execution`：跑 `cargo test --features app render::core::runtime` 或相关模块测试。
 - 改 graph：跑 `cargo test --features app graph`。
 - 改 public render/app API：跑 `cargo check --examples --features app`。
 - 改 Live2D：跑 `cargo check --example live2d_probe --features live2d`，需要 SDK 环境时按 Live2D 文档处理。
@@ -1597,7 +1599,7 @@ Audio 是可选扩展能力，不是 ECS / Render 的根依赖。
 
 核心目录：
 
-- `src/render/live2d/`
+- `src/render/features/live2d/`
 
 启用条件：
 
@@ -1657,12 +1659,12 @@ flowchart TB
     Src --> Reflect[src/reflect]
     Src --> Bin[src/bin]
 
-    Render --> RenderComponent[src/render/component]
-    Render --> RenderRuntime[src/render/runtime]
-    Render --> RenderPipeline[src/render/pipeline]
-    Render --> RenderExecution[src/render/execution]
-    Render --> RenderGraph[src/render/graph]
-    Render --> RenderResources[src/render/resources]
+    Render --> RenderComponent[src/render/core/scene]
+    Render --> RenderRuntime[src/render/core/runtime]
+    Render --> RenderPipeline[src/render/core/pipeline]
+    Render --> RenderExecution[src/render/core/execution]
+    Render --> RenderGraph[src/render/core/graph]
+    Render --> RenderResources[src/render/core/resources]
     Render --> RenderShaders[src/render/shaders]
 
     Examples --> ECSExamples[examples/ecs]
@@ -1850,20 +1852,20 @@ World resource AudioCommands
 
 | 你要新增 | 首选位置 | 还需要考虑 |
 |----------|----------|------------|
-| 普通 gameplay component | app / example 自己的 module | 不要放 `src/render/component`，除非它是渲染 authoring |
-| 渲染 authoring component | `src/render/component/` | 是否需要 extractor 与 phase item |
+| 普通 gameplay component | app / example 自己的 module | 不要放 `src/render/core/scene`，除非它是渲染 authoring |
+| 渲染 authoring component | `src/render/core/scene/` | 是否需要 extractor 与 phase item |
 | 全局 gameplay 状态 | ECS resource | 是否需要 App setup 初始化 |
 | 高频系统 | typed function + `View<Q, F>` / `ParView<Q, F>` | 顺序遍历用 `View`；并行遍历显式用 `ParView` |
 | 查询中结构变化 | system `Commands<'_>` | stage / exclusive flush 边界是否清晰 |
 | 新 input binding | `InputActions` / `ActionMap` | App 会自动 update existing resource |
 | 新 asset type | `src/asset/` + factory / manifest 支持 | 是否需要 install 到 GPU / audio runtime |
-| 新 render feature | `src/render/pipeline/features.rs` 或 family 目录 | 注册 extractor、draw function、pipeline step |
-| 新 render phase | `src/render/phase/` / pipeline registration | sort key、draw dispatch、payload |
+| 新 render feature | `src/render/core/pipeline/features.rs` 或 family 目录 | 注册 extractor、draw function、pipeline step |
+| 新 render phase | `src/render/core/draw/` / pipeline registration | sort key、draw dispatch、payload |
 | 新 render pass | `RenderPass` / `ComputePass` / `PostFxPass` | scene inputs、graph resources、tests |
 | 新 GPU table | `GpuTable` / `GpuTableManager` | 只有跨 feature 共享才进 `GpuScene` |
-| 新 material | `src/render/resources/material/` | shader inputs、scene prepass hooks、example compile |
+| 新 material | `src/render/core/resources/material/` | shader inputs、scene prepass hooks、example compile |
 | 新 shader | `src/render/shaders/` | 绑定布局和 material / pass contract |
-| 新 graph copy op | `src/render/graph/` | reads/writes registration、validation、tests |
+| 新 graph copy op | `src/render/core/graph/` | reads/writes registration、validation、tests |
 | 新 demo | `examples/demo` 或 `examples/render` | Cargo example entry 和 required features |
 | 新 benchmark | `benches/fair/` 或专门 bench | fair benchmark 必须三引擎可比 |
 
@@ -2000,10 +2002,10 @@ docs-only 修改通常不需要 `cargo test`。但如果文档修改伴随 API�
 6. `src/app/runner.rs`
 7. `src/render/mod.rs`
 8. `src/render/AGENTS.md`
-9. `src/render/runtime/`
-10. `src/render/pipeline/`
-11. `src/render/execution/`
-12. `src/render/graph/AGENTS.md`
+9. `src/render/core/runtime/`
+10. `src/render/core/pipeline/`
+11. `src/render/core/execution/`
+12. `src/render/core/graph/AGENTS.md`
 13. `src/asset/mod.rs`
 14. `docs/README.md`
 
@@ -2030,10 +2032,10 @@ docs-only 修改通常不需要 `cargo test`。但如果文档修改伴随 API�
 6. `examples/render/frame_pipeline_showcase.rs`
 7. `examples/render/custom_feature_demo.rs`
 8. `src/render/mod.rs`
-9. `src/render/runtime/frame_coordinator.rs`
-10. `src/render/pipeline/`
-11. `src/render/execution/`
-12. `src/render/graph/`
+9. `src/render/core/runtime/frame_coordinator.rs`
+10. `src/render/core/pipeline/`
+11. `src/render/core/execution/`
+12. `src/render/core/graph/`
 13. `docs/reference/render.md`
 14. `docs/reference/render-expert.md`
 

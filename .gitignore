@@ -28,6 +28,7 @@ criterion/
 # Vendor / third-party SDKs
 CubismSdkForNative/
 tools/*
+!tools/bench-ecs.ps1
 !tools/ecs-comparison/
 !tools/ecs-comparison/**
 tools/ecs-comparison/target/
