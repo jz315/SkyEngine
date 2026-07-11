@@ -14,7 +14,7 @@
 //! ## Quick Start
 //!
 //! ```rust
-//! use sky_engine::ecs::{World, Commands};
+//! use sky_engine::ecs::{Update, View, World};
 //!
 //! #[derive(Clone, Copy)]
 //! struct Position { x: f32, y: f32 }
@@ -22,14 +22,17 @@
 //! #[derive(Clone, Copy)]
 //! struct Velocity { x: f32, y: f32 }
 //!
+//! fn movement(entities: View<(&mut Position, &Velocity)>) {
+//!     entities.for_each(|(pos, vel)| {
+//!         pos.x += vel.x;
+//!         pos.y += vel.y;
+//!     });
+//! }
+//!
 //! let mut world = World::new();
 //! world.spawn((Position { x: 0.0, y: 0.0 }, Velocity { x: 1.0, y: 2.0 }));
-//!
-//! let mut query = world.query::<(&mut Position, &Velocity)>();
-//! query.for_each(&mut world, |(pos, vel)| {
-//!     pos.x += vel.x;
-//!     pos.y += vel.y;
-//! });
+//! world.stage(Update).add(movement);
+//! world.tick_with_delta(1.0 / 60.0).unwrap();
 //! ```
 //!
 //! ## Component Requirements

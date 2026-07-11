@@ -11,7 +11,7 @@
 
 ## 核心模块
 
-- [ECS](reference/ecs.md)：`World`、`EntityId`、`Bundle`、`PreparedQuery`、`Commands`、系统调度、dynamic/expert API。
+- [ECS](reference/ecs.md)：`World`、`View` / `ParView` / `Res` 系统参数、typed stages、查询、命令与 dynamic/expert API。
 - [Reflect](reference/reflect.md)：底层 `Type` layout 反射、ECS component type 语义别名、`#[derive(Reflect)]` Inspector 反射。
 - [Math](reference/math.md)：`Vec2/Vec3/Vec4`、`Quat`、`Mat4`、`Transform`、`Projection`。
 
@@ -37,6 +37,7 @@
 - [Architecture Index](architecture/index.md)：架构文档入口。
 - [Architecture](architecture/architecture.md)：更长的系统架构、渲染管线、RenderGraph、GPU 资源等背景说明。
 - [Render Deep Dive](architecture/render_deep_dive.md)：渲染管线深挖。
+- [Typed Parallel System API](plan/typed_parallel_system_api_design.md)：`View` / `ParView` / `Res` / `Commands` 系统参数、确定性并行 wave、fixed timestep 与 panic-safety 实现说明。
 
 ## 常用验证命令
 

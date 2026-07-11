@@ -161,7 +161,7 @@ AppState::update(ctx)
 
 如果系统需要读取输入，应确保系统运行时 `Input` resource 已经同步。App runner 会在 tick 前同步输入，所以 system 可读到当前帧状态。
 
-如果在 `AppState::update` 中直接读取 `ctx.input` 并写组件，默认会在下一帧 schedule 生效。需要同帧物理输入时，优先写 `pre_physics` system 或关闭 `auto_tick` 手动排序。
+如果在 `AppState::update` 中直接读取 `ctx.input` 并写组件，默认会在下一帧 schedule 生效。需要同帧物理输入时，把控制 system 注册在 `FixedUpdate` 的 physics system 之前，或关闭 `auto_tick` 手动排序。
 
 ## 测试和检查
 

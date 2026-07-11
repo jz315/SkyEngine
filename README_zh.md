@@ -57,13 +57,20 @@ cd SkyEngine
 ### 最小 ECS 示例
 
 ```rust
-use sky_engine::ecs::World;
+use sky_engine::ecs::{ParView, Res, Time, Update, World};
 
 #[derive(Clone, Copy)]
 struct Position { x: f32, y: f32 }
 
 #[derive(Clone, Copy)]
 struct Velocity { x: f32, y: f32 }
+
+fn movement(entities: ParView<(&mut Position, &Velocity)>, time: Res<Time>) {
+    entities.par_for_each(|(position, velocity)| {
+        position.x += velocity.x * time.delta;
+        position.y += velocity.y * time.delta;
+    });
+}
 
 fn main() {
     let mut world = World::new();
@@ -79,19 +86,9 @@ fn main() {
         (Position { x: i as f32, y: 0.0 }, Velocity { x: 1.0, y: 1.0 })
     }));
 
-    // 类型化查询 — 自动缓存匹配 Archetype
-    let mut query = world.query::<(&mut Position, &Velocity)>();
-    query.for_each(&mut world, |(pos, vel)| {
-        pos.x += vel.x * 0.016;
-        pos.y += vel.y * 0.016;
-    });
-
-    // Chunk 级迭代 — 返回连续切片，适合 SIMD
-    query.for_each_chunk(&mut world, |(positions, velocities)| {
-        for (p, v) in positions.iter_mut().zip(velocities.iter()) {
-            p.x += v.x * 0.016;
-        }
-    });
+    // 访问权限由参数类型推导；无冲突系统与查询 stripe 自动并行。
+    world.stage(Update).add(movement);
+    world.tick_with_delta(0.016).unwrap();
 
     let pos = world.get::<Position>(entity).unwrap();
     println!("({}, {})", pos.x, pos.y);
@@ -191,13 +188,13 @@ cargo run --example scene_basic --features scene
 - [x] 块列式 Archetype ECS
 - [x] 类型化查询 + 编译期过滤
 - [x] 延迟命令与批量 Spawn
-- [x] 系统分组调度
+- [x] Typed stage 与访问推导调度
 - [x] wgpu GPU 上下文
 - [x] 声明式 RenderGraph
 - [x] SpriteBatch 2D 渲染
 - [x] 动态光照 + 后处理管线
 - [x] Live2D Cubism 集成
-- [ ] 并行化系统调度
+- [x] 确定性并行 system wave
 - [ ] 资产管线热重载
 - [ ] 场景序列化 / 反序列化
 - [ ] 粒子系统 GPU 加速

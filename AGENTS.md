@@ -10,7 +10,7 @@
 - SkyEngine-local benchmarks are Criterion-based under `benches/`; cross-engine ECS comparisons live in the isolated `tools/ecs-comparison` package.
 
 ## Canonical API Surface
-- **ECS** entry points: `sky_engine::ecs` - `World`, `EntityId`, `Bundle`, `PreparedQuery`, `Commands`, `With`, `Without`, `System`, `Time`.
+- **ECS** entry points: `sky_engine::ecs` - `World`, `EntityId`, `Bundle`, `Query`, `QueryMut`, `QueryData`, `PreparedQuery`, `View`, `ParView`, `Res`, `ResMut`, `Local`, `Commands`, `CommandBuffer`, typed stages, `With`, `Without`, `Any`, and `Time`.
 - **Dynamic ECS** entry points: `sky_engine::ecs::dynamic` - runtime-typed bundles and queries for tools, scripting, and reflection-driven workflows.
 - **Expert ECS** entry points: `sky_engine::ecs::expert` - low-level archetype, component metadata, and unsafe uninitialized spawn helpers for engine internals and benchmarks.
 - **Render** entry points: `sky_engine::render` - `RenderRuntime`, `RenderPipelineAsset`, `RenderPipelineBuilder`, `RenderFeature`, `RenderPhase`, `SpriteFeature`, `TilemapFeature`, `SceneRenderer`, `Camera`, `Color`, `Texture`.
@@ -23,12 +23,12 @@
 - **Tile scene** entry points: `sky_engine::tile` (behind `features = ["app"]`) - `Tiles`, `Map`, `MapBuilder`, `MapEditor`, `TilePalette`, `TileLayer`, `CollisionLayer`, `MetadataLayer`, `ObjectLayer`, `TileCell`, `TileRef`, `MapData`, and related grid/palette/object model types.
 - **Scene/VN/audio/video** entry points are feature-gated under `sky_engine::scene`, `sky_engine::vn`, `sky_engine::audio`, and `sky_engine::video`.
 - Preferred entity construction is bundle-based: `world.spawn((A, B, ...))` and `world.spawn_batch(...)`.
-- Preferred query construction is typed: `world.query::<Q>()` or `world.query_filtered::<Q, Flt>()`.
+- Preferred query construction is typed and world-bound: `world.query::<Q>()` for read-only data, `world.query_mut::<Q>()` for mutable data, and `.filter::<Flt>()` for type-level archetype filters.
 - There is no `sky_engine::ecs::raw` compatibility layer. Use typed ECS APIs first, `ecs::dynamic` for safe runtime-typed access, and `ecs::expert` for explicit low-level internals.
 
 ## Repo Map
 - `src/lib.rs`: crate root, global allocator setup, public module exports and feature gates.
-- `src/ecs/`: compatibility re-export for the standalone ECS crate.
+- `src/ecs/`: engine-facing facade for the standalone ECS crate.
 - `crates/sky_ecs/`: archetype/chunk ECS, typed queries, dynamic queries, expert internals, bundles, resources, commands, plugin protocol, and schedule execution.
 - `src/reflect/`: engine-facing reflection facade and SkyEngine built-in registration helpers.
 - `crates/sky_reflect/`: runtime type registry, layout metadata, and type-erased drop support.
@@ -54,20 +54,27 @@
 - `tools/ecs-comparison/src/{sky,hecs,bevy,flecs}.rs`: engine-specific fair benchmark implementations.
 - `examples/`: feature-focused examples split into `ecs`, `render`, `ui`, `vn`, `scene`, `physics`, `live2d`, `demo`, and `game`.
 - `tools/ecs-comparison/examples/`: cross-engine comparison examples that intentionally depend on external ECS engines.
+- `tools/showcase-check/`: non-publishable Cargo target manifest that keeps local game/render/UI showcase entry points in compile coverage.
 - `docs/`: current user/developer docs. Planning or future architecture notes belong under `docs/plan/`, not in `AGENTS.md`.
 - `README.md`, `README_zh.md`: user-facing overview and quick-start docs.
 - `benches/BENCHMARKS.md`, `benches/BENCHMARKS_CN.md`: benchmark policy, history, and recorded local results.
 
 ## Current Query Model
-- Preferred runtime path: `world.query::<Q>() -> PreparedQuery<Q>` and `world.query_filtered::<Q, Flt>() -> PreparedQuery<Q, Flt>`.
-- `PreparedQuery` caches matching archetypes and refreshes only when `World::archetype_epoch()` changes.
-- Typed queries support entity iteration via `for_each`.
-- Typed queries support chunk iteration via `for_each_chunk`.
-- Typed queries support entity-aware variants via `for_each_with_entity` and `for_each_chunk_with_entities`.
+- Preferred runtime path: `world.query::<Q>() -> Query<'_, Q>` and `world.query_mut::<Q>() -> QueryMut<'_, Q>`; attach filters with `.filter::<Flt>()`.
+- `World` owns the typed query-plan cache. Bound queries lazily snapshot matching archetypes, reuse cached plans, and refresh them when `World::archetype_epoch()` changes.
+- `PreparedQuery<Q, Flt>` remains the explicit reusable-plan API for persistent system/extractor fields, cross-world reuse, and stable parallel job caches.
+- Prepared archetype matching keeps one declaration-order column map plus a TypeId-sorted match plan. Queries of at most two components use direct binary search; wider queries choose suffix binary search or sorted merge from an explicit comparison-cost model.
+- Cached query column maps are fixed-capacity 16-slot values, so 9-16 component queries do not allocate once per matching archetype.
+- Pure AND filter tuples are compiled on archetype-epoch refresh, deduplicated, simplified against required query components, and matched adaptively. Single `With`/`Without`, `Any`, and unfiltered queries retain their direct monomorphized paths.
+- Typed queries support entity iteration via `for_each` / `par_for_each`.
+- Typed queries support chunk iteration via `for_each_chunk` / `par_for_each_chunk`.
+- Typed queries support entity-aware variants via `for_each_with_entity` / `par_for_each_with_entity` and `for_each_chunk_with_entities` / `par_for_each_chunk_with_entities`.
 - Typed queries provide helpers like `count` and `is_empty`.
 - Optional query params are supported via `Option<&T>` and `Option<&mut T>`.
-- Compile-time archetype filters are supported via `With<T>`, `Without<T>`, and tuples of filters.
-- Query tuple support in `QuerySpec` currently goes up to 8 parameters.
+- Compile-time archetype filters are supported via `With<T>`, `Without<T>`, `Any<(...)>`, and AND tuples of filters.
+- Named query items are supported with `#[derive(QueryData)]`; query and filter tuples support up to 16 parameters.
+- Parallel queries split chunks into contiguous 4096-entity stripes and automatically fall back to sequential iteration below the parallel threshold.
+- Bound parallel queries reuse World-owned job plans; O(1) validity checks use World identity plus `storage_epoch`, while `PreparedQuery` owns its job plan for explicit persistent/cross-world use.
 - Duplicate component types in a single query are rejected intentionally for both typed and dynamic queries.
 - Runtime-typed ECS access is through `ecs::dynamic::DynamicQuery` and `ecs::dynamic::DynamicBundle`.
 - `ecs::dynamic` performs runtime access validation and should stay separate from the typed query hot path.
@@ -75,14 +82,17 @@
 
 ## World and Structural Model
 - `World` owns entities, archetype-backed data, resources, and the optional system schedule.
+- `World::storage_epoch()` changes before every successful chunk-layout mutation (spawn, despawn, migration, clear); component value updates do not change it.
 - `EntityId` is generational; stale IDs must be treated as invalid.
 - Structural component inserts/removes migrate entities across archetypes using cached transition plans and copy spans.
 - Entity removal is swap-compacting and must always preserve moved-entity location correctness.
-- `Commands` is the deferred structural mutation path.
+- Borrowed `Commands<'_>` is the typed-system deferred structural path; owned `CommandBuffer` is the manual path outside schedules.
 - Deferred entity commands are coalesced per entity, and flush order follows first-seen entity order.
+- A panic during command application poisons the World. The partial state remains inspectable/shutdown-capable, but later command application and schedule ticks are rejected.
 - Resources are typed singletons stored in the world.
-- Scheduling uses `world.group("name")`, `tick()`, `tick_with_delta()`, and `shutdown()`.
-- Groups run in creation order; fixed-timestep groups accumulate time and may run multiple substeps per frame.
+- Scheduling uses explicitly installed typed stages, typed system parameters, `tick()`, `tick_with_delta()`, and `shutdown()`. Built-in stages always exist; custom stages must be installed with `insert_stage_after` before `stage` access.
+- Built-in stages run in `First -> FixedUpdate -> PreUpdate -> Update -> PostUpdate -> Last` order. Repeated custom-stage insertions preserve sibling/subtree order. Compatible waves use a configurable Rayon threshold (3 systems by default); explicit exclusive systems are barriers. `FixedUpdate` defaults to 60 Hz, fixed stages use bounded `FixedStep` accumulation, and conflicting repeated fixed configuration is rejected.
+- Required typed resources are preflighted before frame state advances. Returned `ScheduleError` is therefore frame-atomic; removing a later system's required resource during execution is an invariant panic.
 
 ## Current App and Module Installation Model
 - The engine-level plugin protocol lives in `crates/sky_ecs/src/plugin.rs` and is re-exported as `sky_engine::plugin`; install plugins with `world.install(plugin)`.
@@ -153,9 +163,11 @@
 - Run yakui UI tests/builds: `cargo test --features yakui-ui`
 - Run VN tests: `cargo test --features vn`
 - Run render/example compile check after render/app API changes: `cargo check --examples --features app`
+- Run all non-published showcase compile checks: `cargo check --manifest-path tools/showcase-check/Cargo.toml --all-targets --all-features`
 - Run legacy UI example compile check after retained UI changes: `cargo check --examples --features ui-legacy`
 - Run canonical fair comparison: `cargo compare-ecs`
 - Run SkyEngine-local benches: `cargo bench`
+- Run typed schedule microbenchmarks: `cargo bench --bench system_schedule`
 - Run one engine slice: `cargo compare-ecs -- sky`
 - Run one exact benchmark: `cargo compare-ecs -- fair_random_access/get/sky --exact`
 - Render graph tests requiring GPU use `create_test_device()` or `GpuContext::new_headless()` and need a GPU-capable environment.
@@ -172,16 +184,18 @@
 ## Implementation Guidelines
 - Prefer bundle-based `spawn` / `spawn_batch` for normal runtime code.
 - Prefer typed queries over dynamic runtime-typed iteration for application and system code.
-- Prefer `for_each_chunk` when a loop is genuinely hot and chunk-slice code helps vectorization or batching.
+- Use `View<Q, F>` for sequential system iteration and `ParView<Q, F>` when the system needs `par_*`; only `ParView` prepares parallel stripe jobs.
+- Prefer `par_for_each` for ergonomic entity-level data parallelism and `par_for_each_chunk` when chunk slices materially help vectorization or batching; both use the same cached stripe executor.
 - Use `ecs::expert::create_archetype().add_rust_component::<T>()` only when low-level archetype construction is actually needed.
 - Keep `ecs::dynamic` working for tools and reflection-driven code, but do not optimize it at the expense of typed query codegen.
 - Do not reintroduce `ecs::raw` compatibility exports or pointer-based public query iteration.
 - If query caching changes, preserve the epoch-based invalidation model in `World`.
+- If structural storage paths change, bump `storage_epoch` before any mutation that can change chunk pointers, entity ranges, or entity ordering.
 - If structural transition logic changes, preserve generational entity validity.
 - If structural transition logic changes, preserve moved-entity location updates.
 - If structural transition logic changes, preserve non-`Copy` drop behavior.
 - If structural transition logic changes, preserve resource lifetime correctness.
-- If schedule code changes, preserve group creation order and fixed-step accumulator semantics.
+- If schedule code changes, preserve typed stage order, resource-preflight atomicity, stable conflict waves, deterministic command flush order, fixed-step accumulator semantics, and panic-safe schedule restoration.
 - Do not rely on `src/main.rs` for correctness, benchmarks, or API direction; it is not the source of truth.
 - Examples are useful usage references, but benchmark behavior and correctness expectations come from `src/` tests plus the bench suites.
 - Keep tile scene API names directional: use importer/exporter names for external formats, edit/refresh names for document mutations and render sync, and reserve `World::spawn` for ECS entity creation in examples where practical.

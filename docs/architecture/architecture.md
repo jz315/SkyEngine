@@ -142,7 +142,7 @@ crate 根部的 feature-gated 模块关系如下：
 | 目标 | 推荐入口 | 不建议 |
 |------|----------|--------|
 | 写 gameplay 状态 | ECS component / resource / system | 把玩法状态放进 renderer cache |
-| 批量遍历实体 | `PreparedQuery` / `for_each_chunk` | dynamic/expert query 作为主路径 |
+| 批量遍历实体 | world-bound `Query` / `par_for_each` / `for_each_chunk` | dynamic/expert query 作为主路径 |
 | 查询中安排结构变化 | `Commands` | active query 内直接 `insert/remove/despawn` |
 | 创建窗口应用 | `World::install(...)` + `App` + `AppState` | 手动绕过 runner 复制事件循环 |
 | 普通渲染 | `RenderPipelineAsset` + `RenderRuntime` | 直接把所有东西塞进 `GpuContext` |
@@ -166,9 +166,9 @@ flowchart TB
 
     subgraph ECSLayer[ECS 层]
         World[ecs::World]
-        Systems[ecs::System / group / tick]
-        Queries[PreparedQuery / Filters]
-        Commands[ecs::Commands]
+        Systems[typed System Params / Stage / Wave / tick]
+        Queries[Query / QueryMut / PreparedQuery / Filters]
+        Commands[Commands / CommandBuffer]
         Resources[Resource Storage]
     end
 
@@ -445,7 +445,7 @@ ECS 是当前项目的运行时数据核心。它提供实体、组件、资源�
 - `src/ecs/query/`
 - `src/ecs/commands.rs`
 - `src/ecs/resource.rs`
-- `src/ecs/system.rs`
+- `crates/sky_ecs/src/ecs/system/`
 - `src/ecs/time.rs`
 - `src/ecs/dynamic.rs`
 - `src/ecs/expert.rs`
@@ -454,7 +454,8 @@ ECS 是当前项目的运行时数据核心。它提供实体、组件、资源�
 
 ```rust
 use sky_engine::ecs::{
-    Bundle, Commands, EntityId, PreparedQuery, System, Time, With, Without, World,
+    Any, Bundle, CommandBuffer, Commands, EntityId, PreparedQuery, Query, QueryData,
+    ParView, QueryMut, Res, ResMut, Time, Update, View, With, Without, World,
 };
 ```
 
@@ -468,10 +469,12 @@ use sky_engine::ecs::{dynamic, expert};
 
 ```mermaid
 flowchart LR
-    System[System / Closure]
-    Group[SystemGroup]
+    System[Typed Function System]
+    Params[View / ParView / Res / Commands / Local]
+    Stage[Typed Stage]
+    Wave[Conflict-free Wave]
     World[World]
-    Query[PreparedQuery]
+    Query[Query / QueryMut / PreparedQuery]
     Commands[Commands]
     Resource[Resource Storage]
     Entity[EntityId]
@@ -480,11 +483,13 @@ flowchart LR
     Chunk[Chunk SoA Storage]
     Registry[reflect Type Registry]
 
-    System --> Group
-    Group --> World
-    System --> Query
-    System --> Commands
-    System --> Resource
+    System --> Params
+    Params --> Query
+    Params --> Commands
+    Params --> Resource
+    System --> Stage
+    Stage --> Wave
+    Wave --> World
 
     World --> Entity
     World --> Location
@@ -506,9 +511,10 @@ flowchart LR
 - `insert` / `remove` / `despawn`
 - `contains` / `has` / `get` / `get_mut`
 - archetype epoch 维护
+- storage epoch 维护
 - entity location 维护
 - resource singleton 存取
-- group schedule 维护
+- typed stage、access graph 与 compiled wave 维护
 - `tick` / `tick_with_delta` / `shutdown`
 
 `World` 不负责：
@@ -599,6 +605,7 @@ entity at old archetype
   -> update entity location
   -> swap-compact old row if needed
   -> bump archetype epoch if archetype set changed
+  -> bump storage epoch for every layout change
 ```
 
 关键点：
@@ -608,22 +615,34 @@ entity at old archetype
 - 被 swap 到旧 row 的实体必须更新 location。
 - transition plan / copy span cache 是结构热路径，不应随意换成高分配、低 locality 的实现。
 
-### 5.6 PreparedQuery
+### 5.6 Typed Query
 
-推荐查询路径是 typed prepared query：
+普通运行时查询使用绑定到 world 的只读/可写 facade：
 
 ```rust
-let mut query = world.query::<(&mut Position, &Velocity)>();
-let mut filtered = world.query_filtered::<&Position, With<Velocity>>();
+let query = world.query::<(&Position, &Velocity)>();
+let mut writable = world.query_mut::<(&mut Position, &Velocity)>();
+let filtered = world.query::<&Position>().filter::<With<Velocity>>();
+
+#[derive(QueryData)]
+struct Movement<'w> {
+    position: &'w mut Position,
+    velocity: &'w Velocity,
+}
 ```
 
-`PreparedQuery<Q, Flt>` 的核心机制：
+`World` 内部按 `(Q, Flt)` 类型缓存 query plan。绑定查询惰性获取最终 plan，避免 `.filter::<F>()` 先扫描无过滤版本。缓存的核心机制：
 
 - 根据 `Q` 生成 typed query spec。
 - 根据 `Flt` 生成 archetype filter。
 - 缓存匹配 archetype。
 - 记录 `World::archetype_epoch()`。
 - 当 epoch 改变时自动刷新缓存。
+- 新 archetype 仅扫描追加的 suffix；`clear` 等非追加变化会完整重建。
+- bound parallel job 划分也缓存在 `World`，重复构造轻量 query 不会重复生成 job。
+- parallel job 命中仅比较 World identity 和 `storage_epoch`，不遍历 Chunk 签名；组件值更新不失效，所有布局变化都会失效。
+
+`PreparedQuery<Q, Flt>` 保留为高级显式计划：它适合存进 system / extractor、跨 world 复用，以及长期复用 parallel job cache；遍历时仍显式接收 world。
 
 支持参数：
 
@@ -631,32 +650,33 @@ let mut filtered = world.query_filtered::<&Position, With<Velocity>>();
 - `&mut T`
 - `Option<&T>`
 - `Option<&mut T>`
+- `#[derive(QueryData)]` 命名字段查询
 
 支持过滤器：
 
 - `With<T>`
 - `Without<T>`
-- filter tuple
+- `Any<(...)>` OR filter
+- 最多 16 项的 AND filter tuple
 
 支持遍历形态：
 
-- entity item：`for_each`
-- chunk slice：`for_each_chunk`
-- entity-aware：`for_each_with_entity`
-- chunk + entity ids：`for_each_chunk_with_entities`
-- parallel chunk variants
+- entity item：`for_each` / `par_for_each`
+- chunk slice：`for_each_chunk` / `par_for_each_chunk`
+- entity-aware：`for_each_with_entity` / `par_for_each_with_entity`
+- chunk + entity ids：`for_each_chunk_with_entities` / `par_for_each_chunk_with_entities`
 - `count` / `is_empty` / `cached_archetype_count`
 
 查询设计原则：
 
 - application / system hot path 优先 typed query。
-- chunk iteration 用在真正 hot 的批处理循环。
+- entity-level parallel iteration 是常规并行系统入口；chunk iteration 用在需要切片、SIMD 或批处理的 hot loop。
 - optional param 用于跨 archetype 的可选 component，不应替代清晰的数据建模。
 - 重复 component 类型在同一 query 中被拒绝，这是有意的 aliasing 防线。
 
-### 5.7 并行 chunk 查询限制
+### 5.7 并行查询限制
 
-并行查询按 chunk 分发，chunk 执行顺序未定义。
+并行查询把 Chunk 切成连续 4096-entity stripe 后交给 Rayon；stripe、chunk 和实体执行顺序未定义。低于任务阈值时自动回退到顺序执行。
 
 并行闭包中应遵守：
 
@@ -704,27 +724,33 @@ resource 生命周期由 `World` 管理。`World::clear()` 清空实体但保留
 
 ### 5.10 System schedule
 
-SkyEngine 当前没有公开独立的 `Schedule` 类型；调度器内置在 `World` 的 group 模型中。
+SkyEngine 不公开可任意改写的 `Schedule` 对象；调度器内置在 `World`，公开面是 typed stage 与 typed system parameters。
 
 核心规则：
 
-- `world.group("name")` 查找或创建 group。
-- group 按创建顺序运行。
-- group 内 system 按添加顺序运行。
-- 普通 group 每次 tick 运行一次。
-- fixed group 使用 accumulator，可能在一帧运行多次 substep。
+- 内置 stage 顺序为 `First -> FixedUpdate -> PreUpdate -> Update -> PostUpdate -> Last`。
+- 自定义 stage 必须通过 `insert_stage_after` 显式安装；未知 label 不会静默追加到 `Last` 后面。
+- `world.stage(Label).add(system)` 从 `View` / `ParView` / `Res` / `ResMut` / `Commands` 参数推导访问集合。`View` 只准备顺序 plan，`ParView` 才准备并行 stripe jobs。
+- stage 内 read/read system 可进入同一 wave；存在写冲突的 system 按注册顺序进入后续 wave。默认至少 3 个 compatible system 才 dispatch 到 Rayon，stage 可调整阈值。
+- `add_exclusive` 是完整 `&mut World` 的显式串行 barrier，barrier 前 flush command buffer。
+- 普通 system 的命令只在 stage 结束或 exclusive barrier 前按注册顺序合并，worker 完成顺序不影响结果。
+- `FixedUpdate` 默认 60 Hz；第一次显式 fixed 配置可覆盖默认值，后续冲突配置会报错而不是 last-writer-wins。`FixedStep` 使用 `f64` accumulator、非零 step、`max_substeps` 和 Drop/Carry overflow 策略。
 - `world.tick()` 使用真实时间差。
-- `world.tick_with_delta(dt)` 使用指定 delta。
+- `world.tick_with_delta(dt)` 使用指定 delta，并返回 `Result<TickReport, ScheduleError>`。
 - `world.shutdown()` teardown system，应用退出时由 App 调用。
+- tick 会先对整帧 required resources 做 preflight；失败不会推进时间或运行 system。运行中移除后续必需 resource 属于 invariant panic。
+- panic 时 RAII guard 恢复 schedule 并丢弃尚未 flush 的命令；已完成的值写入不回滚。command apply 中途 panic 会 poison World，禁止继续 apply/tick。
 
 `Time` 提供：
 
 - `delta`
+- `frame_delta` / `raw_delta`
 - `elapsed`
 - `frame_count`
+- `fixed_alpha`（只对应内置 `FixedUpdate`）
 - `time_scale`
 
-fixed group 中的 `Time::delta` 应反映 fixed step，而不是外部 wall-clock frame dt。
+fixed stage 中的 `Time::delta` 反映 fixed step；普通 system 只能通过 `Res<Time>` 读取。访问 graph、compiled waves、fixed backlog 和冲突原因可通过 `World::schedule_diagnostics()` 检查。
 
 ### 5.11 dynamic / expert API
 
@@ -1697,16 +1723,14 @@ main()
 
 ```text
 World
-  -> group("input")
-  -> group("simulation")
-  -> group("presentation")
+  -> First / FixedUpdate / PreUpdate / Update / PostUpdate / Last
   -> tick / tick_with_delta
-  -> groups in creation order
-  -> systems in insertion order
-  -> system queries components/resources
-  -> structural changes through Commands or direct World API
-  -> fixed groups may run multiple substeps
-  -> shutdown tears down systems
+  -> serial prepare of View plans / ParView stripes / resource caches
+  -> deterministic conflict-free system waves
+  -> stage-end Commands merge in registration order
+  -> explicit exclusive barriers for direct World access
+  -> bounded fixed stages may run multiple substeps
+  -> shutdown tears down exclusive lifecycle and Local state
 ```
 
 ### 11.3 ECS 结构变化链路
@@ -1739,16 +1763,28 @@ despawn
 
 ```text
 world.query::<Q>()
-  -> PreparedQuery<Q>
+  -> Query<'world, Q> / QueryMut<'world, Q>
+  -> optional .filter::<Flt>()
   -> first iteration:
-       read world archetype_epoch
-       match archetypes by component set + filter
-       cache matching archetypes
+       look up World cache by (Q, Flt)
+       match new archetypes by component set + filter
+       snapshot matching archetypes
   -> subsequent iteration:
-       reuse cache if epoch unchanged
+       reuse local snapshot and World plan while epoch is unchanged
   -> for_each / for_each_chunk:
        borrow typed columns
        invoke user closure
+  -> parallel variants:
+       reuse World-owned job snapshot
+       validate by World identity + storage_epoch in O(1)
+       split chunks into cached contiguous stripes
+       par_for_each requires Item<'_>: Send
+       par_for_each_chunk requires Chunk<'_>: Send
+
+advanced persistent path:
+  PreparedQuery<Q, Flt>
+    -> explicit world argument per iteration
+    -> query-owned archetype + parallel-job caches
 ```
 
 ### 11.5 Render 执行链路
@@ -1817,8 +1853,8 @@ World resource AudioCommands
 | 普通 gameplay component | app / example 自己的 module | 不要放 `src/render/component`，除非它是渲染 authoring |
 | 渲染 authoring component | `src/render/component/` | 是否需要 extractor 与 phase item |
 | 全局 gameplay 状态 | ECS resource | 是否需要 App setup 初始化 |
-| 高频系统 | `System` + cached `PreparedQuery` | 是否需要 `for_each_chunk` |
-| 查询中结构变化 | `Commands` | apply 点是否清晰 |
+| 高频系统 | typed function + `View<Q, F>` / `ParView<Q, F>` | 顺序遍历用 `View`；并行遍历显式用 `ParView` |
+| 查询中结构变化 | system `Commands<'_>` | stage / exclusive flush 边界是否清晰 |
 | 新 input binding | `InputActions` / `ActionMap` | App 会自动 update existing resource |
 | 新 asset type | `src/asset/` + factory / manifest 支持 | 是否需要 install 到 GPU / audio runtime |
 | 新 render feature | `src/render/pipeline/features.rs` 或 family 目录 | 注册 extractor、draw function、pipeline step |
@@ -1851,10 +1887,10 @@ World resource AudioCommands
 - entity location 必须在 spawn、despawn、swap-compact、archetype migration 后正确。
 - 非 `Copy` component 必须在 remove、despawn、clear、world drop 时正确 drop。
 - archetype component set 必须保持排序语义，不依赖 bundle 插入顺序。
-- query cache 必须由 world archetype epoch 正确 invalidation。
+- query match cache 必须由 archetype epoch、parallel stripe cache 必须由 storage epoch 正确 invalidation。
 - typed query 必须拒绝重复 component 类型。
-- `Commands` flush 必须保留队列 / barrier / coalescing 语义。
-- group schedule 必须保持创建顺序和 fixed-step accumulator 语义。
+- `Commands` flush 必须保留注册顺序、stage/exclusive barrier 与 coalescing 语义。
+- typed stage 必须保持固定顺序；冲突 system 必须保持注册顺序，fixed accumulator 必须受 substep 上限约束。
 
 ### 13.2 Render 不变量
 
@@ -1915,7 +1951,7 @@ docs-only 修改通常不需要 `cargo test`。但如果文档修改伴随 API�
 ### 14.1 当前架构优势
 
 - ECS 主干明确，`World` 是统一中心。
-- Query 热路径设计清晰，typed prepared query 是明确主路径。
+- Query 热路径分层清晰：普通逻辑使用 world-bound typed query，持久化极热路径使用显式 `PreparedQuery`。
 - 存储模型面向 chunked SoA 和 cache locality。
 - 结构迁移、drop、entity generation 等核心语义已明确。
 - 渲染层已形成“声明配置 + 运行时 composer + prepared execution + graph backend”的稳定结构。

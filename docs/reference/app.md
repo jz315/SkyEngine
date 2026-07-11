@@ -198,7 +198,7 @@ ctx.with_render_runtime_mut(...)
 `dt` 语义：
 
 - `auto_tick = true`：`dt` 是 `world.time.frame_delta`，会受 `time_scale` 影响。
-- `auto_tick = false`：`dt` 是 runner 采样的 clamped delta；你需要自己调用 `world.tick_with_delta` 或 `tick_with_frame_delta`。
+- `auto_tick = false`：`dt` 是 runner 采样的 clamped delta；你需要调用 `ctx.tick()`，或直接处理 `world.tick_with_delta` / `tick_with_frame_delta` 返回的 `Result`。
 
 ## 自动 tick
 
@@ -214,8 +214,9 @@ render
 这意味着：
 
 - ECS systems 在 `update` 之前运行。
+- 若整帧 preflight 发现缺失 resource，runner 会记录错误并有序退出，不会 panic，也不会调用本帧 `update/render`。
 - 如果你在 `update` 中写组件，默认会在下一帧 schedule 生效。
-- 对 physics 玩家控制这种手感敏感逻辑，建议把输入写成 `pre_physics` system，或关闭 auto tick 手动排序。
+- 对 physics 玩家控制这种手感敏感逻辑，把控制 system 注册在 `FixedUpdate` 的 physics system 之前，或关闭 auto tick 手动排序。
 
 手动 tick：
 
@@ -226,7 +227,7 @@ world.install(RunnerPlugin::game().with_auto_tick(false)).unwrap();
 ```rust,no_run
 fn update(&mut self, ctx: &mut FrameContext<'_>) {
     apply_input(ctx.world, ctx.input);
-    ctx.world.tick_with_delta(ctx.dt);
+    let _report = ctx.tick().expect("manual ECS schedule tick failed");
     ctx.render();
 }
 ```
