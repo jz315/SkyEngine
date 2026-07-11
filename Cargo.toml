@@ -358,6 +358,16 @@ path = "benches/parallel_query.rs"
 harness = false
 
 [[bench]]
+name = "bound_query"
+path = "benches/bound_query.rs"
+harness = false
+
+[[bench]]
+name = "system_schedule"
+path = "benches/system_schedule.rs"
+harness = false
+
+[[bench]]
 name = "sky_math"
 path = "benches/sky_math.rs"
 harness = false
