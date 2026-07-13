@@ -1,5 +1,2 @@
-[build]
-rustflags = ["-C", "target-cpu=native"]
-
 [target.x86_64-pc-windows-msvc]
 linker = ".cargo/lld-link-wrapper.cmd"
