@@ -1,13 +1,13 @@
 # AGENTS.md
 
 ## Overview
-- This repo is a Rust game engine with a chunk-based ECS core, an app runner, asset/audio/video/UI/runtime modules, and a programmable render stack.
-- **ECS**: the performance-critical paths are typed prepared queries, chunk iteration, and structural entity/component transitions. Entities, bundles, typed queries, optional query params, filters, deferred commands, resources, and a lightweight system schedule are all in active use.
+- This repo is a Rust game engine built on the independently released `sky_ecs` crate, with an app runner, asset/audio/video/UI/runtime modules, and a programmable render stack.
+- **ECS**: SkyEngine re-exports `sky_ecs` through `sky_engine::ecs`. ECS implementation work, benchmarks, and releases live in `C:\Coding\SkyECS` / `https://github.com/jz315/SkyECS`; this repository owns only the engine-facing facade and its usage.
 - **Rendering**: the current high-level `wgpu` path is `RenderPipelineAsset` / `RenderPipelineBuilder` -> `RenderRuntime`, installed through the app-facing `SceneRenderer` backend wrapper. Built-ins include `SpriteFeature`, `TilemapFeature`, `OpaquePhase`, `TransparentPhase`, material prepasses, shadows, GI steps, and post-fx. Internally, execution is shared through `PreparedFrame` / `PreparedView`, `FramePipeline`, and `RenderGraph`.
 - **Renderer backends**: `WgpuSceneRenderer` wraps `RenderRuntime`. Optional Kajiya and Renderling backends consume a backend-neutral `SceneSnapshot` extracted from ECS.
 - **App lifecycle**: `App` owns the winit event loop, active `SceneRenderer`, input resource sync, optional asset/audio/video service updates, diagnostics, screenshots, and frame present lifecycle behind the `app` feature flag.
 - **UI**: current UI is feature-gated. `ui-core` provides `UiHost` / `UiBackend`; `ui-legacy` adapts the retained ECS UI; `ui-serein` installs the experimental EUI-NEO-style backend; `yakui-ui` installs the experimental yakui backend; `egui` is a separate immediate-mode overlay integration under `src/app/egui_integration.rs`.
-- SkyEngine-local benchmarks are Criterion-based under `benches/`; cross-engine ECS comparisons live in the isolated `tools/ecs-comparison` package.
+- SkyEngine-local math/UI benchmarks are Criterion-based under `benches/`; ECS hot-path and cross-engine comparisons live in the SkyECS repository.
 
 ## Canonical API Surface
 - **ECS** entry points: `sky_engine::ecs` - `World`, `EntityId`, `Bundle`, `Query`, `QueryMut`, `QueryData`, `PreparedQuery`, `View`, `ParView`, `Res`, `ResMut`, `Local`, `Commands`, `CommandBuffer`, typed stages, `With`, `Without`, `Any`, and `Time`.
@@ -28,8 +28,8 @@
 
 ## Repo Map
 - `src/lib.rs`: crate root, global allocator setup, public module exports and feature gates.
-- `src/ecs/`: engine-facing facade for the standalone ECS crate.
-- `crates/sky_ecs/`: archetype/chunk ECS, typed queries, dynamic queries, expert internals, bundles, resources, commands, plugin protocol, and schedule execution.
+- `src/ecs/`: engine-facing facade over the released `sky_ecs` crate.
+- `C:\Coding\SkyECS`: sibling source repository for ECS runtime, derive macros, type metadata, examples, tests, and benchmarks.
 - `src/reflect/`: engine-facing reflection facade and SkyEngine built-in registration helpers.
 - `crates/sky_reflect/`: runtime type registry, layout metadata, and type-erased drop support.
 - `src/math/`: engine-facing math facade that preserves `sky_engine::math` paths.
@@ -49,15 +49,11 @@
 - `src/physics/`: optional Rapier-backed 2D physics runtime.
 - `src/vn/`: visual novel / Galgame script runtime, systems, UI/audio/video bindings, and presentation helpers.
 - `src/main.rs`: scratch/local playground, not the canonical API surface.
-- `benches/ecs/common.rs`: lightweight shared components for SkyEngine-local ECS benchmarks.
-- `tools/ecs-comparison/benches/fair.rs`: canonical apples-to-apples ECS comparison entry point against `hecs`, `bevy_ecs`, and `flecs_ecs`.
-- `tools/ecs-comparison/src/{sky,hecs,bevy,flecs}.rs`: engine-specific fair benchmark implementations.
-- `examples/`: feature-focused examples split into `ecs`, `render`, `ui`, `vn`, `scene`, `physics`, `live2d`, `demo`, and `game`.
-- `tools/ecs-comparison/examples/`: cross-engine comparison examples that intentionally depend on external ECS engines.
+- `examples/`: engine-focused examples split into `render`, `ui`, `vn`, `scene`, `physics`, `live2d`, `demo`, and `game`; standalone ECS examples live in SkyECS.
 - `tools/showcase-check/`: non-publishable Cargo target manifest that keeps local game/render/UI showcase entry points in compile coverage.
 - `docs/`: current user/developer docs. Local planning or future architecture notes belong under the ignored `docs/plan/` directory, not in `AGENTS.md`; do not commit them.
 - `README.md`, `README_zh.md`: user-facing overview and quick-start docs.
-- `benches/BENCHMARKS.md`, `benches/BENCHMARKS_CN.md`: benchmark policy, history, and recorded local results.
+- `https://github.com/jz315/SkyECS/tree/main/benches`: ECS benchmark policy, history, and recorded results.
 
 ## Current Query Model
 - Preferred runtime path: `world.query::<Q>() -> Query<'_, Q>` and `world.query_mut::<Q>() -> QueryMut<'_, Q>`; attach filters with `.filter::<Flt>()`.
@@ -95,7 +91,7 @@
 - Required typed resources are preflighted before frame state advances. Returned `ScheduleError` is therefore frame-atomic; removing a later system's required resource during execution is an invariant panic.
 
 ## Current App and Module Installation Model
-- The engine-level plugin protocol lives in `crates/sky_ecs/src/plugin.rs` and is re-exported as `sky_engine::plugin`; install plugins with `world.install(plugin)`.
+- The engine-level plugin protocol comes from `sky_ecs` and is re-exported as `sky_engine::plugin`; install plugins with `world.install(plugin)`.
 - `World::install` records plugin type installation, rejects duplicates, and supports local dependency checks through `world.require_plugin::<P>(...)`.
 - App-facing capability plugins live in `src/app/plugins.rs`: `WindowPlugin`, `RunnerPlugin`, `LogPlugin`, `InputPlugin`, `AssetPlugin`, `RenderPlugin`, and feature-gated `AudioPlugin` / `VideoPlugin`.
 - Module plugins such as `UiPlugin`, `YakuiUiPlugin`, `SereinUiPlugin`, `VnPlugin`, and the 2D physics plugins implement the same `Plugin` protocol. Prefer `world.install(...)` for normal configuration; keep direct installer helpers only as local/lazy compatibility paths where they already exist.
@@ -139,9 +135,10 @@
 - When debugging retained `ui-serein` layout, do not trust a single-frame layout dump. Many failures are temporal: `live_scope`, animation, scroll widgets, and dirty-scope partial rebuilds can make a correct first frame drift on later frames. For suspected retained UI bugs, dump the same element across several frames and compare layout frame, active clip rect, draw-list command, renderer primitive/scissor data, and final screenshot pixels before assigning blame to layout, draw-list generation, or WGPU.
 - Keep Serein core plans in the Serein repository; SkyEngine plans should cover only adapter and host integration work.
 
-## Storage and Performance Notes
+## ECS Dependency and Performance Notes
+- ECS implementation changes belong in the sibling SkyECS repository; update SkyEngine's released dependency only after the ECS version is published.
 - Storage is columnar per chunk, never entity-interleaved.
-- `CHUNK_SIZE` is currently `512 * 1024` bytes in `crates/sky_ecs/src/ecs/chunk.rs`.
+- `CHUNK_SIZE` is currently `512 * 1024` bytes in `C:\Coding\SkyECS\crates\sky_ecs\src\ecs\chunk.rs`.
 - Chunk backing blocks are pooled per thread with a retained-budget cap (`4 MiB` today).
 - `Data` caches one empty `spare_chunk` per archetype to avoid unnecessary pool round-trips during spawn/despawn churn.
 - Archetype component lists are sorted by component type ID; never assume builder insertion order is preserved.
@@ -165,21 +162,20 @@
 - Run render/example compile check after render/app API changes: `cargo check --examples --features app`
 - Run all non-published showcase compile checks: `cargo check --manifest-path tools/showcase-check/Cargo.toml --all-targets --all-features`
 - Run legacy UI example compile check after retained UI changes: `cargo check --examples --features ui-legacy`
-- Run canonical fair comparison: `cargo compare-ecs`
-- Run SkyEngine-local benches: `cargo bench`
-- Run typed schedule microbenchmarks: `cargo bench --bench system_schedule`
-- Run one engine slice: `cargo compare-ecs -- sky`
-- Run one exact benchmark: `cargo compare-ecs -- fair_random_access/get/sky --exact`
+- Run canonical fair comparison from `C:\Coding\SkyECS`: `cargo compare-ecs`
+- Run SkyEngine-local math/UI benches: `cargo bench`
+- Run typed schedule microbenchmarks from SkyECS: `cargo bench -p sky_ecs --bench system_schedule`
+- Run one exact comparison from SkyECS: `cargo compare-ecs -- fair_random_access/get/sky --exact`
 - Render graph tests requiring GPU use `create_test_device()` or `GpuContext::new_headless()` and need a GPU-capable environment.
 - EUI-NEO visual verification examples support built-in screenshot probes via `SKY_SEREIN_SCREENSHOT_PATH`, `SKY_SEREIN_SCREENSHOT_FRAME`, and `SKY_SEREIN_EXIT_AFTER_SCREENSHOT`; gallery overlay states can be forced with variables such as `SKY_SEREIN_GALLERY_DIALOG_OPEN`, `SKY_SEREIN_GALLERY_CONTEXT_OPEN`, `SKY_SEREIN_GALLERY_DATE_OPEN`, `SKY_SEREIN_GALLERY_TIME_OPEN`, `SKY_SEREIN_GALLERY_COLOR_OPEN`, and `SKY_SEREIN_GALLERY_PAGE`.
 
 ## Benchmark Policy
-- `tools/ecs-comparison/benches/fair.rs` is the only canonical cross-engine ECS comparison suite.
+- `C:\Coding\SkyECS\tools\ecs-comparison\benches\fair.rs` is the only canonical cross-engine ECS comparison suite.
 - `fair` only includes workloads that Sky, hecs, Bevy, and Flecs can all express through safe public APIs.
 - Query/prepared state must be created outside the timed loop in `fair` for every engine.
-- Engine-specific fair implementations live under `tools/ecs-comparison/src/` and are selected via Criterion filters rather than separate bench targets.
-- Keep third-party ECS comparison dependencies (`hecs`, `bevy_ecs`, `flecs_ecs`, comparison-only math/windowing helpers) inside `tools/ecs-comparison`; do not add them back to the root `Cargo.toml`.
-- Historical benchmark numbers live in `benches/BENCHMARKS.md` / `benches/BENCHMARKS_CN.md`; treat them as machine-specific and time-specific.
+- Engine-specific fair implementations live under SkyECS `tools/ecs-comparison/src/` and are selected via Criterion filters rather than separate bench targets.
+- Keep third-party ECS comparison dependencies inside SkyECS; do not add them to SkyEngine's root `Cargo.toml`.
+- Historical benchmark numbers live in the SkyECS `benches/BENCHMARKS.md` / `BENCHMARKS_CN.md`; treat them as machine-specific and time-specific.
 
 ## Implementation Guidelines
 - Prefer bundle-based `spawn` / `spawn_batch` for normal runtime code.

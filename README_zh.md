@@ -8,7 +8,7 @@ SkyEngine 的目标是成为可用于真实项目的 Rust 原生 2D 与混合游
   <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/Rust-2021_Edition-orange?logo=rust&logoColor=white" alt="Rust"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <a href="https://github.com/gfx-rs/wgpu"><img src="https://img.shields.io/badge/GPU-wgpu_29-green?logo=webgpu" alt="wgpu"></a>
-  <a href="benches/BENCHMARKS_CN.md"><img src="https://img.shields.io/badge/Bench-Criterion-purple" alt="Criterion"></a>
+  <a href="https://github.com/jz315/SkyECS/blob/main/benches/BENCHMARKS_CN.md"><img src="https://img.shields.io/badge/Bench-Criterion-purple" alt="Criterion"></a>
 </p>
 
 <p align="center">
@@ -113,7 +113,7 @@ cargo run --example asset_custom_factory --features asset
 
 ## 性能基准
 
-所有数据来自 `cargo compare-ecs` 公平横向对比，使用 Criterion 框架在同一台 Windows 机器上采集。详细历史记录见 [BENCHMARKS.md](benches\BENCHMARKS_CN.md)。
+所有数据来自独立 [SkyECS](https://github.com/jz315/SkyECS) 仓库的 `cargo compare-ecs` 公平横向对比，使用 Criterion 框架在同一台 Windows 机器上采集。详细历史记录见 [BENCHMARKS_CN.md](https://github.com/jz315/SkyECS/blob/main/benches/BENCHMARKS_CN.md)。
 
 ### 迭代性能
 
@@ -140,14 +140,9 @@ cargo run --example asset_custom_factory --features asset
 > 💡 Sky 在完整帧模拟中 **领先 hecs 14%、领先 Bevy 19%**
 
 ```bash
-# 运行公平对比基准
+git clone https://github.com/jz315/SkyECS.git
+cd SkyECS
 cargo compare-ecs
-
-# 运行指定引擎
-cargo compare-ecs -- sky
-cargo compare-ecs -- hecs
-cargo compare-ecs -- bevy
-cargo compare-ecs -- flecs
 ```
 
 ---
@@ -214,7 +209,7 @@ cargo run --example scene_basic --features scene
 | [Render](docs/reference/render.md) | 高层渲染模块导览 |
 | [Persistence](docs/reference/scene.md) | World / Prefab / Save |
 | [Physics](docs/reference/physics.md) | 2D physics 和 Tiled physics |
-| [benches/BENCHMARKS_CN.md](benches/BENCHMARKS_CN.md) | 基准测试方法论与历史记录 |
+| [Sky ECS Benchmark](https://github.com/jz315/SkyECS/blob/main/benches/BENCHMARKS_CN.md) | ECS 基准测试方法论与历史记录 |
 | [src/render/AGENTS.md](src/render/AGENTS.md) | 渲染模块架构指南 |
 | [src/render/core/graph/AGENTS.md](src/render/core/graph/AGENTS.md) | RenderGraph 详细设计文档 |
 

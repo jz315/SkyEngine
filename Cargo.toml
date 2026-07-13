@@ -20,7 +20,7 @@ exclude = [
 [dependencies]
 mimalloc = "0.1.48"
 rustc-hash = "2.1.2"
-sky_ecs = { path = "crates/sky_ecs" }
+sky_ecs = "0.1.1"
 sky_math = { path = "crates/sky_math" }
 sky_reflect = { path = "crates/sky_reflect" }
 sky_profile = { path = "crates/sky_profile", optional = true }
@@ -85,28 +85,6 @@ yakui-winit = { path = "crates/vendor/yakui/crates/yakui-winit", optional = true
 # ── Official release examples ────────────────────────────────────────────────
 # `autoexamples = false` keeps local showcase sources out of the published
 # Cargo example surface unless they are deliberately allowlisted here.
-
-# ECS tutorials (no GPU needed)
-
-[[example]]
-name = "hello_ecs"
-path = "examples/ecs/hello_ecs.rs"
-
-[[example]]
-name = "queries"
-path = "examples/ecs/queries.rs"
-
-[[example]]
-name = "commands"
-path = "examples/ecs/commands.rs"
-
-[[example]]
-name = "systems"
-path = "examples/ecs/systems.rs"
-
-[[example]]
-name = "tiny_defense"
-path = "examples/ecs/tiny_defense.rs"
 
 # Scene/prefab tutorials
 
@@ -354,33 +332,6 @@ yakui-ui = [
 criterion = "0.8.2"
 tempfile = "3"
 
-# ECS hot paths. Target names are intentionally stable for Criterion baselines
-# and `tools/bench-ecs.ps1`; only their source layout is grouped by domain.
-[[bench]]
-name = "parallel_query"
-path = "benches/ecs/parallel_query.rs"
-harness = false
-
-[[bench]]
-name = "bound_query"
-path = "benches/ecs/bound_query.rs"
-harness = false
-
-[[bench]]
-name = "archetype_match"
-path = "benches/ecs/archetype_match.rs"
-harness = false
-
-[[bench]]
-name = "parallel_job_cache"
-path = "benches/ecs/parallel_job_cache.rs"
-harness = false
-
-[[bench]]
-name = "system_schedule"
-path = "benches/ecs/system_schedule.rs"
-harness = false
-
 [[bench]]
 name = "sky_math"
 path = "benches/math/sky_math.rs"
@@ -415,6 +366,7 @@ opt-level = 3
 opt-level = 3
 
 [patch.crates-io]
+sky_profile = { path = "crates/sky_profile" }
 # Kajiya's shader reflection path relies on the ray-tracing extensions from this
 # rspirv branch. Keep this patch scoped to builds that pull Kajiya in.
 rspirv = { git = "https://github.com/gfx-rs/rspirv.git", rev = "dae552c" }
