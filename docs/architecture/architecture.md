@@ -435,20 +435,9 @@ surface lost / timeout / out-of-memory 链路：
 
 ECS 是当前项目的运行时数据核心。它提供实体、组件、资源、查询、延迟命令与轻量 schedule。
 
-核心目录：
-
-- `src/ecs/world.rs`
-- `src/ecs/entity.rs`
-- `src/ecs/archetype.rs`
-- `src/ecs/chunk.rs`
-- `src/ecs/bundle.rs`
-- `src/ecs/query/`
-- `src/ecs/commands.rs`
-- `src/ecs/resource.rs`
-- `crates/sky_ecs/src/ecs/system/`
-- `src/ecs/time.rs`
-- `src/ecs/dynamic.rs`
-- `src/ecs/expert.rs`
+SkyEngine 的本地入口是 `src/ecs/mod.rs`，它重新导出独立
+[`sky_ecs`](https://github.com/jz315/SkyECS) crate。ECS 存储、查询、命令、
+schedule、示例和 benchmark 的源码均在 SkyECS 仓库维护。
 
 公共入口：
 
@@ -557,7 +546,7 @@ World
 设计要点：
 
 - component 数据按列存储，不是 entity-interleaved。
-- `CHUNK_SIZE` 当前在 `src/ecs/chunk.rs`，为 `512 * 1024` bytes。
+- `CHUNK_SIZE` 在独立 SkyECS 仓库的 `crates/sky_ecs/src/ecs/chunk.rs` 中维护，当前为 `512 * 1024` bytes。
 - archetype component list 会按 component type ID 排序，不保留 bundle builder 插入顺序。
 - component-index lookup 使用 thread-local last-hit cache 加 binary search。
 - chunk backing block 按线程池化，并有 retained budget。
@@ -1667,13 +1656,12 @@ flowchart TB
     Render --> RenderResources[src/render/core/resources]
     Render --> RenderShaders[src/render/shaders]
 
-    Examples --> ECSExamples[examples/ecs]
     Examples --> RenderExamples[examples/render]
     Examples --> DemoExamples[examples/demo]
     Examples --> Live2DExamples[examples/live2d]
     Examples --> CompareExamples[examples/compare]
 
-    Benches --> Fair[benches/fair]
+    Benches --> EngineBenches[benches/math and benches/ui]
 ```
 
 关键文件速览：
@@ -1687,10 +1675,10 @@ flowchart TB
 | `src/app/runner.rs` | winit event loop / App lifecycle |
 | `src/gpu/context.rs` | `GpuContext` / active frame / upload arena |
 | `src/asset/mod.rs` | Asset public facade |
-| `examples/ecs/` | ECS 入门与 schedule / commands 示例 |
+| [SkyECS examples](https://github.com/jz315/SkyECS/tree/main/crates/sky_ecs/examples) | ECS 入门与 schedule / commands 示例 |
 | `examples/render/` | Render API showcase |
 | `examples/demo/` | GPU demo |
-| `benches/fair/main.rs` | canonical cross-engine benchmark entry |
+| [SkyECS benchmarks](https://github.com/jz315/SkyECS/tree/main/tools/ecs-comparison) | canonical cross-engine benchmark entry |
 
 ---
 
@@ -1867,7 +1855,7 @@ World resource AudioCommands
 | 新 shader | `src/render/shaders/` | 绑定布局和 material / pass contract |
 | 新 graph copy op | `src/render/core/graph/` | reads/writes registration、validation、tests |
 | 新 demo | `examples/demo` 或 `examples/render` | Cargo example entry 和 required features |
-| 新 benchmark | `benches/fair/` 或专门 bench | fair benchmark 必须三引擎可比 |
+| 新引擎 benchmark | `benches/math/`、`benches/ui/` 或专门 bench | ECS benchmark 必须放在 SkyECS 仓库 |
 
 ### 12.3 边界判断口诀
 
@@ -1996,31 +1984,24 @@ docs-only 修改通常不需要 `cargo test`。但如果文档修改伴随 API�
 
 1. `src/lib.rs`
 2. `src/ecs/mod.rs`
-3. `src/ecs/world.rs`
-4. `src/ecs/query/`
-5. `docs/reference/ecs.md`
-6. `src/app/runner.rs`
-7. `src/render/mod.rs`
-8. `src/render/AGENTS.md`
-9. `src/render/core/runtime/`
-10. `src/render/core/pipeline/`
-11. `src/render/core/execution/`
-12. `src/render/core/graph/AGENTS.md`
-13. `src/asset/mod.rs`
-14. `docs/README.md`
+3. `docs/reference/ecs.md`
+4. [SkyECS source](https://github.com/jz315/SkyECS)
+5. `src/app/runner.rs`
+6. `src/render/mod.rs`
+7. `src/render/AGENTS.md`
+8. `src/render/core/runtime/`
+9. `src/render/core/pipeline/`
+10. `src/render/core/execution/`
+11. `src/render/core/graph/AGENTS.md`
+12. `src/asset/mod.rs`
+13. `docs/README.md`
 
 ### 15.2 ECS 学习路径
 
-1. `examples/ecs/hello_ecs.rs`
-2. `examples/ecs/queries.rs`
-3. `examples/ecs/commands.rs`
-4. `examples/ecs/systems.rs`
-5. `examples/ecs/tiny_defense.rs`
-6. `docs/reference/ecs.md`
-7. `src/ecs/world.rs`
-8. `src/ecs/query/prepared.rs`
-9. `src/ecs/commands.rs`
-10. `src/ecs/system.rs`
+1. [SkyECS examples](https://github.com/jz315/SkyECS/tree/main/crates/sky_ecs/examples)
+2. `docs/reference/ecs.md`
+3. `src/ecs/mod.rs`
+4. [SkyECS typed query source](https://github.com/jz315/SkyECS/tree/main/crates/sky_ecs/src/ecs/query)
 
 ### 15.3 Render 学习路径
 
@@ -2062,10 +2043,6 @@ docs-only 修改通常不需要 `cargo test`。但如果文档修改伴随 API�
 3. `examples/demo/cosmic_jellyfish.rs`
 4. `examples/demo/neon_galaxy.rs`
 5. `examples/demo/rimworld/`
-6. `benches/BENCHMARKS.md`
-7. `benches/fair/main.rs`
-8. `benches/fair/sky.rs`
-9. `benches/fair/hecs.rs`
-10. `benches/fair/bevy.rs`
+6. [SkyECS benchmark guide](https://github.com/jz315/SkyECS/blob/main/benches/BENCHMARKS.md)
 
 如果只想知道“应该把新代码放哪里”，优先读第 12 节。如果要改性能敏感路径，先读第 13 节的不变量，再读对应模块的源码和测试。

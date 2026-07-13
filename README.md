@@ -157,13 +157,13 @@ SkyEngine currently includes:
 
 ## Benchmarks
 
-Cross-engine ECS comparisons live in a separate package under
-`tools/ecs-comparison`.
+Cross-engine ECS comparisons are maintained in the independent
+[SkyECS repository](https://github.com/jz315/SkyECS).
 
 ```bash
+git clone https://github.com/jz315/SkyECS.git
+cd SkyECS
 cargo compare-ecs
-cargo compare-ecs -- sky
-cargo compare-ecs -- fair_random_access/get/sky --exact
 ```
 
 The comparison suite focuses on workloads that Sky ECS, `hecs`, `bevy_ecs`, and
@@ -172,19 +172,16 @@ The comparison suite focuses on workloads that Sky ECS, `hecs`, `bevy_ecs`, and
 ## Repository Layout
 
 ```text
-crates/sky_ecs/          Standalone ECS crate
-crates/sky_type/         Shared type metadata helpers
 crates/sky_profile/      Optional profiling support
-src/ecs/                 sky_engine ECS facade
+src/ecs/                 Facade over the released sky_ecs crate
 src/render/              Render runtime, features, phases, graph
 src/app/                 Window and app lifecycle
 src/asset/               Asset server, handles, cooked assets
 src/ui/                  UI host and backend integrations
 src/tile/                Tile scene and authoring model
 examples/                Official examples and local showcase sources
-tools/ecs-comparison/    Cross-engine ECS benchmark suite
 docs/                    User and developer documentation
-benches/                 SkyEngine-local benchmarks
+benches/                 SkyEngine math/UI benchmarks
 ```
 
 ## Documentation
@@ -194,13 +191,12 @@ benches/                 SkyEngine-local benchmarks
 - [Render Reference](docs/reference/render.md)
 - [Asset Reference](docs/reference/asset.md)
 - [UI Reference](docs/reference/ui.md)
-- [Benchmark Notes](benches/BENCHMARKS.md)
+- [Sky ECS benchmarks](https://github.com/jz315/SkyECS/blob/main/benches/BENCHMARKS.md)
 
 ## Status
 
-SkyEngine is under active development. The ECS crate is published separately as
-`sky_ecs`, and the engine modules are growing around it with examples,
-benchmarks, and release checks.
+SkyEngine is under active development. Its ECS is maintained and released
+independently as [`sky_ecs`](https://github.com/jz315/SkyECS).
 
 ## License
 

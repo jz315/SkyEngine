@@ -2,13 +2,11 @@
 
 ```text
 benches/
-├─ ecs/     # Sky-local ECS query, matching, parallelism, and schedule hot paths
 ├─ math/    # math façade and primitive comparisons
-├─ ui/      # feature-gated UI workloads
-├─ BENCHMARKS.md
-└─ BENCHMARKS_CN.md
+└─ ui/      # feature-gated UI workloads
 ```
 
 Cargo target names remain stable even when their source files move. Run a
-single benchmark with `cargo bench --bench <target>`; see `BENCHMARKS.md` for
-measurement policy and the cross-engine suite under `tools/ecs-comparison`.
+single benchmark with `cargo bench --bench <target>`. ECS hot-path benchmarks,
+measurement policy, and the cross-engine comparison suite live in the
+[SkyECS repository](https://github.com/jz315/SkyECS).

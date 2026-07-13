@@ -5303,7 +5303,9 @@ dependencies = [
 
 [[package]]
 name = "sky_ecs"
-version = "0.1.0"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "522abe39fabc18be5ea66be5dbf1df1d04a6a4a134e82890d22995bbaa57e695"
 dependencies = [
  "lazy_static",
  "rayon",
@@ -5317,6 +5319,8 @@ dependencies = [
 [[package]]
 name = "sky_ecs_derive"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2fef1e166e93df481ebd93655985f91d198f6634654778806ed2bbe16199916a"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -5425,7 +5429,9 @@ dependencies = [
 
 [[package]]
 name = "sky_type"
-version = "0.1.0"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dffd1e51f36499b07730032936bc889b42d189242a42969e9782fcc77d5b4009"
 dependencies = [
  "lazy_static",
  "rustc-hash 2.1.2",
