@@ -64,6 +64,34 @@ sky-kajiya-cache/
 # Test / automation tooling
 .playwright-cli/
 
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.pem
+*.key
+*.pfx
+*.p12
+*.local.*
+*.sqlite
+*.sqlite3
+*.db
+
+# Test coverage and local tool caches
+coverage/
+.coverage
+.nyc_output/
+lcov.info
+*.profraw
+*.profdata
+.cargo-watch/
+.direnv/
+
+# Local planning material
+/docs/plan/
+
 # AI agent data
 .gemini/
 .claude/

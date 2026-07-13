@@ -72,9 +72,10 @@ egui = { version = "0.34", optional = true }
 egui-wgpu = { version = "0.34", optional = true }
 egui-winit = { version = "0.34", optional = true }
 glyphon = { version = "0.11", optional = true }
-eui-neo = { path = "crates/eui-neo", optional = true }
-eui-neo-wgpu = { path = "crates/eui-neo-wgpu", optional = true }
-eui-neo-winit = { path = "crates/eui-neo-winit", optional = true }
+arboard = { version = "3.6", optional = true }
+serein = { version = "0.2.0", optional = true }
+serein-wgpu = { version = "0.2.0", optional = true }
+serein-winit = { version = "0.2.0", optional = true }
 ureq = { version = "2.12", default-features = false, features = ["tls"], optional = true }
 yakui = { path = "crates/vendor/yakui/crates/yakui", optional = true, default-features = true }
 yakui-core = { path = "crates/vendor/yakui/crates/yakui-core", optional = true }
@@ -181,19 +182,19 @@ path = "examples/ui/legacy/hud_menu.rs"
 required-features = ["ui-legacy"]
 
 [[example]]
-name = "ui_neo_eui_gallery"
-path = "examples/ui/neo/eui_gallery.rs"
-required-features = ["ui-neo"]
+name = "ui_serein_eui_gallery"
+path = "examples/ui/serein/eui_gallery.rs"
+required-features = ["ui-serein"]
 
 [[example]]
-name = "ui_neo_layout_primitives"
-path = "examples/ui/neo/layout_primitives.rs"
-required-features = ["ui-neo"]
+name = "ui_serein_layout_primitives"
+path = "examples/ui/serein/layout_primitives.rs"
+required-features = ["ui-serein"]
 
 [[example]]
-name = "ui_neo_scroll_y"
-path = "examples/ui/neo/scroll_y.rs"
-required-features = ["ui-neo"]
+name = "ui_serein_scroll_y"
+path = "examples/ui/serein/scroll_y.rs"
+required-features = ["ui-serein"]
 
 [[example]]
 name = "ui_yakui_demo"
@@ -268,8 +269,8 @@ profile = [
     "dep:sky_profile",
     "sky_ecs/profile",
     "render-timings",
-    "eui-neo?/profile",
-    "eui-neo-wgpu?/profile",
+    "serein?/profile",
+    "serein-wgpu?/profile",
 ]
 profile-tracy = ["profile", "sky_profile/tracy"]
 profile-gpu = ["profile", "app"]
@@ -312,7 +313,7 @@ reflect-serde = ["sky_reflect/serde"]
 physics = ["dep:rapier2d"]
 # Visual novel / Galgame script and runtime core.
 vn = ["dep:serde", "dep:toml", "dep:yarnspinner"]
-vn-ui = ["vn", "ui-neo"]
+vn-ui = ["vn", "ui-serein"]
 vn-audio = ["vn", "audio"]
 vn-live2d = ["vn", "live2d"]
 vn-tools = ["vn"]
@@ -326,18 +327,19 @@ egui = ["app", "dep:egui", "dep:egui-wgpu", "dep:egui-winit"]
 ui-core = ["app"]
 # Legacy retained-mode game UI overlay
 ui-legacy = ["ui-core", "dep:glyphon"]
-# Experimental EUI-NEO-inspired declarative game UI runtime.
-ui-neo = [
+# Serein declarative game UI runtime and SkyEngine adapter.
+ui-serein = [
     "ui-core",
-    "dep:eui-neo",
-    "dep:eui-neo-wgpu",
-    "dep:eui-neo-winit",
+    "dep:arboard",
+    "dep:serein",
+    "dep:serein-wgpu",
+    "dep:serein-winit",
 ]
-# Experimental alternate layout backend for the host-agnostic neo runtime.
-ui-neo-taffy = ["ui-neo", "eui-neo/taffy-layout"]
-# Optional network image/text helpers for EUI-NEO examples and remote images.
-ui-neo-net = [
-    "ui-neo",
+# Experimental alternate layout backend for the host-agnostic serein runtime.
+ui-serein-taffy = ["ui-serein", "serein/taffy-layout"]
+# Optional network image/text helpers for Serein examples and remote images.
+ui-serein-net = [
+    "ui-serein",
     "dep:ureq",
 ]
 # Experimental yakui retained/declarative game UI backend.
@@ -352,41 +354,44 @@ yakui-ui = [
 criterion = "0.8.2"
 tempfile = "3"
 
+# ECS hot paths. Target names are intentionally stable for Criterion baselines
+# and `tools/bench-ecs.ps1`; only their source layout is grouped by domain.
 [[bench]]
 name = "parallel_query"
-path = "benches/parallel_query.rs"
+path = "benches/ecs/parallel_query.rs"
 harness = false
 
 [[bench]]
 name = "bound_query"
-path = "benches/bound_query.rs"
+path = "benches/ecs/bound_query.rs"
 harness = false
 
 [[bench]]
 name = "archetype_match"
-path = "benches/archetype_match.rs"
+path = "benches/ecs/archetype_match.rs"
 harness = false
 
 [[bench]]
 name = "parallel_job_cache"
-path = "benches/parallel_job_cache.rs"
+path = "benches/ecs/parallel_job_cache.rs"
 harness = false
 
 [[bench]]
 name = "system_schedule"
-path = "benches/system_schedule.rs"
+path = "benches/ecs/system_schedule.rs"
 harness = false
 
 [[bench]]
 name = "sky_math"
-path = "benches/sky_math.rs"
+path = "benches/math/sky_math.rs"
 harness = false
 
+# Feature-gated UI workload benchmarks.
 [[bench]]
-name = "neo_ui"
-path = "benches/neo_ui.rs"
+name = "serein_ui"
+path = "benches/ui/serein_ui.rs"
 harness = false
-required-features = ["ui-neo"]
+required-features = ["ui-serein"]
 
 [profile.release]
 debug = true
@@ -424,6 +429,6 @@ path = "src/bin/sky-cook.rs"
 required-features = ["asset"]
 
 [[bin]]
-name = "neo-debug"
-path = "src/bin/neo-debug.rs"
-required-features = ["ui-neo"]
+name = "serein-debug"
+path = "src/bin/serein-debug.rs"
+required-features = ["ui-serein"]

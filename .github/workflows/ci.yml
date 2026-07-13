@@ -54,11 +54,8 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: EUI Neo
-        run: cargo test --locked --manifest-path crates/eui-neo/Cargo.toml
+      - name: Serein adapter
+        run: cargo test --locked --features ui-serein ui::serein
 
-      - name: EUI Neo WGPU
-        run: cargo test --locked --manifest-path crates/eui-neo-wgpu/Cargo.toml
-
-      - name: UI Neo examples
-        run: cargo check --locked --examples --features ui-neo
+      - name: Serein examples
+        run: cargo check --locked --examples --features ui-serein

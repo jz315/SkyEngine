@@ -465,17 +465,6 @@ fn parse_xy(raw: &str) -> Option<[f32; 2]> {
     Some([x.trim().parse().ok()?, y.trim().parse().ok()?])
 }
 
-trait ColorAlphaExt {
-    fn with_alpha(self, alpha: f32) -> Self;
-}
-
-impl ColorAlphaExt for Color {
-    fn with_alpha(mut self, alpha: f32) -> Self {
-        self.a = alpha;
-        self
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use crate::asset::{AssetConfig, Assets};

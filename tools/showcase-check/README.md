@@ -13,5 +13,5 @@ Individual feature families can be checked faster, for example:
 
 ```bash
 cargo check --manifest-path tools/showcase-check/Cargo.toml --all-targets --features app
-cargo check --manifest-path tools/showcase-check/Cargo.toml --all-targets --features ui-neo
+cargo check --manifest-path tools/showcase-check/Cargo.toml --all-targets --features ui-serein
 ```

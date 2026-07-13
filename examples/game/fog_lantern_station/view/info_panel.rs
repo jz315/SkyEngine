@@ -1,5 +1,5 @@
-use sky_engine::ui::neo::widgets;
-use sky_engine::ui::neo::{Signal, State, Ui};
+use sky_engine::ui::serein::widgets;
+use sky_engine::ui::serein::{Signal, State, Ui};
 
 use crate::aftertalk;
 use crate::anomaly;

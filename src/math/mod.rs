@@ -5,6 +5,10 @@
 
 pub use sky_math::*;
 
+pub mod angle {
+    pub use sky_math::angle::*;
+}
+
 pub mod color {
     pub use sky_math::color::*;
 }

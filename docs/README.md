@@ -1,13 +1,12 @@
 # SkyEngine Docs
 
-这页只做导航。文档按用途分成 API Reference、Tutorials、Architecture 和 Plan，避免 API 文档和教程继续混在一起。
+这页只做导航。文档按用途分成 API Reference、Tutorials 和 Architecture，避免 API 文档和教程继续混在一起。
 
 ## 文档分层
 
 - [API Reference](reference/index.md)：正式 API 入口、feature gate、公开类型、方法语义和模块边界。
 - [Tutorials](tutorials/index.md)：一步步跑通的教程和学习路径。
 - [Architecture](architecture/index.md)：内部架构、模块关系、运行链路和不变量。
-- [Plan](plan/)：未来计划、迁移草案和未完成方案。
 
 ## 核心模块
 
@@ -37,7 +36,6 @@
 - [Architecture Index](architecture/index.md)：架构文档入口。
 - [Architecture](architecture/architecture.md)：更长的系统架构、渲染管线、RenderGraph、GPU 资源等背景说明。
 - [Render Deep Dive](architecture/render_deep_dive.md)：渲染管线深挖。
-- [Typed Parallel System API](plan/typed_parallel_system_api_design.md)：`View` / `ParView` / `Res` / `Commands` 系统参数、确定性并行 wave、fixed timestep 与 panic-safety 实现说明。
 
 ## 常用验证命令
 

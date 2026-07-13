@@ -23,6 +23,31 @@ pub enum Projection {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectionError {
+    NonFinite,
+    NonPositiveExtent,
+    NonPositiveZoom,
+    InvalidFieldOfView,
+    InvalidDepthRange,
+}
+
+impl core::fmt::Display for ProjectionError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str(match self {
+            Self::NonFinite => "projection values must be finite",
+            Self::NonPositiveExtent => "orthographic extents must be positive",
+            Self::NonPositiveZoom => "orthographic zoom must be positive",
+            Self::InvalidFieldOfView => {
+                "perspective field of view must be between 0 and PI radians"
+            }
+            Self::InvalidDepthRange => "perspective depth requires 0 < near < far",
+        })
+    }
+}
+
+impl std::error::Error for ProjectionError {}
+
 impl Projection {
     #[inline]
     pub const fn orthographic(height: f32) -> Self {
@@ -45,6 +70,75 @@ impl Projection {
             near,
             far,
         }
+    }
+
+    pub fn try_orthographic(height: f32) -> Result<Self, ProjectionError> {
+        let projection = Self::orthographic(height);
+        projection.validate()?;
+        Ok(projection)
+    }
+
+    pub fn try_orthographic_fixed(width: f32, height: f32) -> Result<Self, ProjectionError> {
+        let projection = Self::orthographic_fixed(width, height);
+        projection.validate()?;
+        Ok(projection)
+    }
+
+    pub fn try_perspective(
+        vertical_fov_radians: f32,
+        near: f32,
+        far: f32,
+    ) -> Result<Self, ProjectionError> {
+        let projection = Self::perspective(vertical_fov_radians, near, far);
+        projection.validate()?;
+        Ok(projection)
+    }
+
+    pub fn validate(self) -> Result<(), ProjectionError> {
+        match self {
+            Self::Orthographic { height, zoom } => {
+                if !height.is_finite() || !zoom.is_finite() {
+                    return Err(ProjectionError::NonFinite);
+                }
+                if height <= 0.0 {
+                    return Err(ProjectionError::NonPositiveExtent);
+                }
+                if zoom <= 0.0 {
+                    return Err(ProjectionError::NonPositiveZoom);
+                }
+            }
+            Self::OrthographicFixed {
+                width,
+                height,
+                zoom,
+            } => {
+                if !width.is_finite() || !height.is_finite() || !zoom.is_finite() {
+                    return Err(ProjectionError::NonFinite);
+                }
+                if width <= 0.0 || height <= 0.0 {
+                    return Err(ProjectionError::NonPositiveExtent);
+                }
+                if zoom <= 0.0 {
+                    return Err(ProjectionError::NonPositiveZoom);
+                }
+            }
+            Self::Perspective {
+                vertical_fov_radians,
+                near,
+                far,
+            } => {
+                if !vertical_fov_radians.is_finite() || !near.is_finite() || !far.is_finite() {
+                    return Err(ProjectionError::NonFinite);
+                }
+                if vertical_fov_radians <= 0.0 || vertical_fov_radians >= core::f32::consts::PI {
+                    return Err(ProjectionError::InvalidFieldOfView);
+                }
+                if near <= 0.0 || far <= near {
+                    return Err(ProjectionError::InvalidDepthRange);
+                }
+            }
+        }
+        Ok(())
     }
 
     #[inline]
@@ -228,7 +322,7 @@ impl Default for Projection {
 
 #[cfg(test)]
 mod tests {
-    use super::Projection;
+    use super::{Projection, ProjectionError};
     use crate::{LogicalPoint, LogicalSize, Transform, Vec3};
 
     #[test]
@@ -305,5 +399,25 @@ mod tests {
 
         assert!((world.x() - 384.0).abs() <= 1e-5);
         assert!(world.y().abs() <= 1e-5);
+    }
+
+    #[test]
+    fn validated_constructors_reject_invalid_parameters() {
+        assert_eq!(
+            Projection::try_orthographic(0.0),
+            Err(ProjectionError::NonPositiveExtent)
+        );
+        assert_eq!(
+            Projection::try_perspective(0.0, 0.1, 100.0),
+            Err(ProjectionError::InvalidFieldOfView)
+        );
+        assert_eq!(
+            Projection::try_perspective(1.0, 1.0, 1.0),
+            Err(ProjectionError::InvalidDepthRange)
+        );
+        assert_eq!(
+            Projection::try_perspective(1.0, f32::NAN, 1.0),
+            Err(ProjectionError::NonFinite)
+        );
     }
 }

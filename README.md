@@ -134,7 +134,7 @@ Run UI examples:
 
 ```bash
 cargo run --example ui_legacy_hud_menu --features ui-legacy
-cargo run --example ui_neo_eui_gallery --features ui-neo
+cargo run --example ui_serein_eui_gallery --features ui-serein
 cargo run --example ui_yakui_demo --features yakui-ui
 ```
 

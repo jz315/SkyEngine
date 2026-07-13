@@ -1,4 +1,4 @@
-//! Neo UI-backed galgame vertical slice using local example assets.
+//! Serein UI-backed galgame vertical slice using local example assets.
 //!
 //! ```bash
 //! cargo run --example vn_after_school_promise --features vn-ui
@@ -17,7 +17,7 @@ use sky_engine::render::{
     CameraMarker, Color as RenderColor, MainCamera, Projection, RenderPipelineAsset,
     RenderSettings, SpriteFeature, Transform, TransparentPhase,
 };
-use sky_engine::ui::neo::{widgets, Color, HorizontalAlign, Screen, Ui};
+use sky_engine::ui::serein::{widgets, Color, HorizontalAlign, Screen, Ui};
 use sky_engine::vn::{
     compose_vn_ui_with, VnAction, VnPlaybackState, VnPlugin, VnResource, VnSaveStore, VnStatus,
     VnUiComposeContext, VnUiMode, YarnProject,

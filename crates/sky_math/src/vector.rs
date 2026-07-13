@@ -18,7 +18,7 @@ impl Vec2 {
     }
 
     #[inline]
-    pub fn splat(value: f32) -> Self {
+    pub const fn splat(value: f32) -> Self {
         Self(glam::Vec2::splat(value))
     }
 
@@ -165,7 +165,7 @@ impl Vec3 {
     }
 
     #[inline]
-    pub fn splat(value: f32) -> Self {
+    pub const fn splat(value: f32) -> Self {
         Self(glam::Vec3::splat(value))
     }
 
@@ -323,7 +323,7 @@ impl Vec4 {
     }
 
     #[inline]
-    pub fn splat(value: f32) -> Self {
+    pub const fn splat(value: f32) -> Self {
         Self(glam::Vec4::splat(value))
     }
 
@@ -594,6 +594,158 @@ impl Mul for Vec4 {
     }
 }
 
+macro_rules! integer_vector {
+    ($name:ident, $glam:ty, $scalar:ty, $len:expr, $($field:ident => $index:expr),+ $(,)?) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+        #[repr(transparent)]
+        pub struct $name(pub(crate) $glam);
+
+        impl $name {
+            pub const ZERO: Self = Self(<$glam>::ZERO);
+            pub const ONE: Self = Self(<$glam>::ONE);
+
+            #[inline]
+            pub const fn new($($field: $scalar),+) -> Self {
+                Self(<$glam>::new($($field),+))
+            }
+
+            #[inline]
+            pub const fn splat(value: $scalar) -> Self {
+                Self(<$glam>::splat(value))
+            }
+
+            #[inline]
+            pub const fn from_array(value: [$scalar; $len]) -> Self {
+                Self(<$glam>::from_array(value))
+            }
+
+            #[inline]
+            pub const fn to_array(self) -> [$scalar; $len] {
+                self.0.to_array()
+            }
+
+            $(
+                #[inline]
+                pub const fn $field(self) -> $scalar { self.0.$field }
+            )+
+
+            #[inline]
+            pub fn min(self, rhs: Self) -> Self { Self(self.0.min(rhs.0)) }
+
+            #[inline]
+            pub fn max(self, rhs: Self) -> Self { Self(self.0.max(rhs.0)) }
+
+            #[inline]
+            pub fn clamp(self, min: Self, max: Self) -> Self { Self(self.0.clamp(min.0, max.0)) }
+        }
+
+        impl Index<usize> for $name {
+            type Output = $scalar;
+            fn index(&self, index: usize) -> &Self::Output {
+                match index { $($index => &self.0.$field,)+ _ => panic!("index {index} out of bounds for {}", stringify!($name)) }
+            }
+        }
+
+        impl IndexMut<usize> for $name {
+            fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+                match index { $($index => &mut self.0.$field,)+ _ => panic!("index {index} out of bounds for {}", stringify!($name)) }
+            }
+        }
+
+        impl Add for $name { type Output = Self; fn add(self, rhs: Self) -> Self { Self(self.0 + rhs.0) } }
+        impl AddAssign for $name { fn add_assign(&mut self, rhs: Self) { self.0 += rhs.0; } }
+        impl Sub for $name { type Output = Self; fn sub(self, rhs: Self) -> Self { Self(self.0 - rhs.0) } }
+        impl SubAssign for $name { fn sub_assign(&mut self, rhs: Self) { self.0 -= rhs.0; } }
+        impl Mul<$scalar> for $name { type Output = Self; fn mul(self, rhs: $scalar) -> Self { Self(self.0 * rhs) } }
+        impl MulAssign<$scalar> for $name { fn mul_assign(&mut self, rhs: $scalar) { self.0 *= rhs; } }
+        impl Div<$scalar> for $name { type Output = Self; fn div(self, rhs: $scalar) -> Self { Self(self.0 / rhs) } }
+        impl DivAssign<$scalar> for $name { fn div_assign(&mut self, rhs: $scalar) { self.0 /= rhs; } }
+        impl From<[$scalar; $len]> for $name { fn from(value: [$scalar; $len]) -> Self { Self::from_array(value) } }
+        impl From<$name> for [$scalar; $len] { fn from(value: $name) -> Self { value.to_array() } }
+    };
+}
+
+integer_vector!(IVec2, glam::IVec2, i32, 2, x => 0, y => 1);
+integer_vector!(IVec3, glam::IVec3, i32, 3, x => 0, y => 1, z => 2);
+integer_vector!(UVec2, glam::UVec2, u32, 2, x => 0, y => 1);
+integer_vector!(UVec3, glam::UVec3, u32, 3, x => 0, y => 1, z => 2);
+
+macro_rules! checked_integer_conversions {
+    ($ivec:ident, $uvec:ident, $vec:ident, $len:expr) => {
+        impl $ivec {
+            pub fn try_from_uvec(value: $uvec) -> Option<Self> {
+                let src = value.to_array();
+                let mut out = [0i32; $len];
+                for index in 0..$len {
+                    out[index] = i32::try_from(src[index]).ok()?;
+                }
+                Some(Self::from_array(out))
+            }
+
+            pub fn try_from_vec(value: $vec) -> Option<Self> {
+                let src = value.to_array();
+                let mut out = [0i32; $len];
+                for index in 0..$len {
+                    let v = src[index];
+                    if !v.is_finite()
+                        || (v as f64) < i32::MIN as f64
+                        || (v as f64) > i32::MAX as f64
+                    {
+                        return None;
+                    }
+                    out[index] = v as i32;
+                }
+                Some(Self::from_array(out))
+            }
+
+            pub fn as_vec(self) -> $vec {
+                let src = self.to_array();
+                let mut out = [0.0; $len];
+                for index in 0..$len {
+                    out[index] = src[index] as f32;
+                }
+                $vec::from_array(out)
+            }
+        }
+
+        impl $uvec {
+            pub fn try_from_ivec(value: $ivec) -> Option<Self> {
+                let src = value.to_array();
+                let mut out = [0u32; $len];
+                for index in 0..$len {
+                    out[index] = u32::try_from(src[index]).ok()?;
+                }
+                Some(Self::from_array(out))
+            }
+
+            pub fn try_from_vec(value: $vec) -> Option<Self> {
+                let src = value.to_array();
+                let mut out = [0u32; $len];
+                for index in 0..$len {
+                    let v = src[index];
+                    if !v.is_finite() || v < 0.0 || (v as f64) > u32::MAX as f64 {
+                        return None;
+                    }
+                    out[index] = v as u32;
+                }
+                Some(Self::from_array(out))
+            }
+
+            pub fn as_vec(self) -> $vec {
+                let src = self.to_array();
+                let mut out = [0.0; $len];
+                for index in 0..$len {
+                    out[index] = src[index] as f32;
+                }
+                $vec::from_array(out)
+            }
+        }
+    };
+}
+
+checked_integer_conversions!(IVec2, UVec2, Vec2, 2);
+checked_integer_conversions!(IVec3, UVec3, Vec3, 3);
+
 impl From<[f32; 2]> for Vec2 {
     fn from(value: [f32; 2]) -> Self {
         Self::from_array(value)
@@ -614,7 +766,7 @@ impl From<[f32; 4]> for Vec4 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Vec2, Vec3, Vec4};
+    use super::{IVec2, UVec2, Vec2, Vec3, Vec4};
 
     #[test]
     fn component_mul_is_supported_for_all_public_vectors() {
@@ -677,5 +829,20 @@ mod tests {
         assert_eq!(a.truncate().to_array(), [-2.0, 4.0, -6.0]);
         assert_eq!((0.5 * Vec4::W).to_array(), [0.0, 0.0, 0.0, 0.5]);
         assert!(Vec4::new(1.0, 2.0, 3.0, 4.0).is_finite());
+    }
+
+    #[test]
+    fn integer_conversions_reject_invalid_values() {
+        assert_eq!(UVec2::try_from_ivec(IVec2::new(-1, 2)), None);
+        assert_eq!(IVec2::try_from_uvec(UVec2::new(u32::MAX, 2)), None);
+        assert_eq!(IVec2::try_from_vec(Vec2::new(f32::NAN, 2.0)), None);
+        assert_eq!(UVec2::try_from_vec(Vec2::new(-1.0, 2.0)), None);
+        assert_eq!(UVec2::try_from_vec(Vec2::splat(u32::MAX as f32)), None);
+        assert_eq!(
+            IVec2::try_from_vec(Vec2::new(2.9, -3.9))
+                .unwrap()
+                .to_array(),
+            [2, -3]
+        );
     }
 }

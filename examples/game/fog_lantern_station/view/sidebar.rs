@@ -1,5 +1,5 @@
-use sky_engine::ui::neo::widgets;
-use sky_engine::ui::neo::{State, Ui};
+use sky_engine::ui::serein::widgets;
+use sky_engine::ui::serein::{State, Ui};
 
 use crate::actions;
 use crate::content;

@@ -4,14 +4,14 @@
 - This module owns SkyEngine's current game UI integration behind UI feature flags.
 - `ui-core` provides the backend-neutral host contract.
 - `ui-legacy` provides the retained ECS UI implementation and adapts it into `UiHost`.
-- `ui-neo` adapts the independent `eui-neo` declarative runtime into `UiHost`.
+- `ui-serein` adapts the independent `serein` declarative runtime into `UiHost`.
 - `yakui-ui` installs an experimental yakui backend into the same `UiHost`.
 - `egui` is not part of this module; it is a separate immediate-mode app overlay in `src/app/egui_integration.rs`.
 
 ## Feature Flags
 - `ui-core`: compiles `UiHost`, `UiBackend`, event/capture/render contexts, and `FrameContext::ui()` facade methods.
 - `ui-legacy`: enables retained ECS UI components, layout, input, state, text, renderer, and `LegacyUiBackend`.
-- `ui-neo`: enables `sky_engine::ui::neo`, `NeoUiBackend`, `NeoUiPlugin`, `eui-neo` widgets, glyphon text, and SkyEngine-backed HTTP/Bing image loading.
+- `ui-serein`: enables `sky_engine::ui::serein`, `SereinUiBackend`, `SereinUiPlugin`, `serein` widgets, glyphon text, and SkyEngine-backed HTTP/Bing image loading.
 - `yakui-ui`: enables `YakuiBackend` and `YakuiUiPlugin`.
 
 ## Current Public Surface
@@ -40,16 +40,15 @@
   - `YakuiUiPlugin`
   - `YakuiBackend`
   - `yakui::run`
-- Neo UI:
-  - `neo::NeoUiPlugin`
-  - `neo::install_neo_ui_backend`
-  - `neo::NeoUiBackend`
-  - `neo::Runtime`
-  - `neo::Ui`, `neo::State`, `neo::Signal`, `neo::SignalKey`, and `neo::widgets`
-  - `neo::compose`
-  - `neo::compose_state`
-  - `neo::open_window`
-  - Common layout-safe widget helpers live in `eui_neo::widgets`: `scroll_y`, `popover`, and rounded clipping through `.rounded_clip(...)` / `.clip_to_radius()`.
+- Serein UI:
+  - `serein::SereinUiPlugin`
+  - `serein::install_serein_ui_backend`
+  - `serein::SereinUiBackend`
+  - `serein::Runtime`
+  - `serein::Ui`, `serein::State`, `serein::Signal`, `serein::SignalKey`, and `serein::widgets`
+  - `serein::compose`
+  - `serein::open_window`
+  - Common layout-safe widget helpers live in `serein::widgets`: `scroll_y`, `popover`, and rounded clipping through `.rounded_clip(...)` / `.clip_to_radius()`.
 
 ## File Map
 - `mod.rs`: module wiring and feature-gated re-exports.
@@ -66,34 +65,26 @@
 - `legacy/render.rs`: retained UI overlay renderer, image quads, glyphon text, and texture binding cache (`ui-legacy`).
 - `yakui/mod.rs`: yakui public helpers and re-exports.
 - `yakui/backend.rs`: experimental yakui backend and installer.
-- `neo/mod.rs`: neo module wiring and re-exports.
-- `neo/config.rs`: `NeoUiConfig` and `NeoWindowConfig`.
-- `neo/api.rs`: `compose(...)` and `open_window(...)`.
-- `neo/plugin.rs`: `NeoUiPlugin` and backend installation.
-- `neo/backend.rs`: `NeoUiBackend`, `NeoPendingInput`, and neo-specific capture/IME/render integration.
-- `neo/window.rs`: auxiliary native window client for neo-driven windows.
-- `neo/input_bridge.rs`: raw input and winit keyboard/IME translation for neo.
-- `neo/`: SkyEngine adapter for the independent `eui-neo` runtime, including backend installation, winit input translation, native windows, image resources, and overlay rendering.
+- `serein/mod.rs`: serein module wiring and re-exports.
+- `serein/config.rs`: `SereinUiConfig` and `SereinWindowConfig`.
+- `serein/api.rs`: `compose(...)` and `open_window(...)`.
+- `serein/plugin.rs`: `SereinUiPlugin` and backend installation.
+- `serein/backend.rs`: `SereinUiBackend`, `SereinPendingInput`, and serein-specific capture/IME/render integration.
+- `serein/window.rs`: auxiliary native window client for serein-driven windows.
+- `serein/input_bridge.rs`: raw input and winit keyboard/IME translation for serein.
+- `serein/`: SkyEngine adapter for the independent `serein` runtime, including backend installation, winit input translation, native windows, image resources, and overlay rendering.
 
-## Neo Crate Map
-- `crates/eui-neo/src/runtime/mod.rs`: public `Runtime` facade, construction, frame types, and lifecycle forwarding.
-- `crates/eui-neo/src/runtime/composition.rs`: full and retained incremental composition, partial/full layout decisions, and tree commits.
-- `crates/eui-neo/src/runtime/tree.rs`: roots, screen, scope roots, structure snapshots, id resolution, and structure signatures.
-- `crates/eui-neo/src/runtime/interaction.rs`: pointer, scroll, keyboard dispatch, hit testing, focus, responses, active/hover/drag state.
-- `crates/eui-neo/src/runtime/timing.rs`: runtime clock seconds, clock period ticks, and timer callback scheduling.
-- `crates/eui-neo/src/runtime/animation.rs`: element animation state, frame targets, animated values, and animation ticking.
-- `crates/eui-neo/src/runtime/resources.rs`: skin registry and text/font registration accessors.
-- `crates/eui-neo/src/runtime/debug.rs`: debug snapshots, trace flags, and diagnostic record collection.
-- `crates/eui-neo/src/runtime/dirty.rs`: render/compose/full-redraw flags and draw-list cache invalidation.
-- `crates/eui-neo/src/{callbacks,clock}.rs`: private DSL support for callback transfer/registration and `UiClock`; `Ui` remains the public builder facade.
-- `crates/eui-neo-wgpu/src/renderer/mod.rs`: public `WgpuRenderer` facade and render orchestration.
-- `crates/eui-neo-wgpu/src/renderer/buffers.rs`: vertex buffer upload and capacity cache.
-- `crates/eui-neo-wgpu/src/renderer/images.rs`: image resources, CPU/GPU uploads, cache revisions, and public `Resources`.
-- `crates/eui-neo-wgpu/src/renderer/text.rs`: glyphon state, font registration, text layers, and text buffer cache policy.
-- `crates/eui-neo-wgpu/src/renderer/collect.rs`: draw-list to render-op and primitive-item collection.
-- `crates/eui-neo-wgpu/src/renderer/primitives.rs`: rect, polygon, image, nine-slice, text vertex emission, color conversion, clip, and transform helpers.
-- `crates/eui-neo-wgpu/src/renderer/backdrop.rs`: dummy backdrop, backdrop capture, and blur capture rect logic.
-- `crates/eui-neo-wgpu/src/renderer/pipelines.rs`: `NeoWgpuResources`, shader composition, pipelines, bind groups, and vertex layouts.
+## Serein Crate Map
+- Serein is a separate sibling repository at `C:\Coding\Serein`; SkyEngine must not regain local copies of its crates.
+- `../Serein/crates/serein/src/core/`: ids, elements, events, geometry, styles, fonts, colors, and caches.
+- `../Serein/crates/serein/src/reactive/`: external state, signals, the dependency graph, and runtime subscription registry.
+- `../Serein/crates/serein/src/dsl/`: the public `Ui` facade, scopes, builders, callbacks, and callback registry.
+- `../Serein/crates/serein/src/runtime/frame/`: frame planning, transactional composition, prepared cleanup, commit validation, and infallible apply.
+- `../Serein/crates/serein/src/runtime/reconcile/`: scope lifecycle, reuse decisions, structure plans, and retained tree state.
+- `../Serein/crates/serein/src/runtime/{input,layers,animation,invalidation}/`: focused runtime subsystems; runtime state must not depend on widgets.
+- `../Serein/crates/serein/src/{layout,draw,widgets,agent_debug,testing}/`: layout, draw-list construction, vertical widget slices, diagnostics, and test support.
+- `../Serein/crates/serein-wgpu/src/renderer/`: public renderer orchestration plus focused buffer, image, text, backdrop, pipeline, and per-primitive collectors.
+- `../Serein/crates/serein-winit/src/lib.rs`: the small winit event adapter; it must not own runtime state.
 
 ## App Integration
 - App window events can flow through `handle_ui_event(...)`; backends return `UiEventResponse::consumed()` when they consume an event.
@@ -106,22 +97,22 @@
 - UI overlays currently render after scene rendering directly onto the active wgpu surface frame.
 - The retained UI renderer in `legacy/render.rs` owns its own wgpu pipelines and glyphon renderer.
 - `YakuiBackend` renders through `yakui_wgpu`.
-- `NeoUiBackend` renders through an internal renderer backed by `eui-neo-wgpu`; text uses glyphon and image resources are resolved through SkyEngine asset/render caches.
-- `eui-neo-wgpu` receives `UiClip` rect/radius data from `eui-neo`; primitive shaders apply rounded clipping, while text remains bounded through glyphon text bounds.
+- `SereinUiBackend` renders through an internal renderer backed by `serein-wgpu`; text uses glyphon and image resources are resolved through SkyEngine asset/render caches.
+- `serein-wgpu` receives `UiClip` rect/radius data from `serein`; primitive shaders apply rounded clipping, while text remains bounded through glyphon text bounds.
 - There is currently no canonical render-pipeline `UiPhase` or `UiFeature`.
 - Do not document a future UI phase/feature as current behavior. If planning that migration, put it under `docs/plan/`.
 
-## Neo UI Rules
-- Reference repository for behavior parity is `C:\Coding\EUI-NEO`. Check the local source before changing `crates/eui-neo*` or `src/ui/neo/` behavior.
+## Serein UI Rules
+- Reference repository for behavior parity is `C:\Coding\EUI-NEO`. Check it before changing `C:\Coding\Serein` runtime/widget behavior or `src/ui/serein/` platform adaptation.
 - Keep widget behavior traceable to EUI-NEO `components/*.h` and runtime/layout/animation behavior traceable to `core/*.h`.
 - Preserve EUI-NEO callback ordering, clamp rules, z-index/layering, modal hit blocking, focus, keyboard, clipboard, IME rect, dirty/redraw, and animation semantics unless there is a documented SkyEngine platform adaptation.
-- Keep reusable behavior in `crates/eui-neo`; `src/ui/neo/` should remain a SkyEngine adapter, and examples should demonstrate parity rather than hide widget implementations.
+- Keep reusable behavior in the separate Serein repository; `src/ui/serein/` should remain a SkyEngine adapter, and examples should demonstrate parity rather than hide widget implementations.
 - Keep `Runtime` and `WgpuRenderer` as public facades over focused subsystem modules. Do not reintroduce a god-object `runtime.rs` or `renderer.rs`, and do not create a broad `RuntimeContext` that centralizes unrelated state.
 - Prefer `Ui::scroll_y` / `widgets::scroll_y` for vertical scrollable panels instead of manual viewport + content translation + scrollbar composition. Use `.inset(...)` when the scroll area lives inside a rounded panel so the scrollbar and clipped viewport do not occupy the outer rounded edge.
 - Prefer `Ui::popover` / `widgets::popover` for dropdowns, context menus, pickers, and other floating UI that should sit on a root layer instead of resizing the parent layout. Anchor popovers to stable element ids and provide a fallback rect when first-frame placement matters.
 - Use `.rounded_clip(radius)` or `.clip_to_radius()` for rounded shells whose children should be clipped to the same visible shape; this affects draw-list clips and hit testing, not only styling.
-- Use engine screenshots through `FrameContext::request_screenshot` for visual checks. The neo examples expose `SKY_NEO_SCREENSHOT_PATH`, `SKY_NEO_SCREENSHOT_FRAME`, and `SKY_NEO_EXIT_AFTER_SCREENSHOT`.
-- Keep active EUI-NEO port tracking in `docs/plan/eui_neo_rust_ui_port_plan.md` only; do not create scattered parity TODO files.
+- Use engine screenshots through `FrameContext::request_screenshot` for visual checks. The serein examples expose `SKY_SEREIN_SCREENSHOT_PATH`, `SKY_SEREIN_SCREENSHOT_FRAME`, and `SKY_SEREIN_EXIT_AFTER_SCREENSHOT`.
+- Keep Serein implementation plans in the Serein repository; SkyEngine planning documents must only cover the adapter and engine integration.
 
 ## Implementation Guidelines
 - Keep backend-neutral lifecycle and capture logic in `core/`.
@@ -136,11 +127,11 @@
 - Run legacy UI tests/builds after retained UI changes:
   - `cargo test --features ui-legacy`
   - `cargo check --examples --features ui-legacy`
-- Run neo UI tests/builds after EUI-NEO-style UI changes:
-  - `cargo test --manifest-path crates/eui-neo/Cargo.toml`
-  - `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`
-  - `cargo test --features ui-neo ui::neo`
-  - `cargo check --examples --features ui-neo`
+- Run Serein UI tests/builds after changing the adapter or the sibling crates:
+  - `cargo test --manifest-path ../Serein/crates/serein/Cargo.toml`
+  - `cargo test --manifest-path ../Serein/crates/serein-wgpu/Cargo.toml`
+  - `cargo test --features ui-serein ui::serein`
+  - `cargo check --examples --features ui-serein`
 - Run yakui checks after yakui backend changes:
   - `cargo test --features yakui-ui`
   - `cargo check --examples --features yakui-ui`

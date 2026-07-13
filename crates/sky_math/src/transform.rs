@@ -1,4 +1,8 @@
-use super::{matrix::Mat4, quaternion::Quat, vector::Vec3};
+use super::{
+    matrix::{Affine3, Mat4},
+    quaternion::Quat,
+    vector::Vec3,
+};
 
 /// Shared 3D TRS transform used by engine systems.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -46,6 +50,36 @@ impl Transform {
             scale,
             rotation,
         }
+    }
+
+    /// Decompose an affine matrix when it can be represented as TRS without shear.
+    pub fn try_from_matrix4(matrix: Mat4) -> Option<Self> {
+        if !matrix.is_finite() {
+            return None;
+        }
+        let (scale, rotation, position) = matrix.to_scale_rotation_translation();
+        if !scale.is_finite()
+            || scale.x().abs() <= f32::EPSILON
+            || scale.y().abs() <= f32::EPSILON
+            || scale.z().abs() <= f32::EPSILON
+            || !rotation.to_xyzw_array().into_iter().all(f32::is_finite)
+            || !position.is_finite()
+        {
+            return None;
+        }
+        let transform = Self::from_parts(position, rotation, scale);
+        let expected = matrix.to_cols_array();
+        let actual = transform.to_matrix4().to_cols_array();
+        expected
+            .into_iter()
+            .zip(actual)
+            .all(|(lhs, rhs)| (lhs - rhs).abs() <= 1.0e-4)
+            .then_some(transform)
+    }
+
+    #[inline]
+    pub fn try_from_affine3(affine: Affine3) -> Option<Self> {
+        Self::try_from_matrix4(affine.to_mat4())
     }
 
     #[inline]
@@ -132,6 +166,12 @@ impl Transform {
         )
     }
 
+    /// Compose transforms exactly, preserving shear that cannot be represented by TRS.
+    #[inline]
+    pub fn mul_affine(self, local: Self) -> Affine3 {
+        self.to_affine3() * local.to_affine3()
+    }
+
     #[inline]
     pub fn right(self) -> Vec3 {
         self.rotation.rotate_vec3(Vec3::X)
@@ -207,6 +247,11 @@ impl Transform {
     }
 
     #[inline]
+    pub fn to_affine3(self) -> Affine3 {
+        Affine3::from_scale_rotation_translation(self.scale, self.rotation, self.position)
+    }
+
+    #[inline]
     pub fn is_planar_2d(self) -> bool {
         self.rotation.is_planar_2d()
     }
@@ -271,5 +316,18 @@ mod tests {
         assert!((round_trip.position.distance(transform.position)) <= 1.0e-5);
         assert!((round_trip.scale.distance(transform.scale)) <= 1.0e-5);
         assert!((round_trip.rotation.dot(transform.rotation) - 1.0).abs() <= 1.0e-5);
+    }
+
+    #[test]
+    fn checked_decomposition_rejects_shear_and_exact_composition_preserves_it() {
+        let parent = Transform::default()
+            .with_scale3(2.0, 1.0, 1.0)
+            .with_rotation(0.5);
+        let child = Transform::default().with_rotation(-0.25);
+        let exact = parent.mul_affine(child);
+        assert!(Transform::try_from_affine3(exact).is_none());
+        let point = crate::Vec3::new(2.0, 3.0, 0.0);
+        let sequential = parent.transform_point(child.transform_point(point));
+        assert!(exact.transform_point3(point).distance(sequential) <= 1.0e-5);
     }
 }

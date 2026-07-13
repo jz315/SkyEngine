@@ -87,9 +87,9 @@ cargo run --example physics_headless_probe --features physics
 
 ```bash
 cargo run --example ui_legacy_hud_menu --features ui-legacy
-cargo run --example ui_neo_eui_gallery --features ui-neo
-cargo run --example ui_neo_layout_primitives --features ui-neo
-cargo run --example ui_neo_scroll_y --features ui-neo
+cargo run --example ui_serein_eui_gallery --features ui-serein
+cargo run --example ui_serein_layout_primitives --features ui-serein
+cargo run --example ui_serein_scroll_y --features ui-serein
 cargo run --example ui_yakui_demo --features yakui-ui
 ```
 

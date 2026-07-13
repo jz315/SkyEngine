@@ -1651,39 +1651,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "eui-neo"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.11.1",
- "cosmic-text",
- "profiling",
- "rustc-hash 2.1.2",
- "serde_json",
- "smallvec",
- "taffy",
-]
-
-[[package]]
-name = "eui-neo-wgpu"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "eui-neo",
- "glyphon",
- "profiling",
- "rustc-hash 2.1.2",
- "wgpu 29.0.3",
-]
-
-[[package]]
-name = "eui-neo-winit"
-version = "0.1.0"
-dependencies = [
- "eui-neo",
- "winit",
-]
-
-[[package]]
 name = "event-listener"
 version = "2.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3751,7 +3718,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5216,6 +5183,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "serein"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b91d95d14222417c7b0eabc344c9de1cf41626e321585c1d65fad48e49f5ec6a"
+dependencies = [
+ "bitflags 2.11.1",
+ "cosmic-text",
+ "profiling",
+ "rustc-hash 2.1.2",
+ "serde_json",
+ "smallvec",
+ "taffy",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "serein-wgpu"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4538f2b67e12c170a93c789687912ca10c3656a8dd4942c8f2015be5b41f4888"
+dependencies = [
+ "bytemuck",
+ "glyphon",
+ "profiling",
+ "rustc-hash 2.1.2",
+ "serein",
+ "wgpu 29.0.3",
+]
+
+[[package]]
+name = "serein-winit"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3efca37b6cd750e3fe44d510d28f677c679882b35f960ba6672e82ad9752614e"
+dependencies = [
+ "serein",
+ "winit",
+]
+
+[[package]]
 name = "shader-prepper"
 version = "0.3.0-pre.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5321,6 +5328,7 @@ dependencies = [
 name = "sky_engine"
 version = "0.1.0"
 dependencies = [
+ "arboard",
  "base64 0.13.1",
  "bitflags 2.11.1",
  "bytemuck",
@@ -5330,9 +5338,6 @@ dependencies = [
  "egui",
  "egui-wgpu",
  "egui-winit",
- "eui-neo",
- "eui-neo-wgpu",
- "eui-neo-winit",
  "ffmpeg-next",
  "flate2",
  "glam 0.32.1",
@@ -5357,6 +5362,9 @@ dependencies = [
  "rustc-hash 2.1.2",
  "serde",
  "serde_json",
+ "serein",
+ "serein-wgpu",
+ "serein-winit",
  "sky_ecs",
  "sky_math",
  "sky_profile",
@@ -6207,7 +6215,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c5f7c95348f20c1c913d72157b3c6dee6ea3e30b3d19502c5a7f6d3f160dacbf"
 dependencies = [
  "cc",
- "windows-targets 0.48.5",
+ "windows-targets 0.52.6",
 ]
 
 [[package]]

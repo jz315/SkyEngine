@@ -1,5 +1,5 @@
-use sky_engine::ui::neo::widgets;
-use sky_engine::ui::neo::{Color, HorizontalAlign, Size, Ui, VerticalAlign};
+use sky_engine::ui::serein::widgets;
+use sky_engine::ui::serein::{Color, HorizontalAlign, Size, Ui, VerticalAlign};
 
 use crate::theme::{self, AppTheme};
 

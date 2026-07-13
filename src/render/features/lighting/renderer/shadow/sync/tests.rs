@@ -270,9 +270,7 @@ fn directional_shadow_view_keeps_light_ray_casters_outside_receiver_slice() {
     let caster_offset = (previous_receiver_depth_extent + 4.0).min(setup.caster_depth_extent - 1.0);
     let caster_center = Vec3::from_array(center_world) - light_direction * caster_offset;
     assert!(
-        shadow_view
-            .frustum()
-            .intersects_sphere(caster_center.to_array(), 0.5),
+        shadow_view.frustum().intersects_sphere(caster_center, 0.5),
         "casters between the light and the receiver slice must survive shadow-view culling"
     );
 }

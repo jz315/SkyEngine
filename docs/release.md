@@ -21,9 +21,9 @@ cargo test --features ui-legacy
 cargo test --features yakui-ui
 cargo test --features vn
 cargo test --features app tile::
-cargo test --manifest-path crates/eui-neo/Cargo.toml
-cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml
-cargo check --examples --features ui-neo
+cargo test --manifest-path ../Serein/crates/serein/Cargo.toml
+cargo test --manifest-path ../Serein/crates/serein-wgpu/Cargo.toml
+cargo check --examples --features ui-serein
 ```
 
 ## Release Checklist
@@ -59,10 +59,10 @@ sky_reflect
 sky_profile
 sky_ecs
 sky_math
-eui-neo
-eui-neo-wgpu
-eui-neo-winit
 sky_engine
 ```
+
+`serein`, `serein-wgpu`, and `serein-winit` are released from their separate
+repository and must already satisfy SkyEngine's declared version requirements.
 
 Only tag after the dry run succeeds.

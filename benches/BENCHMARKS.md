@@ -30,7 +30,7 @@ Re-run the suite before citing comparisons; never mix this snapshot with current
 
 ## 2. Sky-local hot-path benchmarks
 
-Criterion benches under `benches/` are mechanism-level regression tools:
+Criterion benches under `benches/` are mechanism-level regression tools. Sources are grouped by domain: `ecs/`, `math/`, and feature-gated `ui/`; Cargo target names remain stable.
 
 | Target | Scope |
 |---|---|

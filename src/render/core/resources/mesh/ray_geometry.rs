@@ -1,5 +1,3 @@
-use super::math::{cross3, dot3, sub3};
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RayTriangle {
     pub positions: [[f32; 3]; 3],
@@ -295,27 +293,17 @@ impl RayMesh {
 }
 
 fn intersect_triangle(ray: Ray, triangle: RayTriangle, t_max: f32) -> Option<f32> {
-    let v0 = triangle.positions[0];
-    let v1 = triangle.positions[1];
-    let v2 = triangle.positions[2];
-    let e1 = sub3(v1, v0);
-    let e2 = sub3(v2, v0);
-    let pvec = cross3(ray.direction, e2);
-    let det = dot3(e1, pvec);
-    if det.abs() <= 1e-7 {
-        return None;
-    }
-    let inv_det = det.recip();
-    let tvec = sub3(ray.origin, v0);
-    let u = dot3(tvec, pvec) * inv_det;
-    if !(0.0..=1.0).contains(&u) {
-        return None;
-    }
-    let qvec = cross3(tvec, e1);
-    let v = dot3(ray.direction, qvec) * inv_det;
-    if v < 0.0 || u + v > 1.0 {
-        return None;
-    }
-    let t = dot3(e2, qvec) * inv_det;
-    (t >= ray.t_min && t <= t_max).then_some(t)
+    let t_min = ray.t_min;
+    let ray = crate::math::Ray3::new(
+        crate::math::Vec3::from_array(ray.origin),
+        crate::math::Vec3::from_array(ray.direction),
+    );
+    let triangle = crate::math::Triangle3::new(
+        crate::math::Vec3::from_array(triangle.positions[0]),
+        crate::math::Vec3::from_array(triangle.positions[1]),
+        crate::math::Vec3::from_array(triangle.positions[2]),
+    );
+    ray.intersect_triangle(triangle, t_max)
+        .map(|hit| hit.t)
+        .filter(|t| *t >= t_min)
 }

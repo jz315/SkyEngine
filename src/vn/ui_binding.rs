@@ -4,8 +4,8 @@ use std::rc::Rc;
 use crate::app::FrameContext;
 use crate::ecs::World;
 use crate::render::Color as RenderColor;
-use crate::ui::neo::{
-    self, widgets, Color as NeoColor, HorizontalAlign, Screen, Ui, VerticalAlign,
+use crate::ui::serein::{
+    self, widgets, Color as SereinColor, HorizontalAlign, Screen, Ui, VerticalAlign,
 };
 use crate::vn::action::VnAction;
 use crate::vn::dialogue::VnDialogueState;
@@ -257,7 +257,7 @@ pub fn compose_vn_ui_with<R>(
             .unwrap_or(VnUiMode::Reading),
         action_sink: action_sink.clone(),
     };
-    let output = neo::compose(ctx, move |ui, screen| {
+    let output = serein::compose(ctx, move |ui, screen| {
         if let Some(snapshot) = snapshot.as_ref() {
             draw_vn_ui(ui, screen, snapshot, &action_sink);
         }
@@ -344,9 +344,9 @@ fn draw_dialogue(
             ui.rect("vn.dialogue.panel")
                 .fill()
                 .radius(10.0)
-                .color(to_neo(config.panel_color))
-                .border(1.0, NeoColor::rgba8(170, 206, 238, 88))
-                .shadow(22.0, 0.0, 10.0, NeoColor::rgba8(0, 0, 0, 92))
+                .color(to_serein(config.panel_color))
+                .border(1.0, SereinColor::rgba8(170, 206, 238, 88))
+                .shadow(22.0, 0.0, 10.0, SereinColor::rgba8(0, 0, 0, 92))
                 .build();
 
             if !speaker.is_empty() {
@@ -356,7 +356,7 @@ fn draw_dialogue(
                     .text(speaker)
                     .font_size(config.speaker_font_size)
                     .line_height(config.speaker_font_size + 6.0)
-                    .color(to_neo(config.speaker_color))
+                    .color(to_serein(config.speaker_color))
                     .build();
             }
 
@@ -367,7 +367,7 @@ fn draw_dialogue(
                 .font_size(config.line_font_size)
                 .line_height(config.line_font_size + 8.0)
                 .wrap(true)
-                .color(to_neo(config.text_color))
+                .color(to_serein(config.text_color))
                 .build();
 
             ui.stack("vn.advance.slot")
@@ -381,11 +381,11 @@ fn draw_dialogue(
                         .font_size(15.0)
                         .radius(8.0)
                         .colors(
-                            to_neo(config.button_color),
-                            to_neo(config.button_hover_color),
-                            to_neo(config.button_pressed_color),
+                            to_serein(config.button_color),
+                            to_serein(config.button_hover_color),
+                            to_serein(config.button_pressed_color),
                         )
-                        .text_color(to_neo(config.text_color))
+                        .text_color(to_serein(config.text_color))
                         .on_click(move || button_sink.push(VnAction::Advance))
                         .build();
                 });
@@ -411,9 +411,9 @@ fn draw_choices(
             ui.rect("vn.choices.panel")
                 .fill()
                 .radius(12.0)
-                .color(to_neo(config.choice_panel_color))
-                .border(1.0, NeoColor::rgba8(170, 206, 238, 86))
-                .shadow(24.0, 0.0, 12.0, NeoColor::rgba8(0, 0, 0, 96))
+                .color(to_serein(config.choice_panel_color))
+                .border(1.0, SereinColor::rgba8(170, 206, 238, 86))
+                .shadow(24.0, 0.0, 12.0, SereinColor::rgba8(0, 0, 0, 96))
                 .build();
 
             let pad = 18.0;
@@ -442,11 +442,11 @@ fn draw_choices(
                             .font_size((config.line_font_size - 3.0).max(15.0))
                             .radius(8.0)
                             .colors(
-                                to_neo(normal),
-                                to_neo(config.button_hover_color),
-                                to_neo(config.button_pressed_color),
+                                to_serein(normal),
+                                to_serein(config.button_hover_color),
+                                to_serein(config.button_pressed_color),
                             )
-                            .text_color(to_neo(config.text_color))
+                            .text_color(to_serein(config.text_color))
                             .on_click(move || choice_sink.push(VnAction::Choice(index)))
                             .build();
                     });
@@ -454,8 +454,8 @@ fn draw_choices(
         });
 }
 
-fn to_neo(color: RenderColor) -> NeoColor {
-    NeoColor::new(color.r, color.g, color.b, color.a)
+fn to_serein(color: RenderColor) -> SereinColor {
+    SereinColor::new(color.r, color.g, color.b, color.a)
 }
 
 #[allow(dead_code)]
@@ -463,7 +463,7 @@ fn draw_centered_text(
     ui: &mut Ui,
     id: impl Into<String>,
     text: impl Into<String>,
-    color: NeoColor,
+    color: SereinColor,
     font_size: f32,
 ) {
     ui.text(id)
@@ -481,7 +481,7 @@ fn draw_centered_text(
 mod tests {
     use super::*;
     use crate::plugin::Plugin;
-    use crate::ui::neo::{FrameInput, PointerEvent, Runtime};
+    use crate::ui::serein::{FrameInput, PointerEvent, Runtime};
     use crate::vn::dialogue::VnDialogueChoice;
     use crate::vn::script::YarnLine;
     use crate::vn::VnPlugin;
@@ -512,7 +512,7 @@ mod tests {
     }
 
     #[test]
-    fn neo_choice_click_queues_vn_choice_action() {
+    fn serein_choice_click_queues_vn_choice_action() {
         let mut dialogue = VnDialogueState::default();
         dialogue.set_choices(vec![
             VnDialogueChoice {

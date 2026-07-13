@@ -108,7 +108,9 @@ impl SceneView {
         view_uniform: ViewUniform,
         is_planar_2d: bool,
     ) -> Self {
-        let frustum = Frustum::from_view_proj(view_uniform.view_proj);
+        let frustum = Frustum::from_view_projection(crate::math::Mat4::from_cols_array(
+            view_uniform.view_proj,
+        ));
         Self {
             order,
             execution_order: order,
@@ -210,7 +212,9 @@ impl SceneView {
         self.far = view_uniform.near_far_time_delta[1];
         self.time = view_uniform.near_far_time_delta[2];
         self.delta_time = view_uniform.near_far_time_delta[3];
-        self.frustum = Frustum::from_view_proj(view_uniform.view_proj);
+        self.frustum = Frustum::from_view_projection(crate::math::Mat4::from_cols_array(
+            view_uniform.view_proj,
+        ));
         self.view_uniform = view_uniform;
     }
 

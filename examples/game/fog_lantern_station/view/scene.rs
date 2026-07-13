@@ -1,4 +1,4 @@
-use sky_engine::ui::neo::{Color, ImageRef, Ui};
+use sky_engine::ui::serein::{Color, ImageRef, Ui};
 
 use crate::model::Location;
 use crate::theme::{self, AppTheme};

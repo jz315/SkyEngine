@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use sky_engine::app::{AppState, FrameContext, SetupContext};
 use sky_engine::input::KeyCode;
 use sky_engine::render::{CameraMarker, MainCamera, Projection, RenderSettings, Transform};
-use sky_engine::ui::neo::State;
+use sky_engine::ui::serein::State;
 
 use crate::actions;
 use crate::model::{
@@ -43,7 +43,7 @@ impl AppState for FogLanternStation {
     fn setup(&mut self, ctx: &mut SetupContext<'_>) {
         let app_theme = theme::station_theme();
         ctx.world.insert_resource(RenderSettings {
-            clear_color: sky_engine::ui::neo::to_render_color(app_theme.background_bottom),
+            clear_color: sky_engine::ui::serein::to_render_color(app_theme.background_bottom),
             ..Default::default()
         });
         ctx.world.spawn((
@@ -60,7 +60,7 @@ impl AppState for FogLanternStation {
         let snapshot = self.state.read(Clone::clone);
         let title_snapshot = snapshot.clone();
         let state = self.state.clone();
-        sky_engine::ui::neo::compose(ctx, move |ui, screen| {
+        sky_engine::ui::serein::compose(ctx, move |ui, screen| {
             view::render(ui, screen, &state, &snapshot);
         });
 
@@ -135,14 +135,14 @@ struct ScreenshotProbe {
 impl Default for ScreenshotProbe {
     fn default() -> Self {
         Self {
-            path: std::env::var("SKY_NEO_SCREENSHOT_PATH")
+            path: std::env::var("SKY_SEREIN_SCREENSHOT_PATH")
                 .ok()
                 .map(PathBuf::from)
                 .filter(|path| !path.as_os_str().is_empty()),
-            frame: env_u32("SKY_NEO_SCREENSHOT_FRAME").unwrap_or(30),
+            frame: env_u32("SKY_SEREIN_SCREENSHOT_FRAME").unwrap_or(30),
             frame_count: 0,
             taken: false,
-            exit_after: env_flag("SKY_NEO_EXIT_AFTER_SCREENSHOT"),
+            exit_after: env_flag("SKY_SEREIN_EXIT_AFTER_SCREENSHOT"),
         }
     }
 }

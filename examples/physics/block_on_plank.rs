@@ -18,10 +18,10 @@ use sky_engine::render::{
     CameraMarker, Color, MainCamera, Projection, RenderPipelineAsset, RenderSettings,
     SpriteFeature, Transform, TransparentPhase,
 };
-#[cfg(feature = "ui-neo")]
-use sky_engine::ui::neo::NeoUiPlugin;
-#[cfg(feature = "ui-neo")]
-use sky_engine::ui::neo::{Align, Color as NeoColor, HorizontalAlign};
+#[cfg(feature = "ui-serein")]
+use sky_engine::ui::serein::SereinUiPlugin;
+#[cfg(feature = "ui-serein")]
+use sky_engine::ui::serein::{Align, Color as SereinColor, HorizontalAlign};
 
 const PIXELS_PER_METER: f32 = 72.0;
 const BASE_X: f32 = -260.0;
@@ -96,11 +96,11 @@ impl AppState for BlockOnPlankDemo {
         report_canvas_errors(&canvas, self.frame_count);
         EduCanvasRuntime::sync_world(ctx.world, &canvas);
 
-        #[cfg(feature = "ui-neo")]
-        compose_neo_panel(ctx, &self.model, sample);
+        #[cfg(feature = "ui-serein")]
+        compose_serein_panel(ctx, &self.model, sample);
 
         ctx.render();
-        #[cfg(feature = "ui-neo")]
+        #[cfg(feature = "ui-serein")]
         ctx.ui().render_overlays();
 
         self.frame_count = self.frame_count.wrapping_add(1);
@@ -347,8 +347,8 @@ fn report_canvas_errors(canvas: &EduCanvas, frame_count: u32) {
     }
 }
 
-#[cfg(feature = "ui-neo")]
-fn compose_neo_panel(ctx: &mut FrameContext<'_>, model: &PlankModel, sample: MotionSample) {
+#[cfg(feature = "ui-serein")]
+fn compose_serein_panel(ctx: &mut FrameContext<'_>, model: &PlankModel, sample: MotionSample) {
     let phase = if sample.sliding {
         "sliding friction"
     } else {
@@ -359,7 +359,7 @@ fn compose_neo_panel(ctx: &mut FrameContext<'_>, model: &PlankModel, sample: Mot
     let tc = model.common_time();
     let vc = model.common_velocity();
 
-    sky_engine::ui::neo::compose(ctx, |ui, screen| {
+    sky_engine::ui::serein::compose(ctx, |ui, screen| {
         ui.stack("edu.overlay")
             .size(screen.width, screen.height)
             .padding(24.0)
@@ -378,7 +378,7 @@ fn compose_neo_panel(ctx: &mut FrameContext<'_>, model: &PlankModel, sample: Mot
                         .padding(18.0)
                         .gap(8.0)
                         .content(|ui| {
-                            neo_text(
+                            serein_text(
                                 ui,
                                 "edu.title",
                                 "Block on Plank",
@@ -387,7 +387,7 @@ fn compose_neo_panel(ctx: &mut FrameContext<'_>, model: &PlankModel, sample: Mot
                                 22.0,
                                 nc(0.92, 0.96, 1.0, 1.0),
                             );
-                            neo_text(
+                            serein_text(
                                 ui,
                                 "edu.phase",
                                 format!("phase: {phase}"),
@@ -396,7 +396,7 @@ fn compose_neo_panel(ctx: &mut FrameContext<'_>, model: &PlankModel, sample: Mot
                                 15.0,
                                 nc(0.62, 0.74, 0.86, 1.0),
                             );
-                            neo_text(
+                            serein_text(
                                 ui,
                                 "edu.model",
                                 format!(
@@ -411,7 +411,7 @@ fn compose_neo_panel(ctx: &mut FrameContext<'_>, model: &PlankModel, sample: Mot
                                 14.0,
                                 nc(0.76, 0.82, 0.88, 1.0),
                             );
-                            neo_text(
+                            serein_text(
                                 ui,
                                 "edu.accel",
                                 format!(
@@ -422,7 +422,7 @@ fn compose_neo_panel(ctx: &mut FrameContext<'_>, model: &PlankModel, sample: Mot
                                 14.0,
                                 nc(0.76, 0.82, 0.88, 1.0),
                             );
-                            neo_text(
+                            serein_text(
                                 ui,
                                 "edu.common",
                                 format!("t_common={tc:.2} s   v_common={vc:.2} m/s"),
@@ -431,7 +431,7 @@ fn compose_neo_panel(ctx: &mut FrameContext<'_>, model: &PlankModel, sample: Mot
                                 14.0,
                                 nc(0.76, 0.82, 0.88, 1.0),
                             );
-                            neo_text(
+                            serein_text(
                                 ui,
                                 "edu.now",
                                 format!(
@@ -449,15 +449,15 @@ fn compose_neo_panel(ctx: &mut FrameContext<'_>, model: &PlankModel, sample: Mot
     });
 }
 
-#[cfg(feature = "ui-neo")]
-fn neo_text(
-    ui: &mut sky_engine::ui::neo::Ui,
+#[cfg(feature = "ui-serein")]
+fn serein_text(
+    ui: &mut sky_engine::ui::serein::Ui,
     id: &str,
     text: impl Into<String>,
     width: f32,
     height: f32,
     font_size: f32,
-    color: NeoColor,
+    color: SereinColor,
 ) {
     ui.text(id)
         .size(width, height)
@@ -470,9 +470,9 @@ fn neo_text(
         .build();
 }
 
-#[cfg(feature = "ui-neo")]
-fn nc(r: f32, g: f32, b: f32, a: f32) -> NeoColor {
-    NeoColor::new(r, g, b, a)
+#[cfg(feature = "ui-serein")]
+fn nc(r: f32, g: f32, b: f32, a: f32) -> SereinColor {
+    SereinColor::new(r, g, b, a)
 }
 
 fn handle_controls(
@@ -576,8 +576,8 @@ fn main() {
     world.install(InputPlugin).unwrap();
     world.install(AssetPlugin::default()).unwrap();
     world.install(EduCanvasPlugin).unwrap();
-    #[cfg(feature = "ui-neo")]
-    world.install(NeoUiPlugin::default()).unwrap();
+    #[cfg(feature = "ui-serein")]
+    world.install(SereinUiPlugin::default()).unwrap();
     world
         .install(RenderPlugin::pipeline(
             RenderPipelineAsset::builder()

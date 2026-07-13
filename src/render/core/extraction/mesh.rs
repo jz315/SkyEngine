@@ -192,5 +192,5 @@ fn sphere_visible(view: &SceneView, sphere: BoundingSphere) -> bool {
         return true;
     }
     view.frustum()
-        .intersects_sphere(sphere.center, sphere.radius)
+        .intersects_sphere(crate::math::Vec3::from_array(sphere.center), sphere.radius)
 }

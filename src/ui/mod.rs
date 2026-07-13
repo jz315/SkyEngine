@@ -6,8 +6,8 @@
 mod core;
 #[cfg(feature = "ui-legacy")]
 mod legacy;
-#[cfg(feature = "ui-neo")]
-pub mod neo;
+#[cfg(feature = "ui-serein")]
+pub mod serein;
 #[cfg(feature = "yakui-ui")]
 pub mod yakui;
 

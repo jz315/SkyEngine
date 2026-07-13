@@ -1,4 +1,4 @@
-use sky_engine::ui::neo::{HorizontalAlign, Signal, Size, State, Ui};
+use sky_engine::ui::serein::{HorizontalAlign, Signal, Size, State, Ui};
 
 use crate::actions::{self, ActionDefinition};
 use crate::content;

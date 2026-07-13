@@ -2,8 +2,68 @@ use std::ops::Mul;
 
 use super::{
     quaternion::Quat,
-    vector::{Vec3, Vec4},
+    vector::{Vec2, Vec3, Vec4},
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[repr(transparent)]
+pub struct Mat3(pub(crate) glam::Mat3);
+
+impl Mat3 {
+    pub const ZERO: Self = Self(glam::Mat3::ZERO);
+    pub const IDENTITY: Self = Self(glam::Mat3::IDENTITY);
+    #[inline]
+    pub fn from_cols_array(value: [f32; 9]) -> Self {
+        Self(glam::Mat3::from_cols_array(&value))
+    }
+    #[inline]
+    pub fn to_cols_array(self) -> [f32; 9] {
+        self.0.to_cols_array()
+    }
+    #[inline]
+    pub fn determinant(self) -> f32 {
+        self.0.determinant()
+    }
+    #[inline]
+    pub fn transpose(self) -> Self {
+        Self(self.0.transpose())
+    }
+    #[inline]
+    pub fn is_finite(self) -> bool {
+        self.0.is_finite()
+    }
+    #[inline]
+    pub fn inverse(self) -> Self {
+        Self(self.0.inverse())
+    }
+    #[inline]
+    pub fn try_inverse(self) -> Option<Self> {
+        let determinant = self.determinant();
+        (self.is_finite() && determinant.is_finite() && determinant.abs() > f32::EPSILON)
+            .then(|| self.inverse())
+    }
+    #[inline]
+    pub fn from_quat(rotation: Quat) -> Self {
+        Self(glam::Mat3::from_quat(rotation.as_glam()))
+    }
+    #[inline]
+    pub fn transform_vector3(self, vector: Vec3) -> Vec3 {
+        Vec3::from_glam(self.0 * vector.as_glam())
+    }
+}
+
+impl Mul for Mat3 {
+    type Output = Self;
+    fn mul(self, rhs: Self) -> Self {
+        Self(self.0 * rhs.0)
+    }
+}
+impl Mul<Vec3> for Mat3 {
+    type Output = Vec3;
+    fn mul(self, rhs: Vec3) -> Vec3 {
+        self.transform_vector3(rhs)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 #[repr(transparent)]
@@ -26,6 +86,13 @@ impl Mat4 {
     #[inline]
     pub fn inverse(self) -> Self {
         Self(self.0.inverse())
+    }
+
+    #[inline]
+    pub fn try_inverse(self) -> Option<Self> {
+        let determinant = self.determinant();
+        (self.is_finite() && determinant.is_finite() && determinant.abs() > f32::EPSILON)
+            .then(|| self.inverse())
     }
 
     #[inline]
@@ -158,6 +225,124 @@ impl Mat4 {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[repr(transparent)]
+pub struct Affine2(pub(crate) glam::Affine2);
+
+impl Affine2 {
+    pub const IDENTITY: Self = Self(glam::Affine2::IDENTITY);
+    #[inline]
+    pub fn from_cols_array(value: [f32; 6]) -> Self {
+        Self(glam::Affine2::from_cols_array(&value))
+    }
+    #[inline]
+    pub fn to_cols_array(self) -> [f32; 6] {
+        self.0.to_cols_array()
+    }
+    #[inline]
+    pub fn from_scale_angle_translation(
+        scale: Vec2,
+        angle_radians: f32,
+        translation: Vec2,
+    ) -> Self {
+        Self(glam::Affine2::from_scale_angle_translation(
+            scale.0,
+            angle_radians,
+            translation.0,
+        ))
+    }
+    #[inline]
+    pub fn transform_point2(self, point: Vec2) -> Vec2 {
+        Vec2(self.0.transform_point2(point.0))
+    }
+    #[inline]
+    pub fn transform_vector2(self, vector: Vec2) -> Vec2 {
+        Vec2(self.0.transform_vector2(vector.0))
+    }
+    #[inline]
+    pub fn inverse(self) -> Self {
+        Self(self.0.inverse())
+    }
+    #[inline]
+    pub fn is_finite(self) -> bool {
+        self.0.is_finite()
+    }
+    #[inline]
+    pub fn try_inverse(self) -> Option<Self> {
+        let determinant = self.0.matrix2.determinant();
+        (self.is_finite() && determinant.is_finite() && determinant.abs() > f32::EPSILON)
+            .then(|| self.inverse())
+    }
+}
+
+impl Mul for Affine2 {
+    type Output = Self;
+    fn mul(self, rhs: Self) -> Self {
+        Self(self.0 * rhs.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[repr(transparent)]
+pub struct Affine3(pub(crate) glam::Affine3A);
+
+impl Affine3 {
+    pub const IDENTITY: Self = Self(glam::Affine3A::IDENTITY);
+    #[inline]
+    pub fn from_cols_array(value: [f32; 12]) -> Self {
+        Self(glam::Affine3A::from_cols_array(&value))
+    }
+    #[inline]
+    pub fn to_cols_array(self) -> [f32; 12] {
+        self.0.to_cols_array()
+    }
+    #[inline]
+    pub fn from_scale_rotation_translation(scale: Vec3, rotation: Quat, translation: Vec3) -> Self {
+        Self(glam::Affine3A::from_scale_rotation_translation(
+            scale.0,
+            rotation.as_glam(),
+            translation.0,
+        ))
+    }
+    #[inline]
+    pub fn from_mat4(matrix: Mat4) -> Self {
+        Self(glam::Affine3A::from_mat4(matrix.0))
+    }
+    #[inline]
+    pub fn to_mat4(self) -> Mat4 {
+        Mat4(glam::Mat4::from(self.0))
+    }
+    #[inline]
+    pub fn transform_point3(self, point: Vec3) -> Vec3 {
+        Vec3::from_glam(self.0.transform_point3(point.0))
+    }
+    #[inline]
+    pub fn transform_vector3(self, vector: Vec3) -> Vec3 {
+        Vec3::from_glam(self.0.transform_vector3(vector.0))
+    }
+    #[inline]
+    pub fn inverse(self) -> Self {
+        Self(self.0.inverse())
+    }
+    #[inline]
+    pub fn is_finite(self) -> bool {
+        self.0.is_finite()
+    }
+    #[inline]
+    pub fn try_inverse(self) -> Option<Self> {
+        let determinant = self.0.matrix3.determinant();
+        (self.is_finite() && determinant.is_finite() && determinant.abs() > f32::EPSILON)
+            .then(|| self.inverse())
+    }
+}
+
+impl Mul for Affine3 {
+    type Output = Self;
+    fn mul(self, rhs: Self) -> Self {
+        Self(self.0 * rhs.0)
+    }
+}
+
 impl Mul for Mat4 {
     type Output = Self;
 
@@ -176,7 +361,7 @@ impl Mul<Vec4> for Mat4 {
 
 #[cfg(test)]
 mod tests {
-    use super::Mat4;
+    use super::{Affine2, Affine3, Mat3, Mat4};
     use crate::{Quat, Vec3};
 
     fn assert_vec3_close(actual: Vec3, expected: Vec3) {
@@ -214,5 +399,25 @@ mod tests {
         let target_in_view = view.transform_point3(Vec3::ZERO);
 
         assert_vec3_close(target_in_view, Vec3::new(0.0, 0.0, -5.0));
+    }
+
+    #[test]
+    fn singular_matrices_and_affines_have_no_checked_inverse() {
+        assert!(Mat3::ZERO.try_inverse().is_none());
+        assert!(Mat4::ZERO.try_inverse().is_none());
+        assert!(Affine2::from_scale_angle_translation(
+            crate::Vec2::new(0.0, 1.0),
+            0.0,
+            crate::Vec2::ZERO
+        )
+        .try_inverse()
+        .is_none());
+        assert!(Affine3::from_scale_rotation_translation(
+            crate::Vec3::new(1.0, 0.0, 1.0),
+            crate::Quat::IDENTITY,
+            crate::Vec3::ZERO
+        )
+        .try_inverse()
+        .is_none());
     }
 }

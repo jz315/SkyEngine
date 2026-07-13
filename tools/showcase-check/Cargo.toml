@@ -25,14 +25,14 @@ default = []
 app = ["sky_engine/app"]
 physics = ["app", "sky_engine/physics"]
 ui-legacy = ["app", "sky_engine/ui-legacy"]
-ui-neo = ["app", "sky_engine/ui-neo"]
+ui-serein = ["app", "sky_engine/ui-serein"]
 yakui-ui = ["app", "dep:yakui", "sky_engine/yakui-ui"]
 egui = ["app", "dep:egui", "sky_engine/egui"]
 live2d = ["app", "sky_engine/live2d"]
 live2d-egui = ["live2d", "egui"]
 kajiya-renderer = ["app", "sky_engine/kajiya-renderer"]
 renderling-renderer = ["app", "sky_engine/renderling-renderer"]
-vn-ui = ["ui-neo", "sky_engine/vn-ui"]
+vn-ui = ["ui-serein", "sky_engine/vn-ui"]
 
 [[bin]]
 name = "boids-classic"
@@ -62,7 +62,7 @@ required-features = ["app"]
 [[bin]]
 name = "fog-lantern-station"
 path = "../../examples/game/fog_lantern_station/main.rs"
-required-features = ["ui-neo"]
+required-features = ["ui-serein"]
 
 [[bin]]
 name = "kenney-platformer"
@@ -160,49 +160,49 @@ path = "../../examples/ui/legacy/stress_lab.rs"
 required-features = ["ui-legacy"]
 
 [[bin]]
-name = "ui-neo-ai-chat"
-path = "../../examples/ui/neo/ai_chat.rs"
-required-features = ["ui-neo"]
+name = "ui-serein-ai-chat"
+path = "../../examples/ui/serein/ai_chat.rs"
+required-features = ["ui-serein"]
 
 [[bin]]
-name = "ui-neo-calculator"
-path = "../../examples/ui/neo/calculator.rs"
-required-features = ["ui-neo"]
+name = "ui-serein-calculator"
+path = "../../examples/ui/serein/calculator.rs"
+required-features = ["ui-serein"]
 
 [[bin]]
-name = "ui-neo-control-center"
-path = "../../examples/ui/neo/control_center/main.rs"
-required-features = ["ui-neo"]
+name = "ui-serein-control-center"
+path = "../../examples/ui/serein/control_center/main.rs"
+required-features = ["ui-serein"]
 
 [[bin]]
-name = "ui-neo-eui-demo"
-path = "../../examples/ui/neo/eui_demo.rs"
-required-features = ["ui-neo"]
+name = "ui-serein-eui-demo"
+path = "../../examples/ui/serein/eui_demo.rs"
+required-features = ["ui-serein"]
 
 [[bin]]
-name = "ui-neo-game-hud"
-path = "../../examples/ui/neo/game_hud.rs"
-required-features = ["ui-neo"]
+name = "ui-serein-game-hud"
+path = "../../examples/ui/serein/game_hud.rs"
+required-features = ["ui-serein"]
 
 [[bin]]
-name = "ui-neo-kenney-showcase"
-path = "../../examples/ui/neo/kenney_showcase.rs"
-required-features = ["ui-neo"]
+name = "ui-serein-kenney-showcase"
+path = "../../examples/ui/serein/kenney_showcase.rs"
+required-features = ["ui-serein"]
 
 [[bin]]
-name = "ui-neo-scroll-x"
-path = "../../examples/ui/neo/scroll_x.rs"
-required-features = ["ui-neo"]
+name = "ui-serein-scroll-x"
+path = "../../examples/ui/serein/scroll_x.rs"
+required-features = ["ui-serein"]
 
 [[bin]]
-name = "ui-neo-scroll-xy"
-path = "../../examples/ui/neo/scroll_xy.rs"
-required-features = ["ui-neo"]
+name = "ui-serein-scroll-xy"
+path = "../../examples/ui/serein/scroll_xy.rs"
+required-features = ["ui-serein"]
 
 [[bin]]
-name = "ui-neo-stress-lab"
-path = "../../examples/ui/neo/stress_lab.rs"
-required-features = ["ui-neo"]
+name = "ui-serein-stress-lab"
+path = "../../examples/ui/serein/stress_lab.rs"
+required-features = ["ui-serein"]
 
 [[bin]]
 name = "ui-yakui-stress-lab"

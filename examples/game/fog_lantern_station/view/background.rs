@@ -1,4 +1,4 @@
-use sky_engine::ui::neo::Ui;
+use sky_engine::ui::serein::Ui;
 
 use crate::theme::{self, AppTheme};
 

@@ -1,5 +1,5 @@
-use sky_engine::ui::neo::widgets::theme::ThemeColorTokens;
-use sky_engine::ui::neo::Color;
+use sky_engine::ui::serein::widgets::theme::ThemeColorTokens;
+use sky_engine::ui::serein::Color;
 
 #[derive(Clone, Copy)]
 pub struct AppTheme {

@@ -21,9 +21,9 @@ feature checks from `AGENTS.md`. Common examples:
 cargo test --features app
 cargo check --examples --features app
 cargo test --features ui-legacy
-cargo test --manifest-path crates/eui-neo/Cargo.toml
-cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml
-cargo check --examples --features ui-neo
+cargo test --manifest-path ../Serein/crates/serein/Cargo.toml
+cargo test --manifest-path ../Serein/crates/serein-wgpu/Cargo.toml
+cargo check --examples --features ui-serein
 ```
 
 ## API Changes

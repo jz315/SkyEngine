@@ -30,7 +30,7 @@ cargo compare-ecs -- fair_random_access/get/sky --exact
 
 ## 2. Sky 本地热路径基准
 
-`benches/` 下的 Criterion targets 用于机制级回归：
+`benches/` 下的 Criterion targets 用于机制级回归。源码按 `ecs/`、`math/` 与 feature-gated `ui/` 分组；Cargo target 名称保持不变：
 
 | Target | 范围 |
 |---|---|

@@ -1,4 +1,4 @@
-use sky_engine::ui::neo::{State, Ui};
+use sky_engine::ui::serein::{State, Ui};
 
 use crate::actions;
 use crate::content;

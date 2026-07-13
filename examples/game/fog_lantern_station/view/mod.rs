@@ -9,7 +9,7 @@ mod sidebar;
 mod story;
 mod title;
 
-use sky_engine::ui::neo::{Screen, State, Ui};
+use sky_engine::ui::serein::{Screen, State, Ui};
 
 use crate::model::{GameMode, GameSession};
 use crate::theme;

@@ -6,7 +6,7 @@
 - **Rendering**: the current high-level `wgpu` path is `RenderPipelineAsset` / `RenderPipelineBuilder` -> `RenderRuntime`, installed through the app-facing `SceneRenderer` backend wrapper. Built-ins include `SpriteFeature`, `TilemapFeature`, `OpaquePhase`, `TransparentPhase`, material prepasses, shadows, GI steps, and post-fx. Internally, execution is shared through `PreparedFrame` / `PreparedView`, `FramePipeline`, and `RenderGraph`.
 - **Renderer backends**: `WgpuSceneRenderer` wraps `RenderRuntime`. Optional Kajiya and Renderling backends consume a backend-neutral `SceneSnapshot` extracted from ECS.
 - **App lifecycle**: `App` owns the winit event loop, active `SceneRenderer`, input resource sync, optional asset/audio/video service updates, diagnostics, screenshots, and frame present lifecycle behind the `app` feature flag.
-- **UI**: current UI is feature-gated. `ui-core` provides `UiHost` / `UiBackend`; `ui-legacy` adapts the retained ECS UI; `ui-neo` installs the experimental EUI-NEO-style backend; `yakui-ui` installs the experimental yakui backend; `egui` is a separate immediate-mode overlay integration under `src/app/egui_integration.rs`.
+- **UI**: current UI is feature-gated. `ui-core` provides `UiHost` / `UiBackend`; `ui-legacy` adapts the retained ECS UI; `ui-serein` installs the experimental EUI-NEO-style backend; `yakui-ui` installs the experimental yakui backend; `egui` is a separate immediate-mode overlay integration under `src/app/egui_integration.rs`.
 - SkyEngine-local benchmarks are Criterion-based under `benches/`; cross-engine ECS comparisons live in the isolated `tools/ecs-comparison` package.
 
 ## Canonical API Surface
@@ -19,7 +19,7 @@
 - **Input** entry points: `sky_engine::input` (behind `features = ["app"]`) - `Input`, `InputActions`, `InputBinding`, `InteractionContext`.
 - **App** entry points: `sky_engine::app` (behind `features = ["app"]`) - `App`, `FrameContext`, `SetupContext`, `AppState`, app capability plugins, `WindowOptions`, and `RunnerOptions`.
 - **Asset** entry points: `sky_engine::asset` (behind `features = ["asset"]`) - `AssetServer`, handles, texture assets, cooked asset support.
-- **UI** entry points: `sky_engine::ui` (behind UI features) - `UiHost`, `UiBackend`, `UiCaptureState`, `UiPlugin` (`ui-legacy`), `neo::{NeoUiPlugin, NeoUiBackend, Runtime, State}` (`ui-neo`), `YakuiUiPlugin` (`yakui-ui`).
+- **UI** entry points: `sky_engine::ui` (behind UI features) - `UiHost`, `UiBackend`, `UiCaptureState`, `UiPlugin` (`ui-legacy`), `serein::{SereinUiPlugin, SereinUiBackend, Runtime, State}` (`ui-serein`), `YakuiUiPlugin` (`yakui-ui`).
 - **Tile scene** entry points: `sky_engine::tile` (behind `features = ["app"]`) - `Tiles`, `Map`, `MapBuilder`, `MapEditor`, `TilePalette`, `TileLayer`, `CollisionLayer`, `MetadataLayer`, `ObjectLayer`, `TileCell`, `TileRef`, `MapData`, and related grid/palette/object model types.
 - **Scene/VN/audio/video** entry points are feature-gated under `sky_engine::scene`, `sky_engine::vn`, `sky_engine::audio`, and `sky_engine::video`.
 - Preferred entity construction is bundle-based: `world.spawn((A, B, ...))` and `world.spawn_batch(...)`.
@@ -49,13 +49,13 @@
 - `src/physics/`: optional Rapier-backed 2D physics runtime.
 - `src/vn/`: visual novel / Galgame script runtime, systems, UI/audio/video bindings, and presentation helpers.
 - `src/main.rs`: scratch/local playground, not the canonical API surface.
-- `benches/common.rs`: lightweight shared components for SkyEngine-local benchmarks.
+- `benches/ecs/common.rs`: lightweight shared components for SkyEngine-local ECS benchmarks.
 - `tools/ecs-comparison/benches/fair.rs`: canonical apples-to-apples ECS comparison entry point against `hecs`, `bevy_ecs`, and `flecs_ecs`.
 - `tools/ecs-comparison/src/{sky,hecs,bevy,flecs}.rs`: engine-specific fair benchmark implementations.
 - `examples/`: feature-focused examples split into `ecs`, `render`, `ui`, `vn`, `scene`, `physics`, `live2d`, `demo`, and `game`.
 - `tools/ecs-comparison/examples/`: cross-engine comparison examples that intentionally depend on external ECS engines.
 - `tools/showcase-check/`: non-publishable Cargo target manifest that keeps local game/render/UI showcase entry points in compile coverage.
-- `docs/`: current user/developer docs. Planning or future architecture notes belong under `docs/plan/`, not in `AGENTS.md`.
+- `docs/`: current user/developer docs. Local planning or future architecture notes belong under the ignored `docs/plan/` directory, not in `AGENTS.md`; do not commit them.
 - `README.md`, `README_zh.md`: user-facing overview and quick-start docs.
 - `benches/BENCHMARKS.md`, `benches/BENCHMARKS_CN.md`: benchmark policy, history, and recorded local results.
 
@@ -98,8 +98,8 @@
 - The engine-level plugin protocol lives in `crates/sky_ecs/src/plugin.rs` and is re-exported as `sky_engine::plugin`; install plugins with `world.install(plugin)`.
 - `World::install` records plugin type installation, rejects duplicates, and supports local dependency checks through `world.require_plugin::<P>(...)`.
 - App-facing capability plugins live in `src/app/plugins.rs`: `WindowPlugin`, `RunnerPlugin`, `LogPlugin`, `InputPlugin`, `AssetPlugin`, `RenderPlugin`, and feature-gated `AudioPlugin` / `VideoPlugin`.
-- Module plugins such as `UiPlugin`, `YakuiUiPlugin`, `NeoUiPlugin`, `VnPlugin`, and the 2D physics plugins implement the same `Plugin` protocol. Prefer `world.install(...)` for normal configuration; keep direct installer helpers only as local/lazy compatibility paths where they already exist.
-- Keep `AGENTS.md` files factual. Do not add future plugin-system plans here; put proposals under `docs/plan/`.
+- Module plugins such as `UiPlugin`, `YakuiUiPlugin`, `SereinUiPlugin`, `VnPlugin`, and the 2D physics plugins implement the same `Plugin` protocol. Prefer `world.install(...)` for normal configuration; keep direct installer helpers only as local/lazy compatibility paths where they already exist.
+- Keep `AGENTS.md` files factual. Do not add future plugin-system plans here; put local proposals under the ignored `docs/plan/` directory.
 - `RenderPlugin::pipeline(...)` and its presets install a `RenderPipelineAsset`; `WgpuSceneRenderer` materializes it as a `RenderRuntime` after GPU creation.
 - `FrameContext` is the app-facing per-frame access point for rendering, backend-neutral render assets, texture readiness, screenshots, UI facade methods, egui overlays, and wgpu escape hatches.
 
@@ -114,30 +114,30 @@
 ## Current UI Model
 - `ui-core` owns the backend-neutral UI host contract: `UiHost`, `UiBackend`, `UiBackendId`, `UiCaptureState`, event handling, begin-frame updates, and overlay rendering.
 - `ui-legacy` is the current retained ECS UI path. It owns UI components, layout, input, state, text, and direct overlay rendering.
-- `ui-neo` is the experimental EUI-NEO-style declarative UI path. The host-agnostic DSL/runtime/widgets live in `crates/eui-neo`, the wgpu overlay renderer lives in `crates/eui-neo-wgpu`, and `src/ui/neo/` adapts them into SkyEngine's `UiHost`.
-- `eui_neo::Runtime` is a public facade in `crates/eui-neo/src/runtime/mod.rs`; subsystem implementation lives in `runtime/{composition,tree,interaction,timing,animation,resources,debug,dirty}.rs`. Keep new runtime state private to those modules unless an existing public API requires otherwise.
-- `eui_neo::Ui` remains the public DSL builder facade. Private callback and clock support lives in `crates/eui-neo/src/{callbacks,clock}.rs`; do not expose those as a new broad context object.
-- `eui_neo_wgpu::WgpuRenderer` is a public facade in `crates/eui-neo-wgpu/src/renderer/mod.rs`; renderer internals live in `renderer/{buffers,images,text,collect,primitives,backdrop,pipelines}.rs`, with `Target`, `Resources`, and `RenderStatus` re-exported from the original public surface.
-- `src/ui/neo/backend.rs` is the SkyEngine adapter layer. Keep pending input batching, capture/IME glue, and `UiBackend` lifecycle there; reusable runtime, widget, and renderer behavior belongs in the `eui-neo` crates.
-- `ui-neo` exposes layout-safe helper APIs for common failure-prone surfaces: `Ui::scroll_y` / `widgets::scroll_y` for vertical scroll regions, `Ui::popover` / `widgets::popover` for root-layer anchored floating content, and `.rounded_clip(...)` / `.clip_to_radius()` for rounded clipped containers.
+- `ui-serein` is the experimental Serein declarative UI path. The independent crates live in the sibling `C:\Coding\Serein` repository; `src/ui/serein/` only adapts them into SkyEngine's `UiHost`.
+- `serein::Runtime` is the public facade. Its implementation is split across `runtime/frame`, `runtime/reconcile`, input, layers, animation, invalidation, diagnostics, and resources; frame mutation remains transactional.
+- `serein::Ui` remains the public DSL builder facade under `dsl/`; reactive ownership lives under `reactive/`, while runtime state must not depend on concrete widgets.
+- `serein_wgpu::WgpuRenderer` is a public facade in the sibling `serein-wgpu` crate; renderer internals separate buffers, images, text, backdrop, pipelines, and primitive collectors.
+- `src/ui/serein/backend.rs` is the SkyEngine adapter layer. Keep pending input batching, capture/IME glue, and `UiBackend` lifecycle there; reusable runtime, widget, and renderer behavior belongs in the `serein` crates.
+- `ui-serein` exposes layout-safe helper APIs for common failure-prone surfaces: `Ui::scroll_y` / `widgets::scroll_y` for vertical scroll regions, `Ui::popover` / `widgets::popover` for root-layer anchored floating content, and `.rounded_clip(...)` / `.clip_to_radius()` for rounded clipped containers.
 - `yakui-ui` installs `YakuiBackend` into `UiHost`. It handles winit events, updates yakui state, reports capture, and renders through `yakui_wgpu`.
 - `egui` is independent of `UiHost`; it lives in `src/app/egui_integration.rs` and renders at the end of the app frame.
 - Current UI overlays are rendered after the scene by `FrameContext::render_ui_overlays()`, `FrameContext::render_ui()`, or egui end-frame integration. There is no canonical `UiPhase` in the render pipeline today.
 - UI input capture is expressed through `UiCaptureState` and event `consumed` responses. Preserve this when changing app input routing.
 
 ## EUI-NEO Port Rules
-- Local source reference: `C:\Coding\EUI-NEO`. Check it before changing `ui-neo` APIs, widget behavior, layout, event ordering, animation, renderer behavior, or gallery parity.
-- Keep `src/ui/neo/` behavior mechanically traceable to EUI-NEO sources: `core/dsl*.h`, `core/layout.h`, `core/event.h`, `core/animation.h`, `core/image.*`, and `components/*.h`.
+- Local source reference: `C:\Coding\EUI-NEO`. Check it before changing `ui-serein` APIs, widget behavior, layout, event ordering, animation, renderer behavior, or gallery parity.
+- Keep `src/ui/serein/` behavior mechanically traceable to EUI-NEO sources: `core/dsl*.h`, `core/layout.h`, `core/event.h`, `core/animation.h`, `core/image.*`, and `components/*.h`.
 - Preserve EUI-NEO defaults, clamp rules, callback ordering, transition masks, z-index/layering, modal input blocking, focus, clipboard, IME rect, and dirty/redraw behavior unless SkyEngine platform seams require a documented adaptation.
-- Keep reusable widget behavior in `crates/eui-neo/src/widgets/` or shared neo runtime modules; `src/ui/neo/` should stay a SkyEngine adapter. `examples/ui/neo/eui_gallery.rs` is a parity pressure test, not a place to hide missing component behavior.
+- Keep reusable widget behavior in `C:\Coding\Serein\crates\serein\src\widgets\` or shared Serein runtime modules; `src/ui/serein/` should stay a SkyEngine adapter. `examples/ui/serein/eui_gallery.rs` is a parity pressure test, not a place to hide missing component behavior.
 - Keep `Runtime` and `WgpuRenderer` as ergonomic public facades, but do not re-centralize unrelated state, caches, event dispatch, and rendering code into `mod.rs` files. Add focused subsystem modules when a type starts owning a new category of responsibility.
 - Prefer `scroll_y` for vertically scrollable UI panels instead of hand-composing a clipped viewport, translated content, scrollbar, and manual content height. Use `.inset(...)` to keep the viewport and scrollbar inside rounded outer shells, `.offset_bind(...)` for state, and auto content-height measurement unless an explicit height is required.
 - Prefer `popover` for dropdowns, menus, pickers, and other floating UI that should not affect parent layout. Popovers are root-layer content anchored from the previous resolved frame, so call `.anchor(...)` with a stable element id and provide `.fallback_anchor(...)` when first-frame placement matters.
-- Use `.rounded_clip(radius)` or `.clip_to_radius()` when the visual shell is rounded and its children must be clipped to the same shape. `UiClip` carries the clip rect and radius through draw-list generation, hit testing, and `eui-neo-wgpu` primitive rendering.
-- In retained `ui-neo`, keep layout inputs stable for visual-only animation. Do not drive progress fills, chart bars, pulses, meters, or decorative bars by changing `.size(...)`, `.min_width`, `.height`, margins, or grow every frame. Use a stable layout box plus transform/scale, color, opacity, clip, or draw-time state so retained scopes can stay structurally compatible and partial layout can run.
+- Use `.rounded_clip(radius)` or `.clip_to_radius()` when the visual shell is rounded and its children must be clipped to the same shape. `UiClip` carries the clip rect and radius through draw-list generation, hit testing, and `serein-wgpu` primitive rendering.
+- In retained `ui-serein`, keep layout inputs stable for visual-only animation. Do not drive progress fills, chart bars, pulses, meters, or decorative bars by changing `.size(...)`, `.min_width`, `.height`, margins, or grow every frame. Use a stable layout box plus transform/scale, color, opacity, clip, or draw-time state so retained scopes can stay structurally compatible and partial layout can run.
 - Validate visible UI with SkyEngine's built-in screenshot path (`FrameContext::request_screenshot`) rather than browser screenshots.
-- When debugging retained `ui-neo` layout, do not trust a single-frame layout dump. Many failures are temporal: `live_scope`, animation, scroll widgets, and dirty-scope partial rebuilds can make a correct first frame drift on later frames. For suspected retained UI bugs, dump the same element across several frames and compare layout frame, active clip rect, draw-list command, renderer primitive/scissor data, and final screenshot pixels before assigning blame to layout, draw-list generation, or WGPU.
-- Keep the EUI-NEO port plan consolidated in `docs/plan/eui_neo_rust_ui_port_plan.md`; remove completed execution plans from that file instead of creating more plan files.
+- When debugging retained `ui-serein` layout, do not trust a single-frame layout dump. Many failures are temporal: `live_scope`, animation, scroll widgets, and dirty-scope partial rebuilds can make a correct first frame drift on later frames. For suspected retained UI bugs, dump the same element across several frames and compare layout frame, active clip rect, draw-list command, renderer primitive/scissor data, and final screenshot pixels before assigning blame to layout, draw-list generation, or WGPU.
+- Keep Serein core plans in the Serein repository; SkyEngine plans should cover only adapter and host integration work.
 
 ## Storage and Performance Notes
 - Storage is columnar per chunk, never entity-interleaved.
@@ -159,7 +159,7 @@
 - Run runtime tests: `cargo test --features app render::runtime::tests`
 - Run legacy UI tests: `cargo test --features ui-legacy`
 - Run tile scene tests: `cargo test --features app tile::`
-- Run EUI-NEO-style UI tests/builds: `cargo test --manifest-path crates/eui-neo/Cargo.toml`, `cargo test --manifest-path crates/eui-neo-wgpu/Cargo.toml`, `cargo test --features ui-neo ui::neo`, and `cargo check --examples --features ui-neo`
+- Run Serein UI tests/builds: `cargo test --manifest-path ../Serein/crates/serein/Cargo.toml`, `cargo test --manifest-path ../Serein/crates/serein-wgpu/Cargo.toml`, `cargo test --features ui-serein ui::serein`, and `cargo check --examples --features ui-serein`
 - Run yakui UI tests/builds: `cargo test --features yakui-ui`
 - Run VN tests: `cargo test --features vn`
 - Run render/example compile check after render/app API changes: `cargo check --examples --features app`
@@ -171,7 +171,7 @@
 - Run one engine slice: `cargo compare-ecs -- sky`
 - Run one exact benchmark: `cargo compare-ecs -- fair_random_access/get/sky --exact`
 - Render graph tests requiring GPU use `create_test_device()` or `GpuContext::new_headless()` and need a GPU-capable environment.
-- EUI-NEO visual verification examples support built-in screenshot probes via `SKY_NEO_SCREENSHOT_PATH`, `SKY_NEO_SCREENSHOT_FRAME`, and `SKY_NEO_EXIT_AFTER_SCREENSHOT`; gallery overlay states can be forced with variables such as `SKY_NEO_GALLERY_DIALOG_OPEN`, `SKY_NEO_GALLERY_CONTEXT_OPEN`, `SKY_NEO_GALLERY_DATE_OPEN`, `SKY_NEO_GALLERY_TIME_OPEN`, `SKY_NEO_GALLERY_COLOR_OPEN`, and `SKY_NEO_GALLERY_PAGE`.
+- EUI-NEO visual verification examples support built-in screenshot probes via `SKY_SEREIN_SCREENSHOT_PATH`, `SKY_SEREIN_SCREENSHOT_FRAME`, and `SKY_SEREIN_EXIT_AFTER_SCREENSHOT`; gallery overlay states can be forced with variables such as `SKY_SEREIN_GALLERY_DIALOG_OPEN`, `SKY_SEREIN_GALLERY_CONTEXT_OPEN`, `SKY_SEREIN_GALLERY_DATE_OPEN`, `SKY_SEREIN_GALLERY_TIME_OPEN`, `SKY_SEREIN_GALLERY_COLOR_OPEN`, and `SKY_SEREIN_GALLERY_PAGE`.
 
 ## Benchmark Policy
 - `tools/ecs-comparison/benches/fair.rs` is the only canonical cross-engine ECS comparison suite.
